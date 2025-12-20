@@ -317,14 +317,20 @@ public class LookupService : ILookupService
         var conditions = new List<string> { "a.isinactive = 'F'" };
 
         if (!string.IsNullOrEmpty(number))
-            conditions.Add($"a.acctnumber LIKE '{NetSuiteService.EscapeSql(number)}%'");
+        {
+            // Support wildcards: "4*" becomes LIKE '4%', "*income*" becomes LIKE '%income%'
+            // Also support "*" alone to return all accounts
+            var pattern = number.Replace("*", "%");
+            if (!pattern.Contains('%')) pattern += "%";  // Add trailing % if no wildcard
+            conditions.Add($"a.acctnumber LIKE '{NetSuiteService.EscapeSql(pattern)}'");
+        }
 
         if (!string.IsNullOrEmpty(type))
             conditions.Add($"a.accttype = '{NetSuiteService.EscapeSql(type)}'");
 
         // Note: Don't include ORDER BY - QueryPaginatedAsync adds it
         var query = $@"
-            SELECT a.id, a.acctnumber, a.accountsearchdisplayname as name, a.fullname, a.accttype, p.acctnumber as parent
+            SELECT a.id, a.acctnumber, a.accountsearchdisplayname as name, a.fullname, a.accttype, a.sspecacct, p.acctnumber as parent
             FROM account a
             LEFT JOIN account p ON a.parent = p.id
             WHERE {string.Join(" AND ", conditions)}";
@@ -337,6 +343,7 @@ public class LookupService : ILookupService
             Name = r.TryGetProperty("name", out var name) ? name.GetString() ?? "" : "",
             FullName = r.TryGetProperty("fullname", out var fn) ? fn.GetString() : null,
             Type = r.TryGetProperty("accttype", out var type2) ? type2.GetString() ?? "" : "",
+            SpecialAccountType = r.TryGetProperty("sspecacct", out var spec) && spec.ValueKind != JsonValueKind.Null ? spec.GetString() : null,
             Parent = r.TryGetProperty("parent", out var p) && p.ValueKind != JsonValueKind.Null ? p.GetString() : null
         }).ToList();
     }

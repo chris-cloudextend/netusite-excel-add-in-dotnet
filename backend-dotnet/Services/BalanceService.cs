@@ -254,10 +254,14 @@ public class BalanceService : IBalanceService
         {
             // BALANCE SHEET: Cumulative from inception through to_period
             // Use t.trandate (transaction date) instead of ap.startdate/enddate
-            // IMPORTANT: Python /balance endpoint uses INCOME_TYPES_SQL for ALL accounts
-            // (including BS accounts) - only flips Income/OthIncome types.
-            // This matches Python behavior exactly.
-            var signFlip = $"CASE WHEN a.accttype IN ({AccountType.IncomeTypesSql}) THEN -1 ELSE 1 END";
+            // 
+            // SIGN FLIP for Balance Sheet:
+            // - Assets (Bank, AcctRec, FixedAsset, etc.): Stored positive (debit balance) → NO FLIP
+            // - Liabilities (AcctPay, CredCard, LongTermLiab, etc.): Stored negative (credit balance) → FLIP to positive
+            // - Equity (Equity, RetainedEarnings): Stored negative (credit balance) → FLIP to positive
+            //
+            // This matches NetSuite's standard Balance Sheet report display.
+            var signFlip = $"CASE WHEN a.accttype IN ({AccountType.SignFlipTypesSql}) THEN -1 ELSE 1 END";
             
             // Use longer timeout for cumulative BS queries (they scan all historical data)
             // NetSuite CONSOLIDATE over all historical data can take 2-3 minutes

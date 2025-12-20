@@ -47,20 +47,27 @@ public class AccountItem
     [JsonPropertyName("id")]
     public string Id { get; set; } = string.Empty;
     
-    [JsonPropertyName("number")]
+    // Use lowercase 'accountnumber' to match frontend expectations
+    [JsonPropertyName("accountnumber")]
     public string Number { get; set; } = string.Empty;
     
-    [JsonPropertyName("name")]
+    // Use lowercase 'accountname' to match frontend expectations  
+    [JsonPropertyName("accountname")]
     public string Name { get; set; } = string.Empty;
     
     [JsonPropertyName("fullname")]
     public string? FullName { get; set; }
     
-    [JsonPropertyName("type")]
+    // Use lowercase 'accttype' to match frontend expectations
+    [JsonPropertyName("accttype")]
     public string Type { get; set; } = string.Empty;
     
     [JsonPropertyName("parent")]
     public string? Parent { get; set; }
+    
+    // Add special account type for cash flow statements
+    [JsonPropertyName("sspecacct")]
+    public string? SpecialAccountType { get; set; }
 }
 
 /// <summary>Accounting book item</summary>

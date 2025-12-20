@@ -3957,7 +3957,7 @@ For licensing inquiries, contact: legal@celigo.com
                     <h3>ℹ️ Version Info</h3>
                     <div style="font-size: 12px; color: #4b5563;">
                         <p>Add-in Version: <strong id="settingsVersion">loading...</strong></p>
-                        <p style="margin-top: 4px;">Manifest Version: <strong>3.0.5.238</strong></p>
+                        <p style="margin-top: 4px;">Manifest Version: <strong>3.0.5.239</strong></p>
                         <p style="margin-top: 4px;">Proxy: <code style="font-size: 10px; background: #f3f4f6; padding: 2px 6px; border-radius: 4px;">netsuite-proxy.chris-corcoran.workers.dev</code></p>
                     </div>
                 </div>
@@ -19862,7 +19862,11 @@ export default {
                 console.log('Pattern:', pattern);
                 
                 // Call backend API
-                const url = `${SERVER_URL}/accounts/search?pattern=${encodeURIComponent(pattern)}`;
+                // Backend expects 'number' parameter for account number patterns (4*, 42*, etc.)
+                // or 'type' parameter for account types (income, expense, etc.)
+                const isTypeSearch = /^(income|expense|bank|asset|liability|equity|cogs|revenue)/i.test(pattern.toLowerCase());
+                const paramName = isTypeSearch ? 'type' : 'number';
+                const url = `${SERVER_URL}/accounts/search?${paramName}=${encodeURIComponent(pattern)}`;
                 console.log('API URL:', url);
                 
                 const response = await fetch(url);

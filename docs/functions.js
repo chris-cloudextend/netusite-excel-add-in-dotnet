@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '3.0.5.238';  // Version marker for debugging - added BALANCECHANGE formula
+const FUNCTIONS_VERSION = '3.0.5.239';  // Version marker for debugging - added BALANCECHANGE formula
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -2798,7 +2798,8 @@ async function processTypeBatchQueue() {
         }
         
         const data = await response.json();
-        const types = data.types || {};
+        // Backend returns 'account_types' not 'types'
+        const types = data.account_types || data.types || {};
         
         console.log(`📦 TYPE batch response: ${Object.keys(types).length} types returned`);
         

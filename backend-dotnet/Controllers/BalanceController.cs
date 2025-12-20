@@ -600,6 +600,10 @@ public class BalanceController : ControllerBase
                 var endDate = ConvertToYYYYMMDD(period.EndDate);
                 var periodId = !string.IsNullOrEmpty(period.Id) ? period.Id : "NULL";
             
+                // Sign flip for Balance Sheet: Liabilities and Equity are stored as negative credits,
+                // need to flip to positive for display (same as NetSuite reports)
+                var signFlipSql = Models.AccountType.SignFlipTypesSql;
+            
                 var query = $@"
                     SELECT 
                         a.acctnumber,
@@ -616,7 +620,7 @@ public class BalanceController : ControllerBase
                                     {periodId},
                                     'DEFAULT'
                                 )
-                            )
+                            ) * CASE WHEN a.accttype IN ({signFlipSql}) THEN -1 ELSE 1 END
                         ) AS balance
                     FROM transactionaccountingline tal
                     JOIN transaction t ON t.id = tal.transaction
@@ -779,6 +783,10 @@ public class BalanceController : ControllerBase
                 var endDate = ConvertToYYYYMMDD(period.EndDate);
                 var periodId = !string.IsNullOrEmpty(period.Id) ? period.Id : "NULL";
                 
+                // Sign flip for Balance Sheet: Liabilities and Equity are stored as negative credits,
+                // need to flip to positive for display (same as NetSuite reports)
+                var signFlipSql = Models.AccountType.SignFlipTypesSql;
+                
                 // Query ONLY the specific accounts
                 var query = $@"
                     SELECT 
@@ -795,7 +803,7 @@ public class BalanceController : ControllerBase
                                     {periodId},
                                     'DEFAULT'
                                 )
-                            )
+                            ) * CASE WHEN a.accttype IN ({signFlipSql}) THEN -1 ELSE 1 END
                         ) AS balance
                     FROM transactionaccountingline tal
                     JOIN transaction t ON t.id = tal.transaction
