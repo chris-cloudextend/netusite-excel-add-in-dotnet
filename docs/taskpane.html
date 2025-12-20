@@ -5313,7 +5313,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=3.0.5.244"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=3.0.5.245"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -8149,7 +8149,7 @@ For licensing inquiries, contact: legal@celigo.com
                         yearInput.style.animation = '';
                     }, 500);
                 }
-                showToast('Please enter a valid year (2000-2099)', 'error');
+                showToast({ type: 'error', title: 'Invalid Year', message: 'Please enter a valid year (2000-2099)' });
                 return;
             }
             
@@ -8184,7 +8184,7 @@ For licensing inquiries, contact: legal@celigo.com
                         periodInput.style.animation = '';
                     }, 500);
                 }
-                showToast('Please enter a valid period in YYYY-MM format (e.g., 2025-01 for January 2025)', 'error');
+                showToast({ type: 'error', title: 'Invalid Period', message: 'Please enter a valid period in YYYY-MM format (e.g., 2025-01 for January 2025)' });
                 return;
             }
             
@@ -8192,7 +8192,7 @@ For licensing inquiries, contact: legal@celigo.com
             const month = parseInt(match[2], 10);
             
             if (year < 2000 || year > 2099) {
-                showToast('Year must be between 2000 and 2099', 'error');
+                showToast({ type: 'error', title: 'Invalid Year', message: 'Year must be between 2000 and 2099' });
                 return;
             }
             
@@ -10750,7 +10750,7 @@ For licensing inquiries, contact: legal@celigo.com
                 if (document.getElementById('balanceSheetOverlay')) {
                     document.getElementById('balanceSheetOverlay').remove();
                 }
-                showToast(`Error: ${error.message}`, 'error');
+                showToast({ type: 'error', title: 'Balance Sheet Error', message: error.message });
                 
                 setTimeout(() => {
                     isSyncInProgress = false;
