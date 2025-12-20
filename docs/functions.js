@@ -281,6 +281,61 @@ function removeBroadcastToast(toastId) {
 }
 
 // ============================================================================
+// BS PRELOAD SUGGESTION - Auto-suggest when BS queries are slow
+// This bypasses the normal toast suppression for important performance tips
+// ============================================================================
+let bsSlowQueryCount = 0;          // Track consecutive slow BS queries
+let lastBsPreloadSuggestion = 0;   // Prevent spamming suggestions
+const BS_SLOW_THRESHOLD_MS = 30000; // 30 seconds = slow query
+const BS_SUGGESTION_COOLDOWN_MS = 300000; // Only suggest every 5 minutes
+
+/**
+ * Suggest BS preload after detecting slow queries.
+ * This uses a special localStorage key that taskpane always listens to.
+ */
+function suggestBSPreload(periods, queryTimeMs) {
+    const now = Date.now();
+    
+    // Don't spam suggestions
+    if (now - lastBsPreloadSuggestion < BS_SUGGESTION_COOLDOWN_MS) {
+        console.log(`🔇 BS preload suggestion suppressed (cooldown)`);
+        return;
+    }
+    
+    lastBsPreloadSuggestion = now;
+    
+    // Send suggestion to taskpane via special localStorage key
+    // Taskpane will show a persistent toast with action button
+    try {
+        localStorage.setItem('netsuite_bs_preload_suggestion', JSON.stringify({
+            periods: periods,
+            queryTimeMs: queryTimeMs,
+            timestamp: now,
+            message: `Balance Sheet query took ${(queryTimeMs / 1000).toFixed(0)}s. Preload ALL BS accounts to make future lookups instant!`
+        }));
+        console.log(`💡 BS PRELOAD SUGGESTION: ${periods.join(', ')} (query took ${(queryTimeMs / 1000).toFixed(1)}s)`);
+    } catch (e) {
+        console.warn('Could not send BS preload suggestion:', e);
+    }
+}
+
+/**
+ * Track BS periods seen in formulas for smart multi-period detection.
+ * Used to suggest preloading multiple periods at once.
+ */
+const bsPeriodsSeenThisSession = new Set();
+
+function trackBSPeriod(period) {
+    if (period && typeof period === 'string') {
+        bsPeriodsSeenThisSession.add(period);
+    }
+}
+
+function getSeenBSPeriods() {
+    return Array.from(bsPeriodsSeenThisSession);
+}
+
+// ============================================================================
 // PERIOD EXPANSION - Intelligently expand period ranges for better caching
 // ============================================================================
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 
@@ -3840,6 +3895,9 @@ async function processBatchQueue() {
         let cacheHits = 0;
         let apiCalls = 0;
         let deduplicated = 0;
+        let slowQueryCount = 0;
+        let totalApiTime = 0;
+        const bsPeriodsInBatch = new Set(); // Track unique periods for smart suggestion
         
         // ================================================================
         // DEDUPLICATION: Group identical requests by cache key
@@ -3847,6 +3905,12 @@ async function processBatchQueue() {
         // ================================================================
         const uniqueRequests = new Map(); // cacheKey -> { params, requests: [] }
         for (const [cacheKey, request] of cumulativeRequests) {
+            // Track periods seen for smart multi-period suggestion
+            if (request.params.toPeriod) {
+                bsPeriodsInBatch.add(request.params.toPeriod);
+                trackBSPeriod(request.params.toPeriod);
+            }
+            
             if (!uniqueRequests.has(cacheKey)) {
                 uniqueRequests.set(cacheKey, { params: request.params, requests: [request] });
             } else {
@@ -3857,6 +3921,11 @@ async function processBatchQueue() {
         
         if (deduplicated > 0) {
             console.log(`   🔄 DEDUPLICATED: ${cumulativeRequests.length} requests → ${uniqueRequests.size} unique (saved ${deduplicated} API calls)`);
+        }
+        
+        // Log multi-period detection
+        if (bsPeriodsInBatch.size > 1) {
+            console.log(`   📅 MULTI-PERIOD DETECTED: ${Array.from(bsPeriodsInBatch).join(', ')} - consider preloading both!`);
         }
         
         // Rate limiting to avoid NetSuite 429 CONCURRENCY_LIMIT_EXCEEDED errors
@@ -3915,6 +3984,8 @@ async function processBatchQueue() {
                 }
                 apiCalls++;
                 
+                // Track query timing for slow query detection
+                const queryStartTime = Date.now();
                 const response = await fetch(`${SERVER_URL}/balance?${apiParams.toString()}`);
                 
                 if (response.ok) {
@@ -3960,12 +4031,20 @@ async function processBatchQueue() {
                             value = 0;
                         }
                         
+                        // Track query time for slow query detection
+                        const queryTimeMs = Date.now() - queryStartTime;
+                        totalApiTime += queryTimeMs;
+                        if (queryTimeMs > BS_SLOW_THRESHOLD_MS) {
+                            slowQueryCount++;
+                            console.log(`   ⏱️ SLOW BS QUERY: ${account} took ${(queryTimeMs / 1000).toFixed(1)}s`);
+                        }
+                        
                         if (errorCode) {
                             // Return error code to Excel cell instead of 0
                             console.log(`   ⚠️ Cumulative result: ${account} = ${errorCode}`);
                             requests.forEach(r => r.resolve(errorCode));
                         } else {
-                            console.log(`   ✅ Cumulative result: ${account} = ${value.toLocaleString()}`);
+                            console.log(`   ✅ Cumulative result: ${account} = ${value.toLocaleString()} (${(queryTimeMs / 1000).toFixed(1)}s)`);
                             cache.balance.set(cacheKey, value);
                             // Resolve ALL requests waiting for this result
                             requests.forEach(r => r.resolve(value));
@@ -3986,6 +4065,21 @@ async function processBatchQueue() {
                 console.error(`   ❌ Cumulative fetch error: ${error.message} → ${errorCode}`);
                 requests.forEach(r => r.resolve(errorCode));
             }
+        }
+        
+        // ================================================================
+        // AUTO-SUGGEST BS PRELOAD after slow queries
+        // If we had slow BS queries and more than 1 period, suggest preload
+        // ================================================================
+        if (slowQueryCount > 0 && apiCalls > 0) {
+            console.log(`   ⏱️ SLOW QUERY SUMMARY: ${slowQueryCount}/${apiCalls} queries were slow (>${BS_SLOW_THRESHOLD_MS/1000}s)`);
+            
+            // Get all BS periods seen (both in this batch and historically)
+            const allSeenPeriods = getSeenBSPeriods();
+            const periodsToSuggest = allSeenPeriods.length > 0 ? allSeenPeriods : Array.from(bsPeriodsInBatch);
+            
+            // Only suggest if we haven't suggested recently
+            suggestBSPreload(periodsToSuggest, totalApiTime);
         }
         
         if (cacheHits > 0 || apiCalls > 0 || deduplicated > 0) {

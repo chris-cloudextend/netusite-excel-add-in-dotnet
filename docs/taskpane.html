@@ -7396,6 +7396,7 @@ For licensing inquiries, contact: legal@celigo.com
         let lastToastTimestamp = 0;
         let lastToastUpdateTimestamp = 0;
         let lastToastRemoveTimestamp = 0;
+        let lastBsPreloadSuggestionTimestamp = 0;
         const broadcastToastMap = new Map(); // Maps broadcast toast IDs to local toast IDs
         
         setInterval(() => {
@@ -7448,6 +7449,48 @@ For licensing inquiries, contact: legal@celigo.com
                             broadcastToastMap.delete(remove.id);
                         }
                         localStorage.removeItem('netsuite_toast_remove');
+                    }
+                }
+                
+                // ================================================================
+                // BS PRELOAD SUGGESTION - Auto-suggest when BS queries are slow
+                // Shows a persistent toast with action button to trigger preload
+                // ================================================================
+                const bsSuggestionJson = localStorage.getItem('netsuite_bs_preload_suggestion');
+                if (bsSuggestionJson) {
+                    const suggestion = JSON.parse(bsSuggestionJson);
+                    if (suggestion.timestamp > lastBsPreloadSuggestionTimestamp) {
+                        lastBsPreloadSuggestionTimestamp = suggestion.timestamp;
+                        localStorage.removeItem('netsuite_bs_preload_suggestion');
+                        
+                        console.log('💡 BS Preload Suggestion received:', suggestion);
+                        
+                        // Pre-fill the period inputs if we have suggested periods
+                        if (suggestion.periods && suggestion.periods.length > 0) {
+                            const period1Input = document.getElementById('bsPreloadPeriod1');
+                            const period2Input = document.getElementById('bsPreloadPeriod2');
+                            if (period1Input) period1Input.value = suggestion.periods[0];
+                            if (period2Input && suggestion.periods.length > 1) {
+                                period2Input.value = suggestion.periods[1];
+                            }
+                        }
+                        
+                        // Show a persistent actionable toast
+                        showToast({
+                            title: '⚡ Speed Up Balance Sheet Lookups!',
+                            message: `<div style="line-height: 1.5;">
+                                <p style="margin-bottom: 8px;">Your query took <strong>${(suggestion.queryTimeMs / 1000).toFixed(0)} seconds</strong>.</p>
+                                <p style="margin-bottom: 12px; font-size: 12px;">Preload ALL BS accounts now for <strong>instant</strong> future lookups!</p>
+                                <button onclick="preloadBalanceSheet(); removeToast(this.closest('.toast').dataset.toastId);" 
+                                        style="background: #3B82F6; color: white; border: none; padding: 8px 16px; 
+                                               border-radius: 6px; cursor: pointer; font-size: 13px; width: 100%;">
+                                    ⚡ Preload Now (${suggestion.periods?.length > 1 ? suggestion.periods.length + ' periods' : '~70s'})
+                                </button>
+                            </div>`,
+                            type: 'warning',
+                            duration: 30000,  // 30 seconds - long enough to act
+                            icon: '⚡'
+                        });
                     }
                 }
             } catch (e) {
