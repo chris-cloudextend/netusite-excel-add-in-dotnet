@@ -4120,24 +4120,35 @@ For licensing inquiries, contact: legal@celigo.com
                         <div class="guide-choice-icon" style="margin-right: 8px;">⚡</div>
                         <div class="guide-choice-content" style="min-width: 0; overflow: hidden;">
                             <div class="guide-choice-title" style="color: #3B82F6;">Preload Balance Sheet</div>
-                            <div class="guide-choice-desc" style="color: var(--bottlenose); font-size: 11px;">Cache ALL BS accounts for instant lookups</div>
+                            <div class="guide-choice-desc" style="color: var(--bottlenose); font-size: 11px;">Speed up BS account lookups</div>
                             
-                            <!-- Period selector - compact layout -->
-                            <div style="margin-top: 10px; display: flex; flex-direction: column; gap: 6px;">
+                            <!-- Smart Preload - scan sheet -->
+                            <div style="margin-top: 10px;">
+                                <button onclick="smartPreloadFromSheet()" 
+                                        style="width: 100%; padding: 8px 12px; background: linear-gradient(135deg, #10B981, #059669); color: white; border: none; border-radius: 6px; font-size: 12px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 6px; font-weight: 500;">
+                                    <span>🔍</span> <span>Smart Preload (Scan Sheet)</span>
+                                </button>
+                                <div style="font-size: 9px; color: #888; margin-top: 4px; text-align: center;">
+                                    Finds & preloads only BS accounts used on this sheet
+                                </div>
+                            </div>
+                            
+                            <!-- Manual Preload - all accounts -->
+                            <div style="margin-top: 10px; padding-top: 10px; border-top: 1px dashed #ddd;">
+                                <div style="font-size: 10px; color: #666; margin-bottom: 6px;">Or preload ALL BS accounts:</div>
                                 <div style="display: flex; gap: 6px; align-items: center;">
-                                    <label style="font-size: 11px; min-width: 50px;">Period 1:</label>
+                                    <label style="font-size: 10px; min-width: 45px;">Period:</label>
                                     <input type="text" id="bsPreloadPeriod1" placeholder="Dec 2024" value="Dec 2024" 
-                                           style="flex: 1; min-width: 0; padding: 5px 6px; border: 1px solid #ddd; border-radius: 4px; font-size: 11px;">
+                                           style="flex: 1; min-width: 0; padding: 4px 6px; border: 1px solid #ddd; border-radius: 4px; font-size: 10px;">
                                 </div>
-                                <div style="display: flex; gap: 6px; align-items: center;">
-                                    <label style="font-size: 11px; min-width: 50px;">Period 2:</label>
+                                <div style="display: flex; gap: 6px; align-items: center; margin-top: 4px;">
+                                    <label style="font-size: 10px; min-width: 45px;">Period 2:</label>
                                     <input type="text" id="bsPreloadPeriod2" placeholder="optional" 
-                                           style="flex: 1; min-width: 0; padding: 5px 6px; border: 1px solid #ddd; border-radius: 4px; font-size: 11px;">
+                                           style="flex: 1; min-width: 0; padding: 4px 6px; border: 1px solid #ddd; border-radius: 4px; font-size: 10px;">
                                 </div>
-                                <div style="font-size: 9px; color: #888;">💡 2nd period for YoY (~90s vs ~140s)</div>
                                 <button onclick="preloadBalanceSheet()" 
-                                        style="margin-top: 2px; padding: 6px 12px; background: #3B82F6; color: white; border: none; border-radius: 6px; font-size: 12px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 4px;">
-                                    <span>⚡</span> <span>Preload Now</span>
+                                        style="width: 100%; margin-top: 6px; padding: 6px 12px; background: #3B82F6; color: white; border: none; border-radius: 6px; font-size: 11px; cursor: pointer;">
+                                    ⚡ Preload All (~70s/period)
                                 </button>
                             </div>
                         </div>
@@ -10409,7 +10420,195 @@ For licensing inquiries, contact: legal@celigo.com
         }
         
         // ================================================================
-        // PRELOAD BALANCE SHEET ACCOUNTS
+        // SMART PRELOAD - Scan sheet and preload only used BS accounts
+        // Much faster than preloading all 200+ accounts
+        // ================================================================
+        
+        async function smartPreloadFromSheet() {
+            console.log('🔍 SMART PRELOAD: Scanning sheet for BS formulas...');
+            
+            showLoading('🔍 Scanning Sheet', 'Finding Balance Sheet formulas...', 10);
+            
+            try {
+                // Step 1: Scan sheet for XAVI.BALANCE and XAVI.BALANCECHANGE formulas
+                const formulaData = await Excel.run(async (context) => {
+                    const sheet = context.workbook.worksheets.getActiveWorksheet();
+                    const usedRange = sheet.getUsedRange();
+                    usedRange.load('formulas');
+                    await context.sync();
+                    
+                    const accounts = new Set();
+                    const periods = new Set();
+                    const formulas = usedRange.formulas;
+                    
+                    // Regex to match XAVI.BALANCE and XAVI.BALANCECHANGE formulas
+                    const balanceRegex = /XAVI\.BALANCE(?:CHANGE)?\s*\(\s*"?([^",)]+)"?\s*,\s*"?([^",)]*)"?\s*,\s*"?([^",)]+)"?/gi;
+                    
+                    for (let row = 0; row < formulas.length; row++) {
+                        for (let col = 0; col < formulas[row].length; col++) {
+                            const cell = formulas[row][col];
+                            if (typeof cell === 'string' && cell.toUpperCase().includes('XAVI.BALANCE')) {
+                                let match;
+                                balanceRegex.lastIndex = 0;
+                                while ((match = balanceRegex.exec(cell)) !== null) {
+                                    const account = match[1].replace(/"/g, '').trim();
+                                    const fromPeriod = match[2].replace(/"/g, '').trim();
+                                    const toPeriod = match[3].replace(/"/g, '').trim();
+                                    
+                                    // Skip cell references (like $A$2) - we want actual values
+                                    if (account && !account.includes('$')) {
+                                        accounts.add(account);
+                                    }
+                                    if (toPeriod && !toPeriod.includes('$')) {
+                                        periods.add(toPeriod);
+                                    }
+                                    if (fromPeriod && !fromPeriod.includes('$') && fromPeriod !== toPeriod) {
+                                        periods.add(fromPeriod);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    return {
+                        accounts: Array.from(accounts),
+                        periods: Array.from(periods)
+                    };
+                });
+                
+                console.log(`📊 Found ${formulaData.accounts.length} accounts, ${formulaData.periods.length} periods`);
+                console.log('   Accounts:', formulaData.accounts.slice(0, 10).join(', '), formulaData.accounts.length > 10 ? '...' : '');
+                console.log('   Periods:', formulaData.periods.join(', '));
+                
+                if (formulaData.accounts.length === 0) {
+                    hideLoading();
+                    showToast({
+                        title: 'No Formulas Found',
+                        message: 'No XAVI.BALANCE formulas detected on this sheet. Add some formulas first!',
+                        type: 'warning',
+                        duration: 5000
+                    });
+                    return;
+                }
+                
+                if (formulaData.periods.length === 0) {
+                    hideLoading();
+                    showToast({
+                        title: 'No Periods Found',
+                        message: 'Could not detect periods from formulas. Try using the manual preload.',
+                        type: 'warning',
+                        duration: 5000
+                    });
+                    return;
+                }
+                
+                updateLoading('🔍 Identifying BS Accounts', 30, `Checking ${formulaData.accounts.length} accounts...`);
+                
+                // Step 2: Identify which accounts are Balance Sheet accounts
+                const accountTypesResponse = await fetch(`${SERVER_URL}/accounts/types`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ accounts: formulaData.accounts })
+                });
+                
+                if (!accountTypesResponse.ok) {
+                    throw new Error('Failed to get account types');
+                }
+                
+                const accountTypes = await accountTypesResponse.json();
+                const bsAccounts = formulaData.accounts.filter(acct => {
+                    const type = accountTypes[acct];
+                    return type && ['Bank', 'AcctRec', 'OthCurrAsset', 'FixedAsset', 'OthAsset', 
+                                   'AcctPay', 'CreditCard', 'OthCurrLiab', 'LongTermLiab', 
+                                   'Equity', 'RetainEarn'].includes(type);
+                });
+                
+                console.log(`📊 Found ${bsAccounts.length} Balance Sheet accounts out of ${formulaData.accounts.length} total`);
+                
+                if (bsAccounts.length === 0) {
+                    hideLoading();
+                    showToast({
+                        title: 'No BS Accounts',
+                        message: 'All accounts on this sheet are P&L accounts (fast by default). No preload needed!',
+                        type: 'success',
+                        duration: 5000
+                    });
+                    return;
+                }
+                
+                // Step 3: Preload only the BS accounts found
+                updateLoading(
+                    `⚡ Preloading ${bsAccounts.length} BS Accounts`,
+                    40,
+                    `Loading ${bsAccounts.length} accounts × ${formulaData.periods.length} periods...`
+                );
+                
+                // Call targeted preload endpoint
+                const preloadResponse = await fetch(`${SERVER_URL}/batch/bs_preload_targeted`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        accounts: bsAccounts,
+                        periods: formulaData.periods
+                    })
+                });
+                
+                if (!preloadResponse.ok) {
+                    // Handle timeout
+                    if ([524, 522, 523, 504].includes(preloadResponse.status)) {
+                        throw new Error(`Timeout preloading. Try fewer accounts or use manual preload.`);
+                    }
+                    throw new Error(`Preload failed: HTTP ${preloadResponse.status}`);
+                }
+                
+                let result;
+                try {
+                    result = await preloadResponse.json();
+                } catch (e) {
+                    throw new Error('Timeout - server response incomplete');
+                }
+                
+                // Cache results
+                if (result.balances) {
+                    const cacheEntries = {};
+                    for (const [account, periodBalances] of Object.entries(result.balances)) {
+                        if (typeof periodBalances === 'object') {
+                            for (const [pName, balance] of Object.entries(periodBalances)) {
+                                cacheEntries[`balance:${account}::${pName}`] = { value: balance, timestamp: Date.now() };
+                            }
+                        }
+                    }
+                    try {
+                        const existing = JSON.parse(localStorage.getItem('xavi_balance_cache') || '{}');
+                        const merged = { ...existing, ...cacheEntries };
+                        localStorage.setItem('xavi_balance_cache', JSON.stringify(merged));
+                        console.log(`📦 Cached ${Object.keys(cacheEntries).length} balances`);
+                    } catch (e) { }
+                }
+                
+                hideLoading();
+                
+                showToast({
+                    title: '🎉 Smart Preload Complete!',
+                    message: `${bsAccounts.length} BS accounts × ${formulaData.periods.length} periods cached. Formulas will now be instant!`,
+                    type: 'success',
+                    duration: 8000
+                });
+                
+            } catch (error) {
+                console.error('Smart preload error:', error);
+                hideLoading();
+                showToast({
+                    title: 'Smart Preload Failed',
+                    message: error.message,
+                    type: 'error',
+                    duration: 8000
+                });
+            }
+        }
+        
+        // ================================================================
+        // PRELOAD BALANCE SHEET ACCOUNTS (ALL)
         // Performance tool: Batch query ALL BS accounts to cache (~70s)
         // After preload, individual XAVI.BALANCE formulas for BS accounts are instant
         // ================================================================

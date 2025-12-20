@@ -146,6 +146,50 @@ public class AccountController : ControllerBase
     }
 
     /// <summary>
+    /// Get account types for multiple accounts.
+    /// Used by smart preload to identify which accounts are Balance Sheet accounts.
+    /// </summary>
+    [HttpPost("/accounts/types")]
+    public async Task<IActionResult> GetAccountTypes([FromBody] AccountTypesRequest request)
+    {
+        if (request.Accounts == null || request.Accounts.Count == 0)
+            return BadRequest(new { error = "accounts array is required" });
+
+        try
+        {
+            _logger.LogInformation("Getting types for {Count} accounts", request.Accounts.Count);
+            
+            // Build query to get account types
+            var accountFilter = string.Join("', '", request.Accounts.Select(a => NetSuiteService.EscapeSql(a)));
+            var query = $@"
+                SELECT acctnumber, accttype 
+                FROM Account 
+                WHERE acctnumber IN ('{accountFilter}')";
+            
+            var items = await _netSuiteService.QueryAsync<dynamic>(query);
+            
+            var result = new Dictionary<string, string>();
+            foreach (var item in items)
+            {
+                var acctNumber = item.GetProperty("acctnumber").GetString() ?? "";
+                var acctType = item.GetProperty("accttype").GetString() ?? "";
+                if (!string.IsNullOrEmpty(acctNumber))
+                {
+                    result[acctNumber] = acctType;
+                }
+            }
+            
+            _logger.LogInformation("Retrieved types for {Count} accounts", result.Count);
+            return Ok(result);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting account types");
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+    
+    /// <summary>
     /// Search for accounts by account number or type.
     /// </summary>
     [HttpGet("/accounts/search")]
@@ -368,6 +412,14 @@ public class AccountNumberRequest
 /// Request with multiple account numbers.
 /// </summary>
 public class BatchAccountRequest
+{
+    public List<string> Accounts { get; set; } = new();
+}
+
+/// <summary>
+/// Request to get types for multiple accounts.
+/// </summary>
+public class AccountTypesRequest
 {
     public List<string> Accounts { get; set; } = new();
 }

@@ -712,6 +712,171 @@ public class BalanceController : ControllerBase
     }
     
     /// <summary>
+    /// TARGETED BS Preload - Only preload specific accounts (from sheet scan).
+    /// Much faster than preloading all 200+ accounts when sheet only uses 10-20.
+    /// </summary>
+    /// <remarks>
+    /// Used by smart preload feature that scans the sheet first.
+    /// Example: If sheet has 15 BS accounts × 2 periods = ~20 seconds (vs ~140 for all accounts)
+    /// </remarks>
+    [HttpPost("/batch/bs_preload_targeted")]
+    public async Task<IActionResult> PreloadBalanceSheetTargeted([FromBody] TargetedBsPreloadRequest request)
+    {
+        var startTime = DateTime.UtcNow;
+        
+        if (request.Accounts == null || !request.Accounts.Any())
+            return BadRequest(new { error = "accounts array is required" });
+        if (request.Periods == null || !request.Periods.Any())
+            return BadRequest(new { error = "periods array is required" });
+
+        try
+        {
+            _logger.LogInformation("📊 TARGETED BS PRELOAD: {AccountCount} accounts × {PeriodCount} periods", 
+                request.Accounts.Count, request.Periods.Count);
+            
+            var allBalances = new Dictionary<string, Dictionary<string, decimal>>();
+            var allAccountTypes = new Dictionary<string, string>();
+            var totalCachedCount = 0;
+            
+            // Resolve common filters
+            var subsidiaryId = await _lookupService.ResolveSubsidiaryIdAsync(request.Subsidiary);
+            var targetSub = subsidiaryId ?? "1";
+            var hierarchySubs = await _lookupService.GetSubsidiaryHierarchyAsync(targetSub);
+            var subFilter = string.Join(", ", hierarchySubs);
+            
+            var departmentId = await _lookupService.ResolveDimensionIdAsync("department", request.Department);
+            var classId = await _lookupService.ResolveDimensionIdAsync("class", request.Class);
+            var locationId = await _lookupService.ResolveDimensionIdAsync("location", request.Location);
+            
+            var segmentFilters = new List<string> { $"tl.subsidiary IN ({subFilter})" };
+            if (!string.IsNullOrEmpty(departmentId))
+                segmentFilters.Add($"tl.department = {departmentId}");
+            if (!string.IsNullOrEmpty(classId))
+                segmentFilters.Add($"tl.class = {classId}");
+            if (!string.IsNullOrEmpty(locationId))
+                segmentFilters.Add($"tl.location = {locationId}");
+            var segmentWhere = string.Join(" AND ", segmentFilters);
+            
+            var accountingBook = request.Book ?? DefaultAccountingBook;
+            var filtersHash = $"{targetSub}:{departmentId ?? ""}:{locationId ?? ""}:{classId ?? ""}";
+            var cacheExpiry = TimeSpan.FromMinutes(5);
+            
+            // Build account filter
+            var accountFilter = string.Join("', '", request.Accounts.Select(a => NetSuiteService.EscapeSql(a)));
+            
+            // Process each period
+            foreach (var periodName in request.Periods)
+            {
+                var periodStartTime = DateTime.UtcNow;
+                
+                var period = await _netSuiteService.GetPeriodAsync(periodName);
+                if (period?.EndDate == null)
+                {
+                    _logger.LogWarning("Could not find period {Period}, skipping", periodName);
+                    continue;
+                }
+                
+                var endDate = ConvertToYYYYMMDD(period.EndDate);
+                var periodId = !string.IsNullOrEmpty(period.Id) ? period.Id : "NULL";
+                
+                // Query ONLY the specific accounts
+                var query = $@"
+                    SELECT 
+                        a.acctnumber,
+                        a.accttype,
+                        SUM(
+                            TO_NUMBER(
+                                BUILTIN.CONSOLIDATE(
+                                    tal.amount,
+                                    'LEDGER',
+                                    'DEFAULT',
+                                    'DEFAULT',
+                                    {targetSub},
+                                    {periodId},
+                                    'DEFAULT'
+                                )
+                            )
+                        ) AS balance
+                    FROM transactionaccountingline tal
+                    JOIN transaction t ON t.id = tal.transaction
+                    JOIN account a ON a.id = tal.account
+                    JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id
+                    WHERE t.posting = 'T'
+                      AND tal.posting = 'T'
+                      AND a.acctnumber IN ('{accountFilter}')
+                      AND t.trandate <= TO_DATE('{endDate}', 'YYYY-MM-DD')
+                      AND tal.accountingbook = {accountingBook}
+                      AND {segmentWhere}
+                    GROUP BY a.acctnumber, a.accttype
+                    ORDER BY a.acctnumber";
+                
+                _logger.LogDebug("Targeted BS Preload [{Period}] for {Count} accounts", periodName, request.Accounts.Count);
+                
+                var queryResult = await _netSuiteService.QueryRawWithErrorAsync(query, 120);
+                
+                if (!queryResult.Success)
+                {
+                    _logger.LogWarning("Targeted BS Preload query failed for {Period}: {Error}", periodName, queryResult.ErrorDetails);
+                    continue;
+                }
+                
+                var periodElapsed = (DateTime.UtcNow - periodStartTime).TotalSeconds;
+                _logger.LogDebug("Targeted BS Preload [{Period}] time: {Elapsed:F2}s, {Count} accounts", 
+                    periodName, periodElapsed, queryResult.Items.Count);
+                
+                foreach (var item in queryResult.Items)
+                {
+                    if (!item.TryGetProperty("acctnumber", out var acctProp)) continue;
+                    var accountNumber = acctProp.GetString() ?? "";
+                    if (string.IsNullOrEmpty(accountNumber)) continue;
+                    
+                    var acctType = item.TryGetProperty("accttype", out var typeProp) 
+                        ? typeProp.GetString() ?? "" : "";
+                    var balance = item.TryGetProperty("balance", out var balProp) 
+                        ? ParseBalance(balProp) : 0;
+                    
+                    if (!allBalances.ContainsKey(accountNumber))
+                        allBalances[accountNumber] = new Dictionary<string, decimal>();
+                    
+                    allBalances[accountNumber][periodName] = balance;
+                    allAccountTypes[accountNumber] = acctType;
+                    
+                    // Cache this balance
+                    var cacheKey = $"balance:{accountNumber}:{periodName}:{filtersHash}";
+                    _cache.Set(cacheKey, balance, cacheExpiry);
+                    totalCachedCount++;
+                }
+            }
+            
+            var totalElapsed = (DateTime.UtcNow - startTime).TotalSeconds;
+            _logger.LogInformation("✅ TARGETED BS PRELOAD: {AccountCount} accounts × {PeriodCount} periods in {Elapsed:F1}s", 
+                allBalances.Count, request.Periods.Count, totalElapsed);
+            
+            return Ok(new
+            {
+                balances = allBalances,
+                account_types = allAccountTypes,
+                periods = request.Periods,
+                elapsed_seconds = totalElapsed,
+                account_count = allBalances.Count,
+                period_count = request.Periods.Count,
+                cached_count = totalCachedCount,
+                message = $"Loaded {allBalances.Count} accounts × {request.Periods.Count} period(s) in {totalElapsed:F1}s"
+            });
+        }
+        catch (SafetyLimitException ex)
+        {
+            _logger.LogError(ex, "Safety limit in targeted BS preload");
+            return StatusCode(500, new { error = ex.LimitType.ToString(), message = ex.UserFriendlyMessage });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error in targeted BS preload");
+            return StatusCode(500, new { error = "SERVERERR", message = ex.Message });
+        }
+    }
+    
+    /// <summary>
     /// Parse balance value handling scientific notation.
     /// </summary>
     private static decimal ParseBalance(System.Text.Json.JsonElement element)
@@ -763,6 +928,25 @@ public class BsPreloadRequest
     
     /// <summary>Multiple periods for comparison (e.g., Dec 2024 + Dec 2023)</summary>
     public List<string>? Periods { get; set; }
+    
+    public string? Subsidiary { get; set; }
+    public string? Department { get; set; }
+    public string? Class { get; set; }
+    public string? Location { get; set; }
+    public int? Book { get; set; }
+}
+
+/// <summary>
+/// Request for TARGETED Balance Sheet preload.
+/// Only loads specific accounts (from sheet scan) instead of all BS accounts.
+/// </summary>
+public class TargetedBsPreloadRequest
+{
+    /// <summary>Specific account numbers to preload</summary>
+    public List<string> Accounts { get; set; } = new();
+    
+    /// <summary>Periods to preload</summary>
+    public List<string> Periods { get; set; } = new();
     
     public string? Subsidiary { get; set; }
     public string? Department { get; set; }
