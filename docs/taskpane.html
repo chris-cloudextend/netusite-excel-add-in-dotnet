@@ -7504,6 +7504,65 @@ For licensing inquiries, contact: legal@celigo.com
                         });
                     }
                 }
+                
+                // ================================================================
+                // BS BUILD MODE WARNING - Shown when multiple BS formulas queued
+                // More prominent than the slow-query suggestion
+                // ================================================================
+                const bsBuildModeJson = localStorage.getItem('netsuite_bs_buildmode_warning');
+                if (bsBuildModeJson) {
+                    const warning = JSON.parse(bsBuildModeJson);
+                    localStorage.removeItem('netsuite_bs_buildmode_warning');
+                    
+                    console.log('⚠️ BS Build Mode Warning received:', warning);
+                    
+                    // Pre-fill the period inputs
+                    if (warning.periods && warning.periods.length > 0) {
+                        const period1Input = document.getElementById('bsPreloadPeriod1');
+                        const period2Input = document.getElementById('bsPreloadPeriod2');
+                        if (period1Input) period1Input.value = warning.periods[0];
+                        if (period2Input && warning.periods.length > 1) {
+                            period2Input.value = warning.periods[1];
+                        }
+                    }
+                    
+                    // Show prominent modal-style alert
+                    showOnboardingMessage(
+                        '⚠️ Multiple Balance Sheet Formulas Detected',
+                        `<div style="text-align: left;">
+                            <p style="margin-bottom: 12px; color: #B45309; font-weight: 500;">
+                                You're adding <strong>${warning.bsCount} Balance Sheet formulas</strong>.
+                            </p>
+                            <p style="margin-bottom: 12px;">
+                                <strong>Without preloading:</strong> Each formula takes 60-90 seconds individually.<br>
+                                <span style="color: #DC2626;">Total wait: ${warning.bsCount * 60}+ seconds! 😅</span>
+                            </p>
+                            <p style="margin-bottom: 16px;">
+                                <strong>With Smart Preload:</strong> Load all accounts once in ~30 seconds.<br>
+                                <span style="color: #059669;">Then every formula is instant! ⚡</span>
+                            </p>
+                            <div style="display: flex; gap: 12px; margin-top: 16px;">
+                                <button onclick="smartPreloadFromSheet(); hideOnboarding();" 
+                                        style="flex: 1; background: linear-gradient(135deg, #10B981, #059669); color: white; 
+                                               border: none; padding: 12px 16px; border-radius: 8px; cursor: pointer; 
+                                               font-size: 14px; font-weight: 500;">
+                                    🔍 Smart Preload (Recommended)
+                                </button>
+                                <button onclick="hideOnboarding();" 
+                                        style="flex: 0 0 auto; background: #E5E7EB; color: #374151; 
+                                               border: none; padding: 12px 16px; border-radius: 8px; cursor: pointer; 
+                                               font-size: 14px;">
+                                    Continue Anyway
+                                </button>
+                            </div>
+                            <p style="margin-top: 12px; font-size: 11px; color: #6B7280;">
+                                💡 Tip: Smart Preload scans your sheet and only loads the BS accounts you're using.
+                            </p>
+                        </div>`,
+                        'warning'
+                    );
+                }
+                
             } catch (e) {
                 // Ignore parsing errors
             }
