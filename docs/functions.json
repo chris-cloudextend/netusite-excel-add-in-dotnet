@@ -141,6 +141,76 @@
       }
     },
     {
+      "id": "BALANCECHANGE",
+      "name": "BALANCECHANGE",
+      "description": "Get the CHANGE in a Balance Sheet account between two dates. Returns balance(toDate) - balance(fromDate). ONLY for BS accounts - returns INVALIDACCT for P&L.",
+      "helpUrl": "https://www.example.com/help",
+      "result": {
+        "type": "any",
+        "dimensionality": "scalar"
+      },
+      "parameters": [
+        {
+          "name": "account",
+          "description": "Account number (must be a Balance Sheet account: Bank, AcctRec, FixedAsset, AcctPay, Equity, etc.)",
+          "type": "any",
+          "dimensionality": "scalar"
+        },
+        {
+          "name": "fromPeriod",
+          "description": "Starting period (e.g., \"Dec 2024\" or cell with date)",
+          "type": "any",
+          "dimensionality": "scalar"
+        },
+        {
+          "name": "toPeriod",
+          "description": "Ending period (e.g., \"Jan 2025\" or cell with date)",
+          "type": "any",
+          "dimensionality": "scalar"
+        },
+        {
+          "name": "subsidiary",
+          "description": "Subsidiary filter (optional, use \"\" for all)",
+          "type": "any",
+          "dimensionality": "scalar",
+          "optional": true
+        },
+        {
+          "name": "department",
+          "description": "Department filter (optional, use \"\" for all)",
+          "type": "any",
+          "dimensionality": "scalar",
+          "optional": true
+        },
+        {
+          "name": "location",
+          "description": "Location filter (optional, use \"\" for all)",
+          "type": "any",
+          "dimensionality": "scalar",
+          "optional": true
+        },
+        {
+          "name": "classId",
+          "description": "Class filter (optional, use \"\" for all)",
+          "type": "any",
+          "dimensionality": "scalar",
+          "optional": true
+        },
+        {
+          "name": "accountingBook",
+          "description": "Accounting Book ID (optional, defaults to Primary Book)",
+          "type": "any",
+          "dimensionality": "scalar",
+          "optional": true
+        }
+      ],
+      "options": {
+        "stream": false,
+        "cancelable": false,
+        "volatile": false
+      }
+    },
+    {
       "id": "BUDGET",
       "name": "BUDGET",
       "description": "Get budget amount with filters",

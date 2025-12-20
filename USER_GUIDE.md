@@ -101,6 +101,56 @@ Get the GL account balance for a specific period or date range.
 
 ---
 
+### XAVI.BALANCECHANGE
+
+Get the **change** in a Balance Sheet account between two periods.
+
+**⚠️ Only works for Balance Sheet accounts** (Bank, AcctRec, FixedAsset, AcctPay, Equity, etc.). Returns `INVALIDACCT` for P&L accounts.
+
+**Formula:**
+```
+Change = Balance(toDate) − Balance(fromDate)
+```
+
+**Syntax:**
+```
+=XAVI.BALANCECHANGE(account, fromPeriod, toPeriod, [subsidiary], [department], [location], [class], [accountingBook])
+```
+
+**Parameters:**
+
+| Parameter | Required | Description | Example |
+|-----------|----------|-------------|---------|
+| account | Yes | Balance Sheet account number | `"10034"` |
+| fromPeriod | Yes | Starting point in time | `"Dec 2024"` |
+| toPeriod | Yes | Ending point in time | `"Jan 2025"` |
+| subsidiary | No | Subsidiary filter | `"Celigo Inc."` |
+| department | No | Department filter | `"Finance"` |
+| location | No | Location filter | `"US"` |
+| class | No | Class filter | `"Enterprise"` |
+| accountingBook | No | Accounting book ID | `"1"` |
+
+**Examples:**
+```
+=XAVI.BALANCECHANGE("10034", "Dec 2024", "Jan 2025")           → Change in cash
+=XAVI.BALANCECHANGE("12000", "Dec 2023", "Dec 2024")           → YoY AR change
+=XAVI.BALANCECHANGE("4010", "Dec 2024", "Jan 2025")            → INVALIDACCT (P&L not allowed)
+```
+
+**Use Cases:**
+- **Cash Flow Analysis**: Track how cash balances changed month-over-month
+- **Working Capital Movement**: Monitor AR/AP changes between periods
+- **Year-over-Year Comparisons**: Compare BS positions across fiscal years
+
+**Error Codes:**
+| Error | Meaning |
+|-------|---------|
+| `INVALIDACCT` | Account is not a Balance Sheet type |
+| `NOTFOUND` | Account number doesn't exist |
+| `TIMEOUT` | NetSuite query timed out |
+
+---
+
 ### XAVI.BUDGET
 
 Get the budget amount for an account and period.

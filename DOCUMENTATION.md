@@ -88,6 +88,30 @@ This is particularly useful for creating summary rows without listing every acco
 - This matches NetSuite's P&L presentation
 - Example: Revenue for Jan 2025 = only January revenue transactions
 
+### XAVI.BALANCECHANGE - Balance Sheet Movement
+
+Calculate the **change** in a Balance Sheet account between two points in time.
+
+**Syntax:**
+```
+=XAVI.BALANCECHANGE(account, fromPeriod, toPeriod, [subsidiary], [department], [location], [class], [accountingBook])
+```
+
+**Formula:** `Change = Balance(toDate) − Balance(fromDate)`
+
+**⚠️ Balance Sheet Accounts Only** - Returns `INVALIDACCT` for P&L accounts.
+
+**Examples:**
+```
+=XAVI.BALANCECHANGE("10034", "Dec 2024", "Jan 2025")  → Cash change Dec→Jan
+=XAVI.BALANCECHANGE("12000", "Dec 2023", "Dec 2024")  → YoY AR movement
+```
+
+**Use Cases:**
+- Cash flow analysis (how did cash change?)
+- Working capital movement
+- Year-over-year Balance Sheet comparisons
+
 ### Why Are RE, NI, and CTA Separate?
 
 NetSuite doesn't store Retained Earnings, Net Income, or CTA as actual account balances. Instead, it **calculates them dynamically** when you run reports. XAVI replicates these calculations:

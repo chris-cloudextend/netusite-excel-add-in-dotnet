@@ -96,6 +96,177 @@ public class BalanceController : ControllerBase
     }
 
     /// <summary>
+    /// Get the CHANGE in a balance sheet account between two points in time.
+    /// Calculated as: balance(toDate) - balance(fromDate)
+    /// 
+    /// ONLY VALID FOR BALANCE SHEET ACCOUNTS.
+    /// P&L accounts will return error "INVALIDACCT".
+    /// 
+    /// Both fromDate and toDate represent cumulative balances (from inception through that date).
+    /// The change is simply the difference between these two ending balances.
+    /// </summary>
+    /// <remarks>
+    /// Example: GET /balance-change?account=10034&amp;from_period=Dec%202024&amp;to_period=Jan%202025
+    /// Returns: balance(Jan 2025) - balance(Dec 2024)
+    /// </remarks>
+    [HttpGet("/balance-change")]
+    public async Task<IActionResult> GetBalanceChange(
+        [FromQuery] string account,
+        [FromQuery] string from_period,
+        [FromQuery] string to_period,
+        [FromQuery] string? subsidiary = null,
+        [FromQuery] string? department = null,
+        [FromQuery(Name = "class")] string? classFilter = null,
+        [FromQuery] string? location = null,
+        [FromQuery] int? book = null)
+    {
+        if (string.IsNullOrEmpty(account))
+            return BadRequest(new { error = "Account number is required" });
+        if (string.IsNullOrEmpty(from_period))
+            return BadRequest(new { error = "from_period is required" });
+        if (string.IsNullOrEmpty(to_period))
+            return BadRequest(new { error = "to_period is required" });
+
+        try
+        {
+            _logger.LogInformation("BALANCECHANGE: account={Account}, from={From}, to={To}", 
+                account, from_period, to_period);
+            
+            // Step 1: Verify this is a Balance Sheet account
+            var typeQuery = $"SELECT accttype FROM Account WHERE acctnumber = '{NetSuiteService.EscapeSql(account)}'";
+            var typeResult = await _netSuiteService.QueryRawAsync(typeQuery);
+            
+            if (!typeResult.Any())
+            {
+                _logger.LogWarning("BALANCECHANGE: Account {Account} not found", account);
+                return Ok(new BalanceChangeResponse 
+                { 
+                    Account = account,
+                    FromPeriod = from_period,
+                    ToPeriod = to_period,
+                    Error = "NOTFOUND"
+                });
+            }
+            
+            var acctType = typeResult.First().TryGetProperty("accttype", out var typeProp) 
+                ? typeProp.GetString() ?? "" : "";
+            var isBsAccount = AccountType.IsBalanceSheet(acctType);
+            
+            if (!isBsAccount)
+            {
+                _logger.LogWarning("BALANCECHANGE: Account {Account} is type {Type} (not BS) - returning INVALIDACCT", 
+                    account, acctType);
+                return Ok(new BalanceChangeResponse 
+                { 
+                    Account = account,
+                    AccountType = acctType,
+                    FromPeriod = from_period,
+                    ToPeriod = to_period,
+                    Error = "INVALIDACCT"
+                });
+            }
+            
+            // Step 2: Get balance as of fromDate (cumulative, so from_period is empty)
+            var fromRequest = new BalanceRequest
+            {
+                Account = account,
+                FromPeriod = "",  // Cumulative from inception
+                ToPeriod = from_period,
+                Subsidiary = subsidiary,
+                Department = department,
+                Class = classFilter,
+                Location = location,
+                Book = book
+            };
+            
+            var fromResult = await _balanceService.GetBalanceAsync(fromRequest);
+            
+            // Check for error in fromResult
+            if (!string.IsNullOrEmpty(fromResult.Error))
+            {
+                _logger.LogWarning("BALANCECHANGE: fromBalance query failed with {Error}", fromResult.Error);
+                return Ok(new BalanceChangeResponse 
+                { 
+                    Account = account,
+                    AccountType = acctType,
+                    FromPeriod = from_period,
+                    ToPeriod = to_period,
+                    Error = fromResult.Error
+                });
+            }
+            
+            // Step 3: Get balance as of toDate (cumulative, so from_period is empty)
+            var toRequest = new BalanceRequest
+            {
+                Account = account,
+                FromPeriod = "",  // Cumulative from inception
+                ToPeriod = to_period,
+                Subsidiary = subsidiary,
+                Department = department,
+                Class = classFilter,
+                Location = location,
+                Book = book
+            };
+            
+            var toResult = await _balanceService.GetBalanceAsync(toRequest);
+            
+            // Check for error in toResult
+            if (!string.IsNullOrEmpty(toResult.Error))
+            {
+                _logger.LogWarning("BALANCECHANGE: toBalance query failed with {Error}", toResult.Error);
+                return Ok(new BalanceChangeResponse 
+                { 
+                    Account = account,
+                    AccountType = acctType,
+                    FromPeriod = from_period,
+                    ToPeriod = to_period,
+                    Error = toResult.Error
+                });
+            }
+            
+            // Step 4: Calculate change = balance(toDate) - balance(fromDate)
+            var change = toResult.Balance - fromResult.Balance;
+            
+            _logger.LogInformation("BALANCECHANGE: {Account} from {FromPeriod} to {ToPeriod}: {ToBalance:N2} - {FromBalance:N2} = {Change:N2}",
+                account, from_period, to_period, toResult.Balance, fromResult.Balance, change);
+            
+            return Ok(new BalanceChangeResponse
+            {
+                Account = account,
+                AccountType = acctType,
+                FromPeriod = from_period,
+                ToPeriod = to_period,
+                FromBalance = fromResult.Balance,
+                ToBalance = toResult.Balance,
+                Change = change,
+                Cached = fromResult.Cached && toResult.Cached
+            });
+        }
+        catch (SafetyLimitException ex)
+        {
+            _logger.LogError(ex, "Safety limit hit in balance-change for account {Account}", account);
+            return Ok(new BalanceChangeResponse 
+            { 
+                Account = account,
+                FromPeriod = from_period,
+                ToPeriod = to_period,
+                Error = ex.LimitType.ToString().ToUpper()
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting balance change for account {Account}", account);
+            return Ok(new BalanceChangeResponse 
+            { 
+                Account = account,
+                FromPeriod = from_period,
+                ToPeriod = to_period,
+                Error = "SERVERERR"
+            });
+        }
+    }
+
+    /// <summary>
     /// Get balances for multiple accounts and periods in a single batch.
     /// </summary>
     [HttpPost("/batch/balance")]

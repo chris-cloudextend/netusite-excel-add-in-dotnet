@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '3.0.5.236';  // Version marker for debugging - cache bust for BS preload
+const FUNCTIONS_VERSION = '3.0.5.237';  // Version marker for debugging - added BALANCECHANGE formula
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -3413,6 +3413,119 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
 }
 
 // ============================================================================
+// BALANCECHANGE - Get the change in a Balance Sheet account between two dates
+// ============================================================================
+/**
+ * Get the CHANGE in a Balance Sheet account between two points in time.
+ * Calculated as: balance(toDate) - balance(fromDate)
+ * 
+ * ONLY VALID FOR BALANCE SHEET ACCOUNTS.
+ * P&L accounts will return "INVALIDACCT".
+ * 
+ * @customfunction BALANCECHANGE
+ * @param {any} account Account number (must be a Balance Sheet account)
+ * @param {any} fromPeriod Starting period (e.g., "Dec 2024" or 12/1/2024)
+ * @param {any} toPeriod Ending period (e.g., "Jan 2025" or 1/1/2025)
+ * @param {any} subsidiary Subsidiary filter (use "" for all)
+ * @param {any} department Department filter (use "" for all)
+ * @param {any} location Location filter (use "" for all)
+ * @param {any} classId Class filter (use "" for all)
+ * @param {any} accountingBook Accounting Book ID (use "" for Primary Book)
+ * @returns {Promise<number|string>} The change in balance, or error code
+ * @requiresAddress
+ */
+async function BALANCECHANGE(account, fromPeriod, toPeriod, subsidiary, department, location, classId, accountingBook) {
+    try {
+        // Normalize account number
+        account = normalizeAccountNumber(account);
+        
+        if (!account) {
+            console.error('❌ BALANCECHANGE: account parameter is required');
+            return '#MISSING_ACCT#';
+        }
+        
+        // Convert date values to "Mon YYYY" format
+        fromPeriod = convertToMonthYear(fromPeriod, true);
+        toPeriod = convertToMonthYear(toPeriod, false);
+        
+        if (!fromPeriod || !toPeriod) {
+            console.error('❌ BALANCECHANGE: both fromPeriod and toPeriod are required');
+            return '#MISSING_PERIOD#';
+        }
+        
+        console.log(`📊 BALANCECHANGE: ${account} from ${fromPeriod} to ${toPeriod}`);
+        
+        // Other parameters as strings
+        subsidiary = String(subsidiary || '').trim();
+        department = String(department || '').trim();
+        location = String(location || '').trim();
+        classId = String(classId || '').trim();
+        accountingBook = String(accountingBook || '').trim();
+        
+        // Build cache key
+        const cacheKey = JSON.stringify({
+            type: 'balancechange',
+            account, fromPeriod, toPeriod, 
+            subsidiary, department, location, classId, accountingBook
+        });
+        
+        // Check cache
+        if (cache.balance.has(cacheKey)) {
+            const cached = cache.balance.get(cacheKey);
+            console.log(`✅ BALANCECHANGE cache hit: ${account} = ${cached}`);
+            return cached;
+        }
+        
+        // Make API call
+        const apiParams = new URLSearchParams({
+            account: account,
+            from_period: fromPeriod,
+            to_period: toPeriod,
+            subsidiary: subsidiary,
+            department: department,
+            class: classId,
+            location: location,
+            book: accountingBook
+        });
+        
+        const response = await fetch(`${SERVER_URL}/balance-change?${apiParams.toString()}`);
+        
+        if (!response.ok) {
+            const errorCode = response.status === 408 || response.status === 504 ? 'TIMEOUT' :
+                             response.status === 429 ? 'RATELIMIT' :
+                             response.status === 401 || response.status === 403 ? 'AUTHERR' :
+                             'APIERR';
+            console.error(`❌ BALANCECHANGE API error: ${response.status} → ${errorCode}`);
+            return errorCode;
+        }
+        
+        const data = await response.json();
+        
+        // Check for error in response
+        if (data.error) {
+            console.log(`⚠️ BALANCECHANGE: ${account} = ${data.error}`);
+            // Cache the error too (for consistency)
+            cache.balance.set(cacheKey, data.error);
+            return data.error;
+        }
+        
+        // Get the change value
+        const change = data.change || 0;
+        console.log(`✅ BALANCECHANGE: ${account} (${fromPeriod} → ${toPeriod}) = ${change.toLocaleString()}`);
+        console.log(`   From: $${data.from_balance?.toLocaleString() || 0}, To: $${data.to_balance?.toLocaleString() || 0}`);
+        
+        // Cache the result
+        cache.balance.set(cacheKey, change);
+        
+        return change;
+        
+    } catch (error) {
+        console.error('BALANCECHANGE error:', error);
+        return 'NETFAIL';
+    }
+}
+
+// ============================================================================
 // BUDGET - Get Budget Amount from NetSuite BudgetsMachine table
 // ============================================================================
 /**
@@ -5558,6 +5671,7 @@ if (typeof CustomFunctions !== 'undefined') {
     CustomFunctions.associate('TYPE', TYPE);
     CustomFunctions.associate('PARENT', PARENT);
     CustomFunctions.associate('BALANCE', BALANCE);
+    CustomFunctions.associate('BALANCECHANGE', BALANCECHANGE);
     CustomFunctions.associate('BUDGET', BUDGET);
     CustomFunctions.associate('RETAINEDEARNINGS', RETAINEDEARNINGS);
     CustomFunctions.associate('NETINCOME', NETINCOME);
