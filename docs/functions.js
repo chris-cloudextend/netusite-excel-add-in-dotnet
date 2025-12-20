@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '3.0.5.240';  // Version marker for debugging - added BALANCECHANGE formula
+const FUNCTIONS_VERSION = '3.0.5.241';  // Added preload coordination to TYPEBALANCE for CFO Flash cache
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -5303,6 +5303,18 @@ async function TYPEBALANCE(accountType, fromPeriod, toPeriod, subsidiary, depart
     } catch (e) { /* ignore */ }
     
     try {
+        // ================================================================
+        // PRELOAD COORDINATION: If taskpane is pre-fetching, wait for it
+        // This prevents formulas from running before cache is populated
+        // ================================================================
+        let preloadWaited = false;
+        if (isPreloadInProgress()) {
+            console.log(`⏳ TYPEBALANCE: Preload in progress - waiting for cache...`);
+            await waitForPreload();
+            preloadWaited = true;
+            console.log(`✅ TYPEBALANCE: Preload complete - will check cache`);
+        }
+        
         // Normalize account type
         const normalizedType = String(accountType || '').trim();
         if (!normalizedType) {

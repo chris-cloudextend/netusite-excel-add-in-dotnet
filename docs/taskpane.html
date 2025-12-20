@@ -4074,6 +4074,14 @@ For licensing inquiries, contact: legal@celigo.com
                         Or jump straight into a pre-built report:
                     </p>
                     
+                    <!-- Year Input Field -->
+                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px; padding: 8px 12px; background: rgba(255,255,255,0.9); border-radius: 8px; border: 1px solid rgba(0,0,0,0.1);">
+                        <label for="reportYearInput" style="font-size: 11px; font-weight: 600; color: var(--deep-dive);">Fiscal Year:</label>
+                        <input type="number" id="reportYearInput" value="2025" min="2000" max="2099" 
+                               style="width: 80px; padding: 6px 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 13px; font-weight: 600; text-align: center; color: var(--deep-dive);">
+                        <span style="font-size: 10px; color: var(--bottlenose);">Used for reports below</span>
+                    </div>
+                    
                     <!-- Option 1: Sample Report -->
                     <div class="guide-choice" onclick="runGuideMe()" style="margin-bottom: 12px; background: rgba(255,255,255,0.8); border: 2px solid var(--deep-dive);">
                         <div class="guide-choice-icon">📝</div>
@@ -4084,7 +4092,7 @@ For licensing inquiries, contact: legal@celigo.com
             </div>
                     
                     <!-- Option 2: CFO Flash Report -->
-                    <div class="guide-choice" onclick="generateSummaryIncomeStatement()" style="background: rgba(255,255,255,0.8); border: 2px solid #10B981;">
+                    <div class="guide-choice" onclick="generateSummaryIncomeStatement(getReportYear())" style="background: rgba(255,255,255,0.8); border: 2px solid #10B981;">
                         <div class="guide-choice-icon">📈</div>
                         <div class="guide-choice-content">
                             <div class="guide-choice-title" style="color: #10B981;">CFO Flash Report</div>
@@ -4093,7 +4101,7 @@ For licensing inquiries, contact: legal@celigo.com
                     </div>
                     
                     <!-- Option 3: Full Income Statement -->
-                    <div class="guide-choice" onclick="generateFullIncomeStatement()" style="margin-top: 12px; background: rgba(255,255,255,0.8); border: 2px solid var(--deep-dive);">
+                    <div class="guide-choice" onclick="generateFullIncomeStatement(getReportYear())" style="margin-top: 12px; background: rgba(255,255,255,0.8); border: 2px solid var(--deep-dive);">
                         <div class="guide-choice-icon">📊</div>
                         <div class="guide-choice-content">
                             <div class="guide-choice-title" style="color: var(--deep-dive);">Full Income Statement</div>
@@ -4675,6 +4683,29 @@ For licensing inquiries, contact: legal@celigo.com
                         <div class="example-code">=XAVI.BALANCE("4010", "Jan 2025", "Dec 2025")</div>
                         <div class="example-code">=XAVI.BALANCE("4*", "2025", "2025")</div> <span class="example-result">← All 4xxx accounts</span>
                     </div>
+                </div>
+            </div>
+
+            <!-- XAVI.BALANCECHANGE -->
+            <div class="formula-card" onclick="this.classList.toggle('expanded')">
+                <div class="formula-header">
+                    <div class="formula-header-left">
+                        <span class="formula-name">BALANCECHANGE</span>
+                        <span class="formula-brief">BS period change</span>
+                </div>
+                    <svg class="formula-expand-icon" viewBox="0 0 24 24"><path fill="currentColor" d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z"/></svg>
+                </div>
+                <div class="formula-details">
+                    <div class="formula-syntax">=XAVI.BALANCECHANGE(acct, from, to, [sub], [dept], [loc], [class])</div>
+                    <div class="param-item"><span class="param-name">acct</span> - Balance Sheet account # (Bank, AcctRec, AcctPay, Equity, etc.)</div>
+                    <div class="param-item"><span class="param-name">from</span> - Starting period ("Dec 2024")</div>
+                    <div class="param-item"><span class="param-name">to</span> - Ending period ("Jan 2025")</div>
+                    <div class="param-item" style="color: var(--bottlenose); font-size: 10px;">Returns: balance(to) - balance(from) = change during period</div>
+                    <div class="example">
+                        <div class="example-code">=XAVI.BALANCECHANGE("10100", "Dec 2024", "Jan 2025")</div>
+                        <div class="example-code">=XAVI.BALANCECHANGE("20000", "Dec 2024", "Mar 2025")</div>
+                    </div>
+                    <div style="font-size: 10px; color: #dc2626; margin-top: 6px;">⚠️ BS accounts only — returns INVALIDACCT for P&L</div>
                 </div>
             </div>
     
@@ -8024,6 +8055,26 @@ For licensing inquiries, contact: legal@celigo.com
             }
         }
 
+        // Get the year from the Quick Start input field
+        function getReportYear() {
+            const yearInput = document.getElementById('reportYearInput');
+            if (yearInput && yearInput.value) {
+                const year = parseInt(yearInput.value, 10);
+                if (year >= 2000 && year <= 2099) {
+                    return year;
+                }
+            }
+            return new Date().getFullYear(); // Default to current year
+        }
+        
+        // Initialize report year input with current year on page load
+        function initReportYearInput() {
+            const yearInput = document.getElementById('reportYearInput');
+            if (yearInput) {
+                yearInput.value = new Date().getFullYear();
+            }
+        }
+
         async function runGuideMe() {
             const startTime = Date.now(); // Track timing
             // Note: Button may not have an ID (called via onclick on div)
@@ -8701,7 +8752,7 @@ For licensing inquiries, contact: legal@celigo.com
         // GENERATE SUMMARY INCOME STATEMENT (High-Level P&L with TYPEBALANCE)
         // ================================================================
         
-        async function generateSummaryIncomeStatement() {
+        async function generateSummaryIncomeStatement(yearParam) {
             // CRITICAL: Prevent filter change handlers from triggering during report generation
             // When we write to P3, Q3, R3, S3, T3, U3, the event listeners would trigger
             // another sync - we must block that until report is fully generated
@@ -8710,7 +8761,8 @@ For licensing inquiries, contact: legal@celigo.com
             
             const startTime = Date.now(); // Track timing
             const progress = document.getElementById('guideMeProgress');
-            const currentYear = new Date().getFullYear();
+            // Use provided year parameter or default to current year
+            const currentYear = yearParam || getReportYear() || new Date().getFullYear();
             
             // Tips with formula explanations every 3rd item
             const excelTips = [
@@ -8791,7 +8843,9 @@ For licensing inquiries, contact: legal@celigo.com
             };
             
             try {
-                updateProgress(10, '🔍 Step 1 of 4: Getting Settings', 'Loading subsidiary and currency info...');
+                // ========== STEP 1: GET SETTINGS ==========
+                updateProgress(5, '🔍 Step 1 of 4: Getting Settings', 'Loading subsidiary and currency info...');
+                await new Promise(r => setTimeout(r, 800)); // Minimum display time
                 
                 // Get default subsidiary and currency format
                 let defaultSubsidiary = '';
@@ -8828,13 +8882,24 @@ For licensing inquiries, contact: legal@celigo.com
                     defaultSubsidiary = 'Parent Company (Consolidated)';
                 }
                 
-                // ========== PRE-FETCH TYPE BALANCES ==========
+                updateProgress(15, '🔍 Step 1 of 4: Getting Settings', `Using subsidiary: ${defaultSubsidiary.substring(0, 30)}...`);
+                await new Promise(r => setTimeout(r, 500)); // Brief pause to show subsidiary
+                
+                // ========== STEP 2: PRE-FETCH DATA ==========
                 // Call batch typebalance refresh BEFORE adding formulas
                 // This pre-populates the cache so formulas resolve instantly
-                updateProgress(20, '📈 Pre-fetching Type Balances', 'Loading all P&L types in one query...');
+                updateProgress(20, '📥 Step 2 of 4: Pre-fetching Data', 'Loading all P&L types from NetSuite...');
                 
+                // CRITICAL: Signal preload start so formulas wait for cache
+                console.log('🔄 CFO Flash: Starting preload - formulas will wait for cache');
+                localStorage.setItem('netsuite_preload_status', 'running');
+                localStorage.setItem('netsuite_preload_timestamp', Date.now().toString());
+                
+                let prefetchSuccess = false;
                 try {
                     console.log('🚀 CFO Flash: Pre-fetching TYPEBALANCE data for instant formula resolution...');
+                    updateProgress(25, '📥 Step 2 of 4: Pre-fetching Data', 'Querying NetSuite for account type totals...');
+                    
                     const typeBalanceResponse = await fetch(`${SERVER_URL}/batch/typebalance_refresh`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -8854,6 +8919,8 @@ For licensing inquiries, contact: legal@celigo.com
                         const typesLoaded = Object.keys(balances).length;
                         
                         console.log(`✅ CFO Flash: Pre-fetched ${typesLoaded} account types × 12 months`);
+                        updateProgress(30, '📥 Step 2 of 4: Pre-fetching Data', `Loaded ${typesLoaded} account types...`);
+                        prefetchSuccess = true;
                         
                         // CRITICAL: Save directly to localStorage - don't rely on setTypeBalanceCache
                         // because functions.js may not be loaded yet!
@@ -8904,15 +8971,31 @@ For licensing inquiries, contact: legal@celigo.com
                         if (typeof window.setTypeBalanceCache === 'function') {
                             window.setTypeBalanceCache(balances, currentYear, defaultSubsidiary, '', '', '', '', false);
                         }
+                        
+                        // DON'T signal complete yet - wait until AFTER formulas are written
+                        // This ensures formulas wait for cache on first evaluation
+                        console.log('💾 CFO Flash: Cache saved - formulas will be written next');
                     } else {
                         console.warn('⚠️ CFO Flash: TypeBalance pre-fetch failed, formulas will load individually');
+                        // Signal complete so formulas don't wait forever
+                        localStorage.setItem('netsuite_preload_status', 'complete');
                     }
                 } catch (e) {
                     console.warn('⚠️ CFO Flash: TypeBalance pre-fetch error:', e.message);
+                    localStorage.setItem('netsuite_preload_status', 'complete'); // Signal complete on error
                     // Continue anyway - formulas will just load one at a time
                 }
                 
-                updateProgress(35, '📊 Step 2 of 4: Building Structure', 'Creating headers and parameters...');
+                // Show pre-fetch result before moving on
+                if (prefetchSuccess) {
+                    updateProgress(35, '📥 Step 2 of 4: Pre-fetching Data', '✅ Cache populated - formulas will load instantly!');
+                } else {
+                    updateProgress(35, '📥 Step 2 of 4: Pre-fetching Data', '⚠️ Pre-fetch skipped - formulas will load individually');
+                }
+                await new Promise(r => setTimeout(r, 800)); // Show result briefly
+                
+                // ========== STEP 3: BUILD STRUCTURE ==========
+                updateProgress(40, '📊 Step 3 of 4: Building Structure', 'Creating headers and parameters...');
                 
                 await Excel.run(async (context) => {
                     const sheet = context.workbook.worksheets.getActiveWorksheet();
@@ -9026,6 +9109,10 @@ For licensing inquiries, contact: legal@celigo.com
                         await context.sync();
                     } catch (e) {}
                     
+                    updateProgress(45, '📊 Step 3 of 4: Building Structure', 'Headers created ✓');
+                    await context.sync();
+                    
+                    // ========== STEP 3 CONTINUED: ADD FORMULAS ==========
                     updateProgress(50, '📝 Step 3 of 4: Adding Formulas', 'Writing TYPEBALANCE formulas...');
                     
                     // ========== ROW 5: COLUMN HEADERS ==========
@@ -9195,7 +9282,15 @@ For licensing inquiries, contact: legal@celigo.com
                     await context.sync();
                     await createNamedRange("_Net_Income", 16);
                     
-                    updateProgress(80, '🎨 Formatting', 'Applying currency formats...');
+                    updateProgress(75, '📝 Step 3 of 4: Adding Formulas', 'Formulas written ✓');
+                    await context.sync();
+                    
+                    // NOW signal preload complete - formulas can read from cache
+                    // This happens AFTER formulas are written so they wait on first eval
+                    localStorage.setItem('netsuite_preload_status', 'complete');
+                    console.log('✅ CFO Flash: Formulas written, preload status set to complete');
+                    
+                    updateProgress(80, '🎨 Step 3 of 4: Formatting', 'Applying currency formats...');
                     
                     // Format all data as currency
                     const dataRange = sheet.getRange("C6:O16");
@@ -9208,7 +9303,8 @@ For licensing inquiries, contact: legal@celigo.com
                     sheet.getRange("C:O").format.columnWidth = 85;
                     await context.sync();
                     
-                    updateProgress(100, '✅ Complete!', 'Your CFO Flash Report is ready!');
+                    // Don't show 100% yet - wait for formulas to resolve first
+                    updateProgress(95, '📊 Step 4 of 4: Finalizing', 'Waiting for formulas to calculate...');
                 });
                 
                 // Cleanup - update overlay to show waiting for formulas
@@ -9222,17 +9318,26 @@ For licensing inquiries, contact: legal@celigo.com
                 const overlayProgress = overlay.querySelector('.progress-bar-fill');
                 const overlayProgressText = overlay.querySelector('.progress-text');
                 
-                if (overlayTitle) overlayTitle.textContent = '🧹 Step 4 of 4: Tidying Up';
-                if (overlaySubtitle) overlaySubtitle.innerHTML = 'Tidying up the results. This is the last step...';
-                if (overlayStep) overlayStep.innerHTML = '<span class="spreadsheet-animation">📊</span> Tucking everything into place...';
-                if (overlayStepDesc) overlayStepDesc.textContent = '';
+                if (overlayTitle) overlayTitle.textContent = '🧹 Step 4 of 4: Finalizing';
+                if (overlaySubtitle) overlaySubtitle.innerHTML = 'Waiting for all formulas to resolve...';
+                if (overlayStep) overlayStep.innerHTML = '<span class="spreadsheet-animation">📊</span> Calculating formula values...';
+                if (overlayStepDesc) overlayStepDesc.textContent = 'This ensures all numbers are accurate before completion.';
                 
                 // Hide any other loading overlays and status bars
                 hideLoading();
                 hideStatus();
                 
                 // Wait for formulas to complete - no sub-messages, just "Tidying Up"
-                await waitForFormulasToComplete(60000, null);
+                const formulasResolved = await waitForFormulasToComplete(60000, null);
+                
+                // Only now show 100% and success
+                if (overlayProgressText) overlayProgressText.textContent = '100% complete';
+                if (overlayProgress) overlayProgress.style.width = '100%';
+                if (overlayStep) overlayStep.innerHTML = '✅ All formulas resolved!';
+                if (overlayStepDesc) overlayStepDesc.textContent = '';
+                
+                // Brief pause to show the 100% state
+                await new Promise(r => setTimeout(r, 500));
                 
                 // Auto-fit columns AFTER all formulas have resolved
                 await autoFitColumns();
@@ -9298,10 +9403,11 @@ For licensing inquiries, contact: legal@celigo.com
         // GENERATE FULL INCOME STATEMENT
         // ================================================================
         
-        async function generateFullIncomeStatement() {
+        async function generateFullIncomeStatement(yearParam) {
             const startTime = Date.now(); // Track timing
             const progress = document.getElementById('guideMeProgress');
-            const currentYear = new Date().getFullYear();
+            // Use provided year parameter or default to current year
+            const currentYear = yearParam || getReportYear() || new Date().getFullYear();
             const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 
                                'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
             
@@ -9399,6 +9505,11 @@ For licensing inquiries, contact: legal@celigo.com
                 // Step 1: Fetch ALL account data
                 updateProgress(5, '📥 Step 1 of 6: Loading Accounts', 'Fetching all P&L accounts from NetSuite...');
                 
+                // CRITICAL: Signal preload start so formulas wait for cache
+                console.log('🔄 Income Statement: Starting preload - formulas will wait for cache');
+                localStorage.setItem('netsuite_preload_status', 'running');
+                localStorage.setItem('netsuite_preload_timestamp', Date.now().toString());
+                
                 let artificialProgress = 5;
                 const progressInterval = setInterval(() => {
                     if (artificialProgress < 30) {
@@ -9432,9 +9543,12 @@ For licensing inquiries, contact: legal@celigo.com
                 const accountNames = refreshData.account_names || {};
                 
                 console.log(`Income Statement: Loaded ${Object.keys(allBalances).length} accounts`);
+                updateProgress(32, '📥 Step 1 of 6: Loading Accounts', `Loaded ${Object.keys(allBalances).length} accounts ✓`);
+                await new Promise(r => setTimeout(r, 500)); // Brief pause to show result
                 
                 // CRITICAL: Save to localStorage so XAVI.BALANCE formulas can use cached data
                 // This prevents individual API calls for each formula cell
+                updateProgress(33, '💾 Step 1 of 6: Caching Data', 'Saving to local cache...');
                 console.log('💾 Income Statement: Saving BALANCE cache to localStorage...');
                 try {
                     const cacheData = {};
@@ -9444,8 +9558,14 @@ For licensing inquiries, contact: legal@celigo.com
                     localStorage.setItem('netsuite_balance_cache', JSON.stringify(cacheData));
                     localStorage.setItem('netsuite_balance_cache_timestamp', Date.now().toString());
                     console.log(`✅ Income Statement: Saved ${Object.keys(cacheData).length} accounts to localStorage`);
+                    
+                    // DON'T signal complete yet - wait until AFTER formulas are written
+                    // This ensures formulas wait for cache on first evaluation
+                    console.log('💾 Income Statement: Cache saved - formulas will be written next');
                 } catch (e) {
                     console.warn('⚠️ Income Statement: localStorage save failed:', e.message);
+                    // Signal complete on error so formulas don't wait forever
+                    localStorage.setItem('netsuite_preload_status', 'complete');
                 }
                 
                 // Step 2: Categorize accounts by type
@@ -9494,6 +9614,11 @@ For licensing inquiries, contact: legal@celigo.com
                 }
                 
                 console.log(`Income Statement: Revenue=${categories.income.length}, OthIncome=${categories.othIncome.length}, COGS=${categories.cogs.length}, Expense=${categories.expense.length}, OthExpense=${categories.othExpense.length}`);
+                
+                const totalAccts = categories.income.length + categories.othIncome.length + 
+                                   categories.cogs.length + categories.expense.length + categories.othExpense.length;
+                updateProgress(40, '🔍 Step 2 of 6: Categorizing', `Found ${totalAccts} accounts with data ✓`);
+                await new Promise(r => setTimeout(r, 600)); // Brief pause to show result
                 
                 // Get default subsidiary (parent/root) and its currency format
                 // Use the currencies endpoint which correctly identifies the parent via backend
@@ -9998,6 +10123,11 @@ For licensing inquiries, contact: legal@celigo.com
                     netIncomeRow = currentRow;
                     await createNamedRange('_Net_Income', currentRow);
                     
+                    // NOW signal preload complete - formulas can read from cache
+                    // This happens AFTER formulas are written so they wait on first eval
+                    localStorage.setItem('netsuite_preload_status', 'complete');
+                    console.log('✅ Income Statement: Formulas written, preload status set to complete');
+                    
                     updateProgress(95, '🎨 Step 5 of 6: Formatting', 'Applying currency formats...');
                     
                     // Format all number cells with the correct currency symbol (data starts at row 6)
@@ -10025,7 +10155,8 @@ For licensing inquiries, contact: legal@celigo.com
                         await context.sync();
                     } catch (e) {}
                     
-                    updateProgress(100, '✅ Complete!', 'Your Income Statement is ready!');
+                    // Don't show 100% yet - wait for formulas to resolve first
+                    updateProgress(95, '📊 Step 6 of 6: Finalizing', 'Waiting for formulas to calculate...');
                 });
                 
                 // Cleanup the progress overlay but show a "waiting for formulas" message
@@ -10039,17 +10170,26 @@ For licensing inquiries, contact: legal@celigo.com
                 const overlayProgress = overlay.querySelector('.progress-bar-fill');
                 const overlayProgressText = overlay.querySelector('.progress-text');
                 
-                if (overlayTitle) overlayTitle.textContent = '🧹 Step 6 of 6: Tidying Up';
-                if (overlaySubtitle) overlaySubtitle.innerHTML = 'Tidying up the results. This is the last step...';
-                if (overlayStep) overlayStep.innerHTML = '<span class="spreadsheet-animation">📊</span> Tucking everything into place...';
-                if (overlayStepDesc) overlayStepDesc.textContent = '';
+                if (overlayTitle) overlayTitle.textContent = '🧹 Step 6 of 6: Finalizing';
+                if (overlaySubtitle) overlaySubtitle.innerHTML = 'Waiting for all formulas to resolve...';
+                if (overlayStep) overlayStep.innerHTML = '<span class="spreadsheet-animation">📊</span> Calculating formula values...';
+                if (overlayStepDesc) overlayStepDesc.textContent = 'This ensures all numbers are accurate before completion.';
                 
                 // Hide any other loading overlays and status bars
                 hideLoading();
                 hideStatus();
                 
                 // Wait for formulas to complete - no sub-messages, just "Tidying Up"
-                await waitForFormulasToComplete(120000, null);
+                const formulasResolved = await waitForFormulasToComplete(120000, null);
+                
+                // Only now show 100% and success
+                if (overlayProgressText) overlayProgressText.textContent = '100% complete';
+                if (overlayProgress) overlayProgress.style.width = '100%';
+                if (overlayStep) overlayStep.innerHTML = '✅ All formulas resolved!';
+                if (overlayStepDesc) overlayStepDesc.textContent = '';
+                
+                // Brief pause to show the 100% state
+                await new Promise(r => setTimeout(r, 500));
                 
                 // Auto-fit columns AFTER all formulas have resolved
                 await autoFitColumns();
@@ -12966,26 +13106,29 @@ export default {
         // ========================================================================
         // FORMULA COMPLETION DETECTION - CONFIGURATION
         // ========================================================================
-        // Set to false to revert to old behavior (15s fallback wait)
-        // Set to true to use smart detection (checks for numeric values vs formula count)
+        // IMPORTANT: #BUSY detection is the PRIMARY check. Smart detection only helps
+        // detect instant cache hits when #BUSY is never seen.
         const USE_SMART_FORMULA_DETECTION = true;  // <-- EASY REVERT: Change to false
-        const SMART_DETECTION_THRESHOLD = 0.90;    // Require 90% of formulas to have numeric values
-        const FALLBACK_WAIT_SECONDS = 15;          // Old behavior fallback (if smart detection disabled)
+        const SMART_DETECTION_THRESHOLD = 0.95;    // Require 95% of formula CELLS to have numeric values
+        const FALLBACK_WAIT_SECONDS = 25;          // Old behavior fallback (seconds)
+        const INITIAL_WAIT_MS = 2000;              // Wait before first check
         // ========================================================================
         
         // Wait for formulas to complete - smart detection based on actual formula count
-        // Counts XAVI formulas on sheet, then waits until ~90% have numeric values
-        // This avoids waiting 15+ seconds when formulas resolve instantly from cache
+        // PRIMARY GATE: If #BUSY is found, keep waiting regardless of other checks
+        // SECONDARY: Smart detection checks if formula cells have resolved to numbers
         async function waitForFormulasToComplete(maxWaitMs = 120000, updateOverlayFn = null) {
             const startTime = Date.now();
             
             console.log('⏳ Waiting for formulas to complete...');
+            console.log('   PRIMARY CHECK: #BUSY detection (always wins)');
+            console.log('   SECONDARY: Smart detection of formula cell values');
             
             // Clear any existing status broadcasts
             localStorage.removeItem('netsuite_status');
             
-            // First, count XAVI formulas on the sheet (for smart detection)
-            let expectedFormulaCount = 0;
+            // Step 1: Find all XAVI formula cell positions (for tracking their values)
+            let formulaCellPositions = [];  // Array of {row, col}
             if (USE_SMART_FORMULA_DETECTION) {
                 try {
                     await Excel.run(async (context) => {
@@ -12995,39 +13138,41 @@ export default {
                         await context.sync();
                         
                         const formulas = usedRange.formulas;
-                        for (const row of formulas) {
-                            for (const cell of row) {
+                        for (let row = 0; row < formulas.length; row++) {
+                            for (let col = 0; col < formulas[row].length; col++) {
+                                const cell = formulas[row][col];
                                 if (typeof cell === 'string' && cell.toUpperCase().includes('XAVI.')) {
-                                    expectedFormulaCount++;
+                                    formulaCellPositions.push({row, col});
                                 }
                             }
                         }
                     });
-                    console.log(`   Smart detection: ENABLED - expecting ${expectedFormulaCount} XAVI formulas to resolve`);
-                    console.log(`   Threshold: ${Math.round(SMART_DETECTION_THRESHOLD * 100)}% (${Math.ceil(expectedFormulaCount * SMART_DETECTION_THRESHOLD)} numeric values needed)`);
+                    console.log(`   Smart detection: ENABLED - tracking ${formulaCellPositions.length} XAVI formula cells`);
+                    console.log(`   Threshold: ${Math.round(SMART_DETECTION_THRESHOLD * 100)}% must resolve to numeric values`);
                 } catch (e) {
-                    console.warn('   Could not count formulas, using fallback mode');
-                    expectedFormulaCount = 0;
+                    console.warn('   Could not map formula positions, using #BUSY detection only');
+                    formulaCellPositions = [];
                 }
             } else {
                 console.log(`   Smart detection: DISABLED (using ${FALLBACK_WAIT_SECONDS}s fallback)`);
             }
             
             // Brief initial wait for Excel to start calculating
-            console.log('⏳ Giving Excel a moment to start calculating...');
-            await new Promise(resolve => setTimeout(resolve, 3000));
+            console.log(`⏳ Initial wait (${INITIAL_WAIT_MS}ms) for Excel to start calculating...`);
+            await new Promise(resolve => setTimeout(resolve, INITIAL_WAIT_MS));
             
-            let consecutiveNoBusy = 0;
-            const requiredConsecutive = 3; // Need 3 consecutive checks (3 seconds of stability)
+            let consecutiveClean = 0;
+            const requiredConsecutive = 3; // Need 3 consecutive clean checks
             let sawBusyAtLeastOnce = false;
-            const targetNumeric = Math.ceil(expectedFormulaCount * SMART_DETECTION_THRESHOLD);
+            const targetResolved = Math.ceil(formulaCellPositions.length * SMART_DETECTION_THRESHOLD);
             
             while (Date.now() - startTime < maxWaitMs) {
                 await new Promise(resolve => setTimeout(resolve, 1000)); // Check every second
                 
                 let hasBusy = false;
                 let busyCount = 0;
-                let numericCount = 0;  // Smart detection: count actual numbers
+                let resolvedFormulaCount = 0;  // Count formula cells with numeric values
+                let errorCount = 0;
                 
                 try {
                     await Excel.run(async (context) => {
@@ -13037,16 +13182,32 @@ export default {
                         await context.sync();
                         
                         const values = usedRange.values;
+                        
+                        // PRIMARY: Check ALL cells for #BUSY (this is the main gate)
                         for (const row of values) {
                             for (const cell of row) {
-                                const cellStr = String(cell || '');
-                                if (cellStr.includes('#BUSY') || cellStr.includes('#BUSY!')) {
+                                const cellStr = String(cell || '').toUpperCase();
+                                if (cellStr.includes('#BUSY')) {
                                     hasBusy = true;
                                     busyCount++;
                                 }
-                                // Smart detection: count numeric values (indicates resolved formulas)
-                                if (USE_SMART_FORMULA_DETECTION && typeof cell === 'number' && !isNaN(cell)) {
-                                    numericCount++;
+                            }
+                        }
+                        
+                        // SECONDARY: Track formula cells specifically
+                        if (USE_SMART_FORMULA_DETECTION && formulaCellPositions.length > 0) {
+                            for (const pos of formulaCellPositions) {
+                                if (pos.row < values.length && pos.col < values[pos.row].length) {
+                                    const cellValue = values[pos.row][pos.col];
+                                    const cellStr = String(cellValue || '').toUpperCase();
+                                    
+                                    if (typeof cellValue === 'number' && !isNaN(cellValue)) {
+                                        resolvedFormulaCount++;
+                                    } else if (cellStr.startsWith('#') && !cellStr.includes('#BUSY')) {
+                                        // Error like #VALUE!, #N/A - count as resolved (error state)
+                                        errorCount++;
+                                        resolvedFormulaCount++;
+                                    }
                                 }
                             }
                         }
@@ -13054,52 +13215,65 @@ export default {
                     
                     const elapsed = Math.round((Date.now() - startTime) / 1000);
                     
+                    // PRIMARY GATE: If #BUSY found, ALWAYS keep waiting
                     if (hasBusy) {
                         sawBusyAtLeastOnce = true;
-                        consecutiveNoBusy = 0; // Reset counter
-                        console.log(`📊 ${busyCount} #BUSY cells remaining (${elapsed}s elapsed)`);
+                        consecutiveClean = 0; // Reset counter
+                        const pct = formulaCellPositions.length > 0 
+                            ? ` (${Math.round(resolvedFormulaCount/formulaCellPositions.length*100)}% resolved)`
+                            : '';
+                        console.log(`📊 ${busyCount} #BUSY cells remaining${pct} (${elapsed}s elapsed)`);
+                        if (updateOverlayFn) {
+                            updateOverlayFn(`${busyCount} formulas calculating...`);
+                        }
                     } else {
-                        // Determine if we should count this as "resolved"
-                        let shouldCountAsResolved = false;
+                        // No #BUSY found - check if we should declare complete
+                        let shouldCountAsComplete = false;
                         let resolveReason = '';
                         
                         if (sawBusyAtLeastOnce) {
-                            // We saw #BUSY before and now it's gone - definitely resolved
-                            shouldCountAsResolved = true;
-                            resolveReason = 'saw #BUSY clear';
-                        } else if (USE_SMART_FORMULA_DETECTION && expectedFormulaCount > 0 && numericCount >= targetNumeric) {
-                            // SMART DETECTION: We have enough numeric values = formulas resolved from cache
-                            console.log(`🧠 Smart detection: ${numericCount}/${expectedFormulaCount} formulas resolved (${Math.round(numericCount/expectedFormulaCount*100)}%) - cache hit!`);
-                            shouldCountAsResolved = true;
-                            resolveReason = 'smart detection';
-                        } else if (elapsed > FALLBACK_WAIT_SECONDS) {
-                            // Fallback: waited long enough, assume resolved
-                            shouldCountAsResolved = true;
-                            resolveReason = 'timeout fallback';
+                            // Saw #BUSY before and now it's gone - definitely complete
+                            shouldCountAsComplete = true;
+                            resolveReason = '#BUSY cleared';
+                        } else if (USE_SMART_FORMULA_DETECTION && formulaCellPositions.length > 0) {
+                            // Never saw #BUSY - check if formula cells resolved (cache hit)
+                            if (resolvedFormulaCount >= targetResolved) {
+                                console.log(`🧠 Smart: ${resolvedFormulaCount}/${formulaCellPositions.length} formula cells resolved (${Math.round(resolvedFormulaCount/formulaCellPositions.length*100)}%)`);
+                                if (errorCount > 0) {
+                                    console.log(`   ⚠️ ${errorCount} formula cells have error values`);
+                                }
+                                shouldCountAsComplete = true;
+                                resolveReason = 'smart detection (cache hit)';
+                            }
                         }
                         
-                        if (shouldCountAsResolved) {
-                            consecutiveNoBusy++;
-                            const smartInfo = USE_SMART_FORMULA_DETECTION && expectedFormulaCount > 0 
-                                ? ` [${numericCount}/${expectedFormulaCount} numeric]` 
+                        // Fallback: waited long enough without seeing #BUSY
+                        if (!shouldCountAsComplete && elapsed > FALLBACK_WAIT_SECONDS) {
+                            shouldCountAsComplete = true;
+                            resolveReason = `timeout (${FALLBACK_WAIT_SECONDS}s)`;
+                        }
+                        
+                        if (shouldCountAsComplete) {
+                            consecutiveClean++;
+                            const smartInfo = formulaCellPositions.length > 0 
+                                ? ` [${resolvedFormulaCount}/${formulaCellPositions.length} resolved]` 
                                 : '';
-                            console.log(`✓ No #BUSY cells (check ${consecutiveNoBusy}/${requiredConsecutive})${smartInfo}`);
+                            console.log(`✓ Clean check ${consecutiveClean}/${requiredConsecutive}${smartInfo}`);
                             
-                            if (consecutiveNoBusy >= requiredConsecutive) {
-                                console.log(`✅ All cells populated! (${resolveReason})`);
-                                // Don't change suppressStatusBar here - let caller control it
+                            if (consecutiveClean >= requiredConsecutive) {
+                                console.log(`✅ All formulas complete! (${resolveReason})`);
                                 localStorage.removeItem('netsuite_status');
                                 return true;
                             }
                         } else {
-                            const smartInfo = USE_SMART_FORMULA_DETECTION && expectedFormulaCount > 0 
-                                ? ` [${numericCount}/${targetNumeric} needed]` 
+                            const smartInfo = formulaCellPositions.length > 0 
+                                ? ` [${resolvedFormulaCount}/${targetResolved} needed]` 
                                 : '';
-                            console.log(`⏳ Waiting for formulas to resolve... (${elapsed}s)${smartInfo}`);
+                            console.log(`⏳ Waiting for formulas... (${elapsed}s)${smartInfo}`);
                         }
                     }
                 } catch (e) {
-                    console.warn('Error checking #BUSY:', e.message);
+                    console.warn('Error checking formula status:', e.message);
                 }
             }
             
@@ -13644,6 +13818,9 @@ export default {
             
             // Initial contextual UI check (after short delay for Excel to be ready)
             setTimeout(() => updateContextualUI(), 500);
+            
+            // Initialize report year input with current year
+            initReportYearInput();
         });
         
         // Tab Navigation - switch between Data Management, Analytics, and Financial Reporting
