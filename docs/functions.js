@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '3.0.5.243';  // Robust preload coordination + extended formula completion detection
+const FUNCTIONS_VERSION = '3.0.5.244';  // Add date prompts for reports + Balance Sheet report
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================

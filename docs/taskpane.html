@@ -1330,6 +1330,12 @@ For licensing inquiries, contact: legal@celigo.com
             50% { opacity: 1; }
         }
 
+        @keyframes shake {
+            0%, 100% { transform: translateX(0); }
+            10%, 30%, 50%, 70%, 90% { transform: translateX(-5px); }
+            20%, 40%, 60%, 80% { transform: translateX(5px); }
+        }
+
         /* Primary action button */
         .btn-primary {
             background: linear-gradient(135deg, var(--blue-light) 0%, var(--tidal-wave) 100%);
@@ -4074,14 +4080,6 @@ For licensing inquiries, contact: legal@celigo.com
                         Or jump straight into a pre-built report:
                     </p>
                     
-                    <!-- Year Input Field -->
-                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px; padding: 8px 12px; background: rgba(255,255,255,0.9); border-radius: 8px; border: 1px solid rgba(0,0,0,0.1);">
-                        <label for="reportYearInput" style="font-size: 11px; font-weight: 600; color: var(--deep-dive);">Fiscal Year:</label>
-                        <input type="number" id="reportYearInput" value="2025" min="2000" max="2099" 
-                               style="width: 80px; padding: 6px 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 13px; font-weight: 600; text-align: center; color: var(--deep-dive);">
-                        <span style="font-size: 10px; color: var(--bottlenose);">Used for reports below</span>
-                    </div>
-                    
                     <!-- Option 1: Sample Report -->
                     <div class="guide-choice" onclick="runGuideMe()" style="margin-bottom: 12px; background: rgba(255,255,255,0.8); border: 2px solid var(--deep-dive);">
                         <div class="guide-choice-icon">📝</div>
@@ -4089,10 +4087,28 @@ For licensing inquiries, contact: legal@celigo.com
                             <div class="guide-choice-title" style="color: var(--deep-dive);">Sample Report</div>
                             <div class="guide-choice-desc" style="color: var(--bottlenose);">35 accounts with formulas you can study</div>
                         </div>
-            </div>
+                    </div>
+                    
+                    <!-- P&L REPORTS SECTION -->
+                    <div style="margin-top: 16px; padding-top: 12px; border-top: 1px dashed rgba(0,0,0,0.1);">
+                        <div style="font-size: 11px; color: var(--deep-dive); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; font-weight: 600;">📈 Profit & Loss Reports</div>
+                    </div>
+                    
+                    <!-- Year Input for P&L Reports -->
+                    <div style="margin-bottom: 12px; padding: 12px; background: linear-gradient(135deg, rgba(16,185,129,0.05), rgba(16,185,129,0.1)); border-radius: 10px; border: 1px solid rgba(16,185,129,0.2);">
+                        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px;">
+                            <label for="reportYearInput" style="font-size: 12px; font-weight: 600; color: #10B981;">Fiscal Year:</label>
+                            <input type="number" id="reportYearInput" value="2025" min="2000" max="2099" 
+                                   style="width: 90px; padding: 8px 12px; border: 2px solid #10B981; border-radius: 8px; font-size: 14px; font-weight: 700; text-align: center; color: #10B981; background: white;">
+                        </div>
+                        <div style="font-size: 10px; color: #666; line-height: 1.4;">
+                            💡 <strong>P&L reports show monthly columns</strong> for the full fiscal year (Jan–Dec).
+                            The formulas will auto-update if you change this year later.
+                        </div>
+                    </div>
                     
                     <!-- Option 2: CFO Flash Report -->
-                    <div class="guide-choice" onclick="generateSummaryIncomeStatement(getReportYear())" style="background: rgba(255,255,255,0.8); border: 2px solid #10B981;">
+                    <div class="guide-choice" onclick="validateAndRunPLReport('cfo')" style="background: rgba(255,255,255,0.8); border: 2px solid #10B981;">
                         <div class="guide-choice-icon">📈</div>
                         <div class="guide-choice-content">
                             <div class="guide-choice-title" style="color: #10B981;">CFO Flash Report</div>
@@ -4101,7 +4117,7 @@ For licensing inquiries, contact: legal@celigo.com
                     </div>
                     
                     <!-- Option 3: Full Income Statement -->
-                    <div class="guide-choice" onclick="generateFullIncomeStatement(getReportYear())" style="margin-top: 12px; background: rgba(255,255,255,0.8); border: 2px solid var(--deep-dive);">
+                    <div class="guide-choice" onclick="validateAndRunPLReport('full')" style="margin-top: 12px; background: rgba(255,255,255,0.8); border: 2px solid var(--deep-dive);">
                         <div class="guide-choice-icon">📊</div>
                         <div class="guide-choice-content">
                             <div class="guide-choice-title" style="color: var(--deep-dive);">Full Income Statement</div>
@@ -4109,8 +4125,41 @@ For licensing inquiries, contact: legal@celigo.com
                         </div>
                     </div>
                     
-                    <!-- Option 4: Budget Report -->
-                    <div class="guide-choice" onclick="generateBudgetReport()" style="margin-top: 12px; background: rgba(255,255,255,0.8); border: 2px solid #8B5CF6;">
+                    <!-- BALANCE SHEET REPORTS SECTION -->
+                    <div style="margin-top: 16px; padding-top: 12px; border-top: 1px dashed rgba(0,0,0,0.1);">
+                        <div style="font-size: 11px; color: #3B82F6; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; font-weight: 600;">⚖️ Balance Sheet Reports</div>
+                    </div>
+                    
+                    <!-- Period Input for Balance Sheet Reports -->
+                    <div style="margin-bottom: 12px; padding: 12px; background: linear-gradient(135deg, rgba(59,130,246,0.05), rgba(59,130,246,0.1)); border-radius: 10px; border: 1px solid rgba(59,130,246,0.2);">
+                        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px;">
+                            <label for="bsReportPeriod" style="font-size: 12px; font-weight: 600; color: #3B82F6;">As of Period:</label>
+                            <input type="text" id="bsReportPeriod" placeholder="2025-01" 
+                                   pattern="\\d{4}-(0[1-9]|1[0-2])"
+                                   style="width: 100px; padding: 8px 12px; border: 2px solid #3B82F6; border-radius: 8px; font-size: 14px; font-weight: 700; text-align: center; color: #3B82F6; background: white;">
+                        </div>
+                        <div style="font-size: 10px; color: #666; line-height: 1.4;">
+                            💡 <strong>Format: YYYY-MM</strong> (e.g., 2025-01 for January 2025).<br>
+                            Balance Sheet shows cumulative balances as of the end of the selected month.
+                        </div>
+                    </div>
+                    
+                    <!-- Option 4: Balance Sheet Report -->
+                    <div class="guide-choice" onclick="validateAndRunBSReport()" style="background: rgba(255,255,255,0.8); border: 2px solid #3B82F6;">
+                        <div class="guide-choice-icon">⚖️</div>
+                        <div class="guide-choice-content">
+                            <div class="guide-choice-title" style="color: #3B82F6;">Balance Sheet Report</div>
+                            <div class="guide-choice-desc" style="color: var(--bottlenose);">Assets, Liabilities & Equity — point-in-time snapshot</div>
+                        </div>
+                    </div>
+                    
+                    <!-- OTHER REPORTS SECTION -->
+                    <div style="margin-top: 16px; padding-top: 12px; border-top: 1px dashed rgba(0,0,0,0.1);">
+                        <div style="font-size: 11px; color: #8B5CF6; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; font-weight: 600;">💰 Other Reports</div>
+                    </div>
+                    
+                    <!-- Option 5: Budget Report -->
+                    <div class="guide-choice" onclick="generateBudgetReport()" style="background: rgba(255,255,255,0.8); border: 2px solid #8B5CF6;">
                         <div class="guide-choice-icon">💰</div>
                         <div class="guide-choice-content">
                             <div class="guide-choice-title" style="color: #8B5CF6;">Budget Report</div>
@@ -5264,7 +5313,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=3.0.5.243"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=3.0.5.244"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -8074,6 +8123,92 @@ For licensing inquiries, contact: legal@celigo.com
                 yearInput.value = new Date().getFullYear();
             }
         }
+        
+        // Initialize Balance Sheet period input with current month
+        function initBSPeriodInput() {
+            const periodInput = document.getElementById('bsReportPeriod');
+            if (periodInput) {
+                const now = new Date();
+                const year = now.getFullYear();
+                const month = String(now.getMonth() + 1).padStart(2, '0');
+                periodInput.value = `${year}-${month}`;
+            }
+        }
+        
+        // Validate year and run P&L report
+        function validateAndRunPLReport(reportType) {
+            const yearInput = document.getElementById('reportYearInput');
+            const year = yearInput ? parseInt(yearInput.value, 10) : null;
+            
+            if (!year || year < 2000 || year > 2099) {
+                // Highlight the input field and show error
+                if (yearInput) {
+                    yearInput.style.borderColor = '#EF4444';
+                    yearInput.style.animation = 'shake 0.5s';
+                    setTimeout(() => {
+                        yearInput.style.animation = '';
+                    }, 500);
+                }
+                showToast('Please enter a valid year (2000-2099)', 'error');
+                return;
+            }
+            
+            // Reset border color
+            if (yearInput) {
+                yearInput.style.borderColor = '#10B981';
+            }
+            
+            // Run the appropriate report
+            if (reportType === 'cfo') {
+                generateSummaryIncomeStatement(year);
+            } else if (reportType === 'full') {
+                generateFullIncomeStatement(year);
+            }
+        }
+        
+        // Validate period (YYYY-MM) and run Balance Sheet report
+        function validateAndRunBSReport() {
+            const periodInput = document.getElementById('bsReportPeriod');
+            const periodValue = periodInput ? periodInput.value.trim() : '';
+            
+            // Validate format: YYYY-MM
+            const periodRegex = /^(\d{4})-(0[1-9]|1[0-2])$/;
+            const match = periodValue.match(periodRegex);
+            
+            if (!match) {
+                // Highlight the input field and show error
+                if (periodInput) {
+                    periodInput.style.borderColor = '#EF4444';
+                    periodInput.style.animation = 'shake 0.5s';
+                    setTimeout(() => {
+                        periodInput.style.animation = '';
+                    }, 500);
+                }
+                showToast('Please enter a valid period in YYYY-MM format (e.g., 2025-01 for January 2025)', 'error');
+                return;
+            }
+            
+            const year = parseInt(match[1], 10);
+            const month = parseInt(match[2], 10);
+            
+            if (year < 2000 || year > 2099) {
+                showToast('Year must be between 2000 and 2099', 'error');
+                return;
+            }
+            
+            // Reset border color
+            if (periodInput) {
+                periodInput.style.borderColor = '#3B82F6';
+            }
+            
+            // Convert to "Mon YYYY" format for the report (e.g., "Jan 2025")
+            const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 
+                               'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+            const periodFormatted = `${monthNames[month - 1]} ${year}`;
+            
+            // Run the Balance Sheet report
+            generateBalanceSheetReport(periodFormatted, year, month);
+        }
 
         async function runGuideMe() {
             const startTime = Date.now(); // Track timing
@@ -10258,6 +10393,368 @@ For licensing inquiries, contact: legal@celigo.com
                     isSyncInProgress = false;
                     console.log('🔓 Full Income Statement: Filter change handlers unblocked (error case)');
                 }, 3000);
+            }
+        }
+
+        // ================================================================
+        // GENERATE BALANCE SHEET REPORT - Point-in-time snapshot
+        // ================================================================
+        
+        async function generateBalanceSheetReport(periodFormatted, year, month) {
+            const startTime = Date.now();
+            const progress = document.getElementById('guideMeProgress');
+            
+            // Prevent filter changes during generation
+            isSyncInProgress = true;
+            console.log('🔒 Balance Sheet: Blocking filter change handlers during generation');
+            
+            // Tips to show during generation
+            const tips = [
+                '📖 Balance Sheet shows cumulative balances "as of" the selected period',
+                '💡 Assets = Liabilities + Equity (the fundamental accounting equation)',
+                '📊 XAVI.BALANCE formulas query individual account balances from NetSuite',
+                '💰 Current assets are expected to convert to cash within one year',
+                '📖 Liabilities are obligations the company owes to others',
+                '💡 Equity represents the owners\' residual interest in the company',
+                '🏢 Filter by subsidiary to see specific entity balances',
+                '📈 Compare periods by duplicating this sheet and changing the period'
+            ];
+            let tipIndex = 0;
+            
+            // Create loading overlay
+            const overlay = document.createElement('div');
+            overlay.className = 'guide-me-overlay';
+            overlay.id = 'balanceSheetOverlay';
+            overlay.innerHTML = `
+                <div class="loading-spinner"></div>
+                <h2>Building Balance Sheet Report</h2>
+                <div class="loading-subtitle">
+                    ⏱️ Loading all Balance Sheet accounts for ${periodFormatted}. This may take a couple of minutes...
+                </div>
+                
+                <div class="progress-container">
+                    <div class="progress-bar-bg">
+                        <div class="progress-bar-fill" id="bsProgressBar"></div>
+                    </div>
+                    <div class="progress-text" id="bsProgressText">0% complete</div>
+                </div>
+                
+                <div class="loading-step" id="bsStep">Initializing...</div>
+                <div class="loading-tip" id="bsTip">💡 ${tips[0]}</div>
+            `;
+            document.body.appendChild(overlay);
+            
+            // Update progress helper
+            function updateProgress(percent, step, tip = null) {
+                const bar = document.getElementById('bsProgressBar');
+                const text = document.getElementById('bsProgressText');
+                const stepEl = document.getElementById('bsStep');
+                const tipEl = document.getElementById('bsTip');
+                
+                if (bar) bar.style.width = percent + '%';
+                if (text) text.textContent = percent + '% complete';
+                if (stepEl) stepEl.textContent = step;
+                if (tip && tipEl) tipEl.innerHTML = '💡 ' + tip;
+            }
+            
+            // Rotate tips
+            const tipInterval = setInterval(() => {
+                tipIndex = (tipIndex + 1) % tips.length;
+                const tipEl = document.getElementById('bsTip');
+                if (tipEl) tipEl.innerHTML = '💡 ' + tips[tipIndex];
+            }, 4000);
+            
+            try {
+                // Determine currency format
+                let currencyFormat = '"$"#,##0.00';
+                
+                // Step 1: Fetch all accounts to get BS account types
+                updateProgress(5, '📥 Step 1 of 4: Loading Accounts', 'Fetching Balance Sheet accounts from NetSuite...');
+                
+                const accountsResponse = await fetch(`${SERVER_URL}/netsuite/accounts`);
+                if (!accountsResponse.ok) {
+                    throw new Error('Failed to fetch accounts');
+                }
+                const accountsData = await accountsResponse.json();
+                const allAccounts = accountsData.accounts || [];
+                
+                // Balance Sheet account types
+                const bsTypes = ['Bank', 'AcctRec', 'OthCurrAsset', 'FixedAsset', 'OthAsset', 'DeferExpense', 
+                                'AcctPay', 'CredCard', 'OthCurrLiab', 'LongTermLiab', 'DeferRevenue', 
+                                'Equity', 'RetainedEarnings'];
+                
+                // Filter to BS accounts only
+                const bsAccounts = allAccounts.filter(a => bsTypes.includes(a.type));
+                console.log(`📊 Balance Sheet: Found ${bsAccounts.length} BS accounts out of ${allAccounts.length} total`);
+                
+                updateProgress(15, '📥 Step 1 of 4: Loading Accounts', `Found ${bsAccounts.length} Balance Sheet accounts...`);
+                
+                // Group accounts by type for organized display
+                const assetTypes = ['Bank', 'AcctRec', 'OthCurrAsset', 'FixedAsset', 'OthAsset', 'DeferExpense'];
+                const liabilityTypes = ['AcctPay', 'CredCard', 'OthCurrLiab', 'LongTermLiab', 'DeferRevenue'];
+                const equityTypes = ['Equity', 'RetainedEarnings'];
+                
+                const assets = bsAccounts.filter(a => assetTypes.includes(a.type)).sort((a, b) => 
+                    assetTypes.indexOf(a.type) - assetTypes.indexOf(b.type) || a.number.localeCompare(b.number));
+                const liabilities = bsAccounts.filter(a => liabilityTypes.includes(a.type)).sort((a, b) => 
+                    liabilityTypes.indexOf(a.type) - liabilityTypes.indexOf(b.type) || a.number.localeCompare(b.number));
+                const equity = bsAccounts.filter(a => equityTypes.includes(a.type)).sort((a, b) => 
+                    equityTypes.indexOf(a.type) - equityTypes.indexOf(b.type) || a.number.localeCompare(b.number));
+                
+                // Step 2: Build the spreadsheet
+                updateProgress(30, '📝 Step 2 of 4: Building Structure', 'Creating Balance Sheet layout...');
+                
+                await Excel.run(async (context) => {
+                    // Create new sheet
+                    let sheet;
+                    const sheetName = `Balance Sheet ${periodFormatted.replace(' ', '_')}`;
+                    try {
+                        sheet = context.workbook.worksheets.add(sheetName);
+                    } catch (e) {
+                        sheet = context.workbook.worksheets.add(`BS_${Date.now()}`);
+                    }
+                    sheet.activate();
+                    
+                    // Get default subsidiary
+                    let defaultSubsidiary = '';
+                    try {
+                        defaultSubsidiary = localStorage.getItem('netsuite_subsidiary') || '';
+                    } catch(e) {}
+                    
+                    // Row 1: Title
+                    sheet.getRange("A1").values = [[`Balance Sheet - As of ${periodFormatted}`]];
+                    sheet.getRange("A1:D1").merge(true);
+                    sheet.getRange("A1").format.font.bold = true;
+                    sheet.getRange("A1").format.font.size = 18;
+                    sheet.getRange("A1").format.font.color = "#09235C";
+                    
+                    // Row 2: Subsidiary & Period reference
+                    sheet.getRange("A2").values = [["Subsidiary:"]];
+                    sheet.getRange("B2").values = [[defaultSubsidiary || 'All Subsidiaries']];
+                    sheet.getRange("C2").values = [["Period:"]];
+                    sheet.getRange("D2").values = [[periodFormatted]];
+                    sheet.getRange("A2:D2").format.font.size = 11;
+                    sheet.getRange("A2").format.font.bold = true;
+                    sheet.getRange("C2").format.font.bold = true;
+                    
+                    // Row 3: Sync marker (hidden)
+                    sheet.getRange("A3").values = [["=Balance_Sheet_Report="]];
+                    sheet.getRange("A3").format.font.color = "#FFFFFF";
+                    
+                    // Row 4: Headers
+                    sheet.getRange("A5").values = [["Account #"]];
+                    sheet.getRange("B5").values = [["Account Name"]];
+                    sheet.getRange("C5").values = [["Balance"]];
+                    sheet.getRange("A5:C5").format.font.bold = true;
+                    sheet.getRange("A5:C5").format.fill.color = "#09235C";
+                    sheet.getRange("A5:C5").format.font.color = "#FFFFFF";
+                    
+                    let currentRow = 6;
+                    
+                    // Helper to add section header
+                    function addSectionHeader(title, color) {
+                        const range = sheet.getRange(`A${currentRow}:C${currentRow}`);
+                        range.values = [[title, '', '']];
+                        range.merge(true);
+                        range.format.font.bold = true;
+                        range.format.font.size = 14;
+                        range.format.fill.color = color;
+                        range.format.font.color = "#FFFFFF";
+                        currentRow++;
+                    }
+                    
+                    // Helper to add subsection header
+                    function addSubsectionHeader(title) {
+                        const range = sheet.getRange(`A${currentRow}:C${currentRow}`);
+                        range.values = [[title, '', '']];
+                        range.merge(true);
+                        range.format.font.bold = true;
+                        range.format.font.size = 11;
+                        range.format.fill.color = "#E5E7EB";
+                        range.format.font.color = "#374151";
+                        currentRow++;
+                    }
+                    
+                    // Helper to add account row with BALANCE formula
+                    function addAccountRow(account) {
+                        const formula = defaultSubsidiary 
+                            ? `=XAVI.BALANCE("${account.number}", "$D$2", "$B$2")`
+                            : `=XAVI.BALANCE("${account.number}", "$D$2")`;
+                        
+                        sheet.getRange(`A${currentRow}`).values = [[account.number]];
+                        sheet.getRange(`B${currentRow}`).values = [[account.name]];
+                        sheet.getRange(`C${currentRow}`).formulas = [[formula]];
+                        sheet.getRange(`C${currentRow}`).numberFormat = [[currencyFormat]];
+                        currentRow++;
+                    }
+                    
+                    // Helper to add subtotal row
+                    function addSubtotalRow(label, startRow, endRow) {
+                        sheet.getRange(`A${currentRow}`).values = [['']];
+                        sheet.getRange(`B${currentRow}`).values = [[label]];
+                        sheet.getRange(`C${currentRow}`).formulas = [[`=SUBTOTAL(109,C${startRow}:C${endRow-1})`]];
+                        sheet.getRange(`A${currentRow}:C${currentRow}`).format.font.bold = true;
+                        sheet.getRange(`C${currentRow}`).numberFormat = [[currencyFormat]];
+                        sheet.getRange(`C${currentRow}`).format.borders.getItem('EdgeTop').style = 'Thin';
+                        currentRow++;
+                    }
+                    
+                    updateProgress(40, '📝 Step 2 of 4: Building Structure', 'Adding Assets section...');
+                    
+                    // ===== ASSETS SECTION =====
+                    addSectionHeader('ASSETS', '#10B981');
+                    const assetsStartRow = currentRow;
+                    
+                    // Current Assets
+                    addSubsectionHeader('Current Assets');
+                    const currentAssetsStart = currentRow;
+                    const currentAssetTypes = ['Bank', 'AcctRec', 'OthCurrAsset'];
+                    assets.filter(a => currentAssetTypes.includes(a.type)).forEach(addAccountRow);
+                    if (currentRow > currentAssetsStart) {
+                        addSubtotalRow('Total Current Assets', currentAssetsStart, currentRow);
+                    }
+                    
+                    // Non-Current Assets
+                    addSubsectionHeader('Non-Current Assets');
+                    const nonCurrentAssetsStart = currentRow;
+                    const nonCurrentAssetTypes = ['FixedAsset', 'OthAsset', 'DeferExpense'];
+                    assets.filter(a => nonCurrentAssetTypes.includes(a.type)).forEach(addAccountRow);
+                    if (currentRow > nonCurrentAssetsStart) {
+                        addSubtotalRow('Total Non-Current Assets', nonCurrentAssetsStart, currentRow);
+                    }
+                    
+                    // Total Assets
+                    const totalAssetsRow = currentRow;
+                    sheet.getRange(`B${currentRow}`).values = [['TOTAL ASSETS']];
+                    sheet.getRange(`C${currentRow}`).formulas = [[`=SUBTOTAL(109,C${assetsStartRow}:C${currentRow-1})`]];
+                    sheet.getRange(`A${currentRow}:C${currentRow}`).format.font.bold = true;
+                    sheet.getRange(`A${currentRow}:C${currentRow}`).format.fill.color = "#D1FAE5";
+                    sheet.getRange(`C${currentRow}`).numberFormat = [[currencyFormat]];
+                    sheet.getRange(`C${currentRow}`).format.borders.getItem('EdgeTop').style = 'Double';
+                    currentRow += 2; // Add blank row
+                    
+                    updateProgress(55, '📝 Step 2 of 4: Building Structure', 'Adding Liabilities section...');
+                    
+                    // ===== LIABILITIES SECTION =====
+                    addSectionHeader('LIABILITIES', '#EF4444');
+                    const liabilitiesStartRow = currentRow;
+                    
+                    // Current Liabilities
+                    addSubsectionHeader('Current Liabilities');
+                    const currentLiabStart = currentRow;
+                    const currentLiabTypes = ['AcctPay', 'CredCard', 'OthCurrLiab'];
+                    liabilities.filter(a => currentLiabTypes.includes(a.type)).forEach(addAccountRow);
+                    if (currentRow > currentLiabStart) {
+                        addSubtotalRow('Total Current Liabilities', currentLiabStart, currentRow);
+                    }
+                    
+                    // Long-Term Liabilities
+                    addSubsectionHeader('Long-Term Liabilities');
+                    const longTermLiabStart = currentRow;
+                    const longTermLiabTypes = ['LongTermLiab', 'DeferRevenue'];
+                    liabilities.filter(a => longTermLiabTypes.includes(a.type)).forEach(addAccountRow);
+                    if (currentRow > longTermLiabStart) {
+                        addSubtotalRow('Total Long-Term Liabilities', longTermLiabStart, currentRow);
+                    }
+                    
+                    // Total Liabilities
+                    const totalLiabilitiesRow = currentRow;
+                    sheet.getRange(`B${currentRow}`).values = [['TOTAL LIABILITIES']];
+                    sheet.getRange(`C${currentRow}`).formulas = [[`=SUBTOTAL(109,C${liabilitiesStartRow}:C${currentRow-1})`]];
+                    sheet.getRange(`A${currentRow}:C${currentRow}`).format.font.bold = true;
+                    sheet.getRange(`A${currentRow}:C${currentRow}`).format.fill.color = "#FEE2E2";
+                    sheet.getRange(`C${currentRow}`).numberFormat = [[currencyFormat]];
+                    sheet.getRange(`C${currentRow}`).format.borders.getItem('EdgeTop').style = 'Double';
+                    currentRow += 2; // Add blank row
+                    
+                    updateProgress(70, '📝 Step 2 of 4: Building Structure', 'Adding Equity section...');
+                    
+                    // ===== EQUITY SECTION =====
+                    addSectionHeader('EQUITY', '#3B82F6');
+                    const equityStartRow = currentRow;
+                    
+                    equity.forEach(addAccountRow);
+                    
+                    // Total Equity
+                    const totalEquityRow = currentRow;
+                    sheet.getRange(`B${currentRow}`).values = [['TOTAL EQUITY']];
+                    sheet.getRange(`C${currentRow}`).formulas = [[`=SUBTOTAL(109,C${equityStartRow}:C${currentRow-1})`]];
+                    sheet.getRange(`A${currentRow}:C${currentRow}`).format.font.bold = true;
+                    sheet.getRange(`A${currentRow}:C${currentRow}`).format.fill.color = "#DBEAFE";
+                    sheet.getRange(`C${currentRow}`).numberFormat = [[currencyFormat]];
+                    sheet.getRange(`C${currentRow}`).format.borders.getItem('EdgeTop').style = 'Double';
+                    currentRow += 2;
+                    
+                    // ===== TOTAL LIABILITIES + EQUITY =====
+                    sheet.getRange(`B${currentRow}`).values = [['TOTAL LIABILITIES + EQUITY']];
+                    sheet.getRange(`C${currentRow}`).formulas = [[`=C${totalLiabilitiesRow}+C${totalEquityRow}`]];
+                    sheet.getRange(`A${currentRow}:C${currentRow}`).format.font.bold = true;
+                    sheet.getRange(`A${currentRow}:C${currentRow}`).format.font.size = 12;
+                    sheet.getRange(`A${currentRow}:C${currentRow}`).format.fill.color = "#09235C";
+                    sheet.getRange(`A${currentRow}:C${currentRow}`).format.font.color = "#FFFFFF";
+                    sheet.getRange(`C${currentRow}`).numberFormat = [[currencyFormat]];
+                    currentRow += 2;
+                    
+                    // ===== BALANCE CHECK =====
+                    sheet.getRange(`B${currentRow}`).values = [['Balance Check (should be 0):']];
+                    sheet.getRange(`C${currentRow}`).formulas = [[`=C${totalAssetsRow}-C${currentRow-2}`]];
+                    sheet.getRange(`B${currentRow}`).format.font.italic = true;
+                    sheet.getRange(`B${currentRow}`).format.font.color = "#6B7280";
+                    sheet.getRange(`C${currentRow}`).numberFormat = [[currencyFormat]];
+                    
+                    await context.sync();
+                    
+                    updateProgress(85, '🎨 Step 3 of 4: Formatting', 'Auto-fitting columns...');
+                    
+                    // Auto-fit columns
+                    sheet.getRange("A:C").format.autofitColumns();
+                    
+                    // Freeze header rows
+                    sheet.freezePanes.freezeRows(5);
+                    
+                    await context.sync();
+                });
+                
+                updateProgress(95, '📊 Step 4 of 4: Finalizing', 'Waiting for formulas to calculate...');
+                
+                // Wait for formulas to complete
+                await waitForFormulasToComplete(180000, null);
+                
+                // Show success
+                clearInterval(tipInterval);
+                const elapsed = Math.round((Date.now() - startTime) / 1000);
+                
+                if (document.getElementById('balanceSheetOverlay')) {
+                    document.getElementById('balanceSheetOverlay').remove();
+                }
+                
+                showReportSuccessOverlay('Balance Sheet Report', {
+                    elapsed: elapsed,
+                    subtitle: `As of ${periodFormatted}`,
+                    tips: [
+                        'Formulas reference cell D2 for period - change it to update all balances',
+                        'Filter by subsidiary using cell B2',
+                        'Balance Check row should equal $0 (Assets = Liabilities + Equity)'
+                    ]
+                });
+                
+                // Release sync lock
+                setTimeout(() => {
+                    isSyncInProgress = false;
+                    console.log('🔓 Balance Sheet: Filter change handlers unblocked');
+                }, 1000);
+                
+            } catch (error) {
+                console.error('Balance Sheet error:', error);
+                clearInterval(tipInterval);
+                if (document.getElementById('balanceSheetOverlay')) {
+                    document.getElementById('balanceSheetOverlay').remove();
+                }
+                showToast(`Error: ${error.message}`, 'error');
+                
+                setTimeout(() => {
+                    isSyncInProgress = false;
+                }, 1000);
             }
         }
 
@@ -13821,6 +14318,8 @@ export default {
             
             // Initialize report year input with current year
             initReportYearInput();
+            // Initialize Balance Sheet period input with current month
+            initBSPeriodInput();
         });
         
         // Tab Navigation - switch between Data Management, Analytics, and Financial Reporting
