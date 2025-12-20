@@ -1215,9 +1215,11 @@ async function runBuildModeBatch() {
                     }
                 } else {
                     // HTTP error - return informative error code
-                    const errorCode = response.status === 408 || response.status === 504 ? 'TIMEOUT' :
+                    // 522/523/524 are Cloudflare timeout errors
+                    const errorCode = [408, 504, 522, 523, 524].includes(response.status) ? 'TIMEOUT' :
                                      response.status === 429 ? 'RATELIMIT' :
                                      response.status === 401 || response.status === 403 ? 'AUTHERR' :
+                                     response.status >= 500 ? 'SERVERR' :
                                      'APIERR';
                     console.error(`   ❌ Cumulative API error: ${response.status} → ${errorCode}`);
                     items.forEach(item => item.resolve(errorCode));
@@ -3491,9 +3493,14 @@ async function BALANCECHANGE(account, fromPeriod, toPeriod, subsidiary, departme
         const response = await fetch(`${SERVER_URL}/balance-change?${apiParams.toString()}`);
         
         if (!response.ok) {
-            const errorCode = response.status === 408 || response.status === 504 ? 'TIMEOUT' :
+            // Map HTTP status codes to user-friendly error codes
+            // 408/504/522/523/524 = various timeout errors (including Cloudflare)
+            // 429 = rate limited
+            // 401/403 = auth errors
+            const errorCode = [408, 504, 522, 523, 524].includes(response.status) ? 'TIMEOUT' :
                              response.status === 429 ? 'RATELIMIT' :
                              response.status === 401 || response.status === 403 ? 'AUTHERR' :
+                             response.status >= 500 ? 'SERVERR' :
                              'APIERR';
             console.error(`❌ BALANCECHANGE API error: ${response.status} → ${errorCode}`);
             return errorCode;
@@ -4165,9 +4172,11 @@ async function processBatchQueue() {
                     }
                 } else {
                     // HTTP error - return informative error code
-                    const errorCode = response.status === 408 || response.status === 504 ? 'TIMEOUT' :
+                    // 522/523/524 are Cloudflare timeout errors
+                    const errorCode = [408, 504, 522, 523, 524].includes(response.status) ? 'TIMEOUT' :
                                      response.status === 429 ? 'RATELIMIT' :
                                      response.status === 401 || response.status === 403 ? 'AUTHERR' :
+                                     response.status >= 500 ? 'SERVERR' :
                                      'APIERR';
                     console.error(`   ❌ Cumulative API error: ${response.status} → ${errorCode}`);
                     requests.forEach(r => r.resolve(errorCode));

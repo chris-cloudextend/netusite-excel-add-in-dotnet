@@ -4116,27 +4116,27 @@ For licensing inquiries, contact: legal@celigo.com
                     </div>
                     
                     <!-- Option 5: Preload Balance Sheet (expandable) -->
-                    <div class="guide-choice bs-preload-section" style="margin-top: 8px; background: linear-gradient(135deg, rgba(59,130,246,0.05), rgba(59,130,246,0.1)); border: 2px solid #3B82F6; cursor: default;">
-                        <div class="guide-choice-icon">⚡</div>
-                        <div class="guide-choice-content" style="width: 100%;">
+                    <div class="guide-choice bs-preload-section" style="margin-top: 8px; background: linear-gradient(135deg, rgba(59,130,246,0.05), rgba(59,130,246,0.1)); border: 2px solid #3B82F6; cursor: default; flex-wrap: wrap;">
+                        <div class="guide-choice-icon" style="margin-right: 8px;">⚡</div>
+                        <div class="guide-choice-content" style="min-width: 0; overflow: hidden;">
                             <div class="guide-choice-title" style="color: #3B82F6;">Preload Balance Sheet</div>
-                            <div class="guide-choice-desc" style="color: var(--bottlenose);">Cache ALL BS accounts — subsequent lookups instant</div>
+                            <div class="guide-choice-desc" style="color: var(--bottlenose); font-size: 11px;">Cache ALL BS accounts for instant lookups</div>
                             
-                            <!-- Period selector -->
-                            <div style="margin-top: 12px; display: flex; flex-direction: column; gap: 8px;">
-                                <div style="display: flex; gap: 8px; align-items: center;">
-                                    <label style="font-size: 12px; min-width: 60px;">Period 1:</label>
+                            <!-- Period selector - compact layout -->
+                            <div style="margin-top: 10px; display: flex; flex-direction: column; gap: 6px;">
+                                <div style="display: flex; gap: 6px; align-items: center;">
+                                    <label style="font-size: 11px; min-width: 50px;">Period 1:</label>
                                     <input type="text" id="bsPreloadPeriod1" placeholder="Dec 2024" value="Dec 2024" 
-                                           style="flex: 1; padding: 6px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 12px;">
+                                           style="flex: 1; min-width: 0; padding: 5px 6px; border: 1px solid #ddd; border-radius: 4px; font-size: 11px;">
                                 </div>
-                                <div style="display: flex; gap: 8px; align-items: center;">
-                                    <label style="font-size: 12px; min-width: 60px;">Period 2:</label>
-                                    <input type="text" id="bsPreloadPeriod2" placeholder="Dec 2023 (optional)" 
-                                           style="flex: 1; padding: 6px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 12px;">
+                                <div style="display: flex; gap: 6px; align-items: center;">
+                                    <label style="font-size: 11px; min-width: 50px;">Period 2:</label>
+                                    <input type="text" id="bsPreloadPeriod2" placeholder="optional" 
+                                           style="flex: 1; min-width: 0; padding: 5px 6px; border: 1px solid #ddd; border-radius: 4px; font-size: 11px;">
                                 </div>
-                                <div style="font-size: 10px; color: #888;">💡 Add a 2nd period for YoY comparisons (~90s total vs ~140s separately)</div>
+                                <div style="font-size: 9px; color: #888;">💡 2nd period for YoY (~90s vs ~140s)</div>
                                 <button onclick="preloadBalanceSheet()" 
-                                        style="margin-top: 4px; padding: 8px 16px; background: #3B82F6; color: white; border: none; border-radius: 6px; font-size: 13px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 6px;">
+                                        style="margin-top: 2px; padding: 6px 12px; background: #3B82F6; color: white; border: none; border-radius: 6px; font-size: 12px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 4px;">
                                     <span>⚡</span> <span>Preload Now</span>
                                 </button>
                             </div>
@@ -10429,7 +10429,8 @@ For licensing inquiries, contact: legal@celigo.com
             if (period2) periods.push(period2);
             
             const periodLabel = periods.length > 1 ? periods.join(' & ') : periods[0];
-            const expectedTime = periods.length > 1 ? '~90 seconds' : '~70 seconds';
+            // Sequential loading: ~70s per period to avoid Cloudflare timeout
+            const expectedTime = periods.length > 1 ? '~140 seconds (sequential to avoid timeout)' : '~70 seconds';
             
             console.log(`📊 BS Preload: ${periods.length} period(s): ${periodLabel}`);
             
@@ -10519,62 +10520,97 @@ For licensing inquiries, contact: legal@celigo.com
             try {
                 const startTime = Date.now();
                 
-                const response = await fetch(`${SERVER_URL}/batch/bs_preload`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        periods: periods  // Send array of periods
-                    })
-                });
+                // Load periods SEQUENTIALLY to avoid Cloudflare timeout
+                // Each period takes ~70s, Cloudflare times out at ~100s
+                let totalAccountCount = 0;
+                const allBalances = {};
+                const cacheEntries = {};
                 
-                if (!response.ok) {
-                    const errorData = await response.json();
-                    throw new Error(errorData.message || errorData.error || `HTTP ${response.status}`);
-                }
-                
-                const result = await response.json();
-                const elapsedSec = ((Date.now() - startTime) / 1000).toFixed(1);
-                
-                console.log('✅ BS PRELOAD COMPLETE:', result);
-                
-                // Cache results in localStorage for formula lookups
-                // New format: balances = { "10010": { "Dec 2024": 100, "Dec 2023": 90 } }
-                if (result.balances) {
-                    const cacheEntries = {};
-                    for (const [account, periodBalances] of Object.entries(result.balances)) {
-                        if (typeof periodBalances === 'object') {
-                            // Multi-period format: { "Dec 2024": 100, "Dec 2023": 90 }
-                            for (const [periodName, balance] of Object.entries(periodBalances)) {
-                                const cacheKey = `balance:${account}::${periodName}`;
-                                cacheEntries[cacheKey] = {
-                                    value: balance,
-                                    timestamp: Date.now()
-                                };
-                            }
-                        } else {
-                            // Single period (backward compat)
-                            const cacheKey = `balance:${account}::${periods[0]}`;
-                            cacheEntries[cacheKey] = {
-                                value: periodBalances,
-                                timestamp: Date.now()
-                            };
+                for (let i = 0; i < periods.length; i++) {
+                    const period = periods[i];
+                    const periodNum = i + 1;
+                    
+                    console.log(`📊 Loading period ${periodNum}/${periods.length}: ${period}`);
+                    updateLoading(
+                        `Loading Period ${periodNum}/${periods.length}: ${period}`,
+                        Math.round(10 + (i / periods.length) * 70),
+                        `⏳ Each period takes ~70 seconds to calculate from inception...`
+                    );
+                    
+                    const response = await fetch(`${SERVER_URL}/batch/bs_preload`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            periods: [period]  // Send ONE period at a time to avoid timeout
+                        })
+                    });
+                    
+                    if (!response.ok) {
+                        // Handle Cloudflare timeout errors (524, 522, 523) and other errors
+                        const isTimeout = [524, 522, 523, 504, 408].includes(response.status);
+                        if (isTimeout) {
+                            throw new Error(`TIMEOUT loading ${period}. The query took too long. This is a known limitation during development - will be resolved in production.`);
                         }
+                        // Try to get error message from response
+                        let errorMsg = `HTTP ${response.status}`;
+                        try {
+                            const text = await response.text();
+                            if (text && text.startsWith('{')) {
+                                const errorData = JSON.parse(text);
+                                errorMsg = errorData.message || errorData.error || errorMsg;
+                            }
+                        } catch (e) { /* ignore parse errors */ }
+                        throw new Error(`Server error loading ${period}: ${errorMsg}`);
                     }
                     
-                    // Store in localStorage for functions.js to use
+                    // Parse response JSON with error handling
+                    let result;
                     try {
-                        const existing = JSON.parse(localStorage.getItem('xavi_balance_cache') || '{}');
-                        const merged = { ...existing, ...cacheEntries };
-                        localStorage.setItem('xavi_balance_cache', JSON.stringify(merged));
-                        console.log(`📦 Cached ${Object.keys(cacheEntries).length} BS balances to localStorage`);
-                    } catch (e) {
-                        console.warn('Could not cache to localStorage:', e.message);
+                        const text = await response.text();
+                        result = JSON.parse(text);
+                    } catch (parseError) {
+                        console.error('Failed to parse response:', parseError);
+                        throw new Error(`TIMEOUT loading ${period}. Server response was incomplete. This is a known dev limitation.`);
                     }
+                    console.log(`✅ Period ${periodNum} loaded: ${result.account_count} accounts`);
+                    
+                    totalAccountCount = result.account_count;
+                    
+                    // Merge balances from this period
+                    if (result.balances) {
+                        for (const [account, periodBalances] of Object.entries(result.balances)) {
+                            if (!allBalances[account]) allBalances[account] = {};
+                            if (typeof periodBalances === 'object') {
+                                for (const [pName, balance] of Object.entries(periodBalances)) {
+                                    allBalances[account][pName] = balance;
+                                    cacheEntries[`balance:${account}::${pName}`] = { value: balance, timestamp: Date.now() };
+                                }
+                            } else {
+                                allBalances[account][period] = periodBalances;
+                                cacheEntries[`balance:${account}::${period}`] = { value: periodBalances, timestamp: Date.now() };
+                            }
+                        }
+                    }
+                }
+                
+                const elapsedSec = ((Date.now() - startTime) / 1000).toFixed(1);
+                
+                console.log(`✅ BS PRELOAD COMPLETE: ${totalAccountCount} accounts × ${periods.length} periods in ${elapsedSec}s`);
+                
+                // Store in localStorage for functions.js to use
+                try {
+                    const existing = JSON.parse(localStorage.getItem('xavi_balance_cache') || '{}');
+                    const merged = { ...existing, ...cacheEntries };
+                    localStorage.setItem('xavi_balance_cache', JSON.stringify(merged));
+                    console.log(`📦 Cached ${Object.keys(cacheEntries).length} BS balances to localStorage`);
+                } catch (e) {
+                    console.warn('Could not cache to localStorage:', e.message);
                 }
                 
                 hideLoading();
                 
-                const periodCount = result.period_count || 1;
+                const periodCount = periods.length;
+                const result = { account_count: totalAccountCount, balances: allBalances };
                 const timeSaved = Math.round(result.account_count * 70 / 60); // ~70s per account if done individually
                 
                 showToast({
