@@ -5264,7 +5264,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=3.0.5.242"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=3.0.5.243"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -9327,8 +9327,8 @@ For licensing inquiries, contact: legal@celigo.com
                 hideLoading();
                 hideStatus();
                 
-                // Wait for formulas to complete - no sub-messages, just "Tidying Up"
-                const formulasResolved = await waitForFormulasToComplete(60000, null);
+                // Wait for formulas to complete - extended timeout for large reports
+                const formulasResolved = await waitForFormulasToComplete(180000, null);
                 
                 // Only now show 100% and success
                 if (overlayProgressText) overlayProgressText.textContent = '100% complete';
@@ -13109,9 +13109,9 @@ export default {
         // IMPORTANT: #BUSY detection is the PRIMARY check. Smart detection only helps
         // detect instant cache hits when #BUSY is never seen.
         const USE_SMART_FORMULA_DETECTION = true;  // <-- EASY REVERT: Change to false
-        const SMART_DETECTION_THRESHOLD = 0.95;    // Require 95% of formula CELLS to have numeric values
-        const FALLBACK_WAIT_SECONDS = 25;          // Old behavior fallback (seconds)
-        const INITIAL_WAIT_MS = 2000;              // Wait before first check
+        const SMART_DETECTION_THRESHOLD = 1.0;     // Require 100% of formula CELLS to have numeric values (no early completion)
+        const FALLBACK_WAIT_SECONDS = 120;         // Extended fallback for large formula sets (2 minutes)
+        const INITIAL_WAIT_MS = 3000;              // Wait 3 seconds before first check (give formulas time to start)
         // ========================================================================
         
         // Wait for formulas to complete - smart detection based on actual formula count

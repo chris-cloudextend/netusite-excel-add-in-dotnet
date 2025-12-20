@@ -20,15 +20,15 @@
 // 4. Replace ALL code with this file
 // 5. Click: Save and Deploy
 //
-// CURRENT TUNNEL URL: https://retailers-settled-anything-dose.trycloudflare.com
+// CURRENT TUNNEL URL: https://formats-jenny-delete-toronto.trycloudflare.com
 // CURRENT ACCOUNT: 589861 (Production)
-// Last Updated: Dec 19, 2025
+// Last Updated: Dec 20, 2025
 // ════════════════════════════════════════════════════════════════════
 
 export default {
   async fetch(request) {
     // ⚠️ UPDATE THIS LINE when tunnel URL changes:
-    const TUNNEL_URL = 'https://retailers-settled-anything-dose.trycloudflare.com';
+    const TUNNEL_URL = 'https://formats-jenny-delete-toronto.trycloudflare.com';
 
     // Handle CORS preflight requests
     if (request.method === 'OPTIONS') {

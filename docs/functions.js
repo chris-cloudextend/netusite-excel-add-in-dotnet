@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '3.0.5.242';  // Switch to new GitHub Pages repo + preload coordination
+const FUNCTIONS_VERSION = '3.0.5.243';  // Robust preload coordination + extended formula completion detection
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -1983,6 +1983,42 @@ function isPreloadInProgress() {
     } catch (e) {
         return false;
     }
+}
+
+// Check if localStorage has cache data (taskpane may have saved it)
+function hasLocalStorageCache() {
+    try {
+        const stored = localStorage.getItem(TYPEBALANCE_STORAGE_KEY);
+        if (!stored) return false;
+        const data = JSON.parse(stored);
+        return data && data.balances && Object.keys(data.balances).length > 0;
+    } catch (e) {
+        return false;
+    }
+}
+
+// Wait for cache to be populated (with timeout)
+async function waitForCachePopulation(maxWaitMs = 10000) {
+    const startTime = Date.now();
+    const pollInterval = 300;
+    let checkCount = 0;
+    
+    while (Date.now() - startTime < maxWaitMs) {
+        checkCount++;
+        // Check if preload status changed to 'running' (taskpane started)
+        if (isPreloadInProgress()) {
+            console.log(`✅ Preload detected on check #${checkCount} - will wait for completion`);
+            return 'preload_started';
+        }
+        // Check if cache has been populated
+        if (hasLocalStorageCache()) {
+            console.log(`✅ Cache populated on check #${checkCount} - can use cache`);
+            return 'cache_ready';
+        }
+        await new Promise(r => setTimeout(r, pollInterval));
+    }
+    console.log(`⏰ Cache wait timeout (${maxWaitMs}ms) - proceeding without cache`);
+    return 'timeout';
 }
 
 // Wait for preload to complete (polls localStorage)
@@ -5306,13 +5342,36 @@ async function TYPEBALANCE(accountType, fromPeriod, toPeriod, subsidiary, depart
         // ================================================================
         // PRELOAD COORDINATION: If taskpane is pre-fetching, wait for it
         // This prevents formulas from running before cache is populated
+        // Uses localStorage for cross-context communication
         // ================================================================
         let preloadWaited = false;
+        
+        // Log current preload status for debugging
+        const preloadStatus = localStorage.getItem(PRELOAD_STATUS_KEY) || 'not_set';
+        const cacheHasData = hasLocalStorageCache();
+        console.log(`🔍 TYPEBALANCE: preload_status="${preloadStatus}", cache_has_data=${cacheHasData}`);
+        
         if (isPreloadInProgress()) {
+            // Preload is explicitly running - wait for it
             console.log(`⏳ TYPEBALANCE: Preload in progress - waiting for cache...`);
             await waitForPreload();
             preloadWaited = true;
             console.log(`✅ TYPEBALANCE: Preload complete - will check cache`);
+        } else if (!cacheHasData && preloadStatus !== 'complete') {
+            // No preload running AND cache is empty AND preload hasn't completed
+            // This might mean taskpane hasn't started yet - wait briefly
+            console.log(`⏳ TYPEBALANCE: No cache yet - waiting briefly for taskpane to populate...`);
+            const waitResult = await waitForCachePopulation(8000);
+            if (waitResult === 'preload_started') {
+                // Preload was detected during wait - now wait for it to complete
+                console.log(`⏳ TYPEBALANCE: Preload started - waiting for completion...`);
+                await waitForPreload();
+                preloadWaited = true;
+                console.log(`✅ TYPEBALANCE: Preload complete - will check cache`);
+            } else if (waitResult === 'cache_ready') {
+                preloadWaited = true;
+                console.log(`✅ TYPEBALANCE: Cache is ready - will use it`);
+            }
         }
         
         // Normalize account type
