@@ -1,0 +1,24 @@
+{
+  "Logging": {
+    "LogLevel": {
+      "Default": "Debug",
+      "Microsoft.AspNetCore": "Warning",
+      "XaviApi": "Debug"
+    }
+  },
+  "NetSuite": {
+    "AccountId": "YOUR_ACCOUNT_ID",
+    "ConsumerKey": "YOUR_CONSUMER_KEY",
+    "ConsumerSecret": "YOUR_CONSUMER_SECRET",
+    "TokenId": "YOUR_TOKEN_ID",
+    "TokenSecret": "YOUR_TOKEN_SECRET"
+  },
+  "Cors": {
+    "AllowedOrigins": [
+      "https://chris-cloudextend.github.io",
+      "http://localhost:3000",
+      "https://localhost:3000"
+    ]
+  }
+}
+

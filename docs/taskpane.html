@@ -3957,7 +3957,7 @@ For licensing inquiries, contact: legal@celigo.com
                     <h3>ℹ️ Version Info</h3>
                     <div style="font-size: 12px; color: #4b5563;">
                         <p>Add-in Version: <strong id="settingsVersion">loading...</strong></p>
-                        <p style="margin-top: 4px;">Manifest Version: <strong>3.0.5.233</strong></p>
+                        <p style="margin-top: 4px;">Manifest Version: <strong>3.0.5.234</strong></p>
                         <p style="margin-top: 4px;">Proxy: <code style="font-size: 10px; background: #f3f4f6; padding: 2px 6px; border-radius: 4px;">netsuite-proxy.chris-corcoran.workers.dev</code></p>
                     </div>
                 </div>
@@ -4107,6 +4107,20 @@ For licensing inquiries, contact: legal@celigo.com
                         <div class="guide-choice-content">
                             <div class="guide-choice-title" style="color: #8B5CF6;">Budget Report</div>
                             <div class="guide-choice-desc" style="color: var(--bottlenose);">Load existing budget from NetSuite with all accounts</div>
+                        </div>
+                    </div>
+                    
+                    <!-- Performance Tools Divider -->
+                    <div style="margin-top: 16px; padding-top: 12px; border-top: 1px dashed rgba(0,0,0,0.1);">
+                        <div style="font-size: 11px; color: var(--bottlenose); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px;">⚡ Performance Tools</div>
+                    </div>
+                    
+                    <!-- Option 5: Preload Balance Sheet -->
+                    <div class="guide-choice" onclick="preloadBalanceSheet()" style="margin-top: 8px; background: linear-gradient(135deg, rgba(59,130,246,0.05), rgba(59,130,246,0.1)); border: 2px solid #3B82F6;">
+                        <div class="guide-choice-icon">⚡</div>
+                        <div class="guide-choice-content">
+                            <div class="guide-choice-title" style="color: #3B82F6;">Preload Balance Sheet</div>
+                            <div class="guide-choice-desc" style="color: var(--bottlenose);">Cache ALL BS accounts (~70s) — subsequent lookups instant</div>
                         </div>
                     </div>
                     
@@ -5189,7 +5203,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netsuite-excel-addin/functions.js?v=3.0.5.190"></script>
+    <script src="https://chris-cloudextend.github.io/netsuite-excel-addin/functions.js?v=3.0.5.234"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -10331,6 +10345,155 @@ For licensing inquiries, contact: legal@celigo.com
                 }, 3000);
             }
         }
+        
+        // ================================================================
+        // PRELOAD BALANCE SHEET ACCOUNTS
+        // Performance tool: Batch query ALL BS accounts to cache (~70s)
+        // After preload, individual XAVI.BALANCE formulas for BS accounts are instant
+        // ================================================================
+        
+        async function preloadBalanceSheet() {
+            console.log('⚡ PRELOAD BALANCE SHEET: Starting...');
+            
+            // Get current period from filters or default
+            let period = 'Dec 2024';  // Default
+            
+            try {
+                await Excel.run(async (context) => {
+                    const sheet = context.workbook.worksheets.getActiveWorksheet();
+                    const periodCell = sheet.getRange("P3");
+                    periodCell.load("values");
+                    await context.sync();
+                    
+                    const cellVal = periodCell.values[0][0];
+                    if (cellVal && typeof cellVal === 'number') {
+                        // It's an Excel date serial number
+                        const date = new Date((cellVal - 25569) * 86400000);
+                        const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+                        period = `${months[date.getMonth()]} ${date.getFullYear()}`;
+                    } else if (cellVal && typeof cellVal === 'string') {
+                        period = cellVal;
+                    }
+                });
+            } catch (e) {
+                console.log('Could not read period from P3, using default:', period);
+            }
+            
+            // Show loading overlay with BS-specific messaging
+            showLoading(
+                '⚡ Preloading Balance Sheet',
+                `Calculating cumulative balances for ALL Balance Sheet accounts as of ${period}...`,
+                10
+            );
+            
+            // Update with helpful context
+            setTimeout(() => {
+                updateLoading(
+                    'Balance Sheet accounts require cumulative calculation from the beginning of time...',
+                    25,
+                    '💡 This is a one-time cache — subsequent lookups will be instant!'
+                );
+            }, 3000);
+            
+            setTimeout(() => {
+                updateLoading(
+                    'Running consolidated query for all Assets, Liabilities, and Equity...',
+                    45,
+                    '⏱️ Typical time: 60-90 seconds'
+                );
+            }, 15000);
+            
+            setTimeout(() => {
+                updateLoading(
+                    'Still processing — this is normal for Balance Sheet queries...',
+                    65,
+                    '📊 All 100+ BS accounts processed in a single batch!'
+                );
+            }, 35000);
+            
+            setTimeout(() => {
+                updateLoading(
+                    'Almost done — caching results for instant future lookups...',
+                    85,
+                    '✨ Your formulas will resolve instantly after this'
+                );
+            }, 55000);
+            
+            try {
+                const startTime = Date.now();
+                
+                const response = await fetch(`${SERVER_URL}/batch/bs_preload`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        period: period
+                    })
+                });
+                
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.message || errorData.error || `HTTP ${response.status}`);
+                }
+                
+                const result = await response.json();
+                const elapsedSec = ((Date.now() - startTime) / 1000).toFixed(1);
+                
+                console.log('✅ BS PRELOAD COMPLETE:', result);
+                
+                // Cache results in localStorage for formula lookups
+                if (result.balances) {
+                    const cacheEntries = {};
+                    for (const [account, balance] of Object.entries(result.balances)) {
+                        const cacheKey = `balance:${account}::${period}`;
+                        cacheEntries[cacheKey] = {
+                            value: balance,
+                            timestamp: Date.now()
+                        };
+                    }
+                    
+                    // Store in localStorage for functions.js to use
+                    try {
+                        const existing = JSON.parse(localStorage.getItem('xavi_balance_cache') || '{}');
+                        const merged = { ...existing, ...cacheEntries };
+                        localStorage.setItem('xavi_balance_cache', JSON.stringify(merged));
+                        console.log(`📦 Cached ${Object.keys(cacheEntries).length} BS balances to localStorage`);
+                    } catch (e) {
+                        console.warn('Could not cache to localStorage:', e.message);
+                    }
+                }
+                
+                hideLoading();
+                
+                showToast({
+                    title: '✅ Balance Sheet Preloaded!',
+                    message: `${result.account_count} accounts cached in ${elapsedSec}s. Your formulas will now resolve instantly!`,
+                    type: 'success',
+                    duration: 8000,
+                    icon: '⚡'
+                });
+                
+                // Show an info message with the stats
+                showOnboardingMessage(
+                    'Balance Sheet Cache Ready!',
+                    `<p><strong>${result.account_count}</strong> Balance Sheet accounts loaded in <strong>${elapsedSec} seconds</strong>.</p>
+                     <p style="margin-top:8px;">Individual <code>=XAVI.BALANCE()</code> formulas for BS accounts will now resolve instantly instead of taking 60-90 seconds each.</p>
+                     <p style="margin-top:8px; color: var(--anenome);">💡 The cache expires after 5 minutes. Run again if formulas slow down.</p>`,
+                    'success'
+                );
+                
+            } catch (error) {
+                console.error('❌ BS Preload failed:', error);
+                hideLoading();
+                
+                showToast({
+                    title: 'Preload Failed',
+                    message: error.message,
+                    type: 'error',
+                    duration: 10000,
+                    icon: '❌'
+                });
+            }
+        }
 
         // ================================================================
         // SYNC INCOME STATEMENT STRUCTURE FOR NEW YEAR
@@ -15192,6 +15355,9 @@ export default {
                                               upperFormula.includes('XAVI.BUDGET');
                         if (isXaviFormula) continue;
                         
+                        // Skip DATE/TEXT formulas used for month headers (preserve mmmm format)
+                        if (upperFormula.includes('DATE(') || upperFormula.includes('TEXT(')) continue;
+                        
                         // Format native formulas (SUM, arithmetic, etc.)
                                 const range = usedRange.getCell(row, col);
                                 range.numberFormat = [[sheetFormat]];
@@ -15432,6 +15598,9 @@ export default {
                                                   upperFormula.includes('XAVI.NETINCOME') ||
                                                   upperFormula.includes('XAVI.BUDGET');
                             if (isXaviFormula) continue;
+                            
+                            // Skip DATE/TEXT formulas used for month headers (preserve mmmm format)
+                            if (upperFormula.includes('DATE(') || upperFormula.includes('TEXT(')) continue;
                             
                             // Format native formulas (SUM, arithmetic, etc.)
                             const range = usedRange.getCell(row, col);

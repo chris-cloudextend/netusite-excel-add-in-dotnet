@@ -37,18 +37,35 @@ This project is being converted from a **Python Flask backend** to a **.NET (C#)
 
 ## Migration Steps
 
-### Phase 1: Create .NET Project Structure ✅ (Do First)
+### Phase 1: Create .NET Project Structure ✅ COMPLETED
 
-1. Create ASP.NET Core Web API project:
-   ```bash
-   cd /Users/chriscorcoran/Documents/Cursor/NetSuite-Excel-AddIn-DotNet
-   dotnet new webapi -n XaviApi -o backend-dotnet
-   ```
+The .NET project has been created in `backend-dotnet/`:
 
-2. Add required NuGet packages:
-   - `Microsoft.AspNetCore.Cors` - For CORS handling
-   - `RestSharp` or `HttpClient` - For HTTP requests
-   - `OAuth1` or custom implementation - For NetSuite OAuth 1.0
+```
+backend-dotnet/
+├── Controllers/          # API endpoints
+│   ├── HealthController.cs
+│   ├── BalanceController.cs
+│   ├── TypeBalanceController.cs
+│   ├── LookupController.cs
+│   ├── AccountController.cs
+│   └── BudgetController.cs
+├── Services/             # Business logic
+│   ├── NetSuiteService.cs
+│   ├── OAuth1Helper.cs
+│   ├── BalanceService.cs
+│   ├── LookupService.cs
+│   └── BudgetService.cs
+├── Models/               # DTOs and constants
+├── Configuration/        # Config classes
+├── Program.cs            # Entry point
+└── appsettings.json      # Configuration
+```
+
+NuGet packages included:
+- `RestSharp` - HTTP client
+- `Newtonsoft.Json` - JSON handling
+- `Microsoft.Extensions.Caching.Memory` - Caching
 
 ### Phase 2: Convert API Endpoints
 

@@ -20,15 +20,15 @@
 // 4. Replace ALL code with this file
 // 5. Click: Save and Deploy
 //
-// CURRENT TUNNEL URL: https://designing-navigation-surgery-sacred.trycloudflare.com
+// CURRENT TUNNEL URL: https://retailers-settled-anything-dose.trycloudflare.com
 // CURRENT ACCOUNT: 589861 (Production)
-// Last Updated: Dec 17, 2025
+// Last Updated: Dec 19, 2025
 // ════════════════════════════════════════════════════════════════════
 
 export default {
   async fetch(request) {
     // ⚠️ UPDATE THIS LINE when tunnel URL changes:
-    const TUNNEL_URL = 'https://designing-navigation-surgery-sacred.trycloudflare.com';
+    const TUNNEL_URL = 'https://retailers-settled-anything-dose.trycloudflare.com';
 
     // Handle CORS preflight requests
     if (request.method === 'OPTIONS') {

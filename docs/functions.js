@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '3.0.5.233';  // Version marker for debugging
+const FUNCTIONS_VERSION = '3.0.5.234';  // Version marker for debugging - cache bust for BS preload
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -1022,15 +1022,35 @@ async function runBuildModeBatch() {
         
         let cacheHits = 0;
         let apiCalls = 0;
+        let deduplicated = 0;
+        
+        // ================================================================
+        // DEDUPLICATION: Group identical requests by cache key
+        // INVARIANT: Identical formulas must collapse into a single API call
+        // ================================================================
+        const uniqueRequests = new Map(); // cacheKey -> { params, items: [] }
+        for (const item of cumulativeItems) {
+            const cacheKey = getCacheKey('balance', item.params);
+            if (!uniqueRequests.has(cacheKey)) {
+                uniqueRequests.set(cacheKey, { params: item.params, items: [item] });
+            } else {
+                uniqueRequests.get(cacheKey).items.push(item);
+                deduplicated++;
+            }
+        }
+        
+        if (deduplicated > 0) {
+            console.log(`   🔄 DEDUPLICATED: ${cumulativeItems.length} requests → ${uniqueRequests.size} unique (saved ${deduplicated} API calls)`);
+        }
         
         // Rate limiting to avoid NetSuite 429 CONCURRENCY_LIMIT_EXCEEDED errors
         // NetSuite allows ~5-10 concurrent requests; we serialize to be safe
         const RATE_LIMIT_DELAY = 150; // ms between API calls
         const rateLimitSleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
         
-        for (const item of cumulativeItems) {
-            const { account, fromPeriod, toPeriod, subsidiary, department, location, classId, accountingBook } = item.params;
-            const cacheKey = getCacheKey('balance', item.params);
+        // Process each UNIQUE request once
+        for (const [cacheKey, { params, items }] of uniqueRequests) {
+            const { account, fromPeriod, toPeriod, subsidiary, department, location, classId, accountingBook } = params;
             
             // ================================================================
             // TRY WILDCARD CACHE RESOLUTION FIRST
@@ -1041,14 +1061,15 @@ async function runBuildModeBatch() {
                 if (wildcardResult !== null) {
                     console.log(`   🎯 Wildcard cache hit: ${account} = ${wildcardResult.total.toLocaleString()} (${wildcardResult.matchCount} accounts)`);
                     cache.balance.set(cacheKey, wildcardResult.total);
-                    item.resolve(wildcardResult.total);
+                    // Resolve ALL items waiting for this result
+                    items.forEach(item => item.resolve(wildcardResult.total));
                     cacheHits++;
                     continue; // Skip API call
                 }
             }
             
             // ================================================================
-            // CACHE MISS - Call API
+            // CACHE MISS - Call API (ONCE for all identical requests)
             // For wildcards, request breakdown so we can cache individual accounts
             // ================================================================
             try {
@@ -1069,7 +1090,8 @@ async function runBuildModeBatch() {
                     params.append('include_breakdown', 'true');
                 }
                 
-                console.log(`   📤 Cumulative API: ${account} through ${toPeriod}${isWildcard ? ' (with breakdown)' : ''}`);
+                const waitingCount = items.length > 1 ? ` (${items.length} formulas waiting)` : '';
+                console.log(`   📤 Cumulative API: ${account} through ${toPeriod}${isWildcard ? ' (with breakdown)' : ''}${waitingCount}`);
                 
                 // Rate limit: wait before making request if we've already made calls
                 // Prevents NetSuite 429 CONCURRENCY_LIMIT_EXCEEDED errors
@@ -1099,28 +1121,62 @@ async function runBuildModeBatch() {
                         // This enables other wildcards like "101*" to resolve from cache
                         cacheIndividualAccounts(accounts, period, subsidiary);
                         
-                        item.resolve(total);
+                        // Resolve ALL items waiting for this result
+                        items.forEach(item => item.resolve(total));
                     } else {
-                        // Plain text response (non-wildcard or breakdown not available)
-                        const text = await response.text();
-                        const value = parseFloat(text) || 0;
-                        console.log(`   ✅ Cumulative result: ${account} = ${value.toLocaleString()}`);
+                        // Parse JSON response for balance and error
+                        let value = 0;
+                        let errorCode = null;
                         
-                        cache.balance.set(cacheKey, value);
-                        item.resolve(value);
+                        try {
+                            const data = await response.json();
+                            // DEBUG: Log raw response to catch parsing issues
+                            console.log(`   📋 Raw JSON response:`, JSON.stringify(data).substring(0, 200));
+                            
+                            // Handle balance - could be number or null
+                            if (typeof data.balance === 'number') {
+                                value = data.balance;
+                            } else if (data.balance !== null && data.balance !== undefined) {
+                                value = parseFloat(data.balance) || 0;
+                            }
+                            errorCode = data.error || null;
+                        } catch (parseError) {
+                            // JSON parsing failed - try to get raw text for debugging
+                            console.error(`   ❌ JSON parse failed: ${parseError.message}`);
+                            // Note: response body already consumed, can't read again
+                            value = 0;
+                        }
+                        
+                        if (errorCode) {
+                            // Return error code to Excel cell instead of 0
+                            console.log(`   ⚠️ Cumulative result: ${account} = ${errorCode}`);
+                            items.forEach(item => item.resolve(errorCode));
+                        } else {
+                            console.log(`   ✅ Cumulative result: ${account} = ${value.toLocaleString()}`);
+                            cache.balance.set(cacheKey, value);
+                            // Resolve ALL items waiting for this result
+                            items.forEach(item => item.resolve(value));
+                        }
                     }
                 } else {
-                    console.error(`   ❌ Cumulative API error: ${response.status}`);
-                    item.resolve(0);
+                    // HTTP error - return informative error code
+                    const errorCode = response.status === 408 || response.status === 504 ? 'TIMEOUT' :
+                                     response.status === 429 ? 'RATELIMIT' :
+                                     response.status === 401 || response.status === 403 ? 'AUTHERR' :
+                                     'APIERR';
+                    console.error(`   ❌ Cumulative API error: ${response.status} → ${errorCode}`);
+                    items.forEach(item => item.resolve(errorCode));
                 }
             } catch (error) {
-                console.error(`   ❌ Cumulative fetch error:`, error);
-                item.resolve(0);
+                // Network error - return informative error code
+                const errorCode = error.name === 'AbortError' ? 'TIMEOUT' : 'NETFAIL';
+                console.error(`   ❌ Cumulative fetch error: ${error.message} → ${errorCode}`);
+                items.forEach(item => item.resolve(errorCode));
             }
         }
         
-        if (cacheHits > 0 || apiCalls > 0) {
-            console.log(`   📊 Cumulative summary: ${cacheHits} cache hits, ${apiCalls} API calls`);
+        if (cacheHits > 0 || apiCalls > 0 || deduplicated > 0) {
+            console.log(`   📊 Cumulative summary: ${cacheHits} cache hits, ${apiCalls} API calls, ${deduplicated} deduplicated`);
         }
     }
     
@@ -2279,12 +2335,44 @@ function convertToMonthYear(value, isFromPeriod = true) {
 
 // ============================================================================
 // UTILITY: Normalize account number to string
+// Handles: numbers, text, cell references with various formats
 // ============================================================================
 function normalizeAccountNumber(account) {
-    // Excel might pass account as a number (e.g., 15000 instead of "15000-1")
-    // Always convert to string and trim
+    // Handle null/undefined
     if (account === null || account === undefined) return '';
-    return String(account).trim();
+    
+    // If it's a number, handle potential floating point issues
+    // Excel cells formatted as numbers might pass 4220.0 or 4220.9999999
+    if (typeof account === 'number') {
+        // Check if it's a whole number (within floating point tolerance)
+        if (Number.isInteger(account) || Math.abs(account - Math.round(account)) < 0.0001) {
+            return String(Math.round(account));
+        }
+        // It's a true decimal - convert as-is (rare for account numbers)
+        return String(account);
+    }
+    
+    // Convert to string and trim
+    let str = String(account).trim();
+    
+    // Remove any thousand separators (commas) that might have been pasted
+    // But preserve hyphens (e.g., "15000-1")
+    str = str.replace(/,/g, '');
+    
+    // Handle scientific notation that might come from Excel (e.g., "1.5E+6")
+    if (/^[\d.]+[eE][+-]?\d+$/.test(str)) {
+        const num = parseFloat(str);
+        if (!isNaN(num) && Number.isInteger(num)) {
+            return String(Math.round(num));
+        }
+    }
+    
+    // Handle string numbers with decimal (e.g., "4220.0" → "4220")
+    if (/^\d+\.0+$/.test(str)) {
+        return str.replace(/\.0+$/, '');
+    }
+    
+    return str;
 }
 
 // ============================================================================
@@ -3182,9 +3270,23 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         // BUILD MODE: Queue with Promise (will be resolved after batch)
         // We return a Promise, not 0 - this shows #BUSY briefly but ensures
         // correct values. The batch will resolve all promises at once.
+        // 
+        // VALIDATION: Skip incomplete requests (cell references not yet resolved)
+        // - For P&L: both fromPeriod and toPeriod required
+        // - For BS (cumulative): toPeriod required (fromPeriod can be empty)
         // ================================================================
         if (buildMode) {
-            console.log(`🔨 BUILD MODE: Queuing ${account}/${fromPeriod}`);
+            // Skip requests where toPeriod is empty (cell reference not resolved yet)
+            // Excel will re-evaluate when the cell reference resolves
+            if (!toPeriod || toPeriod === '') {
+                console.log(`⏳ BUILD MODE: Skipping ${account} - period not yet resolved`);
+                return new Promise((resolve) => {
+                    // Return a pending value that Excel will retry
+                    setTimeout(() => resolve('#BUSY'), 100);
+                });
+            }
+            
+            console.log(`🔨 BUILD MODE: Queuing ${account}/${fromPeriod || '(cumulative)'} → ${toPeriod}`);
             return new Promise((resolve, reject) => {
                 buildModePending.push({ cacheKey, params, resolve, reject });
             });
@@ -3192,17 +3294,30 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         
         // ================================================================
         // NORMAL MODE: Cache miss - add to batch queue and return Promise
+        // 
+        // VALIDATION: Skip incomplete requests (cell references not yet resolved)
+        // Excel will re-evaluate when the cell reference resolves
         // ================================================================
+        
+        // For cumulative (BS) requests: toPeriod required
+        // For period-range (P&L) requests: both required (toPeriod at minimum)
+        if (!toPeriod || toPeriod === '') {
+            console.log(`⏳ Skipping ${account} - period not yet resolved, will retry`);
+            return new Promise((resolve) => {
+                setTimeout(() => resolve('#BUSY'), 100);
+            });
+        }
+        
         cacheStats.misses++;
         
         // In full refresh mode, queue silently (task pane will trigger processFullRefresh)
         if (!isFullRefreshMode) {
-            console.log(`📥 CACHE MISS [balance]: ${account} (${fromPeriod} to ${toPeriod}) → queuing`);
+            console.log(`📥 CACHE MISS [balance]: ${account} (${fromPeriod || '(cumulative)'} to ${toPeriod}) → queuing`);
         }
         
         // Return a Promise that will be resolved by the batch processor
         return new Promise((resolve, reject) => {
-            console.log(`📥 QUEUED: ${account} for ${fromPeriod}`);
+            console.log(`📥 QUEUED: ${account} for ${fromPeriod || '(cumulative)'} → ${toPeriod}`);
             
             pendingRequests.balance.set(cacheKey, {
                 params,
@@ -3724,14 +3839,33 @@ async function processBatchQueue() {
         
         let cacheHits = 0;
         let apiCalls = 0;
+        let deduplicated = 0;
+        
+        // ================================================================
+        // DEDUPLICATION: Group identical requests by cache key
+        // INVARIANT: Identical formulas must collapse into a single API call
+        // ================================================================
+        const uniqueRequests = new Map(); // cacheKey -> { params, requests: [] }
+        for (const [cacheKey, request] of cumulativeRequests) {
+            if (!uniqueRequests.has(cacheKey)) {
+                uniqueRequests.set(cacheKey, { params: request.params, requests: [request] });
+            } else {
+                uniqueRequests.get(cacheKey).requests.push(request);
+                deduplicated++;
+            }
+        }
+        
+        if (deduplicated > 0) {
+            console.log(`   🔄 DEDUPLICATED: ${cumulativeRequests.length} requests → ${uniqueRequests.size} unique (saved ${deduplicated} API calls)`);
+        }
         
         // Rate limiting to avoid NetSuite 429 CONCURRENCY_LIMIT_EXCEEDED errors
         const RATE_LIMIT_DELAY_BATCH = 150; // ms between API calls
         const rateLimitSleepBatch = (ms) => new Promise(resolve => setTimeout(resolve, ms));
         
-        // Process cumulative requests - try cache first, then API
-        for (const [cacheKey, request] of cumulativeRequests) {
-            const { account, fromPeriod, toPeriod, subsidiary, department, location, classId, accountingBook } = request.params;
+        // Process each UNIQUE cumulative request once
+        for (const [cacheKey, { params, requests }] of uniqueRequests) {
+            const { account, fromPeriod, toPeriod, subsidiary, department, location, classId, accountingBook } = params;
             
             // ================================================================
             // TRY WILDCARD CACHE RESOLUTION FIRST
@@ -3742,19 +3876,20 @@ async function processBatchQueue() {
                 if (wildcardResult !== null) {
                     console.log(`   🎯 Wildcard cache hit: ${account} = ${wildcardResult.total.toLocaleString()} (${wildcardResult.matchCount} accounts)`);
                     cache.balance.set(cacheKey, wildcardResult.total);
-                    request.resolve(wildcardResult.total);
+                    // Resolve ALL requests waiting for this result
+                    requests.forEach(r => r.resolve(wildcardResult.total));
                     cacheHits++;
                     continue; // Skip API call
                 }
             }
             
             // ================================================================
-            // CACHE MISS - Call API
+            // CACHE MISS - Call API (ONCE for all identical requests)
             // For wildcards, request breakdown so we can cache individual accounts
             // ================================================================
             try {
                 const isWildcard = account.includes('*');
-                const params = new URLSearchParams({
+                const apiParams = new URLSearchParams({
                     account: account,
                     from_period: '',  // Empty = cumulative from inception
                     to_period: toPeriod,
@@ -3767,10 +3902,11 @@ async function processBatchQueue() {
                 
                 // Request breakdown for wildcards so we can cache individual accounts
                 if (isWildcard) {
-                    params.append('include_breakdown', 'true');
+                    apiParams.append('include_breakdown', 'true');
                 }
                 
-                console.log(`   📤 Cumulative API: ${account} through ${toPeriod}${isWildcard ? ' (with breakdown)' : ''}`);
+                const waitingCount = requests.length > 1 ? ` (${requests.length} formulas waiting)` : '';
+                console.log(`   📤 Cumulative API: ${account} through ${toPeriod}${isWildcard ? ' (with breakdown)' : ''}${waitingCount}`);
                 
                 // Rate limit: wait before making request if we've already made calls
                 // Prevents NetSuite 429 CONCURRENCY_LIMIT_EXCEEDED errors
@@ -3779,7 +3915,7 @@ async function processBatchQueue() {
                 }
                 apiCalls++;
                 
-                const response = await fetch(`${SERVER_URL}/balance?${params.toString()}`);
+                const response = await fetch(`${SERVER_URL}/balance?${apiParams.toString()}`);
                 
                 if (response.ok) {
                     const contentType = response.headers.get('content-type') || '';
@@ -3799,28 +3935,61 @@ async function processBatchQueue() {
                         // CRITICAL: Cache individual accounts for future wildcard resolution!
                         cacheIndividualAccounts(accounts, period, subsidiary);
                         
-                        request.resolve(total);
+                        // Resolve ALL requests waiting for this result
+                        requests.forEach(r => r.resolve(total));
                     } else {
-                        // Plain text response (non-wildcard or breakdown not available)
-                        const text = await response.text();
-                        const value = parseFloat(text) || 0;
-                        console.log(`   ✅ Cumulative result: ${account} = ${value.toLocaleString()}`);
+                        // Parse JSON response for balance and error
+                        let value = 0;
+                        let errorCode = null;
                         
-                        cache.balance.set(cacheKey, value);
-                        request.resolve(value);
+                        try {
+                            const data = await response.json();
+                            // DEBUG: Log raw response to catch parsing issues
+                            console.log(`   📋 Raw JSON response:`, JSON.stringify(data).substring(0, 200));
+                            
+                            // Handle balance - could be number or null
+                            if (typeof data.balance === 'number') {
+                                value = data.balance;
+                            } else if (data.balance !== null && data.balance !== undefined) {
+                                value = parseFloat(data.balance) || 0;
+                            }
+                            errorCode = data.error || null;
+                        } catch (parseError) {
+                            // JSON parsing failed
+                            console.error(`   ❌ JSON parse failed: ${parseError.message}`);
+                            value = 0;
+                        }
+                        
+                        if (errorCode) {
+                            // Return error code to Excel cell instead of 0
+                            console.log(`   ⚠️ Cumulative result: ${account} = ${errorCode}`);
+                            requests.forEach(r => r.resolve(errorCode));
+                        } else {
+                            console.log(`   ✅ Cumulative result: ${account} = ${value.toLocaleString()}`);
+                            cache.balance.set(cacheKey, value);
+                            // Resolve ALL requests waiting for this result
+                            requests.forEach(r => r.resolve(value));
+                        }
                     }
                 } else {
-                    console.error(`   ❌ Cumulative API error: ${response.status}`);
-                    request.resolve(0);
+                    // HTTP error - return informative error code
+                    const errorCode = response.status === 408 || response.status === 504 ? 'TIMEOUT' :
+                                     response.status === 429 ? 'RATELIMIT' :
+                                     response.status === 401 || response.status === 403 ? 'AUTHERR' :
+                                     'APIERR';
+                    console.error(`   ❌ Cumulative API error: ${response.status} → ${errorCode}`);
+                    requests.forEach(r => r.resolve(errorCode));
                 }
             } catch (error) {
-                console.error(`   ❌ Cumulative fetch error:`, error);
-                request.resolve(0);
+                // Network error - return informative error code
+                const errorCode = error.name === 'AbortError' ? 'TIMEOUT' : 'NETFAIL';
+                console.error(`   ❌ Cumulative fetch error: ${error.message} → ${errorCode}`);
+                requests.forEach(r => r.resolve(errorCode));
             }
         }
         
-        if (cacheHits > 0 || apiCalls > 0) {
-            console.log(`   📊 Cumulative summary: ${cacheHits} cache hits, ${apiCalls} API calls`);
+        if (cacheHits > 0 || apiCalls > 0 || deduplicated > 0) {
+            console.log(`   📊 Cumulative summary: ${cacheHits} cache hits, ${apiCalls} API calls, ${deduplicated} deduplicated`);
         }
     }
     

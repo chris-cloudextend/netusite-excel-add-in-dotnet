@@ -64,6 +64,8 @@ appsettings.Local.json
 appsettings.*.json
 !appsettings.json
 !appsettings.Production.json.template
+!appsettings.Development.json.template
+!*.template
 
 # SSL/TLS certificates and keys
 *.pem
