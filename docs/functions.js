@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '3.0.5.237';  // Version marker for debugging - added BALANCECHANGE formula
+const FUNCTIONS_VERSION = '3.0.5.238';  // Version marker for debugging - added BALANCECHANGE formula
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -315,22 +315,60 @@ function isCumulativeRequest(fromPeriod) {
 }
 
 /**
+ * Trigger automatic BS preload when first BS formula is detected.
+ * This removes user interaction - we automatically scan and preload.
+ */
+let autoPreloadTriggered = false;
+let autoPreloadInProgress = false;
+
+function triggerAutoPreload(firstAccount, firstPeriod) {
+    if (autoPreloadTriggered || autoPreloadInProgress) {
+        console.log('🔄 Auto-preload already triggered or in progress');
+        return;
+    }
+    autoPreloadTriggered = true;
+    autoPreloadInProgress = true;
+    
+    console.log(`🚀 AUTO-PRELOAD: Triggered by first BS formula (${firstAccount}, ${firstPeriod})`);
+    
+    // Send signal to taskpane to trigger auto-preload
+    // Taskpane will scan the sheet and preload all BS accounts
+    try {
+        localStorage.setItem('netsuite_auto_preload_trigger', JSON.stringify({
+            firstAccount: firstAccount,
+            firstPeriod: firstPeriod,
+            timestamp: Date.now(),
+            reason: 'First Balance Sheet formula detected'
+        }));
+    } catch (e) {
+        console.warn('Could not trigger auto-preload:', e);
+    }
+}
+
+/**
+ * Mark auto-preload as complete (called from taskpane)
+ */
+function markAutoPreloadComplete() {
+    autoPreloadInProgress = false;
+    console.log('✅ AUTO-PRELOAD: Complete');
+}
+
+// Expose for taskpane
+window.markAutoPreloadComplete = markAutoPreloadComplete;
+
+/**
  * Show first-time BS education toast.
  * Only shown once per session when first BS formula is detected.
+ * NOW: Also triggers automatic preload!
  */
-function showBSEducationToast() {
+function showBSEducationToast(account, period) {
     if (bsFormulaEducationShown) return;
     bsFormulaEducationShown = true;
     
-    broadcastToast({
-        id: 'bs-education-' + Date.now(),
-        title: '📊 Balance Sheet Account Detected',
-        message: 'BS accounts calculate from the beginning of time and take 60-90 seconds each. Use "Smart Preload" in the task pane to speed up multiple lookups!',
-        type: 'info',
-        duration: 12000,
-        priority: 'high'
-    });
-    console.log('💡 BS EDUCATION: First BS formula detected, showing guidance');
+    // AUTOMATIC PRELOAD: Instead of just showing a toast, trigger auto-preload
+    triggerAutoPreload(account, period);
+    
+    console.log('💡 BS EDUCATION: First BS formula detected, triggering auto-preload');
 }
 
 /**
@@ -3473,9 +3511,9 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
             totalBSFormulasQueued++;
             trackBSPeriod(toPeriod);
             
-            // First BS formula education
+            // First BS formula - trigger automatic preload!
             if (totalBSFormulasQueued === 1) {
-                showBSEducationToast();
+                showBSEducationToast(account, toPeriod);
             }
         }
         

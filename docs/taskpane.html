@@ -3957,7 +3957,7 @@ For licensing inquiries, contact: legal@celigo.com
                     <h3>ℹ️ Version Info</h3>
                     <div style="font-size: 12px; color: #4b5563;">
                         <p>Add-in Version: <strong id="settingsVersion">loading...</strong></p>
-                        <p style="margin-top: 4px;">Manifest Version: <strong>3.0.5.237</strong></p>
+                        <p style="margin-top: 4px;">Manifest Version: <strong>3.0.5.238</strong></p>
                         <p style="margin-top: 4px;">Proxy: <code style="font-size: 10px; background: #f3f4f6; padding: 2px 6px; border-radius: 4px;">netsuite-proxy.chris-corcoran.workers.dev</code></p>
                     </div>
                 </div>
@@ -7461,6 +7461,177 @@ For licensing inquiries, contact: legal@celigo.com
                         }
                         localStorage.removeItem('netsuite_toast_remove');
                     }
+                }
+                
+                // ================================================================
+                // AUTO-PRELOAD TRIGGER - Automatically preload when first BS formula detected
+                // No user interaction needed - we scan and preload automatically!
+                // ================================================================
+                const autoPreloadJson = localStorage.getItem('netsuite_auto_preload_trigger');
+                if (autoPreloadJson) {
+                    const trigger = JSON.parse(autoPreloadJson);
+                    localStorage.removeItem('netsuite_auto_preload_trigger');
+                    
+                    console.log('🚀 AUTO-PRELOAD TRIGGERED:', trigger);
+                    
+                    // Show loading overlay immediately
+                    showLoading(
+                        '🔍 Balance Sheet Detected!',
+                        'Scanning your sheet and preloading BS accounts automatically...',
+                        10
+                    );
+                    
+                    // Small delay to let Excel finish rendering, then scan and preload
+                    setTimeout(async () => {
+                        try {
+                            updateLoading('Scanning Sheet for BS Formulas', 20, 'Finding all Balance Sheet accounts...');
+                            
+                            // Scan the sheet for all BS formulas
+                            const formulaData = await Excel.run(async (context) => {
+                                const sheet = context.workbook.worksheets.getActiveWorksheet();
+                                const usedRange = sheet.getUsedRange();
+                                usedRange.load('formulas');
+                                await context.sync();
+                                
+                                const accounts = new Set();
+                                const periods = new Set();
+                                const formulas = usedRange.formulas;
+                                
+                                // Always include the triggering formula's period
+                                if (trigger.firstPeriod) periods.add(trigger.firstPeriod);
+                                if (trigger.firstAccount) accounts.add(trigger.firstAccount);
+                                
+                                // Scan for XAVI.BALANCE formulas
+                                const balanceRegex = /XAVI\.BALANCE(?:CHANGE)?\s*\(\s*"?([^",)]+)"?\s*,\s*"?([^",)]*)"?\s*,\s*"?([^",)]+)"?/gi;
+                                
+                                for (let row = 0; row < formulas.length; row++) {
+                                    for (let col = 0; col < formulas[row].length; col++) {
+                                        const cell = formulas[row][col];
+                                        if (typeof cell === 'string' && cell.toUpperCase().includes('XAVI.BALANCE')) {
+                                            let match;
+                                            balanceRegex.lastIndex = 0;
+                                            while ((match = balanceRegex.exec(cell)) !== null) {
+                                                const account = match[1].replace(/"/g, '').trim();
+                                                const toPeriod = match[3].replace(/"/g, '').trim();
+                                                
+                                                if (account && !account.includes('$')) accounts.add(account);
+                                                if (toPeriod && !toPeriod.includes('$')) periods.add(toPeriod);
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                return {
+                                    accounts: Array.from(accounts),
+                                    periods: Array.from(periods)
+                                };
+                            });
+                            
+                            console.log(`📊 Auto-scan found ${formulaData.accounts.length} accounts, ${formulaData.periods.length} periods`);
+                            
+                            if (formulaData.accounts.length === 0 || formulaData.periods.length === 0) {
+                                // Just use the triggering formula's data
+                                formulaData.accounts = [trigger.firstAccount];
+                                formulaData.periods = [trigger.firstPeriod];
+                            }
+                            
+                            updateLoading(
+                                `Found ${formulaData.accounts.length} Accounts`,
+                                30,
+                                `Checking which are Balance Sheet accounts...`
+                            );
+                            
+                            // Get account types to identify BS accounts
+                            const typesResponse = await fetch(`${SERVER_URL}/accounts/types`, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ accounts: formulaData.accounts })
+                            });
+                            
+                            let bsAccounts = formulaData.accounts;
+                            if (typesResponse.ok) {
+                                const accountTypes = await typesResponse.json();
+                                const bsTypes = ['Bank', 'AcctRec', 'OthCurrAsset', 'FixedAsset', 'OthAsset', 
+                                               'AcctPay', 'CreditCard', 'OthCurrLiab', 'LongTermLiab', 
+                                               'Equity', 'RetainEarn'];
+                                bsAccounts = formulaData.accounts.filter(acct => {
+                                    const type = accountTypes[acct];
+                                    return type && bsTypes.includes(type);
+                                });
+                            }
+                            
+                            console.log(`📊 ${bsAccounts.length} Balance Sheet accounts identified`);
+                            
+                            if (bsAccounts.length === 0) {
+                                hideLoading();
+                                // No BS accounts - formulas are P&L and will be fast
+                                if (window.markAutoPreloadComplete) window.markAutoPreloadComplete();
+                                return;
+                            }
+                            
+                            updateLoading(
+                                `⚡ Preloading ${bsAccounts.length} BS Accounts`,
+                                40,
+                                `This takes ~${Math.max(20, bsAccounts.length * 2)}s but makes all formulas instant!`
+                            );
+                            
+                            // Preload the BS accounts
+                            const preloadResponse = await fetch(`${SERVER_URL}/batch/bs_preload_targeted`, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                    accounts: bsAccounts,
+                                    periods: formulaData.periods
+                                })
+                            });
+                            
+                            if (preloadResponse.ok) {
+                                const result = await preloadResponse.json();
+                                
+                                // Cache results
+                                if (result.balances) {
+                                    const cacheEntries = {};
+                                    for (const [account, periodBalances] of Object.entries(result.balances)) {
+                                        if (typeof periodBalances === 'object') {
+                                            for (const [pName, balance] of Object.entries(periodBalances)) {
+                                                cacheEntries[`balance:${account}::${pName}`] = { value: balance, timestamp: Date.now() };
+                                            }
+                                        }
+                                    }
+                                    try {
+                                        const existing = JSON.parse(localStorage.getItem('xavi_balance_cache') || '{}');
+                                        const merged = { ...existing, ...cacheEntries };
+                                        localStorage.setItem('xavi_balance_cache', JSON.stringify(merged));
+                                    } catch (e) { }
+                                }
+                                
+                                hideLoading();
+                                
+                                showToast({
+                                    title: '✅ Balance Sheet Ready!',
+                                    message: `${bsAccounts.length} accounts preloaded. Your formulas will now resolve instantly!`,
+                                    type: 'success',
+                                    duration: 5000
+                                });
+                                
+                                console.log(`✅ AUTO-PRELOAD COMPLETE: ${bsAccounts.length} accounts in ${result.elapsed_seconds?.toFixed(1)}s`);
+                            } else {
+                                throw new Error(`Preload failed: ${preloadResponse.status}`);
+                            }
+                            
+                        } catch (error) {
+                            console.error('Auto-preload error:', error);
+                            hideLoading();
+                            showToast({
+                                title: 'Auto-Preload Issue',
+                                message: 'Could not auto-preload. Use Smart Preload manually for faster results.',
+                                type: 'warning',
+                                duration: 8000
+                            });
+                        } finally {
+                            if (window.markAutoPreloadComplete) window.markAutoPreloadComplete();
+                        }
+                    }, 500); // Small delay to let formulas settle
                 }
                 
                 // ================================================================
