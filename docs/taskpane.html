@@ -10390,45 +10390,88 @@ For licensing inquiries, contact: legal@celigo.com
             
             console.log(`📊 BS Preload: ${periods.length} period(s): ${periodLabel}`);
             
-            // Show loading overlay with BS-specific messaging
+            // Show loading overlay with educational BS-specific messaging
+            // Messages explain WHY this takes time and what benefits the user gets
+            
             showLoading(
-                '⚡ Preloading Balance Sheet',
-                `Calculating cumulative balances for ALL Balance Sheet accounts...`,
-                10
+                '📊 Analyzing Account History',
+                `Preparing to load all Balance Sheet accounts for ${periodLabel}...`,
+                5
             );
             
-            // Update with helpful context
+            // Message 1: Explain the "why" - this is the most important
             setTimeout(() => {
                 updateLoading(
-                    `Loading ${periods.length} period(s): ${periodLabel}`,
-                    25,
-                    '💡 This is a one-time cache — subsequent lookups will be instant!'
+                    'Crunching Numbers from the Beginning of Time',
+                    15,
+                    '💡 Unlike P&L accounts, Balance Sheet accounts are cumulative — we calculate every transaction since your company started!'
                 );
             }, 3000);
             
+            // Message 2: Explain caching benefit
             setTimeout(() => {
                 updateLoading(
-                    'Running consolidated query for all Assets, Liabilities, and Equity...',
-                    45,
-                    `⏱️ Typical time: ${expectedTime}`
+                    'Building Your Balance Sheet Cache',
+                    25,
+                    '🚀 Good news: We\'re caching all 200+ accounts at once. After this, individual lookups will be instant!'
+                );
+            }, 8000);
+            
+            // Message 3: Fun fact about BS accounts
+            setTimeout(() => {
+                updateLoading(
+                    'Processing Assets, Liabilities & Equity',
+                    35,
+                    '📚 Fun fact: The Balance Sheet equation (A = L + E) dates back to 1494, invented by Luca Pacioli!'
                 );
             }, 15000);
             
+            // Message 4: Technical insight
             setTimeout(() => {
                 updateLoading(
-                    'Still processing — this is normal for Balance Sheet queries...',
-                    65,
-                    periods.length > 1 ? '📊 Multi-period queries are more efficient than separate calls!' : '📊 All 200+ BS accounts processed in a single batch!'
+                    'Running Consolidated Currency Translation',
+                    45,
+                    '🌍 For multi-currency, we\'re applying exchange rates at each subsidiary level — just like NetSuite\'s CONSOLIDATE function.'
                 );
-            }, 35000);
+            }, 22000);
             
+            // Message 5: Progress update
             setTimeout(() => {
                 updateLoading(
-                    'Almost done — caching results for instant future lookups...',
+                    'Still Working — This is Normal!',
+                    55,
+                    `⏱️ Typical time: ${expectedTime}. A single account would take ~70s anyway — batching saves you hours!`
+                );
+            }, 32000);
+            
+            // Message 6: Almost there
+            setTimeout(() => {
+                updateLoading(
+                    'Finalizing Account Balances',
+                    70,
+                    periods.length > 1 
+                        ? '📊 Loading multiple periods is smart — one query now beats two 70-second waits later!' 
+                        : '📊 Processing Bank, AR, AP, Fixed Assets, and all other BS account types...'
+                );
+            }, 45000);
+            
+            // Message 7: Tip for future
+            setTimeout(() => {
+                updateLoading(
+                    'Almost Done — Caching Results',
                     85,
-                    '✨ Your formulas will resolve instantly after this'
+                    '💡 TIP: Need fresh numbers later? Click "Refresh All" — we\'ll recalc everything in one clean pass.'
                 );
             }, 55000);
+            
+            // Message 8: Final stretch
+            setTimeout(() => {
+                updateLoading(
+                    'Finishing Up...',
+                    95,
+                    '✨ Your Balance Sheet formulas will now resolve in milliseconds instead of minutes!'
+                );
+            }, 70000);
             
             try {
                 const startTime = Date.now();
@@ -10489,20 +10532,43 @@ For licensing inquiries, contact: legal@celigo.com
                 hideLoading();
                 
                 const periodCount = result.period_count || 1;
+                const timeSaved = Math.round(result.account_count * 70 / 60); // ~70s per account if done individually
+                
                 showToast({
-                    title: '✅ Balance Sheet Preloaded!',
-                    message: `${result.account_count} accounts × ${periodCount} period(s) cached in ${elapsedSec}s. Formulas will now be instant!`,
+                    title: '🎉 Balance Sheet Ready!',
+                    message: `${result.account_count} accounts cached! Individual lookups now instant.`,
                     type: 'success',
-                    duration: 8000,
+                    duration: 10000,
                     icon: '⚡'
                 });
                 
-                // Show an info message with the stats
+                // Show an info message with helpful stats and tips
                 showOnboardingMessage(
-                    'Balance Sheet Cache Ready!',
-                    `<p><strong>${result.account_count}</strong> Balance Sheet accounts loaded in <strong>${elapsedSec} seconds</strong>.</p>
-                     <p style="margin-top:8px;">Individual <code>=XAVI.BALANCE()</code> formulas for BS accounts will now resolve instantly instead of taking 60-90 seconds each.</p>
-                     <p style="margin-top:8px; color: var(--anenome);">💡 The cache expires after 5 minutes. Run again if formulas slow down.</p>`,
+                    '✅ Balance Sheet Cache Ready!',
+                    `<div style="line-height: 1.6;">
+                        <p><strong>${result.account_count}</strong> Balance Sheet accounts × <strong>${periodCount}</strong> period(s) loaded in <strong>${elapsedSec} seconds</strong>.</p>
+                        
+                        <div style="margin-top: 12px; padding: 10px; background: rgba(16,185,129,0.1); border-radius: 8px; border-left: 3px solid #10B981;">
+                            <strong style="color: #10B981;">⏱️ Time Saved:</strong> ~${timeSaved} minutes!<br>
+                            <span style="font-size: 12px; opacity: 0.8;">Each BS account would take ~70 seconds individually.</span>
+                        </div>
+                        
+                        <p style="margin-top: 12px;"><strong>What's cached:</strong></p>
+                        <ul style="margin: 4px 0 0 16px; font-size: 13px;">
+                            <li>Bank & Cash accounts</li>
+                            <li>Accounts Receivable & Payable</li>
+                            <li>Fixed Assets & Depreciation</li>
+                            <li>All Liability accounts</li>
+                            <li>Equity & Retained Earnings</li>
+                        </ul>
+                        
+                        <div style="margin-top: 12px; padding: 8px; background: rgba(59,130,246,0.1); border-radius: 6px;">
+                            <strong style="color: #3B82F6;">💡 Tips:</strong><br>
+                            <span style="font-size: 12px;">• Cache lasts 5 minutes — re-run if formulas slow down<br>
+                            • Use "Refresh All" for latest numbers anytime<br>
+                            • P&L accounts don't need preload (they're fast!)</span>
+                        </div>
+                    </div>`,
                     'success'
                 );
                 
