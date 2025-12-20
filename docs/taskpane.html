@@ -3957,7 +3957,7 @@ For licensing inquiries, contact: legal@celigo.com
                     <h3>ℹ️ Version Info</h3>
                     <div style="font-size: 12px; color: #4b5563;">
                         <p>Add-in Version: <strong id="settingsVersion">loading...</strong></p>
-                        <p style="margin-top: 4px;">Manifest Version: <strong>3.0.5.239</strong></p>
+                        <p style="margin-top: 4px;">Manifest Version: <strong>3.0.5.240</strong></p>
                         <p style="margin-top: 4px;">Proxy: <code style="font-size: 10px; background: #f3f4f6; padding: 2px 6px; border-radius: 4px;">netsuite-proxy.chris-corcoran.workers.dev</code></p>
                     </div>
                 </div>
@@ -7551,9 +7551,11 @@ For licensing inquiries, contact: legal@celigo.com
                             let bsAccounts = formulaData.accounts;
                             if (typesResponse.ok) {
                                 const accountTypes = await typesResponse.json();
+                                // Use EXACT NetSuite account type names
                                 const bsTypes = ['Bank', 'AcctRec', 'OthCurrAsset', 'FixedAsset', 'OthAsset', 
-                                               'AcctPay', 'CreditCard', 'OthCurrLiab', 'LongTermLiab', 
-                                               'Equity', 'RetainEarn'];
+                                               'DeferExpense', 'UnbilledRec',
+                                               'AcctPay', 'CredCard', 'OthCurrLiab', 'LongTermLiab', 'DeferRevenue',
+                                               'Equity', 'RetainedEarnings'];
                                 bsAccounts = formulaData.accounts.filter(acct => {
                                     const type = accountTypes[acct];
                                     return type && bsTypes.includes(type);
@@ -10749,8 +10751,8 @@ For licensing inquiries, contact: legal@celigo.com
                 const bsAccounts = formulaData.accounts.filter(acct => {
                     const type = accountTypes[acct];
                     return type && ['Bank', 'AcctRec', 'OthCurrAsset', 'FixedAsset', 'OthAsset', 
-                                   'AcctPay', 'CreditCard', 'OthCurrLiab', 'LongTermLiab', 
-                                   'Equity', 'RetainEarn'].includes(type);
+                                   'AcctPay', 'CredCard', 'OthCurrLiab', 'LongTermLiab', 'DeferRevenue',
+                                   'Equity', 'RetainedEarnings'].includes(type);
                 });
                 
                 console.log(`📊 Found ${bsAccounts.length} Balance Sheet accounts out of ${formulaData.accounts.length} total`);

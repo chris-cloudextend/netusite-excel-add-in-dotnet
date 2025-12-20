@@ -90,6 +90,25 @@ public class FullYearRefreshRequest
     public int? Book { get; set; }
 }
 
+/// <summary>
+/// Request for year balance optimization endpoint.
+/// </summary>
+public class YearBalanceRequest
+{
+    [JsonPropertyName("accounts")]
+    public List<string> Accounts { get; set; } = new();
+    
+    [JsonPropertyName("year")]
+    public int Year { get; set; }
+    
+    [JsonPropertyName("subsidiary")]
+    public string? Subsidiary { get; set; }
+    
+    [JsonPropertyName("accountingbook")]
+    [JsonConverter(typeof(FlexibleIntConverter))]
+    public int? Book { get; set; }
+}
+
 #endregion
 
 #region Balance Responses

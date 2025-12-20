@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '3.0.5.239';  // Version marker for debugging - added BALANCECHANGE formula
+const FUNCTIONS_VERSION = '3.0.5.240';  // Version marker for debugging - added BALANCECHANGE formula
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -303,8 +303,8 @@ const BS_MULTI_FORMULA_THRESHOLD = 3; // Show warning after this many BS formula
  * Used for early detection and user guidance.
  */
 const BS_ACCOUNT_TYPES = ['Bank', 'AcctRec', 'OthCurrAsset', 'FixedAsset', 'OthAsset', 
-                          'AcctPay', 'CreditCard', 'OthCurrLiab', 'LongTermLiab', 
-                          'Equity', 'RetainEarn', 'DeferRevenue', 'UnbilledRec'];
+                          'AcctPay', 'CredCard', 'OthCurrLiab', 'LongTermLiab', 'DeferRevenue',
+                          'Equity', 'RetainedEarnings', 'UnbilledRec'];
 
 /**
  * Check if a request is for a cumulative (BS) account.
@@ -1146,7 +1146,8 @@ async function batchGetAccountTypes(accounts) {
             });
             if (response.ok) {
                 const data = await response.json();
-                const types = data.types || {};  // Backend returns 'types'
+                // Backend returns 'account_types' not 'types'
+                const types = data.account_types || data.types || {};
                 for (const acct of uncached) {
                     const type = types[acct] || null;
                     result[acct] = type;

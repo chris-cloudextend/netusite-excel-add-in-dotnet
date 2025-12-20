@@ -6,6 +6,7 @@
  */
 
 using Microsoft.AspNetCore.Mvc;
+using System.Text.Json;
 using XaviApi.Models;
 using XaviApi.Services;
 
@@ -395,6 +396,95 @@ public class AccountController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error getting batch account types");
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Get multiple account names at once (for XAVI.NAME batch lookup).
+    /// Returns a simple dictionary: { "10010": "Cash", "10020": "AR", ... }
+    /// </summary>
+    [HttpPost("/account/names")]
+    public async Task<IActionResult> BatchGetAccountNames([FromBody] BatchAccountRequest request)
+    {
+        if (request.Accounts == null || !request.Accounts.Any())
+            return BadRequest(new { error = "At least one account is required" });
+
+        try
+        {
+            var result = new Dictionary<string, string>();
+
+            // Get all account titles at once (cached in service)
+            var allTitles = await _lookupService.GetAllAccountTitlesAsync();
+
+            foreach (var account in request.Accounts)
+            {
+                if (allTitles.TryGetValue(account, out var name))
+                {
+                    result[account] = name;
+                }
+                else
+                {
+                    // Try to fetch individually
+                    var title = await _lookupService.GetAccountNameAsync(account);
+                    result[account] = title ?? "";
+                }
+            }
+
+            // Return as simple object (frontend expects just account → name mapping)
+            return Ok(result);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting batch account names");
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Get accounts by type (for TYPEBALANCE drill-down).
+    /// </summary>
+    [HttpGet("/accounts/by-type")]
+    public async Task<IActionResult> GetAccountsByType(
+        [FromQuery] string? account_type = null,
+        [FromQuery] string? to_period = null,
+        [FromQuery] string? subsidiary = null,
+        [FromQuery] string? use_special = null)
+    {
+        if (string.IsNullOrEmpty(account_type))
+            return BadRequest(new { error = "account_type is required" });
+
+        try
+        {
+            _logger.LogInformation("GetAccountsByType: type={Type}, period={Period}", account_type, to_period);
+            
+            var useSpecial = use_special == "1" || use_special?.ToLower() == "true";
+            var typeColumn = useSpecial ? "sspecacct" : "accttype";
+            
+            var query = $@"
+                SELECT a.id, a.acctnumber, a.accountsearchdisplayname as name, a.accttype, a.sspecacct
+                FROM account a
+                WHERE a.isinactive = 'F'
+                  AND a.{typeColumn} = '{NetSuiteService.EscapeSql(account_type)}'
+                ORDER BY a.acctnumber";
+
+            var results = await _netSuiteService.QueryAsync<JsonElement>(query);
+            
+            var accounts = results.Select(r => new
+            {
+                id = r.TryGetProperty("id", out var id) ? id.ToString() : "",
+                acctnumber = r.TryGetProperty("acctnumber", out var num) ? num.GetString() ?? "" : "",
+                accountname = r.TryGetProperty("name", out var name) ? name.GetString() ?? "" : "",
+                accttype = r.TryGetProperty("accttype", out var type) ? type.GetString() ?? "" : "",
+                sspecacct = r.TryGetProperty("sspecacct", out var spec) && spec.ValueKind != JsonValueKind.Null 
+                    ? spec.GetString() : null
+            }).ToList();
+
+            return Ok(new { accounts, count = accounts.Count });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting accounts by type {Type}", account_type);
             return StatusCode(500, new { error = ex.Message });
         }
     }

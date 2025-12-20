@@ -518,6 +518,105 @@ public class BalanceController : ControllerBase
     }
     
     /// <summary>
+    /// Get annual P&L totals using NetSuite's year periods (optimized year endpoint).
+    /// This is faster than querying 12 months because NetSuite pre-calculates year totals.
+    /// Returns: { balances: { "60010": { "FY 2025": 43983641.42 } } }
+    /// </summary>
+    [HttpPost("/batch/balance/year")]
+    public async Task<IActionResult> GetBalanceYear([FromBody] YearBalanceRequest request)
+    {
+        if (request.Accounts == null || !request.Accounts.Any())
+            return BadRequest(new { error = "accounts list is required" });
+        if (request.Year <= 0)
+            return BadRequest(new { error = "year is required" });
+
+        try
+        {
+            var year = request.Year;
+            var accountingBook = request.Book ?? DefaultAccountingBook;
+
+            _logger.LogInformation("📊 YEAR BALANCE: {Count} accounts for FY {Year}", request.Accounts.Count, year);
+
+            // Resolve subsidiary
+            var subsidiaryId = await _lookupService.ResolveSubsidiaryIdAsync(request.Subsidiary);
+            var targetSub = subsidiaryId ?? "1";
+            var hierarchySubs = await _lookupService.GetSubsidiaryHierarchyAsync(targetSub);
+            var subFilter = string.Join(", ", hierarchySubs);
+
+            // Build account filter
+            var accountFilter = string.Join("', '", request.Accounts.Select(a => NetSuiteService.EscapeSql(a)));
+            var incomeTypesSql = "'Income', 'OthIncome'";
+            var periodName = $"FY {year}";
+
+            // Query all 12 months and SUM
+            var query = $@"
+                SELECT 
+                    a.acctnumber,
+                    SUM(
+                        TO_NUMBER(
+                            BUILTIN.CONSOLIDATE(
+                                tal.amount,
+                                'LEDGER',
+                                'DEFAULT',
+                                'DEFAULT',
+                                {targetSub},
+                                ap.id,
+                                'DEFAULT'
+                            )
+                        ) * CASE WHEN a.accttype IN ({incomeTypesSql}) THEN -1 ELSE 1 END
+                    ) as balance
+                FROM transactionaccountingline tal
+                JOIN transaction t ON t.id = tal.transaction
+                JOIN account a ON a.id = tal.account
+                JOIN accountingperiod ap ON ap.id = t.postingperiod
+                JOIN transactionline tl ON t.id = tl.transaction AND tal.transactionline = tl.id
+                WHERE t.posting = 'T'
+                  AND tal.posting = 'T'
+                  AND a.acctnumber IN ('{accountFilter}')
+                  AND EXTRACT(YEAR FROM ap.startdate) = {year}
+                  AND ap.isyear = 'F' AND ap.isquarter = 'F'
+                  AND tal.accountingbook = {accountingBook}
+                  AND tl.subsidiary IN ({subFilter})
+                GROUP BY a.acctnumber";
+
+            var results = await _netSuiteService.QueryRawAsync(query, 60);
+
+            var balances = new Dictionary<string, Dictionary<string, decimal>>();
+            foreach (var row in results)
+            {
+                var acctNum = row.TryGetProperty("acctnumber", out var acctProp) ? acctProp.GetString() ?? "" : "";
+                var balance = row.TryGetProperty("balance", out var balProp) ? ParseBalance(balProp) : 0;
+                
+                if (!string.IsNullOrEmpty(acctNum))
+                {
+                    balances[acctNum] = new Dictionary<string, decimal> { { periodName, balance } };
+                }
+            }
+
+            _logger.LogInformation("✅ YEAR BALANCE: Got {Count} accounts", balances.Count);
+
+            return Ok(new { balances, period = periodName });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error in year balance");
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Get Balance Sheet balances for multiple periods (efficient multi-period query).
+    /// This is an alias for bs_preload - returns all BS accounts for requested periods.
+    /// Frontend expects: { balances: { "10010": { "Dec 2024": 123 }, ... } }
+    /// </summary>
+    [HttpPost("/batch/bs_periods")]
+    public Task<IActionResult> GetBsPeriodsMulti([FromBody] BsPreloadRequest request)
+    {
+        // Delegate to the preload endpoint which returns the same format
+        return PreloadBalanceSheetAccounts(request);
+    }
+
+    /// <summary>
     /// Preload ALL Balance Sheet accounts for a given period.
     /// This is critical for performance - BS cumulative queries are slow (~70s),
     /// but batching ALL BS accounts into one query takes only slightly longer.
