@@ -364,32 +364,41 @@ public class BalanceController : ControllerBase
     {
         var startTime = DateTime.UtcNow;
         
-        if (string.IsNullOrEmpty(request.Period))
-            return BadRequest(new { error = "period is required" });
+        // Support both single period and multiple periods
+        var periodsToLoad = new List<string>();
+        if (request.Periods != null && request.Periods.Any())
+        {
+            periodsToLoad.AddRange(request.Periods.Where(p => !string.IsNullOrEmpty(p)));
+        }
+        else if (!string.IsNullOrEmpty(request.Period))
+        {
+            periodsToLoad.Add(request.Period);
+        }
+        
+        if (!periodsToLoad.Any())
+            return BadRequest(new { error = "period or periods is required" });
 
         try
         {
-            _logger.LogInformation("📊 BS PRELOAD: Starting for period {Period}", request.Period);
+            _logger.LogInformation("📊 BS PRELOAD: Starting for {Count} period(s): {Periods}", 
+                periodsToLoad.Count, string.Join(", ", periodsToLoad));
             
-            // Get period info
-            var period = await _netSuiteService.GetPeriodAsync(request.Period);
-            if (period?.EndDate == null)
-                return BadRequest(new { error = $"Could not find period {request.Period}" });
+            // Results aggregated across all periods
+            var allBalances = new Dictionary<string, Dictionary<string, decimal>>();
+            var allAccountTypes = new Dictionary<string, string>();
+            var allAccountNames = new Dictionary<string, string>();
+            var totalCachedCount = 0;
             
-            // Resolve subsidiary
+            // Resolve common filters (same for all periods)
             var subsidiaryId = await _lookupService.ResolveSubsidiaryIdAsync(request.Subsidiary);
             var targetSub = subsidiaryId ?? "1";
-            
-            // Get subsidiary hierarchy
             var hierarchySubs = await _lookupService.GetSubsidiaryHierarchyAsync(targetSub);
             var subFilter = string.Join(", ", hierarchySubs);
             
-            // Resolve dimension IDs
             var departmentId = await _lookupService.ResolveDimensionIdAsync("department", request.Department);
             var classId = await _lookupService.ResolveDimensionIdAsync("class", request.Class);
             var locationId = await _lookupService.ResolveDimensionIdAsync("location", request.Location);
             
-            // Build segment filter
             var segmentFilters = new List<string> { $"tl.subsidiary IN ({subFilter})" };
             if (!string.IsNullOrEmpty(departmentId))
                 segmentFilters.Add($"tl.department = {departmentId}");
@@ -400,111 +409,123 @@ public class BalanceController : ControllerBase
             var segmentWhere = string.Join(" AND ", segmentFilters);
             
             var accountingBook = request.Book ?? DefaultAccountingBook;
-            var endDate = ConvertToYYYYMMDD(period.EndDate);
-            
-            // Get period ID for CONSOLIDATE exchange rate
-            var periodId = !string.IsNullOrEmpty(period.Id) ? period.Id : "NULL";
-            
-            // Query ALL Balance Sheet accounts at once
-            // BS types: Bank, AcctRec, OthCurrAsset, FixedAsset, OthAsset, AcctPay, 
-            //           CreditCard, OthCurrLiab, LongTermLiab, Equity, RetainEarn
+            var filtersHash = $"{targetSub}:{departmentId ?? ""}:{locationId ?? ""}:{classId ?? ""}";
+            var cacheExpiry = TimeSpan.FromMinutes(5);
             var bsTypesSql = Models.AccountType.BsTypesSql;
             
-            var query = $@"
-                SELECT 
-                    a.acctnumber,
-                    a.accountsearchdisplaynamecopy AS account_name,
-                    a.accttype,
-                    SUM(
-                        TO_NUMBER(
-                            BUILTIN.CONSOLIDATE(
-                                tal.amount,
-                                'LEDGER',
-                                'DEFAULT',
-                                'DEFAULT',
-                                {targetSub},
-                                {periodId},
-                                'DEFAULT'
-                            )
-                        )
-                    ) AS balance
-                FROM transactionaccountingline tal
-                JOIN transaction t ON t.id = tal.transaction
-                JOIN account a ON a.id = tal.account
-                JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id
-                WHERE t.posting = 'T'
-                  AND tal.posting = 'T'
-                  AND a.accttype IN ({bsTypesSql})
-                  AND t.trandate <= TO_DATE('{endDate}', 'YYYY-MM-DD')
-                  AND tal.accountingbook = {accountingBook}
-                  AND {segmentWhere}
-                GROUP BY a.acctnumber, a.accountsearchdisplaynamecopy, a.accttype
-                ORDER BY a.acctnumber";
-            
-            _logger.LogDebug("BS Preload query (first 500 chars): {Query}", query[..Math.Min(500, query.Length)]);
-            
-            // Use error-aware query with 180s timeout for BS cumulative
-            var queryResult = await _netSuiteService.QueryRawWithErrorAsync(query, 180);
-            
-            if (!queryResult.Success)
+            // Process each period
+            foreach (var periodName in periodsToLoad)
             {
-                _logger.LogWarning("BS Preload query failed: {Error}", queryResult.ErrorDetails);
-                return StatusCode(500, new { error = queryResult.ErrorCode, details = queryResult.ErrorDetails });
-            }
-            
-            var elapsed = (DateTime.UtcNow - startTime).TotalSeconds;
-            _logger.LogDebug("BS Preload query time: {Elapsed:F2}s, {Count} accounts", elapsed, queryResult.Items.Count);
-            
-            // Build filters hash for cache key
-            var filtersHash = $"{targetSub}:{departmentId ?? ""}:{locationId ?? ""}:{classId ?? ""}";
-            
-            // Transform results and cache
-            var balances = new Dictionary<string, decimal>();
-            var accountTypes = new Dictionary<string, string>();
-            var accountNames = new Dictionary<string, string>();
-            var cacheExpiry = TimeSpan.FromMinutes(5);
-            var cachedCount = 0;
-            
-            foreach (var row in queryResult.Items)
-            {
-                var accountNumber = row.TryGetProperty("acctnumber", out var numProp) ? numProp.GetString() ?? "" : "";
-                var accountName = row.TryGetProperty("account_name", out var nameProp) ? nameProp.GetString() ?? "" : "";
-                var accountType = row.TryGetProperty("accttype", out var typeProp) ? typeProp.GetString() ?? "" : "";
+                var periodStartTime = DateTime.UtcNow;
                 
-                if (string.IsNullOrEmpty(accountNumber))
-                    continue;
-                
-                decimal balance = 0;
-                if (row.TryGetProperty("balance", out var balProp) && balProp.ValueKind != JsonValueKind.Null)
+                // Get period info
+                var period = await _netSuiteService.GetPeriodAsync(periodName);
+                if (period?.EndDate == null)
                 {
-                    balance = ParseBalance(balProp);
+                    _logger.LogWarning("Could not find period {Period}, skipping", periodName);
+                    continue;
                 }
                 
-                balances[accountNumber] = balance;
-                accountTypes[accountNumber] = accountType;
-                accountNames[accountNumber] = accountName;
+                var endDate = ConvertToYYYYMMDD(period.EndDate);
+                var periodId = !string.IsNullOrEmpty(period.Id) ? period.Id : "NULL";
+            
+                var query = $@"
+                    SELECT 
+                        a.acctnumber,
+                        a.accountsearchdisplaynamecopy AS account_name,
+                        a.accttype,
+                        SUM(
+                            TO_NUMBER(
+                                BUILTIN.CONSOLIDATE(
+                                    tal.amount,
+                                    'LEDGER',
+                                    'DEFAULT',
+                                    'DEFAULT',
+                                    {targetSub},
+                                    {periodId},
+                                    'DEFAULT'
+                                )
+                            )
+                        ) AS balance
+                    FROM transactionaccountingline tal
+                    JOIN transaction t ON t.id = tal.transaction
+                    JOIN account a ON a.id = tal.account
+                    JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id
+                    WHERE t.posting = 'T'
+                      AND tal.posting = 'T'
+                      AND a.accttype IN ({bsTypesSql})
+                      AND t.trandate <= TO_DATE('{endDate}', 'YYYY-MM-DD')
+                      AND tal.accountingbook = {accountingBook}
+                      AND {segmentWhere}
+                    GROUP BY a.acctnumber, a.accountsearchdisplaynamecopy, a.accttype
+                    ORDER BY a.acctnumber";
+            
+                _logger.LogDebug("BS Preload [{Period}] query (first 500 chars): {Query}", 
+                    periodName, query[..Math.Min(500, query.Length)]);
+            
+                var queryResult = await _netSuiteService.QueryRawWithErrorAsync(query, 180);
+            
+                if (!queryResult.Success)
+                {
+                    _logger.LogWarning("BS Preload query failed for {Period}: {Error}", periodName, queryResult.ErrorDetails);
+                    continue; // Skip this period but continue with others
+                }
+            
+                var periodElapsed = (DateTime.UtcNow - periodStartTime).TotalSeconds;
+                _logger.LogDebug("BS Preload [{Period}] query time: {Elapsed:F2}s, {Count} accounts", 
+                    periodName, periodElapsed, queryResult.Items.Count);
+            
+                // Process and cache results for this period
+                foreach (var row in queryResult.Items)
+                {
+                    var accountNumber = row.TryGetProperty("acctnumber", out var numProp) ? numProp.GetString() ?? "" : "";
+                    var accountName = row.TryGetProperty("account_name", out var nameProp) ? nameProp.GetString() ?? "" : "";
+                    var accountType = row.TryGetProperty("accttype", out var typeProp) ? typeProp.GetString() ?? "" : "";
                 
-                // Cache individual account balance
-                var cacheKey = $"balance:{accountNumber}:{request.Period}:{filtersHash}";
-                _cache.Set(cacheKey, balance, cacheExpiry);
-                cachedCount++;
+                    if (string.IsNullOrEmpty(accountNumber))
+                        continue;
+                
+                    decimal balance = 0;
+                    if (row.TryGetProperty("balance", out var balProp) && balProp.ValueKind != JsonValueKind.Null)
+                    {
+                        balance = ParseBalance(balProp);
+                    }
+                
+                    // Store account info (same across periods)
+                    allAccountTypes[accountNumber] = accountType;
+                    allAccountNames[accountNumber] = accountName;
+                    
+                    // Store balance per period: { "10010": { "Dec 2024": 100, "Dec 2023": 90 } }
+                    if (!allBalances.ContainsKey(accountNumber))
+                        allBalances[accountNumber] = new Dictionary<string, decimal>();
+                    allBalances[accountNumber][periodName] = balance;
+                
+                    // Cache individual account balance for this period
+                    var cacheKey = $"balance:{accountNumber}:{periodName}:{filtersHash}";
+                    _cache.Set(cacheKey, balance, cacheExpiry);
+                    totalCachedCount++;
+                }
+                
+                _logger.LogInformation("✅ BS PRELOAD [{Period}]: {Count} accounts in {Elapsed:F1}s", 
+                    periodName, queryResult.Items.Count, periodElapsed);
             }
             
             var totalElapsed = (DateTime.UtcNow - startTime).TotalSeconds;
             _logger.LogInformation(
-                "✅ BS PRELOAD COMPLETE: {Count} accounts in {Elapsed:F1}s ({PerAccount:F2}s per account average, {Cached} cached)",
-                balances.Count, totalElapsed, balances.Count > 0 ? totalElapsed / balances.Count : 0, cachedCount);
+                "✅ BS PRELOAD COMPLETE: {Accounts} accounts × {Periods} periods in {Elapsed:F1}s ({Cached} cached)",
+                allBalances.Count, periodsToLoad.Count, totalElapsed, totalCachedCount);
             
             return Ok(new
             {
-                balances = balances,
-                account_types = accountTypes,
-                account_names = accountNames,
-                period = request.Period,
+                balances = allBalances,
+                account_types = allAccountTypes,
+                account_names = allAccountNames,
+                periods = periodsToLoad,
                 elapsed_seconds = totalElapsed,
-                account_count = balances.Count,
-                cached_count = cachedCount,
-                message = $"Loaded {balances.Count} Balance Sheet accounts in {totalElapsed:F1}s. Individual formulas will now be instant."
+                account_count = allBalances.Count,
+                period_count = periodsToLoad.Count,
+                cached_count = totalCachedCount,
+                message = $"Loaded {allBalances.Count} Balance Sheet accounts × {periodsToLoad.Count} period(s) in {totalElapsed:F1}s. Individual formulas will now be instant."
             });
         }
         catch (SafetyLimitException ex)
@@ -562,10 +583,16 @@ public class BalanceController : ControllerBase
 
 /// <summary>
 /// Request for Balance Sheet preload.
+/// Supports single period OR multiple periods for comparison scenarios.
 /// </summary>
 public class BsPreloadRequest
 {
+    /// <summary>Single period (backward compatible)</summary>
     public string Period { get; set; } = "";
+    
+    /// <summary>Multiple periods for comparison (e.g., Dec 2024 + Dec 2023)</summary>
+    public List<string>? Periods { get; set; }
+    
     public string? Subsidiary { get; set; }
     public string? Department { get; set; }
     public string? Class { get; set; }

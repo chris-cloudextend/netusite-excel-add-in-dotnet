@@ -4115,12 +4115,31 @@ For licensing inquiries, contact: legal@celigo.com
                         <div style="font-size: 11px; color: var(--bottlenose); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px;">⚡ Performance Tools</div>
                     </div>
                     
-                    <!-- Option 5: Preload Balance Sheet -->
-                    <div class="guide-choice" onclick="preloadBalanceSheet()" style="margin-top: 8px; background: linear-gradient(135deg, rgba(59,130,246,0.05), rgba(59,130,246,0.1)); border: 2px solid #3B82F6;">
+                    <!-- Option 5: Preload Balance Sheet (expandable) -->
+                    <div class="guide-choice bs-preload-section" style="margin-top: 8px; background: linear-gradient(135deg, rgba(59,130,246,0.05), rgba(59,130,246,0.1)); border: 2px solid #3B82F6; cursor: default;">
                         <div class="guide-choice-icon">⚡</div>
-                        <div class="guide-choice-content">
+                        <div class="guide-choice-content" style="width: 100%;">
                             <div class="guide-choice-title" style="color: #3B82F6;">Preload Balance Sheet</div>
-                            <div class="guide-choice-desc" style="color: var(--bottlenose);">Cache ALL BS accounts (~70s) — subsequent lookups instant</div>
+                            <div class="guide-choice-desc" style="color: var(--bottlenose);">Cache ALL BS accounts — subsequent lookups instant</div>
+                            
+                            <!-- Period selector -->
+                            <div style="margin-top: 12px; display: flex; flex-direction: column; gap: 8px;">
+                                <div style="display: flex; gap: 8px; align-items: center;">
+                                    <label style="font-size: 12px; min-width: 60px;">Period 1:</label>
+                                    <input type="text" id="bsPreloadPeriod1" placeholder="Dec 2024" value="Dec 2024" 
+                                           style="flex: 1; padding: 6px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 12px;">
+                                </div>
+                                <div style="display: flex; gap: 8px; align-items: center;">
+                                    <label style="font-size: 12px; min-width: 60px;">Period 2:</label>
+                                    <input type="text" id="bsPreloadPeriod2" placeholder="Dec 2023 (optional)" 
+                                           style="flex: 1; padding: 6px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 12px;">
+                                </div>
+                                <div style="font-size: 10px; color: #888;">💡 Add a 2nd period for YoY comparisons (~90s total vs ~140s separately)</div>
+                                <button onclick="preloadBalanceSheet()" 
+                                        style="margin-top: 4px; padding: 8px 16px; background: #3B82F6; color: white; border: none; border-radius: 6px; font-size: 13px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 6px;">
+                                    <span>⚡</span> <span>Preload Now</span>
+                                </button>
+                            </div>
                         </div>
                     </div>
                     
@@ -10355,41 +10374,33 @@ For licensing inquiries, contact: legal@celigo.com
         async function preloadBalanceSheet() {
             console.log('⚡ PRELOAD BALANCE SHEET: Starting...');
             
-            // Get current period from filters or default
-            let period = 'Dec 2024';  // Default
+            // Get periods from input fields
+            const periods = [];
+            const period1Input = document.getElementById('bsPreloadPeriod1');
+            const period2Input = document.getElementById('bsPreloadPeriod2');
             
-            try {
-                await Excel.run(async (context) => {
-                    const sheet = context.workbook.worksheets.getActiveWorksheet();
-                    const periodCell = sheet.getRange("P3");
-                    periodCell.load("values");
-                    await context.sync();
-                    
-                    const cellVal = periodCell.values[0][0];
-                    if (cellVal && typeof cellVal === 'number') {
-                        // It's an Excel date serial number
-                        const date = new Date((cellVal - 25569) * 86400000);
-                        const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-                        period = `${months[date.getMonth()]} ${date.getFullYear()}`;
-                    } else if (cellVal && typeof cellVal === 'string') {
-                        period = cellVal;
-                    }
-                });
-            } catch (e) {
-                console.log('Could not read period from P3, using default:', period);
-            }
+            const period1 = period1Input?.value?.trim() || 'Dec 2024';
+            const period2 = period2Input?.value?.trim();
+            
+            periods.push(period1);
+            if (period2) periods.push(period2);
+            
+            const periodLabel = periods.length > 1 ? periods.join(' & ') : periods[0];
+            const expectedTime = periods.length > 1 ? '~90 seconds' : '~70 seconds';
+            
+            console.log(`📊 BS Preload: ${periods.length} period(s): ${periodLabel}`);
             
             // Show loading overlay with BS-specific messaging
             showLoading(
                 '⚡ Preloading Balance Sheet',
-                `Calculating cumulative balances for ALL Balance Sheet accounts as of ${period}...`,
+                `Calculating cumulative balances for ALL Balance Sheet accounts...`,
                 10
             );
             
             // Update with helpful context
             setTimeout(() => {
                 updateLoading(
-                    'Balance Sheet accounts require cumulative calculation from the beginning of time...',
+                    `Loading ${periods.length} period(s): ${periodLabel}`,
                     25,
                     '💡 This is a one-time cache — subsequent lookups will be instant!'
                 );
@@ -10399,7 +10410,7 @@ For licensing inquiries, contact: legal@celigo.com
                 updateLoading(
                     'Running consolidated query for all Assets, Liabilities, and Equity...',
                     45,
-                    '⏱️ Typical time: 60-90 seconds'
+                    `⏱️ Typical time: ${expectedTime}`
                 );
             }, 15000);
             
@@ -10407,7 +10418,7 @@ For licensing inquiries, contact: legal@celigo.com
                 updateLoading(
                     'Still processing — this is normal for Balance Sheet queries...',
                     65,
-                    '📊 All 100+ BS accounts processed in a single batch!'
+                    periods.length > 1 ? '📊 Multi-period queries are more efficient than separate calls!' : '📊 All 200+ BS accounts processed in a single batch!'
                 );
             }, 35000);
             
@@ -10426,7 +10437,7 @@ For licensing inquiries, contact: legal@celigo.com
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        period: period
+                        periods: periods  // Send array of periods
                     })
                 });
                 
@@ -10441,14 +10452,27 @@ For licensing inquiries, contact: legal@celigo.com
                 console.log('✅ BS PRELOAD COMPLETE:', result);
                 
                 // Cache results in localStorage for formula lookups
+                // New format: balances = { "10010": { "Dec 2024": 100, "Dec 2023": 90 } }
                 if (result.balances) {
                     const cacheEntries = {};
-                    for (const [account, balance] of Object.entries(result.balances)) {
-                        const cacheKey = `balance:${account}::${period}`;
-                        cacheEntries[cacheKey] = {
-                            value: balance,
-                            timestamp: Date.now()
-                        };
+                    for (const [account, periodBalances] of Object.entries(result.balances)) {
+                        if (typeof periodBalances === 'object') {
+                            // Multi-period format: { "Dec 2024": 100, "Dec 2023": 90 }
+                            for (const [periodName, balance] of Object.entries(periodBalances)) {
+                                const cacheKey = `balance:${account}::${periodName}`;
+                                cacheEntries[cacheKey] = {
+                                    value: balance,
+                                    timestamp: Date.now()
+                                };
+                            }
+                        } else {
+                            // Single period (backward compat)
+                            const cacheKey = `balance:${account}::${periods[0]}`;
+                            cacheEntries[cacheKey] = {
+                                value: periodBalances,
+                                timestamp: Date.now()
+                            };
+                        }
                     }
                     
                     // Store in localStorage for functions.js to use
@@ -10464,9 +10488,10 @@ For licensing inquiries, contact: legal@celigo.com
                 
                 hideLoading();
                 
+                const periodCount = result.period_count || 1;
                 showToast({
                     title: '✅ Balance Sheet Preloaded!',
-                    message: `${result.account_count} accounts cached in ${elapsedSec}s. Your formulas will now resolve instantly!`,
+                    message: `${result.account_count} accounts × ${periodCount} period(s) cached in ${elapsedSec}s. Formulas will now be instant!`,
                     type: 'success',
                     duration: 8000,
                     icon: '⚡'
