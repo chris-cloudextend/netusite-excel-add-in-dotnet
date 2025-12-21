@@ -5313,7 +5313,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=3.0.5.259"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=3.0.5.260"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -13865,15 +13865,7 @@ export default {
                             }
                         }
                         
-                        // Fallback: waited long enough without seeing #BUSY
-                        if (!shouldCountAsComplete && elapsed > FALLBACK_WAIT_SECONDS) {
-                            if (errorCount > 0) {
-                                console.warn(`⚠️ Timeout reached (${FALLBACK_WAIT_SECONDS}s) with ${errorCount} errors; marking incomplete`);
-                                return { resolved: false, reason: `errors-present-${errorCount}` };
-                            }
-                            console.warn(`⚠️ Timeout reached (${FALLBACK_WAIT_SECONDS}s) while waiting for formulas; marking incomplete`);
-                            return { resolved: false, reason: `timeout-${FALLBACK_WAIT_SECONDS}s` };
-                        }
+                        // No fallback cutoff: keep waiting until maxWaitMs unless caller times out
                         
                         if (shouldCountAsComplete) {
                             consecutiveClean++;

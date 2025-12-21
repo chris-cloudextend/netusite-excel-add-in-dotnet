@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '3.0.5.259';  // Use max(initial, current) formula count to avoid threshold mismatch
+const FUNCTIONS_VERSION = '3.0.5.260';  // Remove 25s fallback cutoff; wait until maxWaitMs
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
