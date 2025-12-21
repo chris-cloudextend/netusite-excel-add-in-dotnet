@@ -5313,7 +5313,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=3.0.5.255"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=3.0.5.256"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -13772,8 +13772,16 @@ export default {
                                     } else if (cellStr.startsWith('#') && !cellStr.includes('#BUSY')) {
                                         // Error like #VALUE!, #N/A - treat as unresolved but track
                                         errorCount++;
-                                    } else if (cellValue === null || cellValue === undefined || (typeof cellValue === 'string' && cellValue.trim() === '')) {
-                                        // Blank/empty string still indicates formula evaluated; treat as resolved
+                                    } else if (typeof cellValue === 'string') {
+                                        if (cellStr.trim() === '') {
+                                            // Blank/empty string still indicates formula evaluated; treat as resolved
+                                            resolvedFormulaCount++;
+                                        } else if (!cellStr.startsWith('#')) {
+                                            // Non-error string (e.g., XAVI.NAME returns text) counts as resolved
+                                            resolvedFormulaCount++;
+                                        }
+                                    } else if (cellValue === null || cellValue === undefined) {
+                                        // Null/undefined considered resolved (evaluated to blank)
                                         resolvedFormulaCount++;
                                     }
                                 }
@@ -14875,6 +14883,10 @@ export default {
                                 formulaCount++;
                                 subsidiaryParam = extractFormulaParam(formula, 2);
                             } else if (upperFormula.includes('XAVI.BUDGET')) {
+                                formulaCount++;
+                                subsidiaryParam = extractFormulaParam(formula, 3);
+                            } else if (upperFormula.includes('XAVI.NAME')) {
+                                // NAME formulas are still XAVI formulas and should count toward completion
                                 formulaCount++;
                                 subsidiaryParam = extractFormulaParam(formula, 3);
                             } else {
