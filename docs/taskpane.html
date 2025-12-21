@@ -5313,7 +5313,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=3.0.5.250"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=3.0.5.251"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -9463,41 +9463,60 @@ For licensing inquiries, contact: legal@celigo.com
                 hideStatus();
                 
                 // Wait for formulas to complete (shorter timeout since cache should hit)
-                const formulasResolved = await waitForFormulasToComplete(45000, null);
+                const formulaStatus = await waitForFormulasToComplete(45000, null);
                 
-                // Only now show 100% and success
-                if (overlayProgressText) overlayProgressText.textContent = '100% complete';
-                if (overlayProgress) overlayProgress.style.width = '100%';
-                if (overlayStep) overlayStep.innerHTML = '✅ All formulas resolved!';
-                if (overlayStepDesc) overlayStepDesc.textContent = '';
+                if (!formulaStatus.resolved) {
+                    // Warn user; do NOT show success overlay
+                    if (overlayProgressText) overlayProgressText.textContent = 'Incomplete';
+                    if (overlayProgress) overlayProgress.style.width = '95%';
+                    if (overlayStep) overlayStep.innerHTML = '⚠️ Formulas did not finish';
+                    if (overlayStepDesc) overlayStepDesc.textContent = 'Data may be incomplete. Please retry.';
+                    showToast({ type: 'warning', title: 'Formulas did not finish', message: 'CFO Flash data may be incomplete. Please rerun.' });
+                } else {
+                    // Only now show 100% and success
+                    if (overlayProgressText) overlayProgressText.textContent = '100% complete';
+                    if (overlayProgress) overlayProgress.style.width = '100%';
+                    if (overlayStep) overlayStep.innerHTML = '✅ All formulas resolved!';
+                    if (overlayStepDesc) overlayStepDesc.textContent = '';
+                    
+                    // Brief pause to show the 100% state
+                    await new Promise(r => setTimeout(r, 300));
+                }
                 
-                // Brief pause to show the 100% state
-                await new Promise(r => setTimeout(r, 500));
-                
-                // Auto-fit columns AFTER all formulas have resolved
+                // Auto-fit columns AFTER checks
                 await autoFitColumns();
                 
-                // NOW remove overlay and show success
+                // Remove overlay
                 overlay.remove();
                 
-                // Show success overlay with timing
-                const elapsedSeconds = ((Date.now() - startTime) / 1000).toFixed(1);
-                showReportSuccessOverlay('CFO Flash Report', {
-                    totalAccounts: 5,
-                    elapsedTime: elapsedSeconds,
-                    countLabel: 'Formula Type',  // Header label for the count column
-                    sections: [
-                        { name: 'Revenue', count: 'TYPEBALANCE' },
-                        { name: 'COGS', count: 'TYPEBALANCE' },
-                        { name: 'Expenses', count: 'TYPEBALANCE' },
-                        { name: 'Other', count: 'TYPEBALANCE' }
-                    ],
-                    tips: [
-                        { type: 'info', icon: '📅', title: 'Year:', text: 'Edit <strong>P3</strong> to change year. Auto-syncs.' },
-                        { type: 'info', icon: '🏢', title: 'Subsidiary:', text: 'Edit <strong>Q3</strong> to filter. Auto-syncs.' },
-                        { type: 'info', icon: '📋', title: 'Named Ranges:', text: '_Revenue, _COGS, _Gross_Margin, _Operating_Income, _Net_Income' }
-                    ]
-                });
+                if (formulaStatus.resolved) {
+                    // Show success overlay with timing
+                    const elapsedSeconds = ((Date.now() - startTime) / 1000).toFixed(1);
+                    showReportSuccessOverlay('CFO Flash Report', {
+                        totalAccounts: 5,
+                        elapsedTime: elapsedSeconds,
+                        countLabel: 'Formula Type',  // Header label for the count column
+                        sections: [
+                            { name: 'Revenue', count: 'TYPEBALANCE' },
+                            { name: 'COGS', count: 'TYPEBALANCE' },
+                            { name: 'Expenses', count: 'TYPEBALANCE' },
+                            { name: 'Other', count: 'TYPEBALANCE' }
+                        ],
+                        tips: [
+                            { type: 'info', icon: '📅', title: 'Year:', text: 'Edit <strong>P3</strong> to change year. Auto-syncs.' },
+                            { type: 'info', icon: '🏢', title: 'Subsidiary:', text: 'Edit <strong>Q3</strong> to filter. Auto-syncs.' },
+                            { type: 'info', icon: '📋', title: 'Named Ranges:', text: '_Revenue, _COGS, _Gross_Margin, _Operating_Income, _Net_Income' }
+                        ]
+                    });
+                } else {
+                    // If incomplete, surface warning overlay
+                    if (typeof showReportWarningOverlay === 'function') {
+                        showReportWarningOverlay('CFO Flash Report', {
+                            reason: formulaStatus.reason || 'timeout',
+                            message: 'Formulas did not fully complete. Data may be incomplete.'
+                        });
+                    }
+                }
                 
                 closeQuickStart();
                 
@@ -10314,44 +10333,58 @@ For licensing inquiries, contact: legal@celigo.com
                 hideLoading();
                 hideStatus();
                 
-                // Wait for 100% of formulas to complete before showing success
-                const formulasResolved = await waitForFormulasToComplete(90000, null);
+                // Wait for formulas to complete (shorter timeout since cache should hit)
+                const formulaStatusIS = await waitForFormulasToComplete(45000, null);
                 
-                // Only now show 100% and success
-                if (overlayProgressText) overlayProgressText.textContent = '100% complete';
-                if (overlayProgress) overlayProgress.style.width = '100%';
-                if (overlayStep) overlayStep.innerHTML = '✅ All formulas resolved!';
-                if (overlayStepDesc) overlayStepDesc.textContent = '';
+                if (!formulaStatusIS.resolved) {
+                    if (overlayProgressText) overlayProgressText.textContent = 'Incomplete';
+                    if (overlayProgress) overlayProgress.style.width = '95%';
+                    if (overlayStep) overlayStep.innerHTML = '⚠️ Formulas did not finish';
+                    if (overlayStepDesc) overlayStepDesc.textContent = 'Data may be incomplete. Please retry.';
+                    showToast({ type: 'warning', title: 'Formulas did not finish', message: 'Income Statement may be incomplete. Please rerun.' });
+                } else {
+                    if (overlayProgressText) overlayProgressText.textContent = '100% complete';
+                    if (overlayProgress) overlayProgress.style.width = '100%';
+                    if (overlayStep) overlayStep.innerHTML = '✅ All formulas resolved!';
+                    if (overlayStepDesc) overlayStepDesc.textContent = '';
+                    await new Promise(r => setTimeout(r, 300));
+                }
                 
-                // Brief pause to show the 100% state
-                await new Promise(r => setTimeout(r, 500));
-                
-                // Auto-fit columns AFTER all formulas have resolved
+                // Auto-fit columns AFTER checks
                 await autoFitColumns();
                 
-                // NOW remove the overlay and show success
+                // Remove the overlay
                 overlay.remove();
                 
-                // Success message - show as dismissible overlay
-                const totalAccounts = categories.income.length + categories.othIncome.length + 
-                                     categories.cogs.length + categories.expense.length + categories.othExpense.length;
-                
-                const elapsedSeconds = ((Date.now() - startTime) / 1000).toFixed(1);
-                showReportSuccessOverlay('Income Statement', {
-                    totalAccounts,
-                    elapsedTime: elapsedSeconds,
-                    sections: [
-                        { name: 'Revenue', count: categories.income.length },
-                        { name: 'Cost of Sales', count: categories.cogs.length },
-                        { name: 'Operating Expenses', count: categories.expense.length },
-                        { name: 'Other Income/Expense', count: categories.othIncome.length + categories.othExpense.length }
-                    ],
-                    tips: [
-                        { type: 'warning', icon: '⚠️', title: 'Verify:', text: 'Auto-generated from NetSuite. Review before official use.' },
-                        { type: 'info', icon: '📅', title: 'Year:', text: 'Edit <strong>P3</strong> to change year. Structure auto-syncs.' },
-                        { type: 'info', icon: '🏢', title: 'Subsidiary:', text: 'Edit <strong>Q3</strong> to filter. Also supports Dept, Class, Location.' }
-                    ]
-                });
+                if (formulaStatusIS.resolved) {
+                    // Success message - show as dismissible overlay
+                    const totalAccounts = categories.income.length + categories.othIncome.length + 
+                                         categories.cogs.length + categories.expense.length + categories.othExpense.length;
+                    
+                    const elapsedSeconds = ((Date.now() - startTime) / 1000).toFixed(1);
+                    showReportSuccessOverlay('Income Statement', {
+                        totalAccounts,
+                        elapsedTime: elapsedSeconds,
+                        sections: [
+                            { name: 'Revenue', count: categories.income.length },
+                            { name: 'Cost of Sales', count: categories.cogs.length },
+                            { name: 'Operating Expenses', count: categories.expense.length },
+                            { name: 'Other Income/Expense', count: categories.othIncome.length + categories.othExpense.length }
+                        ],
+                        tips: [
+                            { type: 'warning', icon: '⚠️', title: 'Verify:', text: 'Auto-generated from NetSuite. Review before official use.' },
+                            { type: 'info', icon: '📅', title: 'Year:', text: 'Edit <strong>P3</strong> to change year. Structure auto-syncs.' },
+                            { type: 'info', icon: '🏢', title: 'Subsidiary:', text: 'Edit <strong>Q3</strong> to filter. Also supports Dept, Class, Location.' }
+                        ]
+                    });
+                } else {
+                    if (typeof showReportWarningOverlay === 'function') {
+                        showReportWarningOverlay('Income Statement', {
+                            reason: formulaStatusIS.reason || 'timeout',
+                            message: 'Formulas did not fully complete. Data may be incomplete.'
+                        });
+                    }
+                }
                 
                 // Clear sync flag after a delay to let any queued change events fire first
                 setTimeout(() => {
@@ -13618,6 +13651,7 @@ export default {
         // Wait for formulas to complete - smart detection based on actual formula count
         // PRIMARY GATE: If #BUSY is found, keep waiting regardless of other checks
         // SECONDARY: Smart detection checks if formula cells have resolved to numbers
+        // Returns: { resolved: boolean, reason: string }
         async function waitForFormulasToComplete(maxWaitMs = 120000, updateOverlayFn = null) {
             const startTime = Date.now();
             
@@ -13769,7 +13803,7 @@ export default {
                             if (consecutiveClean >= requiredConsecutive) {
                                 console.log(`✅ All formulas complete! (${resolveReason})`);
                                 localStorage.removeItem('netsuite_status');
-                                return true;
+                                return { resolved: true, reason: resolveReason || 'complete' };
                             }
                         } else {
                             const smartInfo = formulaCellPositions.length > 0 
@@ -13784,7 +13818,7 @@ export default {
             }
             
             console.warn('⚠️ Timed out waiting for formulas to complete');
-            return false;
+            return { resolved: false, reason: 'timeout' };
         }
         
         // Auto-fit all columns with data - call AFTER all formulas have resolved
