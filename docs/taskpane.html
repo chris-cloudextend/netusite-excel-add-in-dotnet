@@ -5313,7 +5313,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=3.0.5.246"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=3.0.5.247"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -9462,8 +9462,8 @@ For licensing inquiries, contact: legal@celigo.com
                 hideLoading();
                 hideStatus();
                 
-                // Wait for formulas to complete - extended timeout for large reports
-                const formulasResolved = await waitForFormulasToComplete(60000, null);
+                // Wait for 100% of formulas to complete before showing success
+                const formulasResolved = await waitForFormulasToComplete(90000, null);
                 
                 // Only now show 100% and success
                 if (overlayProgressText) overlayProgressText.textContent = '100% complete';
@@ -10314,8 +10314,8 @@ For licensing inquiries, contact: legal@celigo.com
                 hideLoading();
                 hideStatus();
                 
-                // Wait for formulas to complete - no sub-messages, just "Tidying Up"
-                const formulasResolved = await waitForFormulasToComplete(120000, null);
+                // Wait for 100% of formulas to complete before showing success
+                const formulasResolved = await waitForFormulasToComplete(90000, null);
                 
                 // Only now show 100% and success
                 if (overlayProgressText) overlayProgressText.textContent = '100% complete';
@@ -10717,8 +10717,11 @@ For licensing inquiries, contact: legal@celigo.com
                 
                 updateProgress(95, '📊 Step 4 of 4: Finalizing', 'Waiting for formulas to calculate...');
                 
-                // Wait for formulas to complete
-                await waitForFormulasToComplete(60000, null);
+                // Wait for 100% of formulas to complete before showing success
+                await waitForFormulasToComplete(90000, null);
+                
+                // Auto-fit columns AFTER all formulas have resolved
+                await autoFitColumns();
                 
                 // Show success
                 clearInterval(tipInterval);
@@ -13606,9 +13609,9 @@ export default {
         // IMPORTANT: #BUSY detection is the PRIMARY check. Smart detection only helps
         // detect instant cache hits when #BUSY is never seen.
         const USE_SMART_FORMULA_DETECTION = true;  // <-- EASY REVERT: Change to false
-        const SMART_DETECTION_THRESHOLD = 0.95;    // 95% of formula cells must have numeric values
-        const FALLBACK_WAIT_SECONDS = 30;          // Fallback timeout (30 seconds)
-        const INITIAL_WAIT_MS = 1500;              // Initial wait before first check (1.5 seconds)
+        const SMART_DETECTION_THRESHOLD = 1.0;     // 100% of formula cells must resolve before completion
+        const FALLBACK_WAIT_SECONDS = 90;          // Fallback timeout (only if stuck)
+        const INITIAL_WAIT_MS = 1000;              // Initial wait before first check
         // ========================================================================
         
         // Wait for formulas to complete - smart detection based on actual formula count
@@ -13659,7 +13662,7 @@ export default {
             await new Promise(resolve => setTimeout(resolve, INITIAL_WAIT_MS));
             
             let consecutiveClean = 0;
-            const requiredConsecutive = 3; // Need 3 consecutive clean checks
+            const requiredConsecutive = 2; // Need 2 consecutive clean checks (reduces false positives)
             let sawBusyAtLeastOnce = false;
             const targetResolved = Math.ceil(formulaCellPositions.length * SMART_DETECTION_THRESHOLD);
             
@@ -15702,8 +15705,8 @@ export default {
                 if (loadingStep) loadingStep.innerHTML = '<span class="spreadsheet-animation">📊</span> Tucking everything into place...';
                 if (loadingDesc) loadingDesc.textContent = 'Formulas are refreshing with cached data.';
                 
-                // Wait for formulas to resolve
-                await waitForFormulasToComplete(60000, null);
+                // Wait for 100% of formulas to complete
+                await waitForFormulasToComplete(90000, null);
                 
                 // Auto-fit columns AFTER all formulas have resolved
                 await autoFitColumns();
