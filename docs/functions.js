@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '3.0.5.248';  // Fix TYPEBALANCE cache key mismatch (was missing 1 colon = 1 field)
+const FUNCTIONS_VERSION = '3.0.5.249';  // Fix batch/typebalance_refresh payload (class/book fields) to avoid 400
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================

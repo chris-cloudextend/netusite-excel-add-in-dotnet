@@ -5313,7 +5313,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=3.0.5.248"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=3.0.5.249"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -9043,8 +9043,8 @@ For licensing inquiries, contact: legal@celigo.com
                             subsidiary: defaultSubsidiary,
                             department: '',
                             location: '',
-                            classId: '',
-                            accountingBook: ''
+                            class: '',
+                            accountingBook: null
                         })
                     });
                     
@@ -14669,8 +14669,8 @@ export default {
                         subsidiary: subsidiary,
                         department: '',
                         location: '',
-                        classId: '',
-                        accountingBook: ''
+                        class: '',
+                        accountingBook: null
                     })
                 });
                 
@@ -14861,8 +14861,8 @@ export default {
                             subsidiary: subsidiary,
                             department: department,
                             location: location,
-                            classId: classId,
-                            accountingBook: accountingBook
+                            class: classId,
+                            accountingBook: accountingBook ?? null
                         })
                     });
                     
@@ -15603,8 +15603,8 @@ export default {
                             subsidiary: currentSubsidiary,
                             department: department,
                             location: location,
-                            classId: classId,
-                            accountingBook: accountingBook
+                            class: classId,
+                            accountingBook: accountingBook ?? null
                         })
                     });
                     
@@ -18676,8 +18676,8 @@ export default {
                         subsidiary: subsidiaryValue,
                         department: '',
                         location: '',
-                        classId: '',
-                        accountingBook: ''
+                        class: '',
+                        accountingBook: null
                     })
                 });
                 
