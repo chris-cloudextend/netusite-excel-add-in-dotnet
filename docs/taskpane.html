@@ -5313,7 +5313,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=3.0.5.254"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=3.0.5.255"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -13699,7 +13699,10 @@ export default {
             let consecutiveClean = 0;
             const requiredConsecutive = 2; // Need 2 consecutive clean checks (reduces false positives)
             let sawBusyAtLeastOnce = false;
-            let targetResolved = Math.ceil(formulaCellPositions.length * SMART_DETECTION_THRESHOLD);
+            const effectiveTotalFormulas = (window.lastXaviFormulaCount && window.lastXaviFormulaCount > 0)
+                ? window.lastXaviFormulaCount
+                : formulaCellPositions.length;
+            let targetResolved = Math.ceil(effectiveTotalFormulas * SMART_DETECTION_THRESHOLD);
             const rescanThresholdSeconds = 3; // if we stall without BUSY, refresh formula map
             let lastRescanAt = Date.now();
             
@@ -13804,26 +13807,26 @@ export default {
                             } else {
                                 console.log(`   ⚠️ ${errorCount} formula cells have error values; waiting for clean state`);
                             }
-                        } else if (USE_SMART_FORMULA_DETECTION && formulaCellPositions.length > 0) {
+                        } else if (USE_SMART_FORMULA_DETECTION && effectiveTotalFormulas > 0) {
                             // Never saw #BUSY - check if formula cells resolved (cache hit)
-                            const pct = resolvedFormulaCount / formulaCellPositions.length;
+                            const pct = resolvedFormulaCount / effectiveTotalFormulas;
                             if (pct >= SMART_DETECTION_THRESHOLD) {
-                                console.log(`🧠 Smart: ${resolvedFormulaCount}/${formulaCellPositions.length} formula cells resolved (${Math.round(pct*100)}%)`);
+                                console.log(`🧠 Smart: ${resolvedFormulaCount}/${effectiveTotalFormulas} formula cells resolved (${Math.round(pct*100)}%)`);
                                 if (errorCount > 0) {
                                     console.log(`   ⚠️ ${errorCount} formula cells have error values; not declaring complete`);
                                 } else {
                                     shouldCountAsComplete = true;
                                     resolveReason = 'smart detection (cache hit)';
                                     // Fast-path: if 99%+ resolved, don’t require multiple consecutive checks
-                                    if (pct >= 0.995) {
+                                    if (pct >= 0.995 || resolvedFormulaCount >= effectiveTotalFormulas) {
                                         consecutiveClean = requiredConsecutive;
                                     }
                                 }
                             }
                             
                             // Small-sheet allowance: if very few formulas remain unresolved, don't wait a long timeout
-                            const unresolved = formulaCellPositions.length - resolvedFormulaCount;
-                            const allowance = formulaCellPositions.length <= 100 ? 1 : 0;
+                            const unresolved = effectiveTotalFormulas - resolvedFormulaCount;
+                            const allowance = effectiveTotalFormulas <= 100 ? 1 : 0;
                             if (!shouldCountAsComplete && errorCount === 0 && unresolved <= allowance && resolvedFormulaCount > 0) {
                                 shouldCountAsComplete = true;
                                 resolveReason = 'near-complete (<=1 pending)';
@@ -13837,12 +13840,12 @@ export default {
                             lastRescanAt = now;
                             await rescanFormulaPositions();
                             // Recompute current progress after rescan
-                            if (formulaCellPositions.length > 0) {
-                                const pct = resolvedFormulaCount / formulaCellPositions.length;
-                                if (pct >= SMART_DETECTION_THRESHOLD) {
+                            if (effectiveTotalFormulas > 0) {
+                                const pct = resolvedFormulaCount / effectiveTotalFormulas;
+                                if (pct >= SMART_DETECTION_THRESHOLD && errorCount === 0) {
                                     shouldCountAsComplete = true;
                                     resolveReason = 'smart detection (post-rescan)';
-                                    if (pct >= 0.995) {
+                                    if (pct >= 0.995 || resolvedFormulaCount >= effectiveTotalFormulas) {
                                         consecutiveClean = requiredConsecutive;
                                     }
                                 }
@@ -14897,6 +14900,9 @@ export default {
                         console.log(`📍 Tracking ${knownSubsidiaryCells.size} subsidiary reference cells:`, [...knownSubsidiaryCells]);
                     }
                     console.log(`📊 Initial XAVI formula count: ${formulaCount}`);
+                    // Share counts for completion detector
+                    window.lastXaviFormulaCount = formulaCount;
+                    window.lastXaviFormulaCountTimestamp = Date.now();
                 });
             } catch (e) {
                 console.warn('Could not scan for subsidiary cells:', e.message);
