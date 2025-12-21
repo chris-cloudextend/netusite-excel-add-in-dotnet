@@ -5313,7 +5313,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=3.0.5.247"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=3.0.5.248"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -9073,10 +9073,10 @@ For licensing inquiries, contact: legal@celigo.com
                                 const monthData = balances[accountType];
                                 for (const period in monthData) {
                                     const value = monthData[period];
-                                    // Key format: typebalance:${type}:${from}:${to}:${sub}:${dept}:${loc}:${class}:${book}:${special}
-                                    // 4 empty fields: department, location, class, book
-                                    // IMPORTANT: Must trim subsidiary - TYPEBALANCE function uses .trim()
-                                    const cacheKey = `typebalance:${accountType}:${period}:${period}:${(defaultSubsidiary || '').trim()}::::${specialFlag}`;
+                                    // Key format must match TYPEBALANCE function exactly:
+                                    // typebalance:${type}:${from}:${to}:${sub}:${dept}:${loc}:${class}:${book}:${special}
+                                    // Empty strings for: department, location, classId, accountingBook
+                                    const cacheKey = `typebalance:${accountType}:${period}:${period}:${(defaultSubsidiary || '').trim()}:::::${specialFlag}`;
                                     cacheEntries[cacheKey] = value;
                                 }
                             }
