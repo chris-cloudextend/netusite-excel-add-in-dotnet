@@ -5313,7 +5313,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=3.0.5.258"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=3.0.5.259"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -13699,9 +13699,10 @@ export default {
             let consecutiveClean = 0;
             const requiredConsecutive = 2; // Need 2 consecutive clean checks (reduces false positives)
             let sawBusyAtLeastOnce = false;
-            const effectiveTotalFormulas = (window.lastXaviFormulaCount && window.lastXaviFormulaCount > 0)
-                ? window.lastXaviFormulaCount
-                : formulaCellPositions.length;
+            let effectiveTotalFormulas = Math.max(
+                (window.lastXaviFormulaCount && window.lastXaviFormulaCount > 0) ? window.lastXaviFormulaCount : 0,
+                formulaCellPositions.length
+            );
             let targetResolved = Math.ceil(effectiveTotalFormulas * SMART_DETECTION_THRESHOLD);
             const rescanThresholdSeconds = 3; // if we stall without BUSY, refresh formula map
             let lastRescanAt = Date.now();
@@ -13724,8 +13725,12 @@ export default {
                             }
                         }
                         formulaCellPositions = freshPositions;
-                        targetResolved = Math.ceil(formulaCellPositions.length * SMART_DETECTION_THRESHOLD);
-                        console.log(`   🔄 Rescanned formulas: tracking ${formulaCellPositions.length} XAVI cells; target ${targetResolved}`);
+                        effectiveTotalFormulas = Math.max(
+                            (window.lastXaviFormulaCount && window.lastXaviFormulaCount > 0) ? window.lastXaviFormulaCount : 0,
+                            formulaCellPositions.length
+                        );
+                        targetResolved = Math.ceil(effectiveTotalFormulas * SMART_DETECTION_THRESHOLD);
+                        console.log(`   🔄 Rescanned formulas: tracking ${formulaCellPositions.length} XAVI cells; threshold uses ${effectiveTotalFormulas} (target ${targetResolved})`);
                     });
                 } catch (e) {
                     console.warn('   Rescan of formula positions failed:', e.message);
@@ -13817,7 +13822,7 @@ export default {
                             }
                         } else if (USE_SMART_FORMULA_DETECTION && effectiveTotalFormulas > 0) {
                             // Never saw #BUSY - check if formula cells resolved (cache hit)
-                            const pct = resolvedFormulaCount / effectiveTotalFormulas;
+                            const pct = effectiveTotalFormulas > 0 ? (resolvedFormulaCount / effectiveTotalFormulas) : 0;
                             if (pct >= SMART_DETECTION_THRESHOLD) {
                                 console.log(`🧠 Smart: ${resolvedFormulaCount}/${effectiveTotalFormulas} formula cells resolved (${Math.round(pct*100)}%)`);
                                 if (errorCount > 0) {
