@@ -4145,11 +4145,12 @@ For licensing inquiries, contact: legal@celigo.com
                     </div>
                     
                     <!-- Option 4: Balance Sheet Report -->
-                    <div class="guide-choice" onclick="validateAndRunBSReport()" style="background: rgba(255,255,255,0.8); border: 2px solid #3B82F6;">
+                    <div class="guide-choice" onclick="validateAndRunBSReport()" style="background: rgba(255,255,255,0.8); border: 2px solid #3B82F6; position: relative;">
                         <div class="guide-choice-icon">⚖️</div>
                         <div class="guide-choice-content">
                             <div class="guide-choice-title" style="color: #3B82F6;">Balance Sheet Report</div>
                             <div class="guide-choice-desc" style="color: var(--bottlenose);">Assets, Liabilities & Equity — point-in-time snapshot</div>
+                            <div style="margin-top: 6px; padding: 4px 8px; background: rgba(255, 193, 7, 0.15); border: 1px solid rgba(255, 193, 7, 0.3); border-radius: 4px; font-size: 10px; color: #856404; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;">🚧 Coming Soon</div>
                         </div>
                     </div>
                     
@@ -6717,6 +6718,62 @@ For licensing inquiries, contact: legal@celigo.com
         
         async function autoFillMonths() {
             try {
+                // PRE-CACHE: Trigger full_year_refresh to preload all data before inserting formulas
+                // This ensures formulas resolve instantly instead of taking a long time
+                console.log('📦 Tutorial: Pre-caching data for fast formula resolution...');
+                const currentYear = new Date().getFullYear();
+                
+                try {
+                    const refreshResponse = await fetch(`${SERVER_URL}/batch/full_year_refresh`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            year: currentYear,
+                            subsidiary: '',
+                            department: '',
+                            location: '',
+                            class: ''
+                        })
+                    });
+                    
+                    if (refreshResponse.ok) {
+                        const refreshData = await refreshResponse.json();
+                        const allBalances = refreshData.balances || {};
+                        const accountTypes = refreshData.account_types || {};
+                        const accountNames = refreshData.account_names || {};
+                        
+                        // Populate caches so formulas resolve instantly
+                        try {
+                            // Save to localStorage (shared with functions.js)
+                            const STORAGE_KEY = 'netsuite_balance_cache';
+                            const STORAGE_TIMESTAMP_KEY = 'netsuite_balance_cache_timestamp';
+                            localStorage.setItem(STORAGE_KEY, JSON.stringify(allBalances));
+                            localStorage.setItem(STORAGE_TIMESTAMP_KEY, Date.now().toString());
+                            localStorage.setItem('netsuite_type_cache', JSON.stringify(accountTypes));
+                            localStorage.setItem('netsuite_name_cache', JSON.stringify(accountNames));
+                            
+                            // Populate in-memory caches via Shared Runtime
+                            if (typeof window.setFullYearCache === 'function') {
+                                window.setFullYearCache(allBalances);
+                            }
+                            if (typeof window.setAccountTypeCache === 'function') {
+                                window.setAccountTypeCache(accountTypes);
+                            }
+                            if (typeof window.setAccountNameCache === 'function') {
+                                window.setAccountNameCache(accountNames);
+                            }
+                            
+                            console.log(`✅ Tutorial: Pre-cached ${Object.keys(allBalances).length} accounts for ${currentYear}`);
+                        } catch (cacheError) {
+                            console.warn('Tutorial: Cache population warning:', cacheError.message);
+                        }
+                    } else {
+                        console.warn('Tutorial: Pre-cache failed, formulas may take longer to resolve');
+                    }
+                } catch (precacheError) {
+                    console.warn('Tutorial: Pre-cache error (continuing anyway):', precacheError);
+                }
+                
                 await Excel.run(async (context) => {
                     const sheet = context.workbook.worksheets.getActiveWorksheet();
                     
@@ -6752,7 +6809,7 @@ For licensing inquiries, contact: legal@celigo.com
                     await context.sync();
                 });
                 
-                // Wait for formulas to resolve
+                // Wait for formulas to resolve (should be fast now with pre-cache!)
                 await new Promise(resolve => setTimeout(resolve, 2000));
                 
                 // Ensure column widths are set (autofit doesn't work reliably)
