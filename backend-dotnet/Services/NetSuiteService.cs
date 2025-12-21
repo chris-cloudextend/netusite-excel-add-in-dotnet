@@ -201,7 +201,8 @@ public class NetSuiteService : INetSuiteService
         while (true)
         {
             pageNumber++;
-            var paginatedQuery = $"{query} ORDER BY {orderBy} OFFSET {offset} ROWS FETCH NEXT {pageSize} ROWS ONLY";
+            var effectiveOrderBy = string.IsNullOrWhiteSpace(orderBy) ? "1" : orderBy;
+            var paginatedQuery = $"{query} ORDER BY {effectiveOrderBy} OFFSET {offset} ROWS FETCH NEXT {pageSize} ROWS ONLY";
             
             _logger.LogDebug("Fetching page {Page} (offset={Offset})", pageNumber, offset);
             

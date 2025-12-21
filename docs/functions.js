@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '3.0.5.263';  // Drilldown: balance sends single period (no from/to)
+const FUNCTIONS_VERSION = '3.0.5.264';  // Drilldown guards hyperlinks/empty rows
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
