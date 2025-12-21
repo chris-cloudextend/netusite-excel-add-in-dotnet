@@ -296,7 +296,7 @@ public class LookupService : ILookupService
         var query = $@"
             SELECT p.acctnumber as parent_number
             FROM account a
-            JOIN account p ON a.parent = p.id
+            LEFT JOIN account p ON a.parent = p.id
             WHERE a.acctnumber = '{NetSuiteService.EscapeSql(accountNumber)}'
             FETCH FIRST 1 ROWS ONLY";
 
@@ -304,7 +304,14 @@ public class LookupService : ILookupService
         if (results.Any())
         {
             var row = results.First();
-            return row.TryGetProperty("parent_number", out var parent) ? parent.GetString() : null;
+            // Check if parent_number exists and is not null
+            if (row.TryGetProperty("parent_number", out var parentProp) && 
+                parentProp.ValueKind != JsonValueKind.Null)
+            {
+                var parentValue = parentProp.GetString();
+                // Return null for empty strings (account has no parent)
+                return string.IsNullOrEmpty(parentValue) ? null : parentValue;
+            }
         }
         return null;
     }

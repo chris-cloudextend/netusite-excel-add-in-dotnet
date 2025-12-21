@@ -49,8 +49,19 @@ public class TypeBalanceController : ControllerBase
         if (string.IsNullOrEmpty(request.AccountType))
             return BadRequest(new { error = "account_type is required" });
 
-        if (string.IsNullOrEmpty(request.FromPeriod))
-            return BadRequest(new { error = "from_period is required" });
+        // Check if this is a Balance Sheet type (BS types don't need fromPeriod)
+        var isBalanceSheet = Models.AccountType.BsTypes.Any(bt => 
+            request.AccountType.Equals(bt, StringComparison.OrdinalIgnoreCase)) ||
+            request.AccountType.Equals("Asset", StringComparison.OrdinalIgnoreCase) ||
+            request.AccountType.Equals("Liability", StringComparison.OrdinalIgnoreCase) ||
+            request.AccountType.Equals("Equity", StringComparison.OrdinalIgnoreCase);
+
+        // Only require fromPeriod for P&L types
+        if (!isBalanceSheet && string.IsNullOrEmpty(request.FromPeriod))
+            return BadRequest(new { error = "from_period is required for P&L account types" });
+
+        if (string.IsNullOrEmpty(request.ToPeriod))
+            return BadRequest(new { error = "to_period is required" });
 
         try
         {

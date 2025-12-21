@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '3.0.5.266';  // Full IS rebuild on filter change
+const FUNCTIONS_VERSION = '3.0.5.267';  // PARENT formula fix (LEFT JOIN)
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -3017,9 +3017,12 @@ async function PARENT(accountNumber, invocation) {
         }
         
         const parent = await response.text();
-        cache.parent.set(cacheKey, parent);
-        console.log(`💾 Cached parent: ${account} → "${parent}"`);
-        return parent;
+        // Handle empty response (account has no parent) - return empty string, not #N/A
+        // Empty string is valid - it means the account is a top-level account
+        const parentValue = parent.trim();
+        cache.parent.set(cacheKey, parentValue);
+        console.log(`💾 Cached parent: ${account} → "${parentValue || '(no parent)'}"`);
+        return parentValue;
         
     } catch (error) {
         if (error.name === 'AbortError') {

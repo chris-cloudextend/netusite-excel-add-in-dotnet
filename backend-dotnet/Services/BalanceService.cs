@@ -735,20 +735,47 @@ public class BalanceService : IBalanceService
         var fromPeriod = request.FromPeriod;
         var toPeriod = string.IsNullOrEmpty(request.ToPeriod) ? request.FromPeriod : request.ToPeriod;
 
-        // Handle year-only format
-        if (NetSuiteService.IsYearOnly(fromPeriod))
+        // Determine if this is a Balance Sheet or P&L type (needed before period handling)
+        var isBalanceSheet = AccountType.BsTypes.Any(bt => 
+            request.AccountType.Equals(bt, StringComparison.OrdinalIgnoreCase)) ||
+            request.AccountType.Equals("Asset", StringComparison.OrdinalIgnoreCase) ||
+            request.AccountType.Equals("Liability", StringComparison.OrdinalIgnoreCase) ||
+            request.AccountType.Equals("Equity", StringComparison.OrdinalIgnoreCase);
+
+        // Handle year-only format (only for P&L types - BS types don't use fromPeriod)
+        if (!isBalanceSheet && NetSuiteService.IsYearOnly(fromPeriod))
         {
             var (from, to) = NetSuiteService.ExpandYearToPeriods(fromPeriod);
             fromPeriod = from;
             toPeriod = to;
         }
 
-        var fromPeriodData = await _netSuiteService.GetPeriodAsync(fromPeriod);
+        // For BS types, fromPeriod is ignored (cumulative from inception)
+        // Only fetch fromPeriodData for P&L types
+        AccountingPeriod? fromPeriodData = null;
+        if (!isBalanceSheet && !string.IsNullOrEmpty(fromPeriod))
+        {
+            fromPeriodData = await _netSuiteService.GetPeriodAsync(fromPeriod);
+        }
+        
         var toPeriodData = await _netSuiteService.GetPeriodAsync(toPeriod);
 
-        if (fromPeriodData?.StartDate == null || toPeriodData?.EndDate == null)
+        // Validate periods: P&L needs both, BS only needs toPeriod
+        if (!isBalanceSheet && (fromPeriodData?.StartDate == null || toPeriodData?.EndDate == null))
         {
-            _logger.LogWarning("Could not find period dates for {From} to {To}", fromPeriod, toPeriod);
+            _logger.LogWarning("Could not find period dates for P&L type: {From} to {To}", fromPeriod, toPeriod);
+            return new TypeBalanceResponse
+            {
+                AccountType = request.AccountType,
+                FromPeriod = fromPeriod,
+                ToPeriod = toPeriod,
+                Balance = 0
+            };
+        }
+        
+        if (isBalanceSheet && toPeriodData?.EndDate == null)
+        {
+            _logger.LogWarning("Could not find period date for BS type: {To}", toPeriod);
             return new TypeBalanceResponse
             {
                 AccountType = request.AccountType,
@@ -759,11 +786,11 @@ public class BalanceService : IBalanceService
         }
 
         // Convert dates to YYYY-MM-DD format (required by NetSuite)
-        var fromStartDate = ConvertToYYYYMMDD(fromPeriodData.StartDate);
-        var toEndDate = ConvertToYYYYMMDD(toPeriodData.EndDate);
+        var fromStartDate = fromPeriodData?.StartDate != null ? ConvertToYYYYMMDD(fromPeriodData.StartDate) : null;
+        var toEndDate = ConvertToYYYYMMDD(toPeriodData!.EndDate);
         
         _logger.LogDebug("TypeBalance periods: {FromPeriod} ({FromDate}) to {ToPeriod} ({ToDate})", 
-            fromPeriod, fromStartDate, toPeriod, toEndDate);
+            fromPeriod, fromStartDate ?? "inception", toPeriod, toEndDate);
 
         // Resolve subsidiary name to ID and get hierarchy
         var subsidiaryId = await _lookupService.ResolveSubsidiaryIdAsync(request.Subsidiary);
@@ -794,13 +821,6 @@ public class BalanceService : IBalanceService
         // Map user-friendly type names to NetSuite account types
         var typeFilter = MapAccountType(request.AccountType);
         var accountingBook = request.Book ?? DefaultAccountingBook;
-        
-        // Determine if this is a Balance Sheet or P&L type
-        var isBalanceSheet = AccountType.BsTypes.Any(bt => 
-            request.AccountType.Equals(bt, StringComparison.OrdinalIgnoreCase)) ||
-            request.AccountType.Equals("Asset", StringComparison.OrdinalIgnoreCase) ||
-            request.AccountType.Equals("Liability", StringComparison.OrdinalIgnoreCase) ||
-            request.AccountType.Equals("Equity", StringComparison.OrdinalIgnoreCase);
 
         _logger.LogInformation("TypeBalance: type={Type}, isBalanceSheet={IsBS}, typeFilter={Filter}", 
             request.AccountType, isBalanceSheet, typeFilter);
@@ -925,6 +945,228 @@ public class BalanceService : IBalanceService
             Accounts = new List<AccountBalance>()
         };
     }
+
+    /// <summary>
+    /// Get per-account balances for an account type (used by TYPEBALANCE drill-down step 1).
+    /// Mirrors Python behavior: P&L types use period range; BS types are cumulative through toPeriod.
+    /// </summary>
+    public async Task<List<AccountBalance>> GetTypeBalanceAccountsAsync(TypeBalanceRequest request, bool useSpecialAccountType = false)
+    {
+        var fromPeriod = request.FromPeriod;
+        var toPeriod = string.IsNullOrEmpty(request.ToPeriod) ? request.FromPeriod : request.ToPeriod;
+
+        // Handle year-only (e.g., "2025")
+        if (NetSuiteService.IsYearOnly(fromPeriod))
+        {
+            var (from, to) = NetSuiteService.ExpandYearToPeriods(fromPeriod);
+            fromPeriod = from;
+            toPeriod = to;
+        }
+
+        var fromPeriodData = await _netSuiteService.GetPeriodAsync(fromPeriod);
+        var toPeriodData = await _netSuiteService.GetPeriodAsync(toPeriod);
+
+        if (fromPeriodData?.StartDate == null || toPeriodData?.EndDate == null)
+        {
+            _logger.LogWarning("AccountsByType: missing period dates for {From} → {To}", fromPeriod, toPeriod);
+            return new List<AccountBalance>();
+        }
+
+        var fromStartDate = ConvertToYYYYMMDD(fromPeriodData.StartDate);
+        var toEndDate = ConvertToYYYYMMDD(toPeriodData.EndDate);
+
+        // Resolve subsidiary + hierarchy (names → IDs), fall back to no filter if unresolved
+        var subsidiaryId = await _lookupService.ResolveSubsidiaryIdAsync(request.Subsidiary);
+        var targetSub = !string.IsNullOrEmpty(subsidiaryId) ? subsidiaryId : "1";
+        List<string> hierarchySubs = new();
+        if (!string.IsNullOrEmpty(subsidiaryId))
+        {
+            hierarchySubs = await _lookupService.GetSubsidiaryHierarchyAsync(subsidiaryId);
+        }
+        else if (!string.IsNullOrEmpty(request.Subsidiary))
+        {
+            _logger.LogWarning("AccountsByType: could not resolve subsidiary '{Sub}' to ID - not applying subsidiary filter", request.Subsidiary);
+        }
+
+        // Resolve dimensions (names → IDs)
+        var departmentId = await _lookupService.ResolveDimensionIdAsync("department", request.Department);
+        var classId = await _lookupService.ResolveDimensionIdAsync("class", request.Class);
+        var locationId = await _lookupService.ResolveDimensionIdAsync("location", request.Location);
+
+        var subsidiaryExpr = "COALESCE(tl.subsidiary, t.subsidiary)";
+        var departmentExpr = "COALESCE(tl.department, t.department)";
+        var classExpr = "COALESCE(tl.class, t.class)";
+        var locationExpr = "COALESCE(tl.location, t.location)";
+
+        var segmentFilters = new List<string>();
+        if (hierarchySubs.Any())
+            segmentFilters.Add($"{subsidiaryExpr} IN ({string.Join(", ", hierarchySubs)})");
+        if (!string.IsNullOrEmpty(departmentId))
+            segmentFilters.Add($"{departmentExpr} = {departmentId}");
+        if (!string.IsNullOrEmpty(classId))
+            segmentFilters.Add($"{classExpr} = {classId}");
+        if (!string.IsNullOrEmpty(locationId))
+            segmentFilters.Add($"{locationExpr} = {locationId}");
+        var segmentWhere = segmentFilters.Count > 0 ? string.Join(" AND ", segmentFilters) : "1 = 1";
+
+        var typeFilter = MapAccountType(request.AccountType);
+        var typeWhere = useSpecialAccountType
+            ? $"a.sspecacct = '{NetSuiteService.EscapeSql(request.AccountType)}'"
+            : $"a.accttype IN ({typeFilter})";
+        var accountingBook = request.Book ?? DefaultAccountingBook;
+
+        var isBalanceSheet = AccountType.BsTypes.Any(bt =>
+            request.AccountType.Equals(bt, StringComparison.OrdinalIgnoreCase)) ||
+            request.AccountType.Equals("Asset", StringComparison.OrdinalIgnoreCase) ||
+            request.AccountType.Equals("Liability", StringComparison.OrdinalIgnoreCase) ||
+            request.AccountType.Equals("Equity", StringComparison.OrdinalIgnoreCase);
+
+        _logger.LogDebug("AccountsByType: type={Type}, BS={IsBS}, from={From}, to={To}, sub={Sub}, dept={Dept}, class={Class}, loc={Loc}",
+            request.AccountType, isBalanceSheet, fromPeriod, toPeriod, hierarchySubs.Any() ? string.Join(",", hierarchySubs) : "(none)",
+            departmentId ?? "(none)", classId ?? "(none)", locationId ?? "(none)");
+
+        string query;
+        if (isBalanceSheet)
+        {
+            var signFlip = $"CASE WHEN a.accttype IN ({AccountType.SignFlipTypesSql}) THEN -1 ELSE 1 END";
+            var targetPeriodId = !string.IsNullOrEmpty(toPeriodData?.Id) ? toPeriodData.Id : "NULL";
+
+            query = $@"
+                SELECT 
+                    a.acctnumber,
+                    a.accountsearchdisplayname AS name,
+                    SUM(
+                        TO_NUMBER(
+                            BUILTIN.CONSOLIDATE(
+                                tal.amount,
+                                'LEDGER',
+                                'DEFAULT',
+                                'DEFAULT',
+                                {targetSub},
+                                {targetPeriodId},
+                                'DEFAULT'
+                            )
+                        ) * {signFlip}
+                    ) AS balance
+                FROM transactionaccountingline tal
+                JOIN transaction t ON t.id = tal.transaction
+                JOIN account a ON a.id = tal.account
+                JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id
+                WHERE t.posting = 'T'
+                  AND tal.posting = 'T'
+                  AND {typeWhere}
+                  AND a.isinactive = 'F'
+                  AND t.trandate <= TO_DATE('{toEndDate}', 'YYYY-MM-DD')
+                  AND tal.accountingbook = {accountingBook}
+                  AND {segmentWhere}
+                GROUP BY a.acctnumber, a.accountsearchdisplayname, a.accttype
+                ORDER BY a.acctnumber";
+        }
+        else
+        {
+            var signFlip = $"CASE WHEN a.accttype IN ({AccountType.IncomeTypesSql}) THEN -1 ELSE 1 END";
+
+            query = $@"
+                SELECT 
+                    a.acctnumber,
+                    a.accountsearchdisplayname AS name,
+                    SUM(
+                        TO_NUMBER(
+                            BUILTIN.CONSOLIDATE(
+                                tal.amount,
+                                'LEDGER',
+                                'DEFAULT',
+                                'DEFAULT',
+                                {targetSub},
+                                t.postingperiod,
+                                'DEFAULT'
+                            )
+                        ) * {signFlip}
+                    ) AS balance
+                FROM transactionaccountingline tal
+                JOIN transaction t ON t.id = tal.transaction
+                JOIN account a ON a.id = tal.account
+                JOIN accountingperiod ap ON ap.id = t.postingperiod
+                JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id
+                WHERE t.posting = 'T'
+                  AND tal.posting = 'T'
+                  AND {typeWhere}
+                  AND a.isinactive = 'F'
+                  AND ap.startdate >= TO_DATE('{fromStartDate}', 'YYYY-MM-DD')
+                  AND ap.enddate <= TO_DATE('{toEndDate}', 'YYYY-MM-DD')
+                  AND tal.accountingbook = {accountingBook}
+                  AND {segmentWhere}
+                GROUP BY a.acctnumber, a.accountsearchdisplayname, a.accttype
+                ORDER BY a.acctnumber";
+        }
+
+        _logger.LogDebug("AccountsByType query: {Query}", query[..Math.Min(800, query.Length)]);
+
+        var queryTimeout = isBalanceSheet ? 120 : 60;
+        var queryResult = await _netSuiteService.QueryRawWithErrorAsync(query, queryTimeout);
+        if (!queryResult.Success)
+        {
+            _logger.LogWarning("AccountsByType query failed with {ErrorCode}: {Details}",
+                queryResult.ErrorCode, queryResult.ErrorDetails);
+            return new List<AccountBalance>();
+        }
+
+        static bool TryGetDecimal(JsonElement row, string property, out decimal value, Func<JsonElement, decimal> parser)
+        {
+            if (row.TryGetProperty(property, out var prop))
+            {
+                value = parser(prop);
+                return true;
+            }
+            value = 0;
+            return false;
+        }
+
+        var accounts = new List<AccountBalance>();
+        foreach (var row in queryResult.Items)
+        {
+            // Log raw row for debugging mismatched column names / nulls
+            _logger.LogDebug("AccountsByType row: {Row}", row.ToString());
+
+            var acctNum = row.TryGetProperty("acctnumber", out var numProp) ? numProp.GetString() ?? "" : "";
+            var name = row.TryGetProperty("name", out var nameProp) ? nameProp.GetString() ?? "" : "";
+            decimal bal = 0;
+            // Try common aliases for the aggregated balance
+            if (!TryGetDecimal(row, "balance", out bal, ParseBalance) &&
+                !TryGetDecimal(row, "BALANCE", out bal, ParseBalance) &&
+                !TryGetDecimal(row, "sum", out bal, ParseBalance) &&
+                !TryGetDecimal(row, "SUM", out bal, ParseBalance) &&
+                !TryGetDecimal(row, "total", out bal, ParseBalance) &&
+                !TryGetDecimal(row, "TOTAL", out bal, ParseBalance))
+            {
+                // Fallback: first numeric property (if any)
+                foreach (var prop in row.EnumerateObject())
+                {
+                    if (prop.Value.ValueKind == JsonValueKind.Number || prop.Value.ValueKind == JsonValueKind.String)
+                    {
+                        try
+                        {
+                            bal = ParseBalance(prop.Value);
+                            break;
+                        }
+                        catch
+                        {
+                            // continue to next property
+                        }
+                    }
+                }
+            }
+
+            accounts.Add(new AccountBalance
+            {
+                Account = acctNum,
+                Name = name,
+                Balance = bal
+            });
+        }
+
+        return accounts;
+    }
     
     /// <summary>
     /// Convert date from MM/DD/YYYY to YYYY-MM-DD format.
@@ -951,7 +1193,7 @@ public class BalanceService : IBalanceService
     /// </summary>
     private string MapAccountType(string accountType)
     {
-        // For exact P&L types, return as-is
+        // For exact P&L types, return as-is (but include COGS legacy spelling)
         var exactPlTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             "Income", "OthIncome", "Expense", "OthExpense", "COGS"
@@ -959,6 +1201,11 @@ public class BalanceService : IBalanceService
         
         if (exactPlTypes.Contains(accountType))
         {
+            if (accountType.Equals("COGS", StringComparison.OrdinalIgnoreCase))
+            {
+                // NetSuite sometimes returns "Cost of Goods Sold" instead of "COGS"
+                return "'COGS', 'Cost of Goods Sold'";
+            }
             return $"'{accountType}'";
         }
 
@@ -1021,5 +1268,10 @@ public interface IBalanceService
     Task<BalanceResponse> GetBalanceAsync(BalanceRequest request);
     Task<BatchBalanceResponse> GetBatchBalanceAsync(BatchBalanceRequest request);
     Task<TypeBalanceResponse> GetTypeBalanceAsync(TypeBalanceRequest request);
+
+    /// <summary>
+    /// Get per-account balances for an account type (drill-down).
+    /// </summary>
+    Task<List<AccountBalance>> GetTypeBalanceAccountsAsync(TypeBalanceRequest request, bool useSpecialAccountType = false);
 }
 

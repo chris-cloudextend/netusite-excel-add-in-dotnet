@@ -20,15 +20,18 @@ public class AccountController : ControllerBase
 {
     private readonly ILookupService _lookupService;
     private readonly INetSuiteService _netSuiteService;
+    private readonly IBalanceService _balanceService;
     private readonly ILogger<AccountController> _logger;
 
     public AccountController(
         ILookupService lookupService, 
         INetSuiteService netSuiteService,
+        IBalanceService balanceService,
         ILogger<AccountController> logger)
     {
         _lookupService = lookupService;
         _netSuiteService = netSuiteService;
+        _balanceService = balanceService;
         _logger = logger;
     }
 
@@ -447,8 +450,13 @@ public class AccountController : ControllerBase
     [HttpGet("/accounts/by-type")]
     public async Task<IActionResult> GetAccountsByType(
         [FromQuery] string? account_type = null,
+        [FromQuery] string? from_period = null,
         [FromQuery] string? to_period = null,
         [FromQuery] string? subsidiary = null,
+        [FromQuery] string? department = null,
+        [FromQuery] string? location = null,
+        [FromQuery(Name = "class")] string? @class = null,
+        [FromQuery(Name = "accounting_book")] int? accounting_book = null,
         [FromQuery] string? use_special = null)
     {
         if (string.IsNullOrEmpty(account_type))
@@ -456,29 +464,24 @@ public class AccountController : ControllerBase
 
         try
         {
-            _logger.LogInformation("GetAccountsByType: type={Type}, period={Period}", account_type, to_period);
+            _logger.LogInformation("GetAccountsByType: type={Type}, from={From}, to={To}", account_type, from_period, to_period);
             
             var useSpecial = use_special == "1" || use_special?.ToLower() == "true";
-            var typeColumn = useSpecial ? "sspecacct" : "accttype";
-            
-            var query = $@"
-                SELECT a.id, a.acctnumber, a.accountsearchdisplayname as name, a.accttype, a.sspecacct
-                FROM account a
-                WHERE a.isinactive = 'F'
-                  AND a.{typeColumn} = '{NetSuiteService.EscapeSql(account_type)}'
-                ORDER BY a.acctnumber";
 
-            var results = await _netSuiteService.QueryAsync<JsonElement>(query);
-            
-            var accounts = results.Select(r => new
+            // Build request matching TypeBalance semantics
+            var req = new TypeBalanceRequest
             {
-                id = r.TryGetProperty("id", out var id) ? id.ToString() : "",
-                acctnumber = r.TryGetProperty("acctnumber", out var num) ? num.GetString() ?? "" : "",
-                accountname = r.TryGetProperty("name", out var name) ? name.GetString() ?? "" : "",
-                accttype = r.TryGetProperty("accttype", out var type) ? type.GetString() ?? "" : "",
-                sspecacct = r.TryGetProperty("sspecacct", out var spec) && spec.ValueKind != JsonValueKind.Null 
-                    ? spec.GetString() : null
-            }).ToList();
+                AccountType = account_type,
+                FromPeriod = string.IsNullOrEmpty(from_period) ? to_period ?? "" : from_period,
+                ToPeriod = string.IsNullOrEmpty(to_period) ? from_period ?? "" : to_period,
+                Subsidiary = subsidiary,
+                Department = department,
+                Location = location,
+                Class = @class,
+                Book = accounting_book
+            };
+
+            var accounts = await _balanceService.GetTypeBalanceAccountsAsync(req, useSpecial);
 
             return Ok(new { accounts, count = accounts.Count });
         }
