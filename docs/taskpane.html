@@ -5313,7 +5313,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=3.0.5.251"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=3.0.5.252"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -13699,7 +13699,35 @@ export default {
             let consecutiveClean = 0;
             const requiredConsecutive = 2; // Need 2 consecutive clean checks (reduces false positives)
             let sawBusyAtLeastOnce = false;
-            const targetResolved = Math.ceil(formulaCellPositions.length * SMART_DETECTION_THRESHOLD);
+            let targetResolved = Math.ceil(formulaCellPositions.length * SMART_DETECTION_THRESHOLD);
+            const rescanThresholdSeconds = 3; // if we stall without BUSY, refresh formula map
+            let lastRescanAt = Date.now();
+            
+            async function rescanFormulaPositions() {
+                try {
+                    await Excel.run(async (context) => {
+                        const sheet = context.workbook.worksheets.getActiveWorksheet();
+                        const usedRange = sheet.getUsedRange();
+                        usedRange.load("formulas");
+                        await context.sync();
+                        const formulas = usedRange.formulas;
+                        const freshPositions = [];
+                        for (let row = 0; row < formulas.length; row++) {
+                            for (let col = 0; col < formulas[row].length; col++) {
+                                const cell = formulas[row][col];
+                                if (typeof cell === 'string' && cell.toUpperCase().includes('XAVI.')) {
+                                    freshPositions.push({row, col});
+                                }
+                            }
+                        }
+                        formulaCellPositions = freshPositions;
+                        targetResolved = Math.ceil(formulaCellPositions.length * SMART_DETECTION_THRESHOLD);
+                        console.log(`   🔄 Rescanned formulas: tracking ${formulaCellPositions.length} XAVI cells; target ${targetResolved}`);
+                    });
+                } catch (e) {
+                    console.warn('   Rescan of formula positions failed:', e.message);
+                }
+            }
             
             while (Date.now() - startTime < maxWaitMs) {
                 await new Promise(resolve => setTimeout(resolve, 1000)); // Check every second
@@ -13785,12 +13813,39 @@ export default {
                                     consecutiveClean = requiredConsecutive;
                                 }
                             }
+                            
+                            // Small-sheet allowance: if very few formulas remain unresolved, don't wait a long timeout
+                            const unresolved = formulaCellPositions.length - resolvedFormulaCount;
+                            const allowance = formulaCellPositions.length <= 100 ? 1 : 0;
+                            if (!shouldCountAsComplete && unresolved <= allowance && resolvedFormulaCount > 0) {
+                                shouldCountAsComplete = true;
+                                resolveReason = 'near-complete (<=1 pending)';
+                                consecutiveClean = requiredConsecutive; // allow fast exit for tiny remainder
+                            }
+                        }
+                        
+                        // If we're stalled (no BUSY) and below threshold, try to rescan formula positions
+                        const now = Date.now();
+                        if (!shouldCountAsComplete && !hasBusy && resolvedFormulaCount < targetResolved && (now - lastRescanAt) > rescanThresholdSeconds * 1000) {
+                            lastRescanAt = now;
+                            await rescanFormulaPositions();
+                            // Recompute current progress after rescan
+                            if (formulaCellPositions.length > 0) {
+                                const pct = resolvedFormulaCount / formulaCellPositions.length;
+                                if (pct >= SMART_DETECTION_THRESHOLD) {
+                                    shouldCountAsComplete = true;
+                                    resolveReason = 'smart detection (post-rescan)';
+                                    if (pct >= 0.995) {
+                                        consecutiveClean = requiredConsecutive;
+                                    }
+                                }
+                            }
                         }
                         
                         // Fallback: waited long enough without seeing #BUSY
                         if (!shouldCountAsComplete && elapsed > FALLBACK_WAIT_SECONDS) {
-                            shouldCountAsComplete = true;
-                            resolveReason = `timeout (${FALLBACK_WAIT_SECONDS}s)`;
+                            console.warn(`⚠️ Timeout reached (${FALLBACK_WAIT_SECONDS}s) while waiting for formulas; marking incomplete`);
+                            return { resolved: false, reason: `timeout-${FALLBACK_WAIT_SECONDS}s` };
                         }
                         
                         if (shouldCountAsComplete) {
@@ -13801,6 +13856,37 @@ export default {
                             console.log(`✓ Clean check ${consecutiveClean}/${requiredConsecutive}${smartInfo}`);
                             
                             if (consecutiveClean >= requiredConsecutive) {
+                                // Final guard: quick re-check for BUSY after a short pause to avoid premature success
+                                await new Promise(r => setTimeout(r, 250));
+                                let finalBusy = false;
+                                try {
+                                    await Excel.run(async (context) => {
+                                        const sheet = context.workbook.worksheets.getActiveWorksheet();
+                                        const usedRange = sheet.getUsedRange();
+                                        usedRange.load("values");
+                                        await context.sync();
+                                        const values = usedRange.values;
+                                        for (const row of values) {
+                                            for (const cell of row) {
+                                                const cellStr = String(cell || '').toUpperCase();
+                                                if (cellStr.includes('#BUSY')) {
+                                                    finalBusy = true;
+                                                    break;
+                                                }
+                                            }
+                                            if (finalBusy) break;
+                                        }
+                                    });
+                                } catch (e) {
+                                    console.warn('Final BUSY check failed:', e.message);
+                                }
+                                
+                                if (finalBusy) {
+                                    console.log('↩️ BUSY reappeared after clean checks; continuing to wait');
+                                    consecutiveClean = 0;
+                                    continue;
+                                }
+                                
                                 console.log(`✅ All formulas complete! (${resolveReason})`);
                                 localStorage.removeItem('netsuite_status');
                                 return { resolved: true, reason: resolveReason || 'complete' };
