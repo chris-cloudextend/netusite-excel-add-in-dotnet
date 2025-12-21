@@ -5313,7 +5313,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=3.0.5.256"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=3.0.5.257"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -15006,19 +15006,20 @@ export default {
                 // This dramatically speeds up CFO Flash Report when subsidiary changes
                 // ============================================
                 try {
-                    console.log(`📊 Pre-fetching TYPEBALANCE data for ${year}, subsidiary="${subsidiary}"...`);
-                    console.log(`   Filters: dept="${department}", loc="${location}", class="${classId}", book="${accountingBook}"`);
+                    const payload = {
+                        year: year,
+                        subsidiary: subsidiary || null,
+                        department: department ? department : null,
+                        location: location ? location : null,
+                        class: classId ? classId : null,
+                        accountingBook: accountingBook ? accountingBook : null
+                    };
+                    console.log(`📊 Pre-fetching TYPEBALANCE data for ${year}, subsidiary="${payload.subsidiary}"...`);
+                    console.log(`   Filters: dept="${payload.department}", loc="${payload.location}", class="${payload.class}", book="${payload.accountingBook}"`);
                     const typeBalanceResponse = await fetch(`${SERVER_URL}/batch/typebalance_refresh`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            year: year,
-                            subsidiary: subsidiary,
-                            department: department,
-                            location: location,
-                            class: classId,
-                            accountingBook: accountingBook ?? null
-                        })
+                        body: JSON.stringify(payload)
                     });
                     
                     if (typeBalanceResponse.ok) {
@@ -15735,8 +15736,17 @@ export default {
                 if (loadingStep) loadingStep.innerHTML = '📡 Fetching data from NetSuite...';
                 if (loadingDesc) loadingDesc.textContent = 'Pre-loading TYPEBALANCE data for instant formula resolution.';
                 
+                const typeBalancePayload = {
+                    year: targetYear,
+                    subsidiary: currentSubsidiary || null,
+                    department: department ? department : null,
+                    location: location ? location : null,
+                    class: classId ? classId : null,
+                    accountingBook: accountingBook ? accountingBook : null
+                };
+                
                 console.log(`📊 Pre-fetching TYPEBALANCE data for ${targetYear}...`);
-                console.log(`   Filters: sub="${currentSubsidiary}", dept="${department}", loc="${location}", class="${classId}", book="${accountingBook}"`);
+                console.log(`   Filters: sub="${typeBalancePayload.subsidiary}", dept="${typeBalancePayload.department}", loc="${typeBalancePayload.location}", class="${typeBalancePayload.class}", book="${typeBalancePayload.accountingBook}"`);
                 
                 // Clear existing TYPEBALANCE cache to ensure fresh data
                 localStorage.removeItem('netsuite_typebalance_cache');
@@ -15753,14 +15763,7 @@ export default {
                     const typeBalanceResponse = await fetch(`${SERVER_URL}/batch/typebalance_refresh`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            year: targetYear,
-                            subsidiary: currentSubsidiary,
-                            department: department,
-                            location: location,
-                            class: classId,
-                            accountingBook: accountingBook ?? null
-                        })
+                        body: JSON.stringify(typeBalancePayload)
                     });
                     
                     if (typeBalanceResponse.ok) {
