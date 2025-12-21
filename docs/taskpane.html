@@ -5313,7 +5313,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=3.0.5.253"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=3.0.5.254"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -13767,9 +13767,8 @@ export default {
                                     if (typeof cellValue === 'number' && !isNaN(cellValue)) {
                                         resolvedFormulaCount++;
                                     } else if (cellStr.startsWith('#') && !cellStr.includes('#BUSY')) {
-                                        // Error like #VALUE!, #N/A - count as resolved (error state)
+                                        // Error like #VALUE!, #N/A - treat as unresolved but track
                                         errorCount++;
-                                        resolvedFormulaCount++;
                                     } else if (cellValue === null || cellValue === undefined || (typeof cellValue === 'string' && cellValue.trim() === '')) {
                                         // Blank/empty string still indicates formula evaluated; treat as resolved
                                         resolvedFormulaCount++;
@@ -13798,29 +13797,34 @@ export default {
                         let resolveReason = '';
                         
                         if (sawBusyAtLeastOnce) {
-                            // Saw #BUSY before and now it's gone - definitely complete
-                            shouldCountAsComplete = true;
-                            resolveReason = '#BUSY cleared';
+                            // Saw #BUSY before and now it's gone - only complete if no errors
+                            if (errorCount === 0) {
+                                shouldCountAsComplete = true;
+                                resolveReason = '#BUSY cleared';
+                            } else {
+                                console.log(`   ⚠️ ${errorCount} formula cells have error values; waiting for clean state`);
+                            }
                         } else if (USE_SMART_FORMULA_DETECTION && formulaCellPositions.length > 0) {
                             // Never saw #BUSY - check if formula cells resolved (cache hit)
                             const pct = resolvedFormulaCount / formulaCellPositions.length;
                             if (pct >= SMART_DETECTION_THRESHOLD) {
                                 console.log(`🧠 Smart: ${resolvedFormulaCount}/${formulaCellPositions.length} formula cells resolved (${Math.round(pct*100)}%)`);
                                 if (errorCount > 0) {
-                                    console.log(`   ⚠️ ${errorCount} formula cells have error values`);
-                                }
-                                shouldCountAsComplete = true;
-                                resolveReason = 'smart detection (cache hit)';
-                                // Fast-path: if 99%+ resolved, don’t require multiple consecutive checks
-                                if (pct >= 0.995) {
-                                    consecutiveClean = requiredConsecutive;
+                                    console.log(`   ⚠️ ${errorCount} formula cells have error values; not declaring complete`);
+                                } else {
+                                    shouldCountAsComplete = true;
+                                    resolveReason = 'smart detection (cache hit)';
+                                    // Fast-path: if 99%+ resolved, don’t require multiple consecutive checks
+                                    if (pct >= 0.995) {
+                                        consecutiveClean = requiredConsecutive;
+                                    }
                                 }
                             }
                             
                             // Small-sheet allowance: if very few formulas remain unresolved, don't wait a long timeout
                             const unresolved = formulaCellPositions.length - resolvedFormulaCount;
                             const allowance = formulaCellPositions.length <= 100 ? 1 : 0;
-                            if (!shouldCountAsComplete && unresolved <= allowance && resolvedFormulaCount > 0) {
+                            if (!shouldCountAsComplete && errorCount === 0 && unresolved <= allowance && resolvedFormulaCount > 0) {
                                 shouldCountAsComplete = true;
                                 resolveReason = 'near-complete (<=1 pending)';
                                 consecutiveClean = requiredConsecutive; // allow fast exit for tiny remainder
@@ -13847,6 +13851,10 @@ export default {
                         
                         // Fallback: waited long enough without seeing #BUSY
                         if (!shouldCountAsComplete && elapsed > FALLBACK_WAIT_SECONDS) {
+                            if (errorCount > 0) {
+                                console.warn(`⚠️ Timeout reached (${FALLBACK_WAIT_SECONDS}s) with ${errorCount} errors; marking incomplete`);
+                                return { resolved: false, reason: `errors-present-${errorCount}` };
+                            }
                             console.warn(`⚠️ Timeout reached (${FALLBACK_WAIT_SECONDS}s) while waiting for formulas; marking incomplete`);
                             return { resolved: false, reason: `timeout-${FALLBACK_WAIT_SECONDS}s` };
                         }
