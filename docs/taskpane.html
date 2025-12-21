@@ -5313,7 +5313,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=3.0.5.249"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=3.0.5.250"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -9462,8 +9462,8 @@ For licensing inquiries, contact: legal@celigo.com
                 hideLoading();
                 hideStatus();
                 
-                // Wait for 100% of formulas to complete before showing success
-                const formulasResolved = await waitForFormulasToComplete(90000, null);
+                // Wait for formulas to complete (shorter timeout since cache should hit)
+                const formulasResolved = await waitForFormulasToComplete(45000, null);
                 
                 // Only now show 100% and success
                 if (overlayProgressText) overlayProgressText.textContent = '100% complete';
@@ -10717,8 +10717,8 @@ For licensing inquiries, contact: legal@celigo.com
                 
                 updateProgress(95, '📊 Step 4 of 4: Finalizing', 'Waiting for formulas to calculate...');
                 
-                // Wait for 100% of formulas to complete before showing success
-                await waitForFormulasToComplete(90000, null);
+                // Wait for formulas to complete (shorter timeout since cache should hit)
+                await waitForFormulasToComplete(45000, null);
                 
                 // Auto-fit columns AFTER all formulas have resolved
                 await autoFitColumns();
@@ -13609,9 +13609,10 @@ export default {
         // IMPORTANT: #BUSY detection is the PRIMARY check. Smart detection only helps
         // detect instant cache hits when #BUSY is never seen.
         const USE_SMART_FORMULA_DETECTION = true;  // <-- EASY REVERT: Change to false
-        const SMART_DETECTION_THRESHOLD = 1.0;     // 100% of formula cells must resolve before completion
-        const FALLBACK_WAIT_SECONDS = 90;          // Fallback timeout (only if stuck)
-        const INITIAL_WAIT_MS = 1000;              // Initial wait before first check
+        // Require effectively all formulas, but allow one straggler to avoid stalls
+        const SMART_DETECTION_THRESHOLD = 0.99;    // ~99% of formula cells must resolve
+        const FALLBACK_WAIT_SECONDS = 25;          // Fallback timeout (seconds)
+        const INITIAL_WAIT_MS = 800;               // Initial wait before first check
         // ========================================================================
         
         // Wait for formulas to complete - smart detection based on actual formula count
@@ -13737,13 +13738,18 @@ export default {
                             resolveReason = '#BUSY cleared';
                         } else if (USE_SMART_FORMULA_DETECTION && formulaCellPositions.length > 0) {
                             // Never saw #BUSY - check if formula cells resolved (cache hit)
-                            if (resolvedFormulaCount >= targetResolved) {
-                                console.log(`🧠 Smart: ${resolvedFormulaCount}/${formulaCellPositions.length} formula cells resolved (${Math.round(resolvedFormulaCount/formulaCellPositions.length*100)}%)`);
+                            const pct = resolvedFormulaCount / formulaCellPositions.length;
+                            if (pct >= SMART_DETECTION_THRESHOLD) {
+                                console.log(`🧠 Smart: ${resolvedFormulaCount}/${formulaCellPositions.length} formula cells resolved (${Math.round(pct*100)}%)`);
                                 if (errorCount > 0) {
                                     console.log(`   ⚠️ ${errorCount} formula cells have error values`);
                                 }
                                 shouldCountAsComplete = true;
                                 resolveReason = 'smart detection (cache hit)';
+                                // Fast-path: if 99%+ resolved, don’t require multiple consecutive checks
+                                if (pct >= 0.995) {
+                                    consecutiveClean = requiredConsecutive;
+                                }
                             }
                         }
                         
