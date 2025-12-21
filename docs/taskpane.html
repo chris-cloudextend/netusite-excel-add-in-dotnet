@@ -5313,7 +5313,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=3.0.5.257"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=3.0.5.258"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -15915,6 +15915,13 @@ export default {
                 });
                 
                 console.log(`✅ CFO Sync complete for ${targetYear}`);
+                
+                // Double-tap auto-fit after currency formatting to ensure widths apply on Mac
+                try {
+                    await autoFitColumns();
+                } catch (e) {
+                    console.warn('CFO Sync post-format autofit failed:', e.message);
+                }
                 
             } catch (error) {
                 console.error('CFO Sync error:', error);
