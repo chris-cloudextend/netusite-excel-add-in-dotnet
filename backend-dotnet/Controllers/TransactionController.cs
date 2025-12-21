@@ -33,7 +33,9 @@ public class TransactionController : ControllerBase
     public async Task<IActionResult> GetTransactions(
         [FromQuery] string account,
         [FromQuery] string period,
-        [FromQuery] string? subsidiary = null)
+        [FromQuery] string? subsidiary = null,
+        [FromQuery] string? fromPeriod = null,
+        [FromQuery] string? toPeriod = null)
     {
         if (string.IsNullOrEmpty(account))
             return BadRequest(new { error = "account is required" });
@@ -42,18 +44,26 @@ public class TransactionController : ControllerBase
 
         try
         {
-            _logger.LogInformation("GetTransactions: account={Account}, period={Period}, subsidiary={Subsidiary}",
-                account, period, subsidiary);
+            _logger.LogInformation("GetTransactions: account={Account}, period={Period}, fromPeriod={FromPeriod}, toPeriod={ToPeriod}, subsidiary={Subsidiary}",
+                account, period, fromPeriod, toPeriod, subsidiary);
 
-            // Parse period to get date range
+            // Parse period(s) to get date range
             var periodData = await _netSuiteService.GetPeriodAsync(period);
             if (periodData == null)
             {
                 return BadRequest(new { error = $"Could not find period '{period}'" });
             }
 
-            var startDate = periodData.StartDate ?? periodData.EndDate;
-            var endDate = periodData.EndDate;
+            var fromPeriodData = !string.IsNullOrWhiteSpace(fromPeriod)
+                ? await _netSuiteService.GetPeriodAsync(fromPeriod)
+                : null;
+            var toPeriodData = !string.IsNullOrWhiteSpace(toPeriod)
+                ? await _netSuiteService.GetPeriodAsync(toPeriod)
+                : null;
+
+            // Prefer explicit from/to if provided, otherwise fall back to main period
+            var startDate = fromPeriodData?.StartDate ?? fromPeriodData?.EndDate ?? periodData.StartDate ?? periodData.EndDate;
+            var endDate = toPeriodData?.EndDate ?? toPeriodData?.StartDate ?? periodData.EndDate ?? periodData.StartDate;
 
             // Build subsidiary filter
             var subsidiaryFilter = "";

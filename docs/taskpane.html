@@ -4087,7 +4087,7 @@ For licensing inquiries, contact: legal@celigo.com
                             <div class="guide-choice-title" style="color: var(--deep-dive);">Sample Report</div>
                             <div class="guide-choice-desc" style="color: var(--bottlenose);">35 accounts with formulas you can study</div>
                         </div>
-                    </div>
+            </div>
                     
                     <!-- P&L REPORTS SECTION -->
                     <div style="margin-top: 16px; padding-top: 12px; border-top: 1px dashed rgba(0,0,0,0.1);">
@@ -5313,7 +5313,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=3.0.5.261"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=3.0.5.262"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -9490,24 +9490,24 @@ For licensing inquiries, contact: legal@celigo.com
                 overlay.remove();
                 
                 if (formulaStatus.resolved) {
-                    // Show success overlay with timing
-                    const elapsedSeconds = ((Date.now() - startTime) / 1000).toFixed(1);
-                    showReportSuccessOverlay('CFO Flash Report', {
-                        totalAccounts: 5,
-                        elapsedTime: elapsedSeconds,
-                        countLabel: 'Formula Type',  // Header label for the count column
-                        sections: [
-                            { name: 'Revenue', count: 'TYPEBALANCE' },
-                            { name: 'COGS', count: 'TYPEBALANCE' },
-                            { name: 'Expenses', count: 'TYPEBALANCE' },
-                            { name: 'Other', count: 'TYPEBALANCE' }
-                        ],
-                        tips: [
-                            { type: 'info', icon: '📅', title: 'Year:', text: 'Edit <strong>P3</strong> to change year. Auto-syncs.' },
-                            { type: 'info', icon: '🏢', title: 'Subsidiary:', text: 'Edit <strong>Q3</strong> to filter. Auto-syncs.' },
-                            { type: 'info', icon: '📋', title: 'Named Ranges:', text: '_Revenue, _COGS, _Gross_Margin, _Operating_Income, _Net_Income' }
-                        ]
-                    });
+                // Show success overlay with timing
+                const elapsedSeconds = ((Date.now() - startTime) / 1000).toFixed(1);
+                showReportSuccessOverlay('CFO Flash Report', {
+                    totalAccounts: 5,
+                    elapsedTime: elapsedSeconds,
+                    countLabel: 'Formula Type',  // Header label for the count column
+                    sections: [
+                        { name: 'Revenue', count: 'TYPEBALANCE' },
+                        { name: 'COGS', count: 'TYPEBALANCE' },
+                        { name: 'Expenses', count: 'TYPEBALANCE' },
+                        { name: 'Other', count: 'TYPEBALANCE' }
+                    ],
+                    tips: [
+                        { type: 'info', icon: '📅', title: 'Year:', text: 'Edit <strong>P3</strong> to change year. Auto-syncs.' },
+                        { type: 'info', icon: '🏢', title: 'Subsidiary:', text: 'Edit <strong>Q3</strong> to filter. Auto-syncs.' },
+                        { type: 'info', icon: '📋', title: 'Named Ranges:', text: '_Revenue, _COGS, _Gross_Margin, _Operating_Income, _Net_Income' }
+                    ]
+                });
                 } else {
                     // If incomplete, surface warning overlay
                     if (typeof showReportWarningOverlay === 'function') {
@@ -10357,26 +10357,26 @@ For licensing inquiries, contact: legal@celigo.com
                 overlay.remove();
                 
                 if (formulaStatusIS.resolved) {
-                    // Success message - show as dismissible overlay
-                    const totalAccounts = categories.income.length + categories.othIncome.length + 
-                                         categories.cogs.length + categories.expense.length + categories.othExpense.length;
-                    
-                    const elapsedSeconds = ((Date.now() - startTime) / 1000).toFixed(1);
-                    showReportSuccessOverlay('Income Statement', {
-                        totalAccounts,
-                        elapsedTime: elapsedSeconds,
-                        sections: [
-                            { name: 'Revenue', count: categories.income.length },
-                            { name: 'Cost of Sales', count: categories.cogs.length },
-                            { name: 'Operating Expenses', count: categories.expense.length },
-                            { name: 'Other Income/Expense', count: categories.othIncome.length + categories.othExpense.length }
-                        ],
-                        tips: [
-                            { type: 'warning', icon: '⚠️', title: 'Verify:', text: 'Auto-generated from NetSuite. Review before official use.' },
-                            { type: 'info', icon: '📅', title: 'Year:', text: 'Edit <strong>P3</strong> to change year. Structure auto-syncs.' },
-                            { type: 'info', icon: '🏢', title: 'Subsidiary:', text: 'Edit <strong>Q3</strong> to filter. Also supports Dept, Class, Location.' }
-                        ]
-                    });
+                // Success message - show as dismissible overlay
+                const totalAccounts = categories.income.length + categories.othIncome.length + 
+                                     categories.cogs.length + categories.expense.length + categories.othExpense.length;
+                
+                const elapsedSeconds = ((Date.now() - startTime) / 1000).toFixed(1);
+                showReportSuccessOverlay('Income Statement', {
+                    totalAccounts,
+                    elapsedTime: elapsedSeconds,
+                    sections: [
+                        { name: 'Revenue', count: categories.income.length },
+                        { name: 'Cost of Sales', count: categories.cogs.length },
+                        { name: 'Operating Expenses', count: categories.expense.length },
+                        { name: 'Other Income/Expense', count: categories.othIncome.length + categories.othExpense.length }
+                    ],
+                    tips: [
+                        { type: 'warning', icon: '⚠️', title: 'Verify:', text: 'Auto-generated from NetSuite. Review before official use.' },
+                        { type: 'info', icon: '📅', title: 'Year:', text: 'Edit <strong>P3</strong> to change year. Structure auto-syncs.' },
+                        { type: 'info', icon: '🏢', title: 'Subsidiary:', text: 'Edit <strong>Q3</strong> to filter. Also supports Dept, Class, Location.' }
+                    ]
+                });
                 } else {
                     if (typeof showReportWarningOverlay === 'function') {
                         showReportWarningOverlay('Income Statement', {
@@ -20069,6 +20069,8 @@ export default {
                             period: commonParams.period
                         });
                         
+                        if (commonParams.fromPeriod) queryParams.append('fromPeriod', commonParams.fromPeriod);
+                        if (commonParams.toPeriod) queryParams.append('toPeriod', commonParams.toPeriod);
                         if (commonParams.subsidiary) queryParams.append('subsidiary', commonParams.subsidiary);
                         if (commonParams.department) queryParams.append('department', commonParams.department);
                         if (commonParams.location) queryParams.append('location', commonParams.location);
