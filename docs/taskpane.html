@@ -7623,22 +7623,23 @@ For licensing inquiries, contact: legal@celigo.com
                         try {
                             updateLoading('Scanning Sheet for BS Formulas', 20, 'Finding all Balance Sheet accounts...');
                             
-                            // Scan the sheet for all BS formulas
+                            // Scan the sheet for periods used in BS formulas
+                            // We'll preload ALL BS accounts for these periods (not just specific accounts)
+                            // This is just as fast as loading one account, and makes all subsequent formulas instant
                             const formulaData = await Excel.run(async (context) => {
                                 const sheet = context.workbook.worksheets.getActiveWorksheet();
                                 const usedRange = sheet.getUsedRange();
                                 usedRange.load('formulas');
                                 await context.sync();
                                 
-                                const accounts = new Set();
                                 const periods = new Set();
                                 const formulas = usedRange.formulas;
                                 
                                 // Always include the triggering formula's period
                                 if (trigger.firstPeriod) periods.add(trigger.firstPeriod);
-                                if (trigger.firstAccount) accounts.add(trigger.firstAccount);
                                 
-                                // Scan for XAVI.BALANCE formulas
+                                // Scan for XAVI.BALANCE formulas to extract periods
+                                // We're looking for periods, not accounts - we'll preload ALL BS accounts
                                 const balanceRegex = /XAVI\.BALANCE(?:CHANGE)?\s*\(\s*"?([^",)]+)"?\s*,\s*"?([^",)]*)"?\s*,\s*"?([^",)]+)"?/gi;
                                 
                                 for (let row = 0; row < formulas.length; row++) {
@@ -7648,89 +7649,66 @@ For licensing inquiries, contact: legal@celigo.com
                                             let match;
                                             balanceRegex.lastIndex = 0;
                                             while ((match = balanceRegex.exec(cell)) !== null) {
-                                                const account = match[1].replace(/"/g, '').trim();
                                                 const toPeriod = match[3].replace(/"/g, '').trim();
-                                                
-                                                if (account && !account.includes('$')) accounts.add(account);
-                                                if (toPeriod && !toPeriod.includes('$')) periods.add(toPeriod);
+                                                // Only add periods that are literal values (not cell references)
+                                                if (toPeriod && !toPeriod.includes('$') && !toPeriod.match(/^[A-Z]+\d+$/)) {
+                                                    periods.add(toPeriod);
+                                                }
                                             }
                                         }
                                     }
                                 }
                                 
                                 return {
-                                    accounts: Array.from(accounts),
                                     periods: Array.from(periods)
                                 };
                             });
                             
-                            console.log(`📊 Auto-scan found ${formulaData.accounts.length} accounts, ${formulaData.periods.length} periods`);
+                            console.log(`📊 Auto-scan found ${formulaData.periods.length} period(s) in formulas`);
                             
-                            if (formulaData.accounts.length === 0 || formulaData.periods.length === 0) {
-                                // Just use the triggering formula's data
-                                formulaData.accounts = [trigger.firstAccount];
-                                formulaData.periods = [trigger.firstPeriod];
+                            if (formulaData.periods.length === 0) {
+                                // Fallback to triggering formula's period
+                                if (trigger.firstPeriod) {
+                                    formulaData.periods = [trigger.firstPeriod];
+                                } else {
+                                    hideLoading();
+                                    console.warn('No periods found for BS preload');
+                                    if (window.markAutoPreloadComplete) window.markAutoPreloadComplete();
+                                    return;
+                                }
                             }
                             
                             updateLoading(
-                                `Found ${formulaData.accounts.length} Accounts`,
-                                30,
-                                `Checking which are Balance Sheet accounts...`
-                            );
-                            
-                            // Get account types to identify BS accounts
-                            const typesResponse = await fetch(`${SERVER_URL}/accounts/types`, {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ accounts: formulaData.accounts })
-                            });
-                            
-                            let bsAccounts = formulaData.accounts;
-                            if (typesResponse.ok) {
-                                const accountTypes = await typesResponse.json();
-                                // Use EXACT NetSuite account type names
-                                const bsTypes = ['Bank', 'AcctRec', 'OthCurrAsset', 'FixedAsset', 'OthAsset', 
-                                               'DeferExpense', 'UnbilledRec',
-                                               'AcctPay', 'CredCard', 'OthCurrLiab', 'LongTermLiab', 'DeferRevenue',
-                                               'Equity', 'RetainedEarnings'];
-                                bsAccounts = formulaData.accounts.filter(acct => {
-                                    const type = accountTypes[acct];
-                                    return type && bsTypes.includes(type);
-                                });
-                            }
-                            
-                            console.log(`📊 ${bsAccounts.length} Balance Sheet accounts identified`);
-                            
-                            if (bsAccounts.length === 0) {
-                                hideLoading();
-                                // No BS accounts - formulas are P&L and will be fast
-                                if (window.markAutoPreloadComplete) window.markAutoPreloadComplete();
-                                return;
-                            }
-                            
-                            updateLoading(
-                                `⚡ Preloading ${bsAccounts.length} BS Accounts`,
+                                `⚡ Preloading ALL Balance Sheet Accounts`,
                                 40,
-                                `This takes ~${Math.max(20, bsAccounts.length * 2)}s but makes all formulas instant!`
+                                `Loading all BS accounts for ${formulaData.periods.length} period(s). This makes all formulas instant!`
                             );
                             
-                            // Preload the BS accounts
-                            const preloadResponse = await fetch(`${SERVER_URL}/batch/bs_preload_targeted`, {
+                            // Preload ALL BS accounts for the identified periods
+                            // Using /batch/bs_preload (not targeted) - it loads ALL BS accounts, not just specific ones
+                            // This is just as fast as loading one account, and caches everything for instant subsequent lookups
+                            const preloadResponse = await fetch(`${SERVER_URL}/batch/bs_preload`, {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify({
-                                    accounts: bsAccounts,
-                                    periods: formulaData.periods
+                                    periods: formulaData.periods,
+                                    subsidiary: '',  // Will use default/current subsidiary
+                                    department: '',
+                                    location: '',
+                                    class: '',
+                                    accountingBook: ''
                                 })
                             });
                             
                             if (preloadResponse.ok) {
                                 const result = await preloadResponse.json();
                                 
-                                // Cache results
+                                // Cache results - this caches ALL BS accounts for the period(s)
                                 if (result.balances) {
                                     const cacheEntries = {};
+                                    let accountCount = 0;
                                     for (const [account, periodBalances] of Object.entries(result.balances)) {
+                                        accountCount++;
                                         if (typeof periodBalances === 'object') {
                                             for (const [pName, balance] of Object.entries(periodBalances)) {
                                                 cacheEntries[`balance:${account}::${pName}`] = { value: balance, timestamp: Date.now() };
@@ -7741,21 +7719,26 @@ For licensing inquiries, contact: legal@celigo.com
                                         const existing = JSON.parse(localStorage.getItem('xavi_balance_cache') || '{}');
                                         const merged = { ...existing, ...cacheEntries };
                                         localStorage.setItem('xavi_balance_cache', JSON.stringify(merged));
-                                    } catch (e) { }
+                                        console.log(`✅ Cached ${accountCount} BS accounts for ${formulaData.periods.length} period(s)`);
+                                    } catch (e) {
+                                        console.warn('Cache save error:', e);
+                                    }
                                 }
                                 
                                 hideLoading();
                                 
+                                const accountCount = result.balances ? Object.keys(result.balances).length : 0;
                                 showToast({
                                     title: '✅ Balance Sheet Ready!',
-                                    message: `${bsAccounts.length} accounts preloaded. Your formulas will now resolve instantly!`,
+                                    message: `All ${accountCount} Balance Sheet accounts preloaded for ${formulaData.periods.length} period(s). Your formulas will now resolve instantly!`,
                                     type: 'success',
                                     duration: 5000
                                 });
                                 
-                                console.log(`✅ AUTO-PRELOAD COMPLETE: ${bsAccounts.length} accounts in ${result.elapsed_seconds?.toFixed(1)}s`);
+                                console.log(`✅ AUTO-PRELOAD COMPLETE: ${accountCount} BS accounts × ${formulaData.periods.length} period(s) in ${result.elapsed_seconds?.toFixed(1)}s`);
                             } else {
-                                throw new Error(`Preload failed: ${preloadResponse.status}`);
+                                const errorText = await preloadResponse.text();
+                                throw new Error(`Preload failed: ${preloadResponse.status} - ${errorText}`);
                             }
                             
                         } catch (error) {
