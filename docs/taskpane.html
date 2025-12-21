@@ -5313,7 +5313,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=3.0.5.264"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=3.0.5.265"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -15211,8 +15211,8 @@ export default {
                             // CFO Flash: Simpler sync with all filter values
                             await performCFOSync(newYear, subsidiary, department, location, classId, accountingBook);
                         } else {
-                            // Full Income Statement: Full structure rebuild
-                        await performStructureSync(newYear, subsidiary);
+                            // Full Income Statement: Full structure rebuild with current filters
+                        await performStructureSync(newYear, subsidiary, department, location, classId, accountingBook);
                         }
                     } finally {
                         // Clear sync flag after a delay
@@ -15310,8 +15310,8 @@ export default {
                             // CFO Flash: Simpler sync with all filter values
                             await performCFOSync(year, newSubsidiary, department, location, classId, accountingBook);
                         } else {
-                            // Full Income Statement: Full structure rebuild
-                        await performStructureSync(year, newSubsidiary);
+                            // Full Income Statement: Full structure rebuild with current filters
+                        await performStructureSync(year, newSubsidiary, department, location, classId, accountingBook);
                         }
                     } finally {
                         // Clear sync flag after a delay to let any queued change events fire first
@@ -15419,10 +15419,10 @@ export default {
                             await performCFOSync(year, subsidiary, department, location, classId, accountingBook);
                             console.log('✅ performCFOSync() completed');
                         } else if (syncType === 'income') {
-                            // Use filter sync which waits for recalc + removes zero rows (NOT full Structure Sync)
-                            console.log('🔄 Calling performIncomeStatementFilterSync()...');
-                            await performIncomeStatementFilterSync(year, subsidiary, department, location, classId, accountingBook);
-                            console.log('✅ performIncomeStatementFilterSync() completed');
+                            // Single path: full structure rebuild with current filters (matches subsidiary/year behavior)
+                            console.log('🔄 Calling performStructureSync() for income statement with current filters...');
+                            await performStructureSync(year, subsidiary, department, location, classId, accountingBook);
+                            console.log('✅ performStructureSync() completed');
                         }
                     } catch (syncError) {
                         console.error(`❌ Sync error (${syncType}):`, syncError.message);
@@ -15441,215 +15441,11 @@ export default {
             }
         }
         
-        // Perform Income Statement filter sync - shows overlay while formulas recalculate
+        // Perform Income Statement filter sync (legacy path)
+        // NOTE: We now delegate to performStructureSync to avoid old overlay/success code.
         async function performIncomeStatementFilterSync(targetYear, currentSubsidiary, department = '', location = '', classId = '', accountingBook = '') {
-            console.log(`📊 Income Statement Filter Sync starting for year=${targetYear}, subsidiary="${currentSubsidiary}"`);
-            
-            // Suppress the small status bar - we're showing our own overlay
-            suppressStatusBar = true;
-            localStorage.removeItem('netsuite_status');
-            hideStatus();
-            
-            const syncStartTime = Date.now();
-            
-            // Get currency info
-            let currencyFormat = '$#,##0.00';
-            let currencySymbol = '$';
-            let currencyFlag = '🇺🇸';
-            
-            try {
-                const currencyData = await getCurrencyData();
-                if (currencyData && currentSubsidiary) {
-                    const subsidiaryNameToId = await getSubsidiaryLookup();
-                    const subId = /^\d+$/.test(currentSubsidiary) ? 
-                        currentSubsidiary : 
-                        (subsidiaryNameToId[currentSubsidiary.toLowerCase()] || currencyData.default_subsidiary);
-                    currencySymbol = currencyData.currencies[subId] || currencyData.currencies[currencyData.default_subsidiary] || '$';
-                    currencyFormat = currencyData.formats[currencySymbol] || '$#,##0.00';
-                    currencyFlag = getCurrencyFlag(currencySymbol);
-                    console.log(`💱 Income Statement Filter Sync currency: "${currentSubsidiary}" → ${currencyFlag} ${currencySymbol}`);
-                }
-            } catch (e) {
-                console.warn('Currency lookup failed:', e.message);
-            }
-            
-            // Build filter summary
-            const filters = [];
-            if (department) filters.push(`Dept: ${department}`);
-            if (classId) filters.push(`Class: ${classId}`);
-            if (location) filters.push(`Location: ${location}`);
-            if (accountingBook) filters.push(`Book: ${accountingBook}`);
-            const filterSummary = filters.length > 0 ? filters.join(' • ') : 'No additional filters';
-            
-            // Show full-screen overlay
-            const syncOverlay = document.createElement('div');
-            syncOverlay.id = 'structureSyncOverlay';
-            syncOverlay.className = 'guide-me-overlay';
-            syncOverlay.innerHTML = `
-                <div class="loading-spinner"></div>
-                <h2>🔄 Filter Update</h2>
-                <div class="loading-subtitle">
-                    Recalculating <strong>${targetYear}</strong> Income Statement for <strong>"${currentSubsidiary || 'All Subsidiaries'}"</strong>
-                </div>
-                <div style="margin: 8px auto; font-size: 12px; color: #93c5fd;">${filterSummary}</div>
-                <div style="margin: 16px auto; display: flex; align-items: center; justify-content: center; gap: 12px; 
-                            padding: 12px 24px; background: rgba(10, 226, 193, 0.15); border-radius: 12px; border: 1px solid rgba(10, 226, 193, 0.3);">
-                    <span style="font-size: 32px;">${currencyFlag}</span>
-                    <div style="text-align: left;">
-                        <div style="font-size: 11px; color: #93c5fd; text-transform: uppercase;">Currency</div>
-                        <div style="font-size: 22px; font-weight: bold; color: #0AE2C1;">${currencySymbol}</div>
-                    </div>
-                </div>
-                <div class="progress-container">
-                    <div class="progress-bar-bg">
-                        <div class="progress-bar-fill" id="syncProgressBar" style="width: 30%; animation: syncPulse 1.5s infinite;"></div>
-                    </div>
-                    <div class="progress-text">Recalculating...</div>
-                </div>
-                <div class="loading-step"><span class="spreadsheet-animation">📊</span> Recalculating formulas...</div>
-                <div class="loading-step-desc">BALANCE formulas are refreshing with new filter values.</div>
-            `;
-            document.body.appendChild(syncOverlay);
-            
-            // Add pulse animation
-            const style = document.createElement('style');
-            style.id = 'syncPulseStyle';
-            style.textContent = `
-                @keyframes syncPulse {
-                    0%, 100% { opacity: 1; }
-                    50% { opacity: 0.7; }
-                }
-            `;
-            document.head.appendChild(style);
-            
-            const loadingStep = syncOverlay.querySelector('.loading-step');
-            const loadingDesc = syncOverlay.querySelector('.loading-step-desc');
-            
-            // Signal cache clear to functions.js
-            localStorage.setItem('netsuite_cache_clear_signal', JSON.stringify({
-                action: 'clear_balance',
-                timestamp: Date.now()
-            }));
-            
-            // Brief pause to let signal propagate
-            await new Promise(r => setTimeout(r, 500));
-            
-            if (loadingStep) loadingStep.innerHTML = '<span class="spreadsheet-animation">📊</span> Tucking everything into place...';
-            if (loadingDesc) loadingDesc.textContent = 'BALANCE formulas are refreshing with new filter values.';
-            
-            // Wait for formulas to resolve
-            await waitForFormulasToComplete(90000, null);
-            
-            // Remove rows where ALL numeric values are zero (same as Structure Sync)
-            if (loadingStep) loadingStep.innerHTML = '<span class="spreadsheet-animation">📊</span> Removing zero rows...';
-            if (loadingDesc) loadingDesc.textContent = 'Cleaning up rows with no values.';
-            
-            try {
-                await Excel.run(async (context) => {
-                    const sheet = context.workbook.worksheets.getActiveWorksheet();
-                    const usedRange = sheet.getUsedRange();
-                    usedRange.load(['values', 'rowCount', 'columnCount']);
-                    await context.sync();
-                    
-                    const values = usedRange.values;
-                    const rowsToDelete = [];
-                    
-                    // Start from row 5 (index 4) - skip header rows and parameter row
-                    // Check each data row
-                    for (let i = 4; i < values.length; i++) {
-                        const row = values[i];
-                        // Check columns C through O (indices 2-14) for numeric values
-                        let allZero = true;
-                        let hasNumericValue = false;
-                        
-                        for (let j = 2; j <= 14 && j < row.length; j++) {
-                            const val = row[j];
-                            if (typeof val === 'number') {
-                                hasNumericValue = true;
-                                if (val !== 0) {
-                                    allZero = false;
-                                    break;
-                                }
-                            }
-                        }
-                        
-                        // Only delete if we found numeric values and they're all zero
-                        if (hasNumericValue && allZero) {
-                            rowsToDelete.push(i + 1); // Excel rows are 1-indexed
-                        }
-                    }
-                    
-                    // Delete rows from bottom to top to preserve indices
-                    if (rowsToDelete.length > 0) {
-                        console.log(`🗑️ Removing ${rowsToDelete.length} rows with all zeros`);
-                        rowsToDelete.sort((a, b) => b - a); // Sort descending
-                        
-                        for (const rowNum of rowsToDelete) {
-                            const rowRange = sheet.getRange(`${rowNum}:${rowNum}`);
-                            rowRange.delete(Excel.DeleteShiftDirection.up);
-                        }
-                        await context.sync();
-                        console.log(`✅ Removed ${rowsToDelete.length} zero rows`);
-                    } else {
-                        console.log('📊 No zero rows to remove');
-                    }
-                });
-            } catch (e) {
-                console.warn('Zero row removal failed:', e.message);
-            }
-            
-            // Auto-fit columns AFTER all formulas have resolved
-            await autoFitColumns();
-            
-            // Apply currency formatting
-            try {
-                await scanForSubsidiaryCells();
-                await autoFormatCurrencies();
-            } catch (e) {
-                console.warn('Currency format failed:', e.message);
-            }
-            
-            // Remove overlay
-            const syncOverlayEl = document.getElementById('structureSyncOverlay');
-            if (syncOverlayEl) {
-                syncOverlayEl.style.opacity = '0';
-                syncOverlayEl.style.transition = 'opacity 0.3s ease';
-                setTimeout(() => syncOverlayEl.remove(), 300);
-            }
-            const syncStyle = document.getElementById('syncPulseStyle');
-            if (syncStyle) syncStyle.remove();
-            
-            // Keep suppressStatusBar true - dismissReportSuccess will handle it
-            localStorage.removeItem('netsuite_status');
-            hideStatus();
-            
-            // Calculate elapsed time
-            const elapsedSeconds = ((Date.now() - syncStartTime) / 1000).toFixed(1);
-            
-            // Show success overlay
-            showReportSuccessOverlay(
-                '✅ Filters Applied!',
-                `Income Statement updated in ${elapsedSeconds}s`,
-                [{
-                    label: 'Subsidiary',
-                    value: currentSubsidiary || 'All',
-                    icon: '🏢'
-                }, {
-                    label: 'Currency',
-                    value: `${currencyFlag} ${currencySymbol}`,
-                    icon: '💱'
-                }, {
-                    label: 'Year',
-                    value: String(targetYear),
-                    icon: '📅'
-                }, {
-                    label: 'Filters',
-                    value: filters.length > 0 ? filters.join(', ') : 'None',
-                    icon: '🔧'
-                }],
-                'Filter Update',
-                'records'
-            );
+            console.log(`📊 Income Statement Filter Sync (delegated) for year=${targetYear}, subsidiary="${currentSubsidiary}", dept="${department}", loc="${location}", class="${classId}", book="${accountingBook}"`);
+            await performStructureSync(targetYear, currentSubsidiary, department, location, classId, accountingBook);
         }
         
         // Perform CFO Flash sync - simpler than full Structure Sync (no row rebuilding needed)
@@ -15941,7 +15737,7 @@ export default {
         }
 
         // Perform the structure sync (extracted for reuse)
-        async function performStructureSync(targetYear, currentSubsidiary) {
+        async function performStructureSync(targetYear, currentSubsidiary, department = '', location = '', classId = '', accountingBook = '') {
             const statusEl = document.getElementById('refreshStatus');
             
             // Suppress the small status bar - we're showing our own overlay
@@ -15978,6 +15774,14 @@ export default {
                 <h2>🔄 Structure Sync</h2>
                 <div class="loading-subtitle">
                     Analyzing accounts for <strong>${targetYear}</strong> and <strong>"${currentSubsidiary || 'All Subsidiaries'}"</strong>
+                </div>
+                <div style="margin: 6px auto; font-size: 12px; color: #93c5fd;">
+                    ${[
+                        department ? `Dept: ${department}` : null,
+                        location ? `Loc: ${location}` : null,
+                        classId ? `Class: ${classId}` : null,
+                        accountingBook ? `Book: ${accountingBook}` : null
+                    ].filter(Boolean).join(' • ') || 'No additional filters'}
                 </div>
                 <div style="margin: 16px auto; display: flex; align-items: center; justify-content: center; gap: 12px; 
                             padding: 12px 24px; background: rgba(10, 226, 193, 0.15); border-radius: 12px; border: 1px solid rgba(10, 226, 193, 0.3);">
@@ -16023,16 +15827,17 @@ export default {
                 if (syncStep) syncStep.textContent = '📥 Fetching account data from NetSuite...';
                 
                 // Fetch accounts for the target year AND selected subsidiary
-                console.log(`performStructureSync: year=${targetYear}, subsidiary="${currentSubsidiary}"`);
+                console.log(`performStructureSync: year=${targetYear}, subsidiary="${currentSubsidiary}", dept="${department}", loc="${location}", class="${classId}", book="${accountingBook}"`);
                 const refreshResponse = await fetch(`${SERVER_URL}/batch/full_year_refresh`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         year: targetYear,
                         subsidiary: currentSubsidiary || '',  // Use selected subsidiary!
-                        department: '',
-                        location: '',
-                        class: ''
+                        department: department || '',
+                        location: location || '',
+                        class: classId || '',
+                        accountingBook: accountingBook || ''
                     })
                 });
                 
@@ -16125,10 +15930,10 @@ export default {
                     
                     sheet.getRange("P3").values = [[targetYear]];
                     sheet.getRange("Q3").values = [[currentSubsidiary || 'Celigo Inc. (Consolidated)']];
-                    sheet.getRange("R3").values = [[""]];  // Department
-                    sheet.getRange("S3").values = [[""]];  // Location
-                    sheet.getRange("T3").values = [[""]];  // Class
-                    sheet.getRange("U3").values = [[""]];  // Accounting Book
+                    sheet.getRange("R3").values = [[department || ""]];   // Department
+                    sheet.getRange("S3").values = [[location || ""]];     // Location
+                    sheet.getRange("T3").values = [[classId || ""]];      // Class
+                    sheet.getRange("U3").values = [[accountingBook || ""]]; // Accounting Book
                     sheet.getRange("V3").values = [["TRUE"]];
                     await context.sync();
                     
@@ -20155,10 +19960,16 @@ export default {
                 showDrilldownStatus(`Fetching ${resolvedParams.accountType} accounts...`, 'Querying NetSuite');
                 
                 // Query backend for all accounts of this type with their balances
+                const fromPeriod = resolvedParams.fromPeriod || resolvedParams.toPeriod || '';
                 const queryParams = new URLSearchParams({
                     account_type: resolvedParams.accountType,
-                    to_period: resolvedParams.toPeriod || '',
+                    from_period: fromPeriod,
+                    to_period: resolvedParams.toPeriod || fromPeriod,
                     subsidiary: resolvedParams.subsidiary || '',
+                    department: resolvedParams.department || '',
+                    location: resolvedParams.location || '',
+                    class: resolvedParams.classId || '',
+                    accounting_book: resolvedParams.accountingBook || '',
                     use_special: resolvedParams.useSpecialAccountType ? '1' : '0'
                 });
                 
@@ -20313,7 +20124,10 @@ export default {
             drillSheet.getRange('A1').format.font.size = 14;
             
             const useSpecialLabel = params.useSpecialAccountType ? ' (Special Account Type)' : '';
-            drillSheet.getRange('A2').values = [[`Account Type: ${params.accountType}${useSpecialLabel} | Period: ${params.toPeriod || 'All Time'}`]];
+            const periodLabel = (params.fromPeriod && params.toPeriod)
+                ? `${params.fromPeriod} → ${params.toPeriod}`
+                : (params.toPeriod || params.fromPeriod || 'All Time');
+            drillSheet.getRange('A2').values = [[`Account Type: ${params.accountType}${useSpecialLabel} | Period: ${periodLabel}`]];
             drillSheet.getRange('A2').format.font.bold = true;
             
             drillSheet.getRange('A3').values = [['💡 To drill into an account: Select the Account Number cell, then click "Drill Down" in the Quick Actions bar.']];
@@ -20329,18 +20143,17 @@ export default {
             drillSheet.getRange('A5:C5').format.font.color = 'white';
             
             // Store drill-down context in row 3 (hidden) for drill-down function to use
-            // Format: DRILLDOWN_CONTEXT:toPeriod:subsidiary:fromPeriod
-            // We extract the year from toPeriod for the drill-down (to get all YTD transactions)
-            const yearMatch = (params.toPeriod || '').match(/\d{4}/);
-            const drilldownPeriod = yearMatch ? yearMatch[0] : params.toPeriod || '';
+            // Format: DRILLDOWN_CONTEXT:period:subsidiary
+            // Use the exact toPeriod/fromPeriod instead of year-only to match Python behavior
+            const drilldownPeriod = params.toPeriod || params.fromPeriod || '';
             drillSheet.getRange('A3').values = [[`DRILLDOWN_CONTEXT:${drilldownPeriod}:${params.subsidiary || ''}`]];
             drillSheet.getRange('A3').format.font.color = 'white'; // Hide it visually
             
             if (accounts.length > 0) {
                 // Use PRE-FETCHED balances as static values (INSTANT display - no API calls!)
                 const dataRows = accounts.map(acc => [
-                    acc.account_number || acc.acctnumber || '',
-                    acc.account_name || acc.accountname || '',
+                    acc.account || acc.account_number || acc.acctnumber || '',
+                    acc.name || acc.account_name || acc.accountname || '',
                     acc.balance || 0
                 ]);
                 drillSheet.getRange(`A6:C${5 + accounts.length}`).values = dataRows;
