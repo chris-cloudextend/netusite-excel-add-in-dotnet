@@ -10553,9 +10553,44 @@ For licensing inquiries, contact: legal@celigo.com
                     defaultClass = localStorage.getItem('netsuite_class') || '';
                 } catch(e) {}
                 
-                // Step 1: Fetch Balance Sheet report data from backend
-                // Use SERVER_URL (Cloudflare Worker) which handles CORS and proxies to tunnel
-                updateProgress(10, '📥 Step 1 of 3: Loading Balance Sheet Data', 'Fetching structured Balance Sheet from NetSuite...');
+                // Step 1: Preload BS account balances (can take 60-90s, but data gets cached)
+                // Step 2: Build report structure from cached data (fast, <5s)
+                updateProgress(10, '📥 Step 1 of 3: Preloading Balance Sheet Data', 'Fetching all BS account balances from NetSuite (this may take 60-90 seconds)...');
+                
+                // First, call bs_preload to cache all balances
+                console.log(`🔄 Step 1a: Calling bs_preload to cache all BS account balances...`);
+                const preloadStartTime = Date.now();
+                try {
+                    const preloadResponse = await fetch(`${SERVER_URL}/batch/bs_preload`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            period: periodFormatted,
+                            subsidiary: defaultSubsidiary || null,
+                            department: defaultDepartment || null,
+                            location: defaultLocation || null,
+                            class: defaultClass || null,
+                            book: null
+                        })
+                    });
+                    
+                    if (!preloadResponse.ok) {
+                        const errorData = await preloadResponse.json().catch(() => ({ error: `HTTP ${preloadResponse.status}` }));
+                        throw new Error(errorData.error || `Failed to preload BS balances (${preloadResponse.status})`);
+                    }
+                    
+                    const preloadData = await preloadResponse.json();
+                    const preloadElapsed = ((Date.now() - preloadStartTime) / 1000).toFixed(1);
+                    console.log(`✅ Step 1a complete: bs_preload finished in ${preloadElapsed}s`);
+                    console.log(`   Cached ${Object.keys(preloadData.balances || {}).length} accounts`);
+                    updateProgress(40, '📥 Step 1 of 3: Preloading Balance Sheet Data', `Cached ${Object.keys(preloadData.balances || {}).length} accounts...`);
+                } catch (preloadError) {
+                    console.error('❌ bs_preload failed:', preloadError);
+                    // Continue anyway - report builder will fetch data on-demand
+                }
+                
+                // Step 1b: Fetch Balance Sheet report structure from backend (uses cached data)
+                updateProgress(45, '📥 Step 2 of 3: Building Report Structure', 'Building Balance Sheet structure from cached data...');
                 
                 console.log(`═══════════════════════════════════════════════════════`);
                 console.log(`📊 BALANCE SHEET REPORT - Starting`);
@@ -10613,7 +10648,7 @@ For licensing inquiries, contact: legal@celigo.com
                         totalLiabilities: reportData.total_liabilities || 0,
                         totalEquity: reportData.total_equity || 0
                     });
-                    updateProgress(50, '📥 Step 1 of 3: Loading Balance Sheet Data', `Loaded ${rows.length} accounts and calculated rows...`);
+                    updateProgress(60, '📥 Step 2 of 3: Building Report Structure', `Loaded ${rows.length} accounts and calculated rows...`);
                 } catch (fetchError) {
                     clearTimeout(timeoutId);
                     if (fetchError.name === 'AbortError') {
@@ -10622,8 +10657,8 @@ For licensing inquiries, contact: legal@celigo.com
                     throw fetchError;
                 }
                 
-                // Step 2: Build the spreadsheet
-                updateProgress(60, '📝 Step 2 of 3: Building Structure', 'Creating Balance Sheet layout...');
+                // Step 3: Build the spreadsheet
+                updateProgress(70, '📝 Step 3 of 3: Building Structure', 'Creating Balance Sheet layout...');
                 
                 await Excel.run(async (context) => {
                     // Create new sheet

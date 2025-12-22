@@ -1461,7 +1461,8 @@ public class BalanceController : ControllerBase
             }
 
             // Calculate special formulas
-            _logger.LogDebug("Calculating NETINCOME, RETAINEDEARNINGS, and CTA...");
+            _logger.LogInformation("🔄 Step 3: Calculating special rows (NETINCOME, RETAINEDEARNINGS, CTA)...");
+            var calcStartTime = DateTime.UtcNow;
 
             // Get fiscal year info for special formulas
             var fyInfo = await GetFiscalYearInfoAsync(request.Period, accountingBook);
@@ -1704,8 +1705,13 @@ public class BalanceController : ControllerBase
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "Error calculating CTA");
+                    var calcElapsedError = (DateTime.UtcNow - calcStartTime).TotalSeconds;
+                    _logger.LogWarning(ex, "Error calculating CTA after {Elapsed:F1}s", calcElapsedError);
                 }
+                
+                var calcElapsedFinal = (DateTime.UtcNow - calcStartTime).TotalSeconds;
+                _logger.LogInformation("✅ Step 3 complete: Calculated special rows in {Elapsed:F1}s (NETINCOME={NetInc}, RE={RE}, CTA={CTA})",
+                    calcElapsedFinal, netIncome, retainedEarnings, cta);
 
                 // Add calculated rows to Equity section (in correct order)
                 var equityRows = rows.Where(r => r.Section == "Equity").ToList();
@@ -1769,9 +1775,13 @@ public class BalanceController : ControllerBase
             var totalLiabilities = rows.Where(r => r.Section == "Liabilities").Sum(r => r.Balance);
             var totalEquity = rows.Where(r => r.Section == "Equity").Sum(r => r.Balance);
 
-            var elapsed = (DateTime.UtcNow - startTime).TotalSeconds;
-            _logger.LogInformation("✅ Balance Sheet report generated: {AccountCount} accounts, {RowCount} rows in {Elapsed:F1}s",
-                accountMap.Count, rows.Count, elapsed);
+            var totalElapsed = (DateTime.UtcNow - startTime).TotalSeconds;
+            _logger.LogInformation("═══════════════════════════════════════════════════════");
+            _logger.LogInformation("✅ BALANCE SHEET REPORT COMPLETE");
+            _logger.LogInformation("   Accounts: {AccountCount}", accountMap.Count);
+            _logger.LogInformation("   Total rows: {RowCount}", rows.Count);
+            _logger.LogInformation("   Total time: {Elapsed:F1}s", totalElapsed);
+            _logger.LogInformation("═══════════════════════════════════════════════════════");
 
             return Ok(new BalanceSheetReportResponse
             {
