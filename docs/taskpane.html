@@ -10562,7 +10562,15 @@ For licensing inquiries, contact: legal@celigo.com
                 const BACKEND_TUNNEL_URL = 'https://keeps-store-sally-planet.trycloudflare.com';
                 
                 console.log(`📡 Calling Balance Sheet endpoint: ${BACKEND_TUNNEL_URL}/balance-sheet/report`);
-                console.log(`📅 Period: ${periodFormatted}`);
+                console.log(`📅 Period being sent: "${periodFormatted}" (year=${year}, month=${month})`);
+                console.log(`📦 Request body:`, {
+                    period: periodFormatted,
+                    subsidiary: defaultSubsidiary || null,
+                    department: defaultDepartment || null,
+                    location: defaultLocation || null,
+                    class: defaultClass || null,
+                    book: null
+                });
                 
                 // Create AbortController for timeout
                 const controller = new AbortController();

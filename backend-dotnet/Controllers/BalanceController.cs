@@ -1038,7 +1038,9 @@ public class BalanceController : ControllerBase
             if (string.IsNullOrEmpty(request.Period))
                 return BadRequest(new { error = "period is required" });
 
-            _logger.LogInformation("📊 Generating Balance Sheet report for {Period}", request.Period);
+            _logger.LogInformation("📊 Generating Balance Sheet report for period: '{Period}'", request.Period);
+            _logger.LogDebug("Request details: Period={Period}, Subsidiary={Sub}, Department={Dept}, Class={Class}, Location={Loc}", 
+                request.Period, request.Subsidiary ?? "null", request.Department ?? "null", request.Class ?? "null", request.Location ?? "null");
 
             // Resolve filters
             var subsidiaryId = await _lookupService.ResolveSubsidiaryIdAsync(request.Subsidiary);
@@ -1080,11 +1082,15 @@ public class BalanceController : ControllerBase
             var equityTypes = new[] { AccountType.Equity };
 
             // Query all BS accounts with balances for the period
-            // Using the same query structure as bs_preload but returning account details
+            // Optimized: Use INNER JOIN for TransactionLine (faster than LEFT JOIN)
+            // Use accountsearchdisplaynamecopy instead of fullname (faster)
+            var signFlipSql = AccountType.SignFlipTypesSql;
+            var bsTypesSql = AccountType.BsTypesSql;
+            
             var bsQuery = $@"
                 SELECT 
                     a.acctnumber,
-                    a.fullname AS account_name,
+                    a.accountsearchdisplaynamecopy AS account_name,
                     a.accttype,
                     p.acctnumber AS parent_number,
                     SUM(
@@ -1098,21 +1104,21 @@ public class BalanceController : ControllerBase
                                 {targetPeriodId},
                                 'DEFAULT'
                             )
-                        ) * CASE WHEN a.accttype IN ({AccountType.SignFlipTypesSql}) THEN -1 ELSE 1 END
+                        ) * CASE WHEN a.accttype IN ({signFlipSql}) THEN -1 ELSE 1 END
                     ) AS balance
                 FROM transactionaccountingline tal
                 JOIN transaction t ON t.id = tal.transaction
                 JOIN account a ON a.id = tal.account
                 LEFT JOIN account p ON a.parent = p.id
-                LEFT JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id
+                JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id
                 WHERE t.posting = 'T'
                   AND tal.posting = 'T'
-                  AND a.accttype IN ({AccountType.BsTypesSql})
+                  AND a.accttype IN ({bsTypesSql})
                   AND a.isinactive = 'F'
                   AND t.trandate <= TO_DATE('{periodEndDate}', 'YYYY-MM-DD')
                   AND tal.accountingbook = {accountingBook}
                   AND {segmentWhere}
-                GROUP BY a.acctnumber, a.fullname, a.accttype, p.acctnumber
+                GROUP BY a.acctnumber, a.accountsearchdisplaynamecopy, a.accttype, p.acctnumber
                 HAVING SUM(
                     TO_NUMBER(
                         BUILTIN.CONSOLIDATE(
@@ -1124,7 +1130,7 @@ public class BalanceController : ControllerBase
                             {targetPeriodId},
                             'DEFAULT'
                         )
-                    ) * CASE WHEN a.accttype IN ({AccountType.SignFlipTypesSql}) THEN -1 ELSE 1 END
+                    ) * CASE WHEN a.accttype IN ({signFlipSql}) THEN -1 ELSE 1 END
                 ) != 0
                 ORDER BY a.acctnumber";
 
