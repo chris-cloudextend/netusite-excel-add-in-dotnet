@@ -1196,6 +1196,9 @@ public class BalanceController : ControllerBase
 
             // Process ALL accounts from bs_preload (including zero balance accounts)
             // Zero balance accounts may be parent accounts or accounts that should appear in the report
+            // Also track which accounts are parents so we can include them even if they have zero balance
+            var allAccountNumbers = new HashSet<string>(periodBalances.Keys);
+            
             foreach (var (acctNum, balance) in periodBalances)
             {
                 // Get account info - prefer from accountInfoQuery, fallback to bs_preload cache
@@ -1300,7 +1303,10 @@ public class BalanceController : ControllerBase
             }
 
             // Fetch parent accounts that have children with non-zero balances (even if parent has zero balance)
-            var missingParents = parentAccountNumbers.Where(p => !accountMap.ContainsKey(p)).ToList();
+            // Also include parents that might not be in periodBalances (zero balance, no transactions)
+            var missingParents = parentAccountNumbers
+                .Where(p => !accountMap.ContainsKey(p) && !allAccountNumbers.Contains(p))
+                .ToList();
             if (missingParents.Any())
             {
                 _logger.LogDebug("Fetching {Count} parent accounts that have children with balances", missingParents.Count);
