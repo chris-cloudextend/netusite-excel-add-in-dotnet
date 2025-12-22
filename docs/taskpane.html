@@ -10669,6 +10669,7 @@ For licensing inquiries, contact: legal@celigo.com
                 // Step 3: Build the spreadsheet
                 updateProgress(70, '📝 Step 3 of 3: Building Structure', 'Creating Balance Sheet layout...');
                 
+                try {
                 await Excel.run(async (context) => {
                     // Create new sheet (delete existing if it exists)
                     let sheet;
@@ -11161,11 +11162,12 @@ For licensing inquiries, contact: legal@celigo.com
                     }
                     
                     await context.sync();
+                });
                 } catch (excelError) {
                     console.error('❌ Excel.run error:', excelError.message);
                     console.error('Stack:', excelError.stack);
                     throw excelError; // Re-throw to be caught by outer try-catch
-                });
+                }
                 
                 updateProgress(95, '✅ Report Complete!', 'Balance Sheet structure built successfully...');
                 
