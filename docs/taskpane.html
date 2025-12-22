@@ -10669,12 +10669,13 @@ For licensing inquiries, contact: legal@celigo.com
                     let sheet;
                     const sheetName = `Balance Sheet ${periodFormatted.replace(' ', '_')}`;
                     try {
-                        // Try to get existing sheet first
+                        // Try to get existing sheet first and delete it
                         try {
                             const existingSheet = context.workbook.worksheets.getItem(sheetName);
                             existingSheet.delete();
+                            await context.sync(); // Sync deletion before creating new sheet
                         } catch (e) {
-                            // Sheet doesn't exist, that's fine
+                            // Sheet doesn't exist, that's fine - continue
                         }
                         // Now create the new sheet
                         sheet = context.workbook.worksheets.add(sheetName);
@@ -10786,15 +10787,23 @@ For licensing inquiries, contact: legal@celigo.com
                             sheet.getRange(`C${currentRow}`).formulas = [[formula]];
                             sheet.getRange(`C${currentRow}`).numberFormat = [[currencyFormat]];
                         } else {
-                            // Regular account row
+                            // Regular account row - guard against missing data
+                            if (!row.account_number || !row.account_name) {
+                                console.warn('Skipping row with missing account_number or account_name:', row);
+                                return; // Skip this row
+                            }
+                            
+                            // Escape quotes in account number for formula
+                            const accountNum = String(row.account_number).replace(/"/g, '""');
                             const formula = defaultSubsidiary 
-                                ? `=XAVI.BALANCE("${row.account_number}", "$D$2", "$B$2")`
-                                : `=XAVI.BALANCE("${row.account_number}", "$D$2")`;
+                                ? `=XAVI.BALANCE("${accountNum}", "$D$2", "$B$2")`
+                                : `=XAVI.BALANCE("${accountNum}", "$D$2")`;
                             
                             // Indent based on level (parent-child hierarchy)
                             const indent = '  '.repeat(row.level || 0);
-                            sheet.getRange(`A${currentRow}`).values = [[row.account_number || '']];
-                            sheet.getRange(`B${currentRow}`).values = [[indent + row.account_name]];
+                            const accountName = String(row.account_name || '').replace(/"/g, '""');
+                            sheet.getRange(`A${currentRow}`).values = [[row.account_number]];
+                            sheet.getRange(`B${currentRow}`).values = [[indent + accountName]];
                             sheet.getRange(`C${currentRow}`).formulas = [[formula]];
                             sheet.getRange(`C${currentRow}`).numberFormat = [[currencyFormat]];
                         }
@@ -10803,8 +10812,13 @@ For licensing inquiries, contact: legal@celigo.com
                     
                     // Helper to add subtotal row
                     function addSubtotalRow(label, startRow, endRow) {
+                        // Guard against invalid row references
+                        if (startRow <= 0 || endRow <= startRow || currentRow <= 0) {
+                            console.warn(`Invalid subtotal row reference: startRow=${startRow}, endRow=${endRow}, currentRow=${currentRow}`);
+                            return;
+                        }
                         sheet.getRange(`A${currentRow}`).values = [['']];
-                        sheet.getRange(`B${currentRow}`).values = [[label]];
+                        sheet.getRange(`B${currentRow}`).values = [[label || 'Subtotal']];
                         sheet.getRange(`C${currentRow}`).formulas = [[`=SUBTOTAL(109,C${startRow}:C${endRow-1})`]];
                         sheet.getRange(`A${currentRow}:C${currentRow}`).format.font.bold = true;
                         sheet.getRange(`C${currentRow}`).numberFormat = [[currencyFormat]];
@@ -10858,7 +10872,12 @@ For licensing inquiries, contact: legal@celigo.com
                                     totalEquityRow = currentRow;
                                 }
                                 
-                                sheet.getRange(`C${currentRow}`).formulas = [[`=SUBTOTAL(109,C${sectionStartRow}:C${currentRow-1})`]];
+                                // Guard against invalid row references
+                                if (sectionStartRow > 0 && currentRow > sectionStartRow) {
+                                    sheet.getRange(`C${currentRow}`).formulas = [[`=SUBTOTAL(109,C${sectionStartRow}:C${currentRow-1})`]];
+                                } else {
+                                    sheet.getRange(`C${currentRow}`).values = [[0]];
+                                }
                                 sheet.getRange(`A${currentRow}:C${currentRow}`).format.font.bold = true;
                                 sheet.getRange(`A${currentRow}:C${currentRow}`).format.fill.color = 
                                     currentSection === 'Assets' ? '#D1FAE5' : 
@@ -10919,44 +10938,50 @@ For licensing inquiries, contact: legal@celigo.com
                     }
                     
                     // Add final section total (Equity) - but we'll add calculated rows before this
-                    if (currentSection === 'Equity') {
+                    if (currentSection === 'Equity' && equityStartRow > 0) {
                         // Insert calculated rows BEFORE the Equity total
                         const netIncomeRow = currentRow;
                         const retainedEarningsRow = currentRow + 1;
                         const ctaRow = currentRow + 2;
                         
                         // Add NETINCOME
-                        sheet.getRange(`A${netIncomeRow}`).values = [['']];
-                        sheet.getRange(`B${netIncomeRow}`).values = [['Net Income']];
-                        const netIncomeFormula = defaultSubsidiary 
-                            ? `=XAVI.NETINCOME("$D$2", "$B$2")`
-                            : `=XAVI.NETINCOME("$D$2")`;
-                        sheet.getRange(`C${netIncomeRow}`).formulas = [[netIncomeFormula]];
-                        sheet.getRange(`B${netIncomeRow}`).format.font.italic = true;
-                        sheet.getRange(`C${netIncomeRow}`).numberFormat = [[currencyFormat]];
-                        currentRow++;
+                        if (netIncomeRow > 0) {
+                            sheet.getRange(`A${netIncomeRow}`).values = [['']];
+                            sheet.getRange(`B${netIncomeRow}`).values = [['Net Income']];
+                            const netIncomeFormula = defaultSubsidiary 
+                                ? `=XAVI.NETINCOME("$D$2", "$B$2")`
+                                : `=XAVI.NETINCOME("$D$2")`;
+                            sheet.getRange(`C${netIncomeRow}`).formulas = [[netIncomeFormula]];
+                            sheet.getRange(`B${netIncomeRow}`).format.font.italic = true;
+                            sheet.getRange(`C${netIncomeRow}`).numberFormat = [[currencyFormat]];
+                            currentRow++;
+                        }
                         
                         // Add RETAINEDEARNINGS
-                        sheet.getRange(`A${retainedEarningsRow}`).values = [['']];
-                        sheet.getRange(`B${retainedEarningsRow}`).values = [['Retained Earnings']];
-                        const retainedEarningsFormula = defaultSubsidiary 
-                            ? `=XAVI.RETAINEDEARNINGS("$D$2", "$B$2")`
-                            : `=XAVI.RETAINEDEARNINGS("$D$2")`;
-                        sheet.getRange(`C${retainedEarningsRow}`).formulas = [[retainedEarningsFormula]];
-                        sheet.getRange(`B${retainedEarningsRow}`).format.font.italic = true;
-                        sheet.getRange(`C${retainedEarningsRow}`).numberFormat = [[currencyFormat]];
-                        currentRow++;
+                        if (retainedEarningsRow > 0) {
+                            sheet.getRange(`A${retainedEarningsRow}`).values = [['']];
+                            sheet.getRange(`B${retainedEarningsRow}`).values = [['Retained Earnings']];
+                            const retainedEarningsFormula = defaultSubsidiary 
+                                ? `=XAVI.RETAINEDEARNINGS("$D$2", "$B$2")`
+                                : `=XAVI.RETAINEDEARNINGS("$D$2")`;
+                            sheet.getRange(`C${retainedEarningsRow}`).formulas = [[retainedEarningsFormula]];
+                            sheet.getRange(`B${retainedEarningsRow}`).format.font.italic = true;
+                            sheet.getRange(`C${retainedEarningsRow}`).numberFormat = [[currencyFormat]];
+                            currentRow++;
+                        }
                         
                         // Add CTA
-                        sheet.getRange(`A${ctaRow}`).values = [['']];
-                        sheet.getRange(`B${ctaRow}`).values = [['Cumulative Translation Adjustment']];
-                        const ctaFormula = defaultSubsidiary 
-                            ? `=XAVI.CTA("$D$2", "$B$2")`
-                            : `=XAVI.CTA("$D$2")`;
-                        sheet.getRange(`C${ctaRow}`).formulas = [[ctaFormula]];
-                        sheet.getRange(`B${ctaRow}`).format.font.italic = true;
-                        sheet.getRange(`C${ctaRow}`).numberFormat = [[currencyFormat]];
-                        currentRow++;
+                        if (ctaRow > 0) {
+                            sheet.getRange(`A${ctaRow}`).values = [['']];
+                            sheet.getRange(`B${ctaRow}`).values = [['Cumulative Translation Adjustment']];
+                            const ctaFormula = defaultSubsidiary 
+                                ? `=XAVI.CTA("$D$2", "$B$2")`
+                                : `=XAVI.CTA("$D$2")`;
+                            sheet.getRange(`C${ctaRow}`).formulas = [[ctaFormula]];
+                            sheet.getRange(`B${ctaRow}`).format.font.italic = true;
+                            sheet.getRange(`C${ctaRow}`).numberFormat = [[currencyFormat]];
+                            currentRow++;
+                        }
                         
                         // Now add Equity total
                         totalEquityRow = currentRow;
@@ -10971,6 +10996,15 @@ For licensing inquiries, contact: legal@celigo.com
                         sheet.getRange(`A${currentRow}:C${currentRow}`).format.fill.color = '#DBEAFE';
                         sheet.getRange(`C${currentRow}`).numberFormat = [[currencyFormat]];
                         sheet.getRange(`C${currentRow}`).format.borders.getItem('EdgeTop').style = 'Double';
+                        currentRow += 2;
+                    } else if (currentSection === 'Equity') {
+                        // Equity section exists but no equityStartRow - just add the total
+                        totalEquityRow = currentRow;
+                        sheet.getRange(`B${currentRow}`).values = [['TOTAL EQUITY']];
+                        sheet.getRange(`C${currentRow}`).values = [[0]];
+                        sheet.getRange(`A${currentRow}:C${currentRow}`).format.font.bold = true;
+                        sheet.getRange(`A${currentRow}:C${currentRow}`).format.fill.color = '#DBEAFE';
+                        sheet.getRange(`C${currentRow}`).numberFormat = [[currencyFormat]];
                         currentRow += 2;
                     }
                     
