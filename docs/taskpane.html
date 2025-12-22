@@ -10745,30 +10745,57 @@ For licensing inquiries, contact: legal@celigo.com
                     
                     // Helper to add section header
                     function addSectionHeader(title, color) {
-                        const range = sheet.getRange(`A${currentRow}:C${currentRow}`);
-                        range.values = [[title, '', '']];
-                        range.merge(true);
-                        range.format.font.bold = true;
-                        range.format.font.size = 14;
-                        range.format.fill.color = color;
-                        range.format.font.color = "#FFFFFF";
-                        currentRow++;
+                        if (currentRow <= 0) {
+                            console.error('Invalid currentRow for section header:', currentRow);
+                            return;
+                        }
+                        try {
+                            const range = sheet.getRange(`A${currentRow}:C${currentRow}`);
+                            range.values = [[title || '', '', '']];
+                            range.merge(true);
+                            range.format.font.bold = true;
+                            range.format.font.size = 14;
+                            range.format.fill.color = color || '#6B7280';
+                            range.format.font.color = "#FFFFFF";
+                            currentRow++;
+                        } catch (e) {
+                            console.error('Error adding section header:', e.message, 'row:', currentRow);
+                            throw e;
+                        }
                     }
                     
                     // Helper to add subsection header
                     function addSubsectionHeader(title) {
-                        const range = sheet.getRange(`A${currentRow}:C${currentRow}`);
-                        range.values = [[title, '', '']];
-                        range.merge(true);
-                        range.format.font.bold = true;
-                        range.format.font.size = 11;
-                        range.format.fill.color = "#E5E7EB";
-                        range.format.font.color = "#374151";
-                        currentRow++;
+                        if (currentRow <= 0) {
+                            console.error('Invalid currentRow for subsection header:', currentRow);
+                            return;
+                        }
+                        try {
+                            const range = sheet.getRange(`A${currentRow}:C${currentRow}`);
+                            range.values = [[title || '', '', '']];
+                            range.merge(true);
+                            range.format.font.bold = true;
+                            range.format.font.size = 11;
+                            range.format.fill.color = "#E5E7EB";
+                            range.format.font.color = "#374151";
+                            currentRow++;
+                        } catch (e) {
+                            console.error('Error adding subsection header:', e.message, 'row:', currentRow);
+                            throw e;
+                        }
                     }
                     
                     // Helper to add account row with BALANCE formula or calculated value
                     function addAccountRow(row) {
+                        if (currentRow <= 0) {
+                            console.error('Invalid currentRow for account row:', currentRow, 'row data:', row);
+                            return;
+                        }
+                        if (!row) {
+                            console.error('Missing row data in addAccountRow');
+                            return;
+                        }
+                        try {
                         if (row.is_calculated) {
                             // For calculated rows (NETINCOME, RETAINEDEARNINGS, CTA), use the appropriate formula
                             let formula;
@@ -10868,9 +10895,10 @@ For licensing inquiries, contact: legal@celigo.com
                             }
                             
                             // Add section total for previous section
-                            if (currentSection !== '') {
+                            if (currentSection !== '' && currentRow > 0) {
                                 const sectionTotalLabel = `TOTAL ${currentSection.toUpperCase()}`;
-                                sheet.getRange(`B${currentRow}`).values = [[sectionTotalLabel]];
+                                try {
+                                    sheet.getRange(`B${currentRow}`).values = [[sectionTotalLabel]];
                                 
                                 let sectionStartRow;
                                 if (currentSection === 'Assets') {
