@@ -10952,6 +10952,7 @@ For licensing inquiries, contact: legal@celigo.com
                         // Handle type headers (account type category headers like "Bank", "Accounts Receivable")
                         if (row.is_type_header) {
                             const accountName = String(row.type_category || row.account_name || '').replace(/"/g, '""');
+                            console.log(`🏷️  Adding type header: "${accountName}" (${row.account_type}) at row ${currentRow}, section: ${row.section}, subsection: ${row.subsection}`);
                             
                             sheet.getRange(`A${currentRow}`).values = [['']];
                             sheet.getRange(`B${currentRow}`).values = [[String(accountName)]];
@@ -11376,6 +11377,7 @@ For licensing inquiries, contact: legal@celigo.com
                             }
                             
                             currentSection = row.section;
+                            console.log(`📑 Adding section header: "${currentSection.toUpperCase()}" at row ${currentRow}`);
                             addSectionHeader(currentSection.toUpperCase(), sectionColors[currentSection] || '#6B7280');
                             
                             if (currentSection === 'Liabilities') {
@@ -11398,6 +11400,7 @@ For licensing inquiries, contact: legal@celigo.com
                             }
                             
                             currentSubsection = row.subsection;
+                            console.log(`📋 Adding subsection header: "${currentSubsection}" at row ${currentRow}`);
                             addSubsectionHeader(currentSubsection);
                             subsectionStartRow = currentRow;
                         }
