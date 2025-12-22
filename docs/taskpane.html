@@ -10967,7 +10967,12 @@ For licensing inquiries, contact: legal@celigo.com
                     
                     // ===== TOTAL LIABILITIES + EQUITY =====
                     sheet.getRange(`B${currentRow}`).values = [['TOTAL LIABILITIES + EQUITY']];
-                    sheet.getRange(`C${currentRow}`).formulas = [[`=C${totalLiabilitiesRow}+C${totalEquityRow}`]];
+                    // Guard against invalid row references
+                    if (totalLiabilitiesRow > 0 && totalEquityRow > 0) {
+                        sheet.getRange(`C${currentRow}`).formulas = [[`=C${totalLiabilitiesRow}+C${totalEquityRow}`]];
+                    } else {
+                        sheet.getRange(`C${currentRow}`).values = [[0]];
+                    }
                     sheet.getRange(`A${currentRow}:C${currentRow}`).format.font.bold = true;
                     sheet.getRange(`A${currentRow}:C${currentRow}`).format.font.size = 12;
                     sheet.getRange(`A${currentRow}:C${currentRow}`).format.fill.color = "#09235C";
