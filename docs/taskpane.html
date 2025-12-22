@@ -5314,7 +5314,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=3.0.5.268"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=3.0.5.269"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -11142,12 +11142,24 @@ For licensing inquiries, contact: legal@celigo.com
                     updateProgress(85, '🎨 Step 3 of 3: Formatting', 'Auto-fitting columns...');
                     
                     // Auto-fit columns
-                    sheet.getRange("A:C").format.autofitColumns();
+                    try {
+                        sheet.getRange("A:C").format.autofitColumns();
+                    } catch (e) {
+                        console.error('Error auto-fitting columns:', e.message);
+                    }
                     
                     // Freeze header rows
-                    sheet.freezePanes.freezeRows(5);
+                    try {
+                        sheet.freezePanes.freezeRows(5);
+                    } catch (e) {
+                        console.error('Error freezing panes:', e.message);
+                    }
                     
                     await context.sync();
+                } catch (excelError) {
+                    console.error('❌ Excel.run error:', excelError.message);
+                    console.error('Stack:', excelError.stack);
+                    throw excelError; // Re-throw to be caught by outer try-catch
                 });
                 
                 updateProgress(95, '✅ Report Complete!', 'Balance Sheet structure built successfully...');
