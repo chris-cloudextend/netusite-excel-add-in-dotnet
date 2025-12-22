@@ -10733,17 +10733,29 @@ For licensing inquiries, contact: legal@celigo.com
                     } catch(e) {}
                     
                     // Row 1: Title
-                    sheet.getRange("A1").values = [[`Balance Sheet - As of ${periodFormatted}`]];
+                    const titleText = String(periodFormatted || 'Period').trim();
+                    // #region agent log
+                    fetch('http://127.0.0.1:7242/ingest/e97b1944-c101-4b82-829f-4e5331e3d29e',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'taskpane.html:10736',message:'Before setting title',data:{titleText,periodFormatted,type:typeof titleText},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+                    // #endregion
+                    sheet.getRange("A1").values = [[`Balance Sheet - As of ${titleText}`]];
                     sheet.getRange("A1:D1").merge(true);
                     sheet.getRange("A1").format.font.bold = true;
                     sheet.getRange("A1").format.font.size = 18;
                     sheet.getRange("A1").format.font.color = "#09235C";
+                    // #region agent log
+                    fetch('http://127.0.0.1:7242/ingest/e97b1944-c101-4b82-829f-4e5331e3d29e',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'taskpane.html:10740',message:'After setting title',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+                    // #endregion
                     
                     // Row 2: Subsidiary & Period reference
+                    const subsidiaryText = String(defaultSubsidiary || 'All Subsidiaries').trim();
+                    const periodText = String(periodFormatted || '').trim();
+                    // #region agent log
+                    fetch('http://127.0.0.1:7242/ingest/e97b1944-c101-4b82-829f-4e5331e3d29e',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'taskpane.html:10744',message:'Before setting row 2',data:{subsidiaryText,periodText,defaultSubsidiary},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+                    // #endregion
                     sheet.getRange("A2").values = [["Subsidiary:"]];
-                    sheet.getRange("B2").values = [[defaultSubsidiary || 'All Subsidiaries']];
+                    sheet.getRange("B2").values = [[subsidiaryText]];
                     sheet.getRange("C2").values = [["Period:"]];
-                    sheet.getRange("D2").values = [[periodFormatted]];
+                    sheet.getRange("D2").values = [[periodText]];
                     sheet.getRange("A2:D2").format.font.size = 11;
                     sheet.getRange("A2").format.font.bold = true;
                     sheet.getRange("C2").format.font.bold = true;
