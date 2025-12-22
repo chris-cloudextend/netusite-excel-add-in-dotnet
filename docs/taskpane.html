@@ -11223,6 +11223,16 @@ For licensing inquiries, contact: legal@celigo.com
                         }
                     }
                     
+                    // CHECKPOINT: Sync before final totals
+                    console.log(`🔍 CHECKPOINT: Syncing before final totals (currentRow=${currentRow}, totalLiabilitiesRow=${totalLiabilitiesRow}, totalEquityRow=${totalEquityRow}, totalAssetsRow=${totalAssetsRow})...`);
+                    try {
+                        await context.sync();
+                        console.log(`✅ CHECKPOINT: Pre-final-totals sync successful`);
+                    } catch (checkpointError) {
+                        console.error(`❌ CHECKPOINT ERROR: Failed before final totals:`, checkpointError.message);
+                        throw checkpointError;
+                    }
+                    
                     // ===== TOTAL LIABILITIES + EQUITY =====
                     console.log(`🔍 Adding TOTAL LIABILITIES + EQUITY at row ${currentRow}`);
                     try {
@@ -11269,7 +11279,18 @@ For licensing inquiries, contact: legal@celigo.com
                         console.error('❌ Error adding Balance Check:', e.message);
                     }
                     
-                    await context.sync();
+                    // CHECKPOINT: Final sync before formatting
+                    console.log('🔍 CHECKPOINT: Final sync before formatting operations...');
+                    try {
+                        await context.sync();
+                        console.log('✅ CHECKPOINT: Final sync complete - all data operations successful!');
+                    } catch (finalSyncError) {
+                        console.error('❌ CHECKPOINT ERROR: Failed at final sync:', finalSyncError.message);
+                        console.error('  This means one of the operations above is invalid.');
+                        console.error('  Check the logs above to see the last successful checkpoint.');
+                        console.error('  Last successful checkpoint should indicate which section failed.');
+                        throw finalSyncError;
+                    }
                     
                     updateProgress(85, '🎨 Step 3 of 3: Formatting', 'Auto-fitting columns...');
                     
