@@ -10560,29 +10560,50 @@ For licensing inquiries, contact: legal@celigo.com
                 
                 // Use tunnel URL for this endpoint (tunnel URL changes - may need to update)
                 const BACKEND_TUNNEL_URL = 'https://keeps-store-sally-planet.trycloudflare.com';
-                const reportResponse = await fetch(`${BACKEND_TUNNEL_URL}/balance-sheet/report`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        period: periodFormatted,
-                        subsidiary: defaultSubsidiary || null,
-                        department: defaultDepartment || null,
-                        location: defaultLocation || null,
-                        class: defaultClass || null,
-                        book: null
-                    })
-                });
                 
-                if (!reportResponse.ok) {
-                    const errorData = await reportResponse.json().catch(() => ({ error: 'Unknown error' }));
-                    throw new Error(errorData.error || 'Failed to fetch Balance Sheet data');
+                console.log(`📡 Calling Balance Sheet endpoint: ${BACKEND_TUNNEL_URL}/balance-sheet/report`);
+                console.log(`📅 Period: ${periodFormatted}`);
+                
+                // Create AbortController for timeout
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => {
+                    console.error('⏱️ Balance Sheet request timed out after 5 minutes');
+                    controller.abort();
+                }, 300000); // 5 minute timeout
+                
+                try {
+                    const reportResponse = await fetch(`${BACKEND_TUNNEL_URL}/balance-sheet/report`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            period: periodFormatted,
+                            subsidiary: defaultSubsidiary || null,
+                            department: defaultDepartment || null,
+                            location: defaultLocation || null,
+                            class: defaultClass || null,
+                            book: null
+                        }),
+                        signal: controller.signal
+                    });
+                    clearTimeout(timeoutId);
+                
+                    if (!reportResponse.ok) {
+                        const errorData = await reportResponse.json().catch(() => ({ error: `HTTP ${reportResponse.status}` }));
+                        throw new Error(errorData.error || `Failed to fetch Balance Sheet data (${reportResponse.status})`);
+                    }
+                    
+                    const reportData = await reportResponse.json();
+                    const rows = reportData.rows || [];
+                    
+                    console.log(`📊 Balance Sheet: Received ${rows.length} rows from backend`);
+                    updateProgress(50, '📥 Step 1 of 3: Loading Balance Sheet Data', `Loaded ${rows.length} accounts and calculated rows...`);
+                } catch (fetchError) {
+                    clearTimeout(timeoutId);
+                    if (fetchError.name === 'AbortError') {
+                        throw new Error('Request timed out after 5 minutes. The Balance Sheet query may be taking longer than expected.');
+                    }
+                    throw fetchError;
                 }
-                
-                const reportData = await reportResponse.json();
-                const rows = reportData.rows || [];
-                
-                console.log(`📊 Balance Sheet: Received ${rows.length} rows from backend`);
-                updateProgress(50, '📥 Step 1 of 3: Loading Balance Sheet Data', `Loaded ${rows.length} accounts and calculated rows...`);
                 
                 // Step 2: Build the spreadsheet
                 updateProgress(60, '📝 Step 2 of 3: Building Structure', 'Creating Balance Sheet layout...');
