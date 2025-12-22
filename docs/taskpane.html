@@ -5766,7 +5766,7 @@ For licensing inquiries, contact: legal@celigo.com
             
             console.log('🏢 Fetching subsidiary lookup...');
             subsidiaryLookupCache = {};
-            const response = await fetch(`${SERVER_URL}/lookups/all`);
+            const response = await fetch(`${getServerUrl()}/lookups/all`);
             if (response.ok) {
                 const lookups = await response.json();
                 for (const sub of (lookups.subsidiaries || [])) {
@@ -8411,7 +8411,7 @@ For licensing inquiries, contact: legal@celigo.com
                     }
                 }, 5000); // Increment every 5 seconds
                 
-                const refreshResponse = await fetch(`${SERVER_URL}/batch/full_year_refresh`, {
+                const refreshResponse = await fetch(`${getServerUrl()}/batch/full_year_refresh`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -9722,7 +9722,7 @@ For licensing inquiries, contact: legal@celigo.com
                     }
                 }, 4000);
                 
-                const refreshResponse = await fetch(`${SERVER_URL}/batch/full_year_refresh`, {
+                const refreshResponse = await fetch(`${getServerUrl()}/batch/full_year_refresh`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -12327,7 +12327,7 @@ For licensing inquiries, contact: legal@celigo.com
                 // Fetch accounts for the target year AND selected subsidiary
                 // This ensures we get accounts that have data for THIS subsidiary
                 console.log(`Syncing structure for year ${targetYear}, subsidiary: "${currentSubsidiary}"`);
-                const refreshResponse = await fetch(`${SERVER_URL}/batch/full_year_refresh`, {
+                const refreshResponse = await fetch(`${getServerUrl()}/batch/full_year_refresh`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -16260,7 +16260,7 @@ export default {
                 
                 // Fetch accounts for the target year AND selected subsidiary
                 console.log(`performStructureSync: year=${targetYear}, subsidiary="${currentSubsidiary}", dept="${department}", loc="${location}", class="${classId}", book="${accountingBook}"`);
-                const refreshResponse = await fetch(`${SERVER_URL}/batch/full_year_refresh`, {
+                const refreshResponse = await fetch(`${getServerUrl()}/batch/full_year_refresh`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
