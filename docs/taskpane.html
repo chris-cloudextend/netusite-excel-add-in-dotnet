@@ -7267,10 +7267,11 @@ For licensing inquiries, contact: legal@celigo.com
             statusText.textContent = 'Checking...';
             
             try {
+                const serverUrl = typeof SERVER_URL !== 'undefined' ? SERVER_URL : 'https://netsuite-proxy.chris-corcoran.workers.dev';
                 const controller = new AbortController();
                 const timeoutId = setTimeout(() => controller.abort(), 8000);
                 
-                const response = await fetch(`${SERVER_URL}/health`, {
+                const response = await fetch(`${serverUrl}/health`, {
                     method: 'GET',
                     signal: controller.signal
                 });
