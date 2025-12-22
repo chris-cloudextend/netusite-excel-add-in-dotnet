@@ -20,15 +20,23 @@
 // 4. Replace ALL code with this file
 // 5. Click: Save and Deploy
 //
-// CURRENT TUNNEL URL: https://formats-jenny-delete-toronto.trycloudflare.com
+// CURRENT TUNNEL URLS:
+// - Python Backend: https://comfortable-honest-garage-desired.trycloudflare.com
+// - .NET Backend: (set DOTNET_TUNNEL_URL below - get from cloudflared output)
 // CURRENT ACCOUNT: 589861 (Production)
-// Last Updated: Dec 20, 2025
+// Last Updated: Jan 2025
 // ════════════════════════════════════════════════════════════════════
 
 export default {
   async fetch(request) {
-    // ⚠️ UPDATE THIS LINE when tunnel URL changes:
-    const TUNNEL_URL = 'https://formats-jenny-delete-toronto.trycloudflare.com';
+    // Python backend tunnel (for most endpoints)
+    const PYTHON_TUNNEL_URL = 'https://comfortable-honest-garage-desired.trycloudflare.com';
+    
+    // .NET backend tunnel (for balance-sheet/report endpoint)
+    // ⚠️ UPDATE THIS when .NET backend tunnel URL changes
+    // To get the URL, run: cloudflared tunnel --url http://localhost:5002
+    // Copy the https://xxxxx.trycloudflare.com URL and paste it here
+    const DOTNET_TUNNEL_URL = 'https://comfortable-honest-garage-desired.trycloudflare.com'; // TODO: Update with actual .NET tunnel URL
 
     // Handle CORS preflight requests
     if (request.method === 'OPTIONS') {
@@ -45,9 +53,17 @@ export default {
     }
 
     try {
-      // Forward request to tunnel
       const url = new URL(request.url);
-      const targetUrl = TUNNEL_URL + url.pathname + url.search;
+      const pathname = url.pathname;
+      
+      // Route balance-sheet/report to .NET backend
+      // All other requests go to Python backend
+      let targetUrl;
+      if (pathname.startsWith('/balance-sheet/report')) {
+        targetUrl = DOTNET_TUNNEL_URL + pathname + url.search;
+      } else {
+        targetUrl = PYTHON_TUNNEL_URL + pathname + url.search;
+      }
       
       const headers = new Headers(request.headers);
       headers.delete('host');
@@ -77,7 +93,9 @@ export default {
       return new Response(JSON.stringify({
         error: 'Proxy error',
         message: error.message,
-        tunnel: TUNNEL_URL,
+        pythonTunnel: PYTHON_TUNNEL_URL,
+        dotNetTunnel: DOTNET_TUNNEL_URL,
+        path: new URL(request.url).pathname,
         timestamp: new Date().toISOString()
       }), {
         status: 502,

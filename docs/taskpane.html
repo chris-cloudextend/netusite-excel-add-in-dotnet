@@ -5738,18 +5738,10 @@ For licensing inquiries, contact: legal@celigo.com
         // Do NOT redeclare it here to avoid duplicate variable error
         
         // Helper function to get .NET backend URL for Balance Sheet endpoints
-        // The .NET backend runs separately from the Python backend
-        // Check for environment variable or use default tunnel URL
+        // The Workers proxy now routes /balance-sheet/report to the .NET backend automatically
+        // So we can just use the same server URL - the proxy handles routing
         const getDotNetBackendUrl = () => {
-            // Check if user has configured a .NET backend URL in localStorage
-            const dotNetUrl = localStorage.getItem('DOTNET_BACKEND_URL');
-            if (dotNetUrl) {
-                return dotNetUrl;
-            }
-            // Default: assume .NET backend is exposed via the same Workers proxy
-            // If you have a separate tunnel for .NET backend, set it in localStorage:
-            // localStorage.setItem('DOTNET_BACKEND_URL', 'https://your-dotnet-tunnel.trycloudflare.com');
-            return getServerUrl(); // Fallback to same URL for now
+            return getServerUrl(); // Workers proxy routes /balance-sheet/report to .NET backend
         };
         
         // ========================================================================
