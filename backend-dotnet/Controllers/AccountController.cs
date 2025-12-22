@@ -7,6 +7,7 @@
 
 using Microsoft.AspNetCore.Mvc;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using XaviApi.Models;
 using XaviApi.Services;
 
@@ -498,6 +499,7 @@ public class AccountController : ControllerBase
 /// </summary>
 public class AccountNumberRequest
 {
+    [JsonPropertyName("account")]
     public string Account { get; set; } = string.Empty;
 }
 
