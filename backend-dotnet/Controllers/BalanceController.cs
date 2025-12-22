@@ -1081,9 +1081,8 @@ public class BalanceController : ControllerBase
             var longTermLiabilityTypes = new[] { AccountType.LongTermLiab };
             var equityTypes = new[] { AccountType.Equity };
 
-            // Query all BS accounts with balances for the period
-            // Optimized: Use INNER JOIN for TransactionLine (faster than LEFT JOIN)
-            // Use accountsearchdisplaynamecopy instead of fullname (faster)
+            // Query all BS accounts with balances using the proven bs_preload pattern
+            // This avoids duplicate BUILTIN.CONSOLIDATE calls (HAVING clause) which is much faster
             var signFlipSql = AccountType.SignFlipTypesSql;
             var bsTypesSql = AccountType.BsTypesSql;
             
@@ -1092,7 +1091,6 @@ public class BalanceController : ControllerBase
                     a.acctnumber,
                     a.accountsearchdisplaynamecopy AS account_name,
                     a.accttype,
-                    p.acctnumber AS parent_number,
                     SUM(
                         TO_NUMBER(
                             BUILTIN.CONSOLIDATE(
@@ -1109,7 +1107,6 @@ public class BalanceController : ControllerBase
                 FROM transactionaccountingline tal
                 JOIN transaction t ON t.id = tal.transaction
                 JOIN account a ON a.id = tal.account
-                LEFT JOIN account p ON a.parent = p.id
                 JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id
                 WHERE t.posting = 'T'
                   AND tal.posting = 'T'
@@ -1118,41 +1115,69 @@ public class BalanceController : ControllerBase
                   AND t.trandate <= TO_DATE('{periodEndDate}', 'YYYY-MM-DD')
                   AND tal.accountingbook = {accountingBook}
                   AND {segmentWhere}
-                GROUP BY a.acctnumber, a.accountsearchdisplaynamecopy, a.accttype, p.acctnumber
-                HAVING SUM(
-                    TO_NUMBER(
-                        BUILTIN.CONSOLIDATE(
-                            tal.amount,
-                            'LEDGER',
-                            'DEFAULT',
-                            'DEFAULT',
-                            {targetSub},
-                            {targetPeriodId},
-                            'DEFAULT'
-                        )
-                    ) * CASE WHEN a.accttype IN ({signFlipSql}) THEN -1 ELSE 1 END
-                ) != 0
+                GROUP BY a.acctnumber, a.accountsearchdisplaynamecopy, a.accttype
                 ORDER BY a.acctnumber";
 
-            _logger.LogDebug("Executing Balance Sheet accounts query...");
+            _logger.LogDebug("Executing Balance Sheet accounts query (bs_preload pattern - no HAVING clause)...");
             var accountResults = await _netSuiteService.QueryRawAsync(bsQuery, 180);
             
-            _logger.LogInformation("Found {Count} BS accounts with non-zero balances", accountResults.Count);
+            // Filter zero balances in code (same result as HAVING, but avoids duplicate BUILTIN.CONSOLIDATE call)
+            var accountsWithBalances = accountResults
+                .Where(row => {
+                    var balance = ParseBalance(row.TryGetProperty("balance", out var balProp) ? balProp : default);
+                    return balance != 0;
+                })
+                .ToList();
+            
+            _logger.LogInformation("Found {Count} BS accounts with non-zero balances (from {Total} total)", 
+                accountsWithBalances.Count, accountResults.Count);
+            
+            // Step 2: Fetch parent relationships in a separate simple query
+            var accountNumbers = accountsWithBalances
+                .Select(row => row.TryGetProperty("acctnumber", out var numProp) ? numProp.GetString() : null)
+                .Where(num => !string.IsNullOrEmpty(num))
+                .ToList();
+            
+            Dictionary<string, string?> parentMap = new();
+            if (accountNumbers.Any())
+            {
+                var parentNumbersList = string.Join(", ", accountNumbers.Select(n => $"'{NetSuiteService.EscapeSql(n)}'"));
+                var parentQuery = $@"
+                    SELECT 
+                        a.acctnumber,
+                        p.acctnumber AS parent_number
+                    FROM account a
+                    LEFT JOIN account p ON a.parent = p.id
+                    WHERE a.acctnumber IN ({parentNumbersList})
+                      AND a.isinactive = 'F'";
+                
+                _logger.LogDebug("Fetching parent relationships for {Count} accounts...", accountNumbers.Count);
+                var parentResults = await _netSuiteService.QueryRawAsync(parentQuery, 30);
+                
+                parentMap = parentResults
+                    .ToDictionary(
+                        row => row.TryGetProperty("acctnumber", out var numProp) ? numProp.GetString() ?? "" : "",
+                        row => row.TryGetProperty("parent_number", out var pProp) && pProp.ValueKind != JsonValueKind.Null 
+                            ? pProp.GetString() : null,
+                        StringComparer.OrdinalIgnoreCase
+                    );
+            }
 
             // Build account map with parent relationships
             var accountMap = new Dictionary<string, BalanceSheetRow>();
             var parentChildMap = new Dictionary<string, List<string>>(); // parent -> children
             var parentAccountNumbers = new HashSet<string>(); // Track parent accounts that need to be included
 
-            // First pass: process accounts with non-zero balances
-            foreach (var row in accountResults)
+            // Process accounts with non-zero balances
+            foreach (var row in accountsWithBalances)
             {
                 var acctNum = row.TryGetProperty("acctnumber", out var acctProp) ? acctProp.GetString() ?? "" : "";
                 var acctName = row.TryGetProperty("account_name", out var nameProp) ? nameProp.GetString() ?? "" : "";
                 var acctType = row.TryGetProperty("accttype", out var typeProp) ? typeProp.GetString() ?? "" : "";
-                var parentNum = row.TryGetProperty("parent_number", out var parentProp) && parentProp.ValueKind != JsonValueKind.Null 
-                    ? parentProp.GetString() : null;
                 var balance = ParseBalance(row.TryGetProperty("balance", out var balProp) ? balProp : default);
+                
+                // Get parent from the separate parent map
+                var parentNum = parentMap.GetValueOrDefault(acctNum);
 
                 if (string.IsNullOrEmpty(acctNum) || string.IsNullOrEmpty(acctType))
                     continue;
@@ -1255,7 +1280,7 @@ public class BalanceController : ControllerBase
                 var parentQuery = $@"
                     SELECT 
                         a.acctnumber,
-                        a.fullname AS account_name,
+                        a.accountsearchdisplaynamecopy AS account_name,
                         a.accttype,
                         p.acctnumber AS parent_number,
                         0 AS balance
