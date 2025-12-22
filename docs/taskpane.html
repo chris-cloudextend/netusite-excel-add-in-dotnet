@@ -5314,7 +5314,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=3.0.5.274"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=3.0.5.275"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -7261,9 +7261,16 @@ For licensing inquiries, contact: legal@celigo.com
         let connectionCheckInterval = null;
         
         async function checkConnectionStatus(silent = false) {
+            // #region agent log
+            fetch('http://127.0.0.1:7242/ingest/e97b1944-c101-4b82-829f-4e5331e3d29e',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'taskpane.html:7263',message:'checkConnectionStatus called',data:{silent,isCheckingConnection},timestamp:Date.now(),sessionId:'debug-session',runId:'connection-check',hypothesisId:'A'})}).catch(()=>{});
+            // #endregion
+            
             // Prevent multiple simultaneous checks
             if (isCheckingConnection) {
                 console.log('Connection check already in progress, skipping...');
+                // #region agent log
+                fetch('http://127.0.0.1:7242/ingest/e97b1944-c101-4b82-829f-4e5331e3d29e',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'taskpane.html:7268',message:'Already checking, skipping',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'connection-check',hypothesisId:'A'})}).catch(()=>{});
+                // #endregion
                 return false;
             }
             
@@ -7272,6 +7279,9 @@ For licensing inquiries, contact: legal@celigo.com
             
             if (!statusBadge || !statusText) {
                 console.warn('Connection status elements not found');
+                // #region agent log
+                fetch('http://127.0.0.1:7242/ingest/e97b1944-c101-4b82-829f-4e5331e3d29e',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'taskpane.html:7275',message:'Status elements not found',data:{hasBadge:!!statusBadge,hasText:!!statusText},timestamp:Date.now(),sessionId:'debug-session',runId:'connection-check',hypothesisId:'B'})}).catch(()=>{});
+                // #endregion
                 return false;
             }
             
@@ -7281,8 +7291,16 @@ For licensing inquiries, contact: legal@celigo.com
             statusBadge.className = 'status-badge checking';
             statusText.textContent = 'Checking...';
             
+            // #region agent log
+            fetch('http://127.0.0.1:7242/ingest/e97b1944-c101-4b82-829f-4e5331e3d29e',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'taskpane.html:7283',message:'Starting connection check',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'connection-check',hypothesisId:'C'})}).catch(()=>{});
+            // #endregion
+            
             try {
                 const serverUrl = getServerUrl();
+                
+                // #region agent log
+                fetch('http://127.0.0.1:7242/ingest/e97b1944-c101-4b82-829f-4e5331e3d29e',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'taskpane.html:7288',message:'Got server URL',data:{serverUrl,isString:typeof serverUrl==='string',startsWithHttp:serverUrl?.startsWith('http')},timestamp:Date.now(),sessionId:'debug-session',runId:'connection-check',hypothesisId:'C'})}).catch(()=>{});
+                // #endregion
                 
                 // Validate URL before attempting fetch
                 if (!serverUrl || typeof serverUrl !== 'string' || !serverUrl.startsWith('http')) {
@@ -7290,20 +7308,41 @@ For licensing inquiries, contact: legal@celigo.com
                 }
                 
                 const controller = new AbortController();
+                const startTime = Date.now();
+                
+                // #region agent log
+                fetch('http://127.0.0.1:7242/ingest/e97b1944-c101-4b82-829f-4e5331e3d29e',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'taskpane.html:7297',message:'Setting up timeout and fetch',data:{serverUrl,timeoutMs:8000},timestamp:Date.now(),sessionId:'debug-session',runId:'connection-check',hypothesisId:'C'})}).catch(()=>{});
+                // #endregion
+                
                 const timeoutId = setTimeout(() => {
+                    const elapsed = Date.now() - startTime;
+                    // #region agent log
+                    fetch('http://127.0.0.1:7242/ingest/e97b1944-c101-4b82-829f-4e5331e3d29e',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'taskpane.html:7302',message:'Timeout fired, aborting',data:{elapsed},timestamp:Date.now(),sessionId:'debug-session',runId:'connection-check',hypothesisId:'D'})}).catch(()=>{});
+                    // #endregion
                     controller.abort();
                     console.warn('Connection check timed out after 8 seconds');
                 }, 8000);
                 
                 let response;
                 try {
+                    // #region agent log
+                    fetch('http://127.0.0.1:7242/ingest/e97b1944-c101-4b82-829f-4e5331e3d29e',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'taskpane.html:7310',message:'About to call fetch',data:{url:`${serverUrl}/health`},timestamp:Date.now(),sessionId:'debug-session',runId:'connection-check',hypothesisId:'E'})}).catch(()=>{});
+                    // #endregion
+                    
                     response = await fetch(`${serverUrl}/health`, {
                         method: 'GET',
                         signal: controller.signal,
                         cache: 'no-cache'
                     });
+                    
+                    // #region agent log
+                    fetch('http://127.0.0.1:7242/ingest/e97b1944-c101-4b82-829f-4e5331e3d29e',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'taskpane.html:7318',message:'Fetch completed',data:{status:response.status,ok:response.ok,elapsed:Date.now()-startTime},timestamp:Date.now(),sessionId:'debug-session',runId:'connection-check',hypothesisId:'E'})}).catch(()=>{});
+                    // #endregion
                 } catch (fetchError) {
                     clearTimeout(timeoutId);
+                    // #region agent log
+                    fetch('http://127.0.0.1:7242/ingest/e97b1944-c101-4b82-829f-4e5331e3d29e',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'taskpane.html:7322',message:'Fetch error caught',data:{errorName:fetchError.name,errorMessage:fetchError.message,elapsed:Date.now()-startTime},timestamp:Date.now(),sessionId:'debug-session',runId:'connection-check',hypothesisId:'F'})}).catch(()=>{});
+                    // #endregion
                     // Re-throw to be caught by outer catch
                     throw fetchError;
                 }
