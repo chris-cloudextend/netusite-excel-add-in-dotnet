@@ -10948,6 +10948,22 @@ For licensing inquiries, contact: legal@celigo.com
                             return;
                         }
                         try {
+                        // Handle type headers (account type category headers like "Bank", "Accounts Receivable")
+                        if (row.is_type_header) {
+                            const accountName = String(row.type_category || row.account_name || '').replace(/"/g, '""');
+                            
+                            sheet.getRange(`A${currentRow}`).values = [['']];
+                            sheet.getRange(`B${currentRow}`).values = [[String(accountName)]];
+                            sheet.getRange(`B${currentRow}`).format.font.bold = true;
+                            sheet.getRange(`B${currentRow}`).format.font.size = 11;
+                            sheet.getRange(`B${currentRow}`).format.fill.color = "#E5E7EB"; // Slightly darker than parent headers
+                            // No formula for type headers - they're just category labels
+                            sheet.getRange(`C${currentRow}`).values = [['']];
+                            
+                            currentRow++;
+                            return;
+                        }
+                        
                         // Handle parent headers (category headers with no formula)
                         if (row.is_parent_header) {
                             const indent = '  '.repeat(Math.max(0, Number(row.level) || 0));
@@ -10975,39 +10991,59 @@ For licensing inquiries, contact: legal@celigo.com
                             const accountName = String(row.account_name || '').replace(/"/g, '""');
                             const indent = '  '.repeat(Math.max(0, Number(row.level) || 0));
                             
-                            // Get child row range for this subtotal
-                            let startRow = null;
-                            let endRow = currentRow;
+                            // Check if this is a type subtotal (e.g., "Total Bank") vs parent subtotal
+                            const isTypeSubtotal = row.source === 'TypeSubtotal';
                             
-                            if (row.subtotal_for && childRowRanges.has(row.subtotal_for)) {
-                                const range = childRowRanges.get(row.subtotal_for);
-                                startRow = range.startRow;
-                                // Update end row to current position (before subtotal)
-                                range.endRow = currentRow;
-                            }
-                            
-                            if (startRow && startRow < endRow) {
-                                // Use SUBTOTAL formula to sum child rows
-                                const subtotalFormula = `=SUBTOTAL(109, C${startRow}:C${endRow - 1})`;
+                            if (isTypeSubtotal) {
+                                // Type subtotal - use the balance value from backend (already calculated)
+                                // TODO: Could improve this to use SUBTOTAL formula with range tracking
                                 sheet.getRange(`A${currentRow}`).values = [['']];
                                 sheet.getRange(`B${currentRow}`).values = [[String(indent + accountName)]];
-                                sheet.getRange(`C${currentRow}`).formulas = [[subtotalFormula]];
+                                sheet.getRange(`C${currentRow}`).values = [[Number(row.balance) || 0]];
                                 sheet.getRange(`B${currentRow}:C${currentRow}`).format.font.bold = true;
                                 sheet.getRange(`C${currentRow}`).numberFormat = [[String(currencyFormat || '$#,##0.00')]];
                                 
-                                // Add top border to separate from children
+                                // Add top border to separate from accounts
                                 try {
                                     sheet.getRange(`C${currentRow}`).format.borders.getItem('EdgeTop').style = 'Thin';
                                 } catch (borderError) {
                                     // Border might not exist, that's okay
                                 }
                             } else {
-                                // Fallback: use balance value if we can't calculate range
-                                sheet.getRange(`A${currentRow}`).values = [['']];
-                                sheet.getRange(`B${currentRow}`).values = [[String(indent + accountName)]];
-                                sheet.getRange(`C${currentRow}`).values = [[Number(row.balance) || 0]];
-                                sheet.getRange(`B${currentRow}:C${currentRow}`).format.font.bold = true;
-                                sheet.getRange(`C${currentRow}`).numberFormat = [[String(currencyFormat || '$#,##0.00')]];
+                                // Parent subtotal - use child row range
+                                let startRow = null;
+                                let endRow = currentRow;
+                                
+                                if (row.subtotal_for && childRowRanges.has(row.subtotal_for)) {
+                                    const range = childRowRanges.get(row.subtotal_for);
+                                    startRow = range.startRow;
+                                    // Update end row to current position (before subtotal)
+                                    range.endRow = currentRow;
+                                }
+                                
+                                if (startRow && startRow < endRow) {
+                                    // Use SUBTOTAL formula to sum child rows
+                                    const subtotalFormula = `=SUBTOTAL(109, C${startRow}:C${endRow - 1})`;
+                                    sheet.getRange(`A${currentRow}`).values = [['']];
+                                    sheet.getRange(`B${currentRow}`).values = [[String(indent + accountName)]];
+                                    sheet.getRange(`C${currentRow}`).formulas = [[subtotalFormula]];
+                                    sheet.getRange(`B${currentRow}:C${currentRow}`).format.font.bold = true;
+                                    sheet.getRange(`C${currentRow}`).numberFormat = [[String(currencyFormat || '$#,##0.00')]];
+                                    
+                                    // Add top border to separate from children
+                                    try {
+                                        sheet.getRange(`C${currentRow}`).format.borders.getItem('EdgeTop').style = 'Thin';
+                                    } catch (borderError) {
+                                        // Border might not exist, that's okay
+                                    }
+                                } else {
+                                    // Fallback: use balance value if we can't calculate range
+                                    sheet.getRange(`A${currentRow}`).values = [['']];
+                                    sheet.getRange(`B${currentRow}`).values = [[String(indent + accountName)]];
+                                    sheet.getRange(`C${currentRow}`).values = [[Number(row.balance) || 0]];
+                                    sheet.getRange(`B${currentRow}:C${currentRow}`).format.font.bold = true;
+                                    sheet.getRange(`C${currentRow}`).numberFormat = [[String(currencyFormat || '$#,##0.00')]];
+                                }
                             }
                             
                             currentRow++;

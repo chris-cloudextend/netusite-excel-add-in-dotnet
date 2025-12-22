@@ -381,6 +381,21 @@ public class BalanceSheetRow
     
     [JsonPropertyName("level")]
     public int Level { get; set; } // 0 = top level, 1 = child, etc.
+    
+    [JsonPropertyName("is_parent_header")]
+    public bool IsParentHeader { get; set; } // true if this account is a parent acting as a category header
+    
+    [JsonPropertyName("is_subtotal")]
+    public bool IsSubtotal { get; set; } // true if this is a subtotal row
+    
+    [JsonPropertyName("subtotal_for")]
+    public string? SubtotalFor { get; set; } // account number this subtotal is for (if it's a subtotal row)
+    
+    [JsonPropertyName("is_type_header")]
+    public bool IsTypeHeader { get; set; } // true if this is an account type category header (e.g., "Bank", "Accounts Receivable")
+    
+    [JsonPropertyName("type_category")]
+    public string? TypeCategory { get; set; } // the account type display name for type headers
 }
 
 /// <summary>Balance Sheet report response</summary>
