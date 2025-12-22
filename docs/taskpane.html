@@ -5727,10 +5727,14 @@ For licensing inquiries, contact: legal@celigo.com
         // automatically when taskpane opens with ?action=drilldown parameter.
         
         // SERVER_URL is defined in functions.js (loaded via shared runtime)
-        // Fallback definition in case functions.js hasn't loaded yet
-        if (typeof SERVER_URL === 'undefined') {
-            var SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
-        }
+        // Helper function to get SERVER_URL with fallback (avoids duplicate variable error)
+        const getServerUrl = () => {
+            try {
+                return typeof SERVER_URL !== 'undefined' ? SERVER_URL : 'https://netsuite-proxy.chris-corcoran.workers.dev';
+            } catch (e) {
+                return 'https://netsuite-proxy.chris-corcoran.workers.dev';
+            }
+        };
         // Do NOT redeclare it here to avoid duplicate variable error
         
         // ========================================================================
@@ -5746,7 +5750,7 @@ For licensing inquiries, contact: legal@celigo.com
             }
             
             console.log('💱 Fetching currency data...');
-            const response = await fetch(`${SERVER_URL}/lookups/currencies`);
+            const response = await fetch(`${getServerUrl()}/lookups/currencies`);
             if (response.ok) {
                 currencyCache = await response.json();
                 console.log('💱 Currency data cached:', Object.keys(currencyCache.currencies).length, 'subsidiaries');
@@ -6434,7 +6438,7 @@ For licensing inquiries, contact: legal@celigo.com
                 showLoading('Bulk Add', `Searching for accounts matching "${pattern}"...`, 20);
                 
                 // Call backend API directly (don't rely on searchAccounts which needs event.target)
-                const url = `${SERVER_URL}/accounts/search?pattern=${encodeURIComponent(pattern)}`;
+                const url = `${getServerUrl()}/accounts/search?pattern=${encodeURIComponent(pattern)}`;
                 console.log('Bulk Add API URL:', url);
                 
                 const response = await fetch(url);
@@ -6522,7 +6526,7 @@ For licensing inquiries, contact: legal@celigo.com
             
             try {
                 // Fetch accounts that have data for Jan 2025 (detail accounts only - those with parents)
-                const response = await fetch(`${SERVER_URL}/accounts/with-activity?period=Jan 2025&limit=10&types=Income,Expense,COGS`);
+                const response = await fetch(`${getServerUrl()}/accounts/with-activity?period=Jan 2025&limit=10&types=Income,Expense,COGS`);
                 
                 if (!response.ok) {
                     throw new Error('Could not load accounts');
@@ -6728,7 +6732,7 @@ For licensing inquiries, contact: legal@celigo.com
                 const currentYear = new Date().getFullYear();
                 
                 try {
-                    const refreshResponse = await fetch(`${SERVER_URL}/batch/full_year_refresh`, {
+                    const refreshResponse = await fetch(`${getServerUrl()}/batch/full_year_refresh`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
@@ -7267,7 +7271,7 @@ For licensing inquiries, contact: legal@celigo.com
             statusText.textContent = 'Checking...';
             
             try {
-                const serverUrl = typeof SERVER_URL !== 'undefined' ? SERVER_URL : 'https://netsuite-proxy.chris-corcoran.workers.dev';
+                const serverUrl = getServerUrl();
                 const controller = new AbortController();
                 const timeoutId = setTimeout(() => controller.abort(), 8000);
                 
@@ -7478,7 +7482,7 @@ For licensing inquiries, contact: legal@celigo.com
                     const qp = new URLSearchParams({ account, period });
                     if (subsidiary) qp.append('subsidiary', subsidiary);
                     
-                    const resp = await fetch(`${SERVER_URL}/transactions?${qp}`);
+                    const resp = await fetch(`${getServerUrl()}/transactions?${qp}`);
                     if (resp.ok) {
                         const data = await resp.json();
                         showDrilldownStatus(`Creating sheet with ${data.transactions?.length || 0} transactions...`);
@@ -7692,7 +7696,7 @@ For licensing inquiries, contact: legal@celigo.com
                             // Preload ALL BS accounts for the identified periods
                             // Using /batch/bs_preload (not targeted) - it loads ALL BS accounts, not just specific ones
                             // This is just as fast as loading one account, and caches everything for instant subsequent lookups
-                            const preloadResponse = await fetch(`${SERVER_URL}/batch/bs_preload`, {
+                            const preloadResponse = await fetch(`${getServerUrl()}/batch/bs_preload`, {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify({
@@ -8555,14 +8559,14 @@ For licensing inquiries, contact: legal@celigo.com
                 let defaultSubsidiaryId = '1';
                 try {
                     // Get parent subsidiary ID from currencies endpoint (backend knows the root)
-                    const currencyResponse = await fetch(`${SERVER_URL}/lookups/currencies`);
+                    const currencyResponse = await fetch(`${getServerUrl()}/lookups/currencies`);
                     if (currencyResponse.ok) {
                         const currencyData = await currencyResponse.json();
                         defaultSubsidiaryId = currencyData.default_subsidiary || '1';
                     }
                     
                     // Get the subsidiary name
-                    const lookupsResponse = await fetch(`${SERVER_URL}/lookups/all`);
+                    const lookupsResponse = await fetch(`${getServerUrl()}/lookups/all`);
                     if (lookupsResponse.ok) {
                         const lookups = await lookupsResponse.json();
                         if (lookups.subsidiaries && lookups.subsidiaries.length > 0) {
@@ -9033,7 +9037,7 @@ For licensing inquiries, contact: legal@celigo.com
                 let currencyFormat = '$#,##0.00';
                 
                 try {
-                    const currencyResponse = await fetch(`${SERVER_URL}/lookups/currencies`);
+                    const currencyResponse = await fetch(`${getServerUrl()}/lookups/currencies`);
                     if (currencyResponse.ok) {
                         const currencyData = await currencyResponse.json();
                         defaultSubsidiaryId = currencyData.default_subsidiary || '1';
@@ -9041,7 +9045,7 @@ For licensing inquiries, contact: legal@celigo.com
                         currencyFormat = currencyData.formats[symbol] || '$#,##0.00';
                     }
                     
-                    const lookupsResponse = await fetch(`${SERVER_URL}/lookups/all`);
+                    const lookupsResponse = await fetch(`${getServerUrl()}/lookups/all`);
                     if (lookupsResponse.ok) {
                         const lookups = await lookupsResponse.json();
                         if (lookups.subsidiaries && lookups.subsidiaries.length > 0) {
@@ -9080,7 +9084,7 @@ For licensing inquiries, contact: legal@celigo.com
                     console.log('🚀 CFO Flash: Pre-fetching TYPEBALANCE data for instant formula resolution...');
                     updateProgress(25, '📥 Step 2 of 4: Pre-fetching Data', 'Querying NetSuite for account type totals...');
                     
-                    const typeBalanceResponse = await fetch(`${SERVER_URL}/batch/typebalance_refresh`, {
+                    const typeBalanceResponse = await fetch(`${getServerUrl()}/batch/typebalance_refresh`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
@@ -9826,7 +9830,7 @@ For licensing inquiries, contact: legal@celigo.com
                 let currencyFormat = '$#,##0.00';  // Default to USD
                 try {
                     // First get the correct parent subsidiary from currencies endpoint
-                    const currencyResponse = await fetch(`${SERVER_URL}/lookups/currencies`);
+                    const currencyResponse = await fetch(`${getServerUrl()}/lookups/currencies`);
                     if (currencyResponse.ok) {
                         const currencyData = await currencyResponse.json();
                         defaultSubsidiaryId = currencyData.default_subsidiary || '1';
@@ -9836,7 +9840,7 @@ For licensing inquiries, contact: legal@celigo.com
                     }
                     
                     // Now get the subsidiary name
-                    const lookupsResponse = await fetch(`${SERVER_URL}/lookups/all`);
+                    const lookupsResponse = await fetch(`${getServerUrl()}/lookups/all`);
                     if (lookupsResponse.ok) {
                         const lookups = await lookupsResponse.json();
                         if (lookups.subsidiaries && lookups.subsidiaries.length > 0) {
@@ -10599,7 +10603,7 @@ For licensing inquiries, contact: legal@celigo.com
                 
                 console.log(`═══════════════════════════════════════════════════════`);
                 console.log(`📊 BALANCE SHEET REPORT - Starting`);
-                console.log(`📡 Endpoint: ${SERVER_URL}/balance-sheet/report`);
+                console.log(`📡 Endpoint: ${getServerUrl()}/balance-sheet/report`);
                 console.log(`📅 Period: "${periodFormatted}" (year=${year}, month=${month})`);
                 console.log(`📦 Request:`, {
                     period: periodFormatted,
@@ -10624,7 +10628,7 @@ For licensing inquiries, contact: legal@celigo.com
                 }, 300000); // 5 minute timeout
                 
                 try {
-                    const reportResponse = await fetch(`${SERVER_URL}/balance-sheet/report`, {
+                    const reportResponse = await fetch(`${getServerUrl()}/balance-sheet/report`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
@@ -11281,7 +11285,7 @@ For licensing inquiries, contact: legal@celigo.com
                 
                 try {
                     // Get currencies and default subsidiary
-                    const currencyResponse = await fetch(`${SERVER_URL}/lookups/currencies`);
+                    const currencyResponse = await fetch(`${getServerUrl()}/lookups/currencies`);
                     if (currencyResponse.ok) {
                         const currencyData = await currencyResponse.json();
                         defaultSubsidiaryId = currencyData.default_subsidiary || '1';
@@ -11290,7 +11294,7 @@ For licensing inquiries, contact: legal@celigo.com
                     }
                     
                     // Get subsidiary name
-                    const lookupsResponse = await fetch(`${SERVER_URL}/lookups/all`);
+                    const lookupsResponse = await fetch(`${getServerUrl()}/lookups/all`);
                     if (lookupsResponse.ok) {
                         const lookups = await lookupsResponse.json();
                         if (lookups.subsidiaries && lookups.subsidiaries.length > 0) {
@@ -11329,7 +11333,7 @@ For licensing inquiries, contact: legal@celigo.com
                     }
                 }, 2000);
                 
-                const budgetUrl = new URL(`${SERVER_URL}/budget/all`);
+                const budgetUrl = new URL(`${getServerUrl()}/budget/all`);
                 budgetUrl.searchParams.append('year', budgetYear);
                 if (budgetCategoryId) budgetUrl.searchParams.append('category', budgetCategoryId);
                 
@@ -11838,7 +11842,7 @@ For licensing inquiries, contact: legal@celigo.com
                 updateLoading('🔍 Identifying BS Accounts', 30, `Checking ${formulaData.accounts.length} accounts...`);
                 
                 // Step 2: Identify which accounts are Balance Sheet accounts
-                const accountTypesResponse = await fetch(`${SERVER_URL}/accounts/types`, {
+                const accountTypesResponse = await fetch(`${getServerUrl()}/accounts/types`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ accounts: formulaData.accounts })
@@ -11877,7 +11881,7 @@ For licensing inquiries, contact: legal@celigo.com
                 );
                 
                 // Call targeted preload endpoint
-                const preloadResponse = await fetch(`${SERVER_URL}/batch/bs_preload_targeted`, {
+                const preloadResponse = await fetch(`${getServerUrl()}/batch/bs_preload_targeted`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -12069,7 +12073,7 @@ For licensing inquiries, contact: legal@celigo.com
                         `⏳ Each period takes ~70 seconds to calculate from inception...`
                     );
                     
-                    const response = await fetch(`${SERVER_URL}/batch/bs_preload`, {
+                    const response = await fetch(`${getServerUrl()}/batch/bs_preload`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
@@ -13005,7 +13009,7 @@ For licensing inquiries, contact: legal@celigo.com
                         console.log(`Pre-load: Fetching year ${year}...`);
                         const startTime = Date.now();
                         
-                        const response = await fetch(`${SERVER_URL}/batch/full_year_refresh`, {
+                        const response = await fetch(`${getServerUrl()}/batch/full_year_refresh`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
@@ -13059,7 +13063,7 @@ For licensing inquiries, contact: legal@celigo.com
                     // Fetch account names if not already loaded
                     updateProgress(85, '📥 Loading Names', 'Fetching account names...');
                     try {
-                        const namesResponse = await fetch(`${SERVER_URL}/account/preload_titles`);
+                        const namesResponse = await fetch(`${getServerUrl()}/account/preload_titles`);
                         if (namesResponse.ok) {
                             const namesData = await namesResponse.json();
                             allNames = namesData.titles || {};
@@ -13224,7 +13228,7 @@ For licensing inquiries, contact: legal@celigo.com
                     console.log(`🏦 Fetching BS data for ${year}...`);
                     const startTime = Date.now();
                     
-                    const response = await fetch(`${SERVER_URL}/batch/full_year_refresh_bs`, {
+                    const response = await fetch(`${getServerUrl()}/batch/full_year_refresh_bs`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
@@ -13315,7 +13319,7 @@ For licensing inquiries, contact: legal@celigo.com
                 const controller = new AbortController();
                 const timeoutId = setTimeout(() => controller.abort(), 10000);
                 
-                const response = await fetch(`${SERVER_URL}/health`, { 
+                const response = await fetch(`${getServerUrl()}/health`, { 
                     method: 'GET',
                     signal: controller.signal
                 });
@@ -13355,7 +13359,7 @@ For licensing inquiries, contact: legal@celigo.com
             });
             
             try {
-                const response = await fetch(`${SERVER_URL}/admin/restart`, { 
+                const response = await fetch(`${getServerUrl()}/admin/restart`, { 
                     method: 'POST',
                     signal: AbortSignal.timeout(10000)
                 });
@@ -13377,7 +13381,7 @@ For licensing inquiries, contact: legal@celigo.com
                 const checkInterval = setInterval(async () => {
                     attempts++;
                     try {
-                        const healthResponse = await fetch(`${SERVER_URL}/health`, { 
+                        const healthResponse = await fetch(`${getServerUrl()}/health`, { 
                             method: 'GET',
                             signal: AbortSignal.timeout(3000)
                         });
@@ -13388,7 +13392,7 @@ For licensing inquiries, contact: legal@celigo.com
                         
                         // Fetch and display tunnel URL
                         try {
-                            const infoResponse = await fetch(`${SERVER_URL}/`, { 
+                            const infoResponse = await fetch(`${getServerUrl()}/`, { 
                                 method: 'GET',
                                 signal: AbortSignal.timeout(3000)
                             });
@@ -13546,7 +13550,7 @@ export default {
                 
                 // The health check goes through the worker → tunnel → server
                 // If it works, tunnel is working
-                const response = await fetch(`${SERVER_URL}/health`, { 
+                const response = await fetch(`${getServerUrl()}/health`, { 
                     method: 'GET',
                     signal: controller.signal
                 });
@@ -13739,7 +13743,7 @@ export default {
             listDiv.innerHTML = '';
             
             try {
-                const response = await fetch(`${SERVER_URL}/check-permissions`, {
+                const response = await fetch(`${getServerUrl()}/check-permissions`, {
                     method: 'GET',
                     signal: AbortSignal.timeout(60000)
                 });
@@ -14494,7 +14498,7 @@ export default {
             statusEl.style.color = '#0284c7';
             
             try {
-                const response = await fetch(`${SERVER_URL}/lookups/all`);
+                const response = await fetch(`${getServerUrl()}/lookups/all`);
                 if (!response.ok) {
                     throw new Error(`API error: ${response.status}`);
                 }
@@ -14686,7 +14690,7 @@ export default {
             
             try {
                 // First, fetch the lookup data
-                const response = await fetch(`${SERVER_URL}/lookups/all`);
+                const response = await fetch(`${getServerUrl()}/lookups/all`);
                 if (!response.ok) {
                     throw new Error(`API error: ${response.status}`);
                 }
@@ -15234,7 +15238,7 @@ export default {
                 
                 console.log(`🚀 Auto-fetching TYPEBALANCE batch for ${currentYear}, subsidiary: "${subsidiary || '(all)'}"`);
                 
-                const response = await fetch(`${SERVER_URL}/batch/typebalance_refresh`, {
+                const response = await fetch(`${getServerUrl()}/batch/typebalance_refresh`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -15441,7 +15445,7 @@ export default {
                     };
                     console.log(`📊 Pre-fetching TYPEBALANCE data for ${year}, subsidiary="${payload.subsidiary}"...`);
                     console.log(`   Filters: dept="${payload.department}", loc="${payload.location}", class="${payload.class}", book="${payload.accountingBook}"`);
-                    const typeBalanceResponse = await fetch(`${SERVER_URL}/batch/typebalance_refresh`, {
+                    const typeBalanceResponse = await fetch(`${getServerUrl()}/batch/typebalance_refresh`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify(payload)
@@ -15981,7 +15985,7 @@ export default {
                 }));
                 
                 try {
-                    const typeBalanceResponse = await fetch(`${SERVER_URL}/batch/typebalance_refresh`, {
+                    const typeBalanceResponse = await fetch(`${getServerUrl()}/batch/typebalance_refresh`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify(typeBalancePayload)
@@ -17490,7 +17494,7 @@ export default {
                     // Fetch accounts for the target year AND selected subsidiary
                     console.log(`🚀 STRUCTURE SYNC: Calling API with year=${syncYear}, subsidiary="${syncSubsidiary}"`);
                     
-                    const refreshResponse = await fetch(`${SERVER_URL}/batch/full_year_refresh`, {
+                    const refreshResponse = await fetch(`${getServerUrl()}/batch/full_year_refresh`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
@@ -18071,7 +18075,7 @@ export default {
                 
                 if (detectedAccounts.size > 0) {
                     try {
-                        const typeResponse = await fetch(`${SERVER_URL}/batch/account_types`, {
+                        const typeResponse = await fetch(`${getServerUrl()}/batch/account_types`, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ accounts: [...detectedAccounts] })
@@ -18258,7 +18262,7 @@ export default {
                     
                     try {
                         // Use the EFFICIENT batch_bs_periods endpoint
-                        const response = await fetch(`${SERVER_URL}/batch/bs_periods`, {
+                        const response = await fetch(`${getServerUrl()}/batch/bs_periods`, {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify({
@@ -19063,7 +19067,7 @@ export default {
                 const subsidiaryValue = document.getElementById('subsidiaryFilter')?.value || '';
                 
                 // Call the batch endpoint
-                const response = await fetch(`${SERVER_URL}/batch/typebalance_refresh`, {
+                const response = await fetch(`${getServerUrl()}/batch/typebalance_refresh`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -20188,7 +20192,7 @@ export default {
                                     const queryParams = new URLSearchParams({ account, period });
                                     if (subsidiary) queryParams.append('subsidiary', subsidiary);
                                     
-                                    const response = await fetch(`${SERVER_URL}/transactions?${queryParams}`);
+                                    const response = await fetch(`${getServerUrl()}/transactions?${queryParams}`);
                                     if (!response.ok) throw new Error(`API error: ${response.status}`);
                                     
                                     const data = await response.json();
@@ -20307,7 +20311,7 @@ export default {
                         if (commonParams.location) queryParams.append('location', commonParams.location);
                         if (commonParams.class) queryParams.append('class', commonParams.class);
                     
-                    const fetchUrl = `${SERVER_URL}/transactions?${queryParams}`;
+                    const fetchUrl = `${getServerUrl()}/transactions?${queryParams}`;
                     
                         try {
                     const response = await fetch(fetchUrl);
@@ -20401,7 +20405,7 @@ export default {
                     use_special: resolvedParams.useSpecialAccountType ? '1' : '0'
                 });
                 
-                const response = await fetch(`${SERVER_URL}/accounts/by-type?${queryParams}`);
+                const response = await fetch(`${getServerUrl()}/accounts/by-type?${queryParams}`);
                 
                 if (!response.ok) {
                     throw new Error(`API error: ${response.status}`);
@@ -20957,7 +20961,7 @@ export default {
                 // or 'type' parameter for account types (income, expense, etc.)
                 const isTypeSearch = /^(income|expense|bank|asset|liability|equity|cogs|revenue)/i.test(pattern.toLowerCase());
                 const paramName = isTypeSearch ? 'type' : 'number';
-                const url = `${SERVER_URL}/accounts/search?${paramName}=${encodeURIComponent(pattern)}`;
+                const url = `${getServerUrl()}/accounts/search?${paramName}=${encodeURIComponent(pattern)}`;
                 console.log('API URL:', url);
                 
                 const response = await fetch(url);
