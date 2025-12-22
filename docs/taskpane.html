@@ -10952,7 +10952,12 @@ For licensing inquiries, contact: legal@celigo.com
                         // Now add Equity total
                         totalEquityRow = currentRow;
                         sheet.getRange(`B${currentRow}`).values = [['TOTAL EQUITY']];
-                        sheet.getRange(`C${currentRow}`).formulas = [[`=SUBTOTAL(109,C${equityStartRow}:C${currentRow-1})`]];
+                        // Guard against invalid row references
+                        if (equityStartRow > 0 && currentRow > equityStartRow) {
+                            sheet.getRange(`C${currentRow}`).formulas = [[`=SUBTOTAL(109,C${equityStartRow}:C${currentRow-1})`]];
+                        } else {
+                            sheet.getRange(`C${currentRow}`).values = [[0]];
+                        }
                         sheet.getRange(`A${currentRow}:C${currentRow}`).format.font.bold = true;
                         sheet.getRange(`A${currentRow}:C${currentRow}`).format.fill.color = '#DBEAFE';
                         sheet.getRange(`C${currentRow}`).numberFormat = [[currencyFormat]];
@@ -10972,7 +10977,12 @@ For licensing inquiries, contact: legal@celigo.com
                     
                     // ===== BALANCE CHECK =====
                     sheet.getRange(`B${currentRow}`).values = [['Balance Check (should be 0):']];
-                    sheet.getRange(`C${currentRow}`).formulas = [[`=C${totalAssetsRow}-C${currentRow-2}`]];
+                    // Guard against invalid row references
+                    if (totalAssetsRow > 0 && currentRow > 2) {
+                        sheet.getRange(`C${currentRow}`).formulas = [[`=C${totalAssetsRow}-C${currentRow-2}`]];
+                    } else {
+                        sheet.getRange(`C${currentRow}`).values = [[0]];
+                    }
                     sheet.getRange(`B${currentRow}`).format.font.italic = true;
                     sheet.getRange(`B${currentRow}`).format.font.color = "#6B7280";
                     sheet.getRange(`C${currentRow}`).numberFormat = [[currencyFormat]];
