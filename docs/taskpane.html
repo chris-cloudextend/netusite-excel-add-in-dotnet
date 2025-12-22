@@ -5314,7 +5314,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=3.0.5.279"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=3.0.5.280"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -5736,6 +5736,21 @@ For licensing inquiries, contact: legal@celigo.com
             }
         };
         // Do NOT redeclare it here to avoid duplicate variable error
+        
+        // Helper function to get .NET backend URL for Balance Sheet endpoints
+        // The .NET backend runs separately from the Python backend
+        // Check for environment variable or use default tunnel URL
+        const getDotNetBackendUrl = () => {
+            // Check if user has configured a .NET backend URL in localStorage
+            const dotNetUrl = localStorage.getItem('DOTNET_BACKEND_URL');
+            if (dotNetUrl) {
+                return dotNetUrl;
+            }
+            // Default: assume .NET backend is exposed via the same Workers proxy
+            // If you have a separate tunnel for .NET backend, set it in localStorage:
+            // localStorage.setItem('DOTNET_BACKEND_URL', 'https://your-dotnet-tunnel.trycloudflare.com');
+            return getServerUrl(); // Fallback to same URL for now
+        };
         
         // ========================================================================
         // CURRENCY CACHE - Fetched once, reused until page reload
@@ -10702,8 +10717,9 @@ For licensing inquiries, contact: legal@celigo.com
                 updateProgress(45, '📥 Step 2 of 3: Building Report Structure', 'Building Balance Sheet structure from cached data...');
                 
                 console.log(`═══════════════════════════════════════════════════════`);
+                const dotNetBackendUrl = getDotNetBackendUrl();
                 console.log(`📊 BALANCE SHEET REPORT - Starting`);
-                console.log(`📡 Endpoint: ${getServerUrl()}/balance-sheet/report`);
+                console.log(`📡 Endpoint: ${dotNetBackendUrl}/balance-sheet/report`);
                 console.log(`📅 Period: "${periodFormatted}" (year=${year}, month=${month})`);
                 console.log(`📦 Request:`, {
                     period: periodFormatted,
@@ -10728,7 +10744,7 @@ For licensing inquiries, contact: legal@celigo.com
                 }, 300000); // 5 minute timeout
                 
                 try {
-                    const reportResponse = await fetch(`${getServerUrl()}/balance-sheet/report`, {
+                    const reportResponse = await fetch(`${dotNetBackendUrl}/balance-sheet/report`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
@@ -10745,7 +10761,18 @@ For licensing inquiries, contact: legal@celigo.com
                     clearTimeout(timeoutId);
                 
                     if (!reportResponse.ok) {
-                        const errorData = await reportResponse.json().catch(() => ({ error: `HTTP ${reportResponse.status}` }));
+                        const errorText = await reportResponse.text().catch(() => '');
+                        let errorData;
+                        try {
+                            errorData = JSON.parse(errorText);
+                        } catch {
+                            errorData = { error: errorText || `HTTP ${reportResponse.status}` };
+                        }
+                        console.error(`❌ Balance Sheet API Error (${reportResponse.status}):`, errorData);
+                        console.error(`   URL: ${dotNetBackendUrl}/balance-sheet/report`);
+                        if (reportResponse.status === 404) {
+                            throw new Error(`Balance Sheet endpoint not found. The .NET backend may not be running or the URL is incorrect. Current URL: ${dotNetBackendUrl}/balance-sheet/report. If you have a separate .NET backend tunnel, set it with: localStorage.setItem('DOTNET_BACKEND_URL', 'https://your-tunnel-url.trycloudflare.com')`);
+                        }
                         throw new Error(errorData.error || `Failed to fetch Balance Sheet data (${reportResponse.status})`);
                     }
                     
