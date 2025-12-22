@@ -141,6 +141,84 @@
       }
     },
     {
+      "id": "BALANCEBETA",
+      "name": "BALANCEBETA",
+      "description": "Get GL account balance with explicit currency control for consolidation. Currency parameter determines consolidation root, while subsidiary filters transactions to exact match.",
+      "helpUrl": "https://www.example.com/help",
+      "result": {
+        "type": "any",
+        "dimensionality": "scalar"
+      },
+      "parameters": [
+        {
+          "name": "account",
+          "description": "Account number or ID (can be text or numeric)",
+          "type": "any",
+          "dimensionality": "scalar"
+        },
+        {
+          "name": "fromPeriod",
+          "description": "Starting period name (required for P&L, ignored for BS)",
+          "type": "any",
+          "dimensionality": "scalar",
+          "optional": true
+        },
+        {
+          "name": "toPeriod",
+          "description": "Ending period name (required)",
+          "type": "any",
+          "dimensionality": "scalar"
+        },
+        {
+          "name": "subsidiary",
+          "description": "Subsidiary filter (optional, use \"\" for all). Filters transactions to exact match, not hierarchy.",
+          "type": "any",
+          "dimensionality": "scalar",
+          "optional": true
+        },
+        {
+          "name": "currency",
+          "description": "Currency code for consolidation root (e.g., \"USD\", \"EUR\") - optional. If not provided, uses filtered subsidiary as consolidation root.",
+          "type": "any",
+          "dimensionality": "scalar",
+          "optional": true
+        },
+        {
+          "name": "department",
+          "description": "Department filter (optional, use \"\" for all)",
+          "type": "any",
+          "dimensionality": "scalar",
+          "optional": true
+        },
+        {
+          "name": "location",
+          "description": "Location filter (optional, use \"\" for all)",
+          "type": "any",
+          "dimensionality": "scalar",
+          "optional": true
+        },
+        {
+          "name": "classId",
+          "description": "Class filter (optional, use \"\" for all)",
+          "type": "any",
+          "dimensionality": "scalar",
+          "optional": true
+        },
+        {
+          "name": "accountingBook",
+          "description": "Accounting Book ID (optional, defaults to Primary Book)",
+          "type": "any",
+          "dimensionality": "scalar",
+          "optional": true
+        }
+      ],
+      "options": {
+        "stream": false,
+        "cancelable": false,
+        "volatile": false
+      }
+    },
+    {
       "id": "BALANCECHANGE",
       "name": "BALANCECHANGE",
       "description": "Get the CHANGE in a Balance Sheet account between two dates. Returns balance(toDate) - balance(fromDate). ONLY for BS accounts - returns INVALIDACCT for P&L.",
