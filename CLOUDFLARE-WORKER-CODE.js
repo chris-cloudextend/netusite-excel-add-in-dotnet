@@ -36,7 +36,7 @@ export default {
     // ⚠️ UPDATE THIS when .NET backend tunnel URL changes
     // To get the URL, run: cloudflared tunnel --url http://localhost:5003
     // Copy the https://xxxxx.trycloudflare.com URL and paste it here
-    const DOTNET_TUNNEL_URL = 'https://partially-var-currency-nation.trycloudflare.com';
+    const DOTNET_TUNNEL_URL = 'https://arcade-pharmaceuticals-configurations-former.trycloudflare.com';
 
     // Handle CORS preflight requests
     if (request.method === 'OPTIONS') {
