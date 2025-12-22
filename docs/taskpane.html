@@ -10566,6 +10566,11 @@ For licensing inquiries, contact: legal@celigo.com
                 const skipPreload = localStorage.getItem('BS_DEBUG_SKIP_PRELOAD') === 'true' || 
                                    new URLSearchParams(window.location.search).get('skip_preload') === 'true';
                 
+                if (skipPreload) {
+                    console.log('⚡⚡⚡ DEBUG MODE: bs_preload is SKIPPED ⚡⚡⚡');
+                    console.log('   To re-enable preload, run: localStorage.removeItem("BS_DEBUG_SKIP_PRELOAD")');
+                }
+                
                 // Step 1: Preload BS account balances (can take 60-90s, but data gets cached)
                 // Step 2: Build report structure from cached data (fast, <5s)
                 if (!skipPreload) {
