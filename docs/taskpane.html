@@ -15164,7 +15164,20 @@ export default {
                 const data = await response.json();
                 currencySelect.innerHTML = '<option value="">-- Default (No Currency) --</option>';
                 
-                (data.currencies || []).forEach(currency => {
+                // Handle both response formats:
+                // 1. BALANCEBETA format (with subsidiary param): { currencies: [{name, symbol, code}] }
+                // 2. Legacy format (no subsidiary param): { currencies: {subId: symbol}, formats: {...} }
+                let currencies = [];
+                if (Array.isArray(data.currencies)) {
+                    // BALANCEBETA format - array of currency objects
+                    currencies = data.currencies;
+                } else if (data.currencies && typeof data.currencies === 'object') {
+                    // Legacy format - object mapping, skip it (shouldn't happen with subsidiary param)
+                    console.warn('Received legacy currency format when subsidiary was provided');
+                    currencies = [];
+                }
+                
+                currencies.forEach(currency => {
                     const option = document.createElement('option');
                     option.value = currency.name || currency.code || '';  // Use currency code (USD, EUR, etc.)
                     option.textContent = `${currency.name || currency.code || ''} (${currency.symbol || ''})`;
