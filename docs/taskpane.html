@@ -5727,6 +5727,10 @@ For licensing inquiries, contact: legal@celigo.com
         // automatically when taskpane opens with ?action=drilldown parameter.
         
         // SERVER_URL is defined in functions.js (loaded via shared runtime)
+        // Fallback definition in case functions.js hasn't loaded yet
+        if (typeof SERVER_URL === 'undefined') {
+            var SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
+        }
         // Do NOT redeclare it here to avoid duplicate variable error
         
         // ========================================================================
