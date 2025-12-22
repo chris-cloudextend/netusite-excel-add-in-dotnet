@@ -10906,6 +10906,14 @@ For licensing inquiries, contact: legal@celigo.com
                             }
                             
                             try {
+                                // Validate formula before setting
+                                if (!formula || typeof formula !== 'string') {
+                                    throw new Error(`Invalid formula for account ${row.account_number}: ${formula}`);
+                                }
+                                if (formula.includes('undefined') || formula.includes('null')) {
+                                    throw new Error(`Formula contains undefined/null for account ${row.account_number}: ${formula}`);
+                                }
+                                
                                 sheet.getRange(`A${currentRow}`).values = [[String(row.account_number || '')]];
                                 if (currentRow <= 10) console.log(`  ✅ Set A${currentRow}`);
                                 
@@ -10917,6 +10925,21 @@ For licensing inquiries, contact: legal@celigo.com
                                 
                                 sheet.getRange(`C${currentRow}`).numberFormat = [[String(currencyFormat || '$#,##0.00')]];
                                 if (currentRow <= 10) console.log(`  ✅ Set C${currentRow} format`);
+                                
+                                currentRow++;
+                                
+                                // Sync every 20 rows to catch errors early
+                                if (currentRow % 20 === 0) {
+                                    try {
+                                        await context.sync();
+                                        console.log(`✅ Synced successfully after row ${currentRow} (${i+1}/${rows.length} accounts)`);
+                                    } catch (syncError) {
+                                        console.error(`❌ SYNC ERROR at row ${currentRow} (account ${i+1}/${rows.length}: ${row.account_number})`);
+                                        console.error(`  Last formula was: ${formula}`);
+                                        console.error(`  Account: ${row.account_number}, Name: ${accountName}`);
+                                        throw syncError;
+                                    }
+                                }
                             } catch (rowError) {
                                 console.error(`❌ Error setting row ${currentRow} for account ${row.account_number}:`, rowError.message);
                                 console.error(`  Formula: ${formula}`);
@@ -10925,7 +10948,6 @@ For licensing inquiries, contact: legal@celigo.com
                                 throw rowError;
                             }
                         }
-                        currentRow++;
                         } catch (e) {
                             console.error('Error adding account row:', e.message, 'row data:', row, 'currentRow:', currentRow);
                             // Don't throw - skip this row and continue to avoid breaking entire report
