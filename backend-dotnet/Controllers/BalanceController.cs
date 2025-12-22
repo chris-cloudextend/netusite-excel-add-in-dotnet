@@ -1482,11 +1482,46 @@ public class BalanceController : ControllerBase
                 if (account.Section == currentSection && account.Subsection == currentSubsection)
                 {
                     // Add parent header first (if it's a parent), then add the account itself
-                    // Parent headers are category labels, not account rows with formulas
+                    // Parent headers are category labels, but if they have a balance, also show as account row
                     if (account.IsParentHeader)
                     {
                         // Create a separate header row (will be rendered differently in frontend)
-                        orderedRows.Add(account);
+                        // This is a header-only row (no formula)
+                        var headerRow = new BalanceSheetRow
+                        {
+                            Section = account.Section,
+                            Subsection = account.Subsection,
+                            AccountNumber = account.AccountNumber,
+                            AccountName = account.AccountName,
+                            AccountType = account.AccountType,
+                            ParentAccount = account.ParentAccount,
+                            Balance = 0, // Header has no balance
+                            IsParentHeader = true,
+                            IsCalculated = false,
+                            Source = "ParentHeader",
+                            Level = account.Level
+                        };
+                        orderedRows.Add(headerRow);
+                        
+                        // If parent account also has a balance, add it as a regular account row too
+                        if (account.Balance != 0)
+                        {
+                            var accountRow = new BalanceSheetRow
+                            {
+                                Section = account.Section,
+                                Subsection = account.Subsection,
+                                AccountNumber = account.AccountNumber,
+                                AccountName = account.AccountName,
+                                AccountType = account.AccountType,
+                                ParentAccount = account.ParentAccount,
+                                Balance = account.Balance,
+                                IsParentHeader = false, // This is the account row, not the header
+                                IsCalculated = false,
+                                Source = "Account",
+                                Level = account.Level
+                            };
+                            orderedRows.Add(accountRow);
+                        }
                     }
                     else
                     {

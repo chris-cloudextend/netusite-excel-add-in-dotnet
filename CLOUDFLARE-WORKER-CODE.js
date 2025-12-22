@@ -20,7 +20,7 @@
 // 4. Replace ALL code with this file
 // 5. Click: Save and Deploy
 //
-// CURRENT TUNNEL URL: https://arcade-pharmaceuticals-configurations-former.trycloudflare.com
+// CURRENT TUNNEL URL: https://iso-cream-males-chocolate.trycloudflare.com
 // CURRENT ACCOUNT: 589861 (Production)
 // BACKEND: .NET (all endpoints)
 // Last Updated: Jan 2025
@@ -30,9 +30,9 @@ export default {
   async fetch(request) {
     // .NET backend tunnel (ALL endpoints now use .NET backend)
     // ⚠️ UPDATE THIS when .NET backend tunnel URL changes
-    // To get the URL, run: cloudflared tunnel --url http://localhost:5003
+    // To get the URL, run: cloudflared tunnel --url http://localhost:5002
     // Copy the https://xxxxx.trycloudflare.com URL and paste it here
-    const TUNNEL_URL = 'https://arcade-pharmaceuticals-configurations-former.trycloudflare.com';
+    const TUNNEL_URL = 'https://iso-cream-males-chocolate.trycloudflare.com';
 
     // Handle CORS preflight requests
     if (request.method === 'OPTIONS') {

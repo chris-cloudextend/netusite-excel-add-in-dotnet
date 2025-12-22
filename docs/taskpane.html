@@ -10937,6 +10937,7 @@ For licensing inquiries, contact: legal@celigo.com
                     // Track child row ranges for subtotals (parent account -> {startRow, endRow})
                     // This must be declared before addAccountRow so it's accessible to both parent headers and subtotals
                     const childRowRanges = new Map();
+                    const typeRowRanges = new Map();
                     
                     async function addAccountRow(row, accountIndex, totalAccounts) {
                         if (currentRow <= 0) {
@@ -10959,6 +10960,18 @@ For licensing inquiries, contact: legal@celigo.com
                             sheet.getRange(`B${currentRow}`).format.fill.color = "#E5E7EB"; // Slightly darker than parent headers
                             // No formula for type headers - they're just category labels
                             sheet.getRange(`C${currentRow}`).values = [['']];
+                            
+                            // Track start row for this type's children (for type subtotal calculation)
+                            if (row.account_type) {
+                                typeRowRanges.set(row.account_type, { startRow: currentRow + 1, endRow: null });
+                            }
+                            
+                            // Sync after type header to ensure it's committed before adding accounts
+                            try {
+                                await context.sync();
+                            } catch (syncError) {
+                                console.error(`❌ Error syncing after type header at row ${currentRow}:`, syncError.message);
+                            }
                             
                             currentRow++;
                             return;
@@ -10995,19 +11008,38 @@ For licensing inquiries, contact: legal@celigo.com
                             const isTypeSubtotal = row.source === 'TypeSubtotal';
                             
                             if (isTypeSubtotal) {
-                                // Type subtotal - use the balance value from backend (already calculated)
-                                // TODO: Could improve this to use SUBTOTAL formula with range tracking
-                                sheet.getRange(`A${currentRow}`).values = [['']];
-                                sheet.getRange(`B${currentRow}`).values = [[String(indent + accountName)]];
-                                sheet.getRange(`C${currentRow}`).values = [[Number(row.balance) || 0]];
-                                sheet.getRange(`B${currentRow}:C${currentRow}`).format.font.bold = true;
-                                sheet.getRange(`C${currentRow}`).numberFormat = [[String(currencyFormat || '$#,##0.00')]];
+                                // Type subtotal - use SUBTOTAL formula with range tracking
+                                let startRow = null;
+                                let endRow = currentRow;
                                 
-                                // Add top border to separate from accounts
-                                try {
-                                    sheet.getRange(`C${currentRow}`).format.borders.getItem('EdgeTop').style = 'Thin';
-                                } catch (borderError) {
-                                    // Border might not exist, that's okay
+                                if (row.account_type && typeRowRanges.has(row.account_type)) {
+                                    const range = typeRowRanges.get(row.account_type);
+                                    startRow = range.startRow;
+                                    range.endRow = currentRow;
+                                }
+                                
+                                if (startRow && startRow < endRow) {
+                                    // Use SUBTOTAL formula to sum all accounts of this type
+                                    const subtotalFormula = `=SUBTOTAL(109, C${startRow}:C${endRow - 1})`;
+                                    sheet.getRange(`A${currentRow}`).values = [['']];
+                                    sheet.getRange(`B${currentRow}`).values = [[String(indent + accountName)]];
+                                    sheet.getRange(`C${currentRow}`).formulas = [[subtotalFormula]];
+                                    sheet.getRange(`B${currentRow}:C${currentRow}`).format.font.bold = true;
+                                    sheet.getRange(`C${currentRow}`).numberFormat = [[String(currencyFormat || '$#,##0.00')]];
+                                    
+                                    // Add top border to separate from accounts
+                                    try {
+                                        sheet.getRange(`C${currentRow}`).format.borders.getItem('EdgeTop').style = 'Thin';
+                                    } catch (borderError) {
+                                        // Border might not exist, that's okay
+                                    }
+                                } else {
+                                    // Fallback: use balance value if we can't calculate range
+                                    sheet.getRange(`A${currentRow}`).values = [['']];
+                                    sheet.getRange(`B${currentRow}`).values = [[String(indent + accountName)]];
+                                    sheet.getRange(`C${currentRow}`).values = [[Number(row.balance) || 0]];
+                                    sheet.getRange(`B${currentRow}:C${currentRow}`).format.font.bold = true;
+                                    sheet.getRange(`C${currentRow}`).numberFormat = [[String(currencyFormat || '$#,##0.00')]];
                                 }
                             } else {
                                 // Parent subtotal - use child row range
@@ -11335,7 +11367,7 @@ For licensing inquiries, contact: legal@celigo.com
                                     console.log('Could not set border style:', borderError.message);
                                 }
                                 console.log(`✅ Section total for ${currentSection} added`);
-                                currentRow += 1; // Only one blank row between sections
+                                currentRow += 1; // One blank row between sections
                                 } catch (sectionError) {
                                     console.error('❌ Error adding section total:', sectionError.message, 'section:', currentSection, 'row:', currentRow);
                                     // Continue anyway - don't break the entire report
