@@ -10668,19 +10668,31 @@ For licensing inquiries, contact: legal@celigo.com
                     // Create new sheet (delete existing if it exists)
                     let sheet;
                     const sheetName = `Balance Sheet ${periodFormatted.replace(' ', '_')}`;
+                    
+                    // Try to delete existing sheet first (if it exists)
                     try {
-                        // Try to get existing sheet first and delete it
-                        try {
+                        const worksheets = context.workbook.worksheets;
+                        worksheets.load('items/name');
+                        await context.sync();
+                        
+                        // Check if sheet exists and delete it
+                        const sheetExists = worksheets.items.some(ws => ws.name === sheetName);
+                        if (sheetExists) {
                             const existingSheet = context.workbook.worksheets.getItem(sheetName);
                             existingSheet.delete();
                             await context.sync(); // Sync deletion before creating new sheet
-                        } catch (e) {
-                            // Sheet doesn't exist, that's fine - continue
                         }
-                        // Now create the new sheet
+                    } catch (e) {
+                        // Error checking/deleting - that's fine, we'll create new one anyway
+                        console.log('Note: Could not check/delete existing sheet:', e.message);
+                    }
+                    
+                    // Now create the new sheet
+                    try {
                         sheet = context.workbook.worksheets.add(sheetName);
                     } catch (e) {
                         // Fallback: use timestamp if name conflict persists
+                        console.log('Sheet name conflict, using timestamp:', e.message);
                         sheet = context.workbook.worksheets.add(`BS_${Date.now()}`);
                     }
                     sheet.activate();
