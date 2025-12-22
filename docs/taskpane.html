@@ -5314,7 +5314,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=3.0.5.272"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=3.0.5.273"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -10941,9 +10941,18 @@ For licensing inquiries, contact: legal@celigo.com
                             return;
                         }
                         try {
-                            sheet.getRange(`A${currentRow}`).values = [['']];
-                            sheet.getRange(`B${currentRow}`).values = [[String(label || 'Subtotal')]];
-                            sheet.getRange(`C${currentRow}`).formulas = [[`=SUBTOTAL(109,C${startRow}:C${endRow-1})`]];
+                            const subtotalFormula = `=SUBTOTAL(109,C${startRow}:C${endRow-1})`;
+                            // Validate formula
+                            if (!subtotalFormula || subtotalFormula.includes('undefined') || subtotalFormula.includes('null')) {
+                                console.error(`  ❌ Invalid SUBTOTAL formula in addSubtotalRow: ${subtotalFormula} (startRow=${startRow}, endRow=${endRow-1})`);
+                                sheet.getRange(`A${currentRow}`).values = [['']];
+                                sheet.getRange(`B${currentRow}`).values = [[String(label || 'Subtotal')]];
+                                sheet.getRange(`C${currentRow}`).values = [[0]];
+                            } else {
+                                sheet.getRange(`A${currentRow}`).values = [['']];
+                                sheet.getRange(`B${currentRow}`).values = [[String(label || 'Subtotal')]];
+                                sheet.getRange(`C${currentRow}`).formulas = [[subtotalFormula]];
+                            }
                             sheet.getRange(`A${currentRow}:C${currentRow}`).format.font.bold = true;
                             sheet.getRange(`C${currentRow}`).numberFormat = [[String(currencyFormat || '$#,##0.00')]];
                             try {
@@ -10953,7 +10962,7 @@ For licensing inquiries, contact: legal@celigo.com
                             }
                             currentRow++;
                         } catch (e) {
-                            console.error('Error in addSubtotalRow:', e.message, 'row:', currentRow);
+                            console.error('Error in addSubtotalRow:', e.message, 'row:', currentRow, 'startRow:', startRow, 'endRow:', endRow);
                             currentRow++; // Continue anyway
                         }
                     }
@@ -11007,10 +11016,16 @@ For licensing inquiries, contact: legal@celigo.com
                                 }
                                 
                                 // Guard against invalid row references
-                                if (sectionStartRow > 0 && currentRow > sectionStartRow) {
+                                if (sectionStartRow > 0 && currentRow > sectionStartRow && currentRow > 1) {
                                     const subtotalFormula = `=SUBTOTAL(109,C${sectionStartRow}:C${currentRow-1})`;
-                                    console.log(`  Setting subtotal formula: ${subtotalFormula}`);
-                                    sheet.getRange(`C${currentRow}`).formulas = [[subtotalFormula]];
+                                    console.log(`  Setting subtotal formula: ${subtotalFormula} (startRow=${sectionStartRow}, endRow=${currentRow-1})`);
+                                    // Validate formula
+                                    if (!subtotalFormula || subtotalFormula.includes('undefined') || subtotalFormula.includes('null')) {
+                                        console.error(`  ❌ Invalid SUBTOTAL formula: ${subtotalFormula}`);
+                                        sheet.getRange(`C${currentRow}`).values = [[0]];
+                                    } else {
+                                        sheet.getRange(`C${currentRow}`).formulas = [[subtotalFormula]];
+                                    }
                                 } else {
                                     console.log(`  Using 0 (invalid row refs: start=${sectionStartRow}, current=${currentRow})`);
                                     sheet.getRange(`C${currentRow}`).values = [[0]];
@@ -11073,12 +11088,17 @@ For licensing inquiries, contact: legal@celigo.com
                     }
                     
                     // CHECKPOINT: Sync after all account rows are added
+                    // But first, let's sync in smaller batches to find the problematic row
                     console.log(`🔍 CHECKPOINT: Syncing after all ${rows.length} account rows added (currentRow=${currentRow})...`);
+                    console.log(`  Attempting sync - if this fails, we'll need to sync in smaller batches to find the bad row`);
                     try {
                         await context.sync();
                         console.log(`✅ CHECKPOINT: All account rows synced successfully`);
                     } catch (checkpointError) {
                         console.error(`❌ CHECKPOINT ERROR: Failed at account rows sync:`, checkpointError.message);
+                        console.error(`  This means one of the ${rows.length} account rows has an invalid formula or value`);
+                        console.error(`  The issue is likely with a XAVI.BALANCE formula or a SUBTOTAL formula in a section total`);
+                        console.error(`  We need to sync in smaller batches to find the exact row`);
                         throw checkpointError;
                     }
                     
