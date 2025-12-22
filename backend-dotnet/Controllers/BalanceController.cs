@@ -1475,7 +1475,18 @@ public class BalanceController : ControllerBase
                 // Only add if it matches the current section/subsection (for proper grouping)
                 if (account.Section == currentSection && account.Subsection == currentSubsection)
                 {
-                    orderedRows.Add(account);
+                    // Add parent header first (if it's a parent), then add the account itself
+                    // Parent headers are category labels, not account rows with formulas
+                    if (account.IsParentHeader)
+                    {
+                        // Create a separate header row (will be rendered differently in frontend)
+                        orderedRows.Add(account);
+                    }
+                    else
+                    {
+                        // Regular account row
+                        orderedRows.Add(account);
+                    }
                     
                     // Add children recursively
                     if (accountTree.ContainsKey(accountNum))

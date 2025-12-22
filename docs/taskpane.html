@@ -11161,8 +11161,15 @@ For licensing inquiries, contact: legal@celigo.com
                                 console.error(`  Account name (with indent): ${indent + accountName}`);
                                 console.error(`  Currency format: ${currencyFormat}`);
                                 console.error(`  Full error:`, rowError);
-                                // Log the error but continue - don't throw to avoid breaking entire report
-                                // Still increment currentRow to avoid infinite loop
+                                // Write empty cells to avoid sync errors, then continue
+                                try {
+                                    sheet.getRange(`A${currentRow}`).values = [['']];
+                                    sheet.getRange(`B${currentRow}`).values = [[String(indent + accountName)]];
+                                    sheet.getRange(`C${currentRow}`).values = [['#ERROR']];
+                                } catch (writeError) {
+                                    // If even writing empty cells fails, skip this row entirely
+                                    console.error(`  Failed to write error placeholder: ${writeError.message}`);
+                                }
                                 currentRow++;
                                 return; // Exit this row, continue with next
                             }
@@ -11170,7 +11177,15 @@ For licensing inquiries, contact: legal@celigo.com
                         } catch (e) {
                             console.error('❌ Error adding account row:', e.message, 'row data:', row, 'currentRow:', currentRow);
                             console.error('  Full error stack:', e);
-                            // Don't throw - skip this row and continue to avoid breaking entire report
+                            // Write empty cells to avoid sync errors, then continue
+                            try {
+                                sheet.getRange(`A${currentRow}`).values = [['']];
+                                sheet.getRange(`B${currentRow}`).values = [[String(row.account_name || 'ERROR')]];
+                                sheet.getRange(`C${currentRow}`).values = [['#ERROR']];
+                            } catch (writeError) {
+                                // If even writing empty cells fails, skip this row entirely
+                                console.error(`  Failed to write error placeholder: ${writeError.message}`);
+                            }
                             currentRow++; // Increment to avoid infinite loop
                         }
                     }
@@ -11284,7 +11299,7 @@ For licensing inquiries, contact: legal@celigo.com
                                     console.log('Could not set border style:', borderError.message);
                                 }
                                 console.log(`✅ Section total for ${currentSection} added`);
-                                currentRow += 2;
+                                currentRow += 1; // Only one blank row between sections
                                 } catch (sectionError) {
                                     console.error('❌ Error adding section total:', sectionError.message, 'section:', currentSection, 'row:', currentRow);
                                     // Continue anyway - don't break the entire report
@@ -11514,10 +11529,10 @@ For licensing inquiries, contact: legal@celigo.com
                         sheet.getRange(`A${currentRow}:C${currentRow}`).format.font.color = "#FFFFFF";
                         sheet.getRange(`C${currentRow}`).numberFormat = [[String(currencyFormat || '$#,##0.00')]];
                         console.log(`✅ TOTAL LIABILITIES + EQUITY added`);
-                        currentRow += 2;
+                        currentRow += 1; // Only one blank row
                     } catch (e) {
                         console.error('❌ Error adding TOTAL LIABILITIES + EQUITY:', e.message);
-                        currentRow += 2;
+                        currentRow += 1; // Only one blank row
                     }
                     
                     // ===== BALANCE CHECK =====
