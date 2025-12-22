@@ -313,18 +313,25 @@ public class AccountController : ControllerBase
     [HttpPost("/account/parent")]
     public async Task<IActionResult> GetAccountParent([FromBody] AccountNumberRequest request)
     {
-        if (string.IsNullOrEmpty(request.Account))
+        _logger.LogInformation("GetAccountParent called with account: '{Account}'", request?.Account ?? "(null)");
+        
+        if (string.IsNullOrEmpty(request?.Account))
+        {
+            _logger.LogWarning("GetAccountParent: Account number is empty or null");
             return BadRequest(new { error = "Account number is required" });
+        }
 
         try
         {
+            _logger.LogInformation("GetAccountParent: Looking up parent for account '{Account}'", request.Account);
             var parent = await _lookupService.GetAccountParentAsync(request.Account);
+            _logger.LogInformation("GetAccountParent: Parent for '{Account}' is '{Parent}'", request.Account, parent ?? "(null)");
             // Return plain text like Python does
             return Content(parent ?? "", "text/plain");
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error getting account parent for {Account}", request.Account);
+            _logger.LogError(ex, "Error getting account parent for {Account}", request?.Account);
             return StatusCode(500, new { error = ex.Message });
         }
     }
