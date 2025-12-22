@@ -5314,7 +5314,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=3.0.5.273"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=3.0.5.274"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -7261,10 +7261,21 @@ For licensing inquiries, contact: legal@celigo.com
         let connectionCheckInterval = null;
         
         async function checkConnectionStatus(silent = false) {
+            // Prevent multiple simultaneous checks
+            if (isCheckingConnection) {
+                console.log('Connection check already in progress, skipping...');
+                return false;
+            }
+            
             const statusBadge = document.getElementById('connectionStatus');
             const statusText = document.getElementById('connectionText');
             
-            if (!statusBadge || !statusText) return false;
+            if (!statusBadge || !statusText) {
+                console.warn('Connection status elements not found');
+                return false;
+            }
+            
+            isCheckingConnection = true;
             
             // Show checking state
             statusBadge.className = 'status-badge checking';
@@ -7272,13 +7283,30 @@ For licensing inquiries, contact: legal@celigo.com
             
             try {
                 const serverUrl = getServerUrl();
-                const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 8000);
                 
-                const response = await fetch(`${serverUrl}/health`, {
-                    method: 'GET',
-                    signal: controller.signal
-                });
+                // Validate URL before attempting fetch
+                if (!serverUrl || typeof serverUrl !== 'string' || !serverUrl.startsWith('http')) {
+                    throw new Error(`Invalid server URL: ${serverUrl}`);
+                }
+                
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => {
+                    controller.abort();
+                    console.warn('Connection check timed out after 8 seconds');
+                }, 8000);
+                
+                let response;
+                try {
+                    response = await fetch(`${serverUrl}/health`, {
+                        method: 'GET',
+                        signal: controller.signal,
+                        cache: 'no-cache'
+                    });
+                } catch (fetchError) {
+                    clearTimeout(timeoutId);
+                    // Re-throw to be caught by outer catch
+                    throw fetchError;
+                }
                 
                 clearTimeout(timeoutId);
                 
@@ -7356,13 +7384,20 @@ For licensing inquiries, contact: legal@celigo.com
         }
         
         // Start periodic connection checks (every 60 seconds)
+        let isCheckingConnection = false;
         function startConnectionMonitor() {
-            // Initial check (silent)
-            checkConnectionStatus(true);
+            // Initial check (silent) - delay slightly to ensure DOM is ready
+            setTimeout(() => {
+                if (!isCheckingConnection) {
+                    checkConnectionStatus(true);
+                }
+            }, 500);
             
             // Periodic checks every 60 seconds
             connectionCheckInterval = setInterval(() => {
-                checkConnectionStatus(true);
+                if (!isCheckingConnection) {
+                    checkConnectionStatus(true);
+                }
             }, 60000);
         }
         
