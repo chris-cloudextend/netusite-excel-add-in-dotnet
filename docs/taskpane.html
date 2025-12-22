@@ -5314,7 +5314,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=3.0.5.278"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=3.0.5.279"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -11000,17 +11000,45 @@ For licensing inquiries, contact: legal@celigo.com
                                     throw new Error(`Formula contains undefined/null for account ${row.account_number}: ${formula}`);
                                 }
                                 
-                                sheet.getRange(`A${currentRow}`).values = [[String(row.account_number || '')]];
-                                if (currentRow <= 10) console.log(`  ✅ Set A${currentRow}`);
+                                // Set each cell individually to isolate which one fails
+                                try {
+                                    sheet.getRange(`A${currentRow}`).values = [[String(row.account_number || '')]];
+                                    console.log(`  ✅ Set A${currentRow} = "${row.account_number}"`);
+                                } catch (aError) {
+                                    console.error(`  ❌ FAILED setting A${currentRow}:`, aError.message);
+                                    throw new Error(`Failed to set A${currentRow}: ${aError.message}`);
+                                }
                                 
-                                sheet.getRange(`B${currentRow}`).values = [[String(indent + accountName)]];
-                                if (currentRow <= 10) console.log(`  ✅ Set B${currentRow}`);
+                                try {
+                                    sheet.getRange(`B${currentRow}`).values = [[String(indent + accountName)]];
+                                    console.log(`  ✅ Set B${currentRow} = "${indent + accountName}"`);
+                                } catch (bError) {
+                                    console.error(`  ❌ FAILED setting B${currentRow}:`, bError.message);
+                                    console.error(`  Account name value:`, indent + accountName);
+                                    console.error(`  Account name length:`, (indent + accountName).length);
+                                    throw new Error(`Failed to set B${currentRow}: ${bError.message}`);
+                                }
                                 
-                                sheet.getRange(`C${currentRow}`).formulas = [[formula]];
-                                if (currentRow <= 10) console.log(`  ✅ Set C${currentRow} formula: ${formula}`);
+                                try {
+                                    sheet.getRange(`C${currentRow}`).formulas = [[formula]];
+                                    console.log(`  ✅ Set C${currentRow} formula: ${formula}`);
+                                } catch (cError) {
+                                    console.error(`  ❌ FAILED setting C${currentRow} formula:`, cError.message);
+                                    console.error(`  Formula: ${formula}`);
+                                    console.error(`  Formula length: ${formula.length}`);
+                                    console.error(`  Formula type: ${typeof formula}`);
+                                    throw new Error(`Failed to set C${currentRow} formula: ${cError.message}`);
+                                }
                                 
-                                sheet.getRange(`C${currentRow}`).numberFormat = [[String(currencyFormat || '$#,##0.00')]];
-                                if (currentRow <= 10) console.log(`  ✅ Set C${currentRow} format`);
+                                try {
+                                    const formatStr = String(currencyFormat || '$#,##0.00');
+                                    sheet.getRange(`C${currentRow}`).numberFormat = [[formatStr]];
+                                    console.log(`  ✅ Set C${currentRow} format: ${formatStr}`);
+                                } catch (formatError) {
+                                    console.error(`  ❌ FAILED setting C${currentRow} format:`, formatError.message);
+                                    console.error(`  Format string: ${currencyFormat}`);
+                                    // Don't throw - format is less critical
+                                }
                                 
                                 currentRow++;
                                 
@@ -11023,6 +11051,7 @@ For licensing inquiries, contact: legal@celigo.com
                                         console.error(`❌ SYNC ERROR at row ${currentRow} (account ${accountIndex + 1}/${totalAccounts}: ${row.account_number})`);
                                         console.error(`  Last formula was: ${formula}`);
                                         console.error(`  Account: ${row.account_number}, Name: ${accountName}`);
+                                        console.error(`  Last row that was set: ${currentRow - 1}`);
                                         throw syncError;
                                     }
                                 }
@@ -11030,6 +11059,7 @@ For licensing inquiries, contact: legal@celigo.com
                                 console.error(`❌ Error setting row ${currentRow} for account ${row.account_number}:`, rowError.message);
                                 console.error(`  Formula: ${formula}`);
                                 console.error(`  Account name: ${accountName}`);
+                                console.error(`  Account name (with indent): ${indent + accountName}`);
                                 console.error(`  Currency format: ${currencyFormat}`);
                                 throw rowError;
                             }
