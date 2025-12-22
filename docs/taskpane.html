@@ -5314,7 +5314,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=3.0.5.276"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=3.0.5.277"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -10911,7 +10911,7 @@ For licensing inquiries, contact: legal@celigo.com
                     }
                     
                     // Helper to add account row with BALANCE formula or calculated value
-                    function addAccountRow(row) {
+                    async function addAccountRow(row) {
                         if (currentRow <= 0) {
                             console.error('Invalid currentRow for account row:', currentRow, 'row data:', row);
                             return;
@@ -11186,7 +11186,7 @@ For licensing inquiries, contact: legal@celigo.com
                         }
                         
                         // Add the account row
-                        addAccountRow(row);
+                        await addAccountRow(row);
                     }
                     
                     // Add final subsection subtotal
