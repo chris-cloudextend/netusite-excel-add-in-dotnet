@@ -10885,10 +10885,35 @@ For licensing inquiries, contact: legal@celigo.com
                             const indent = '  '.repeat(Math.max(0, Number(row.level) || 0));
                             const accountName = String(row.account_name || '').replace(/"/g, '""');
                             
-                            sheet.getRange(`A${currentRow}`).values = [[String(row.account_number || '')]];
-                            sheet.getRange(`B${currentRow}`).values = [[String(indent + accountName)]];
-                            sheet.getRange(`C${currentRow}`).formulas = [[formula]];
-                            sheet.getRange(`C${currentRow}`).numberFormat = [[String(currencyFormat || '$#,##0.00')]];
+                            // Debug: Log first few rows
+                            if (currentRow <= 10) {
+                                console.log(`🔍 Setting row ${currentRow} for account ${row.account_number}:`, {
+                                    accountNum,
+                                    formula,
+                                    accountName: indent + accountName,
+                                    currencyFormat
+                                });
+                            }
+                            
+                            try {
+                                sheet.getRange(`A${currentRow}`).values = [[String(row.account_number || '')]];
+                                if (currentRow <= 10) console.log(`  ✅ Set A${currentRow}`);
+                                
+                                sheet.getRange(`B${currentRow}`).values = [[String(indent + accountName)]];
+                                if (currentRow <= 10) console.log(`  ✅ Set B${currentRow}`);
+                                
+                                sheet.getRange(`C${currentRow}`).formulas = [[formula]];
+                                if (currentRow <= 10) console.log(`  ✅ Set C${currentRow} formula: ${formula}`);
+                                
+                                sheet.getRange(`C${currentRow}`).numberFormat = [[String(currencyFormat || '$#,##0.00')]];
+                                if (currentRow <= 10) console.log(`  ✅ Set C${currentRow} format`);
+                            } catch (rowError) {
+                                console.error(`❌ Error setting row ${currentRow} for account ${row.account_number}:`, rowError.message);
+                                console.error(`  Formula: ${formula}`);
+                                console.error(`  Account name: ${accountName}`);
+                                console.error(`  Currency format: ${currencyFormat}`);
+                                throw rowError;
+                            }
                         }
                         currentRow++;
                         } catch (e) {
