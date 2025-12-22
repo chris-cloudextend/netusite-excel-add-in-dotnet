@@ -1022,6 +1022,766 @@ public class BalanceController : ControllerBase
         }
         return mmddyyyy;
     }
+    
+    /// <summary>
+    /// Generate structured Balance Sheet report for a given period.
+    /// Returns all BS accounts with non-zero balances, grouped by section/subsection,
+    /// with parent-child hierarchy, plus calculated rows (NETINCOME, RETAINEDEARNINGS, CTA).
+    /// </summary>
+    [HttpPost("/balance-sheet/report")]
+    public async Task<IActionResult> GenerateBalanceSheetReport([FromBody] BalanceSheetReportRequest request)
+    {
+        var startTime = DateTime.UtcNow;
+        
+        try
+        {
+            if (string.IsNullOrEmpty(request.Period))
+                return BadRequest(new { error = "period is required" });
+
+            _logger.LogInformation("📊 Generating Balance Sheet report for {Period}", request.Period);
+
+            // Resolve filters
+            var subsidiaryId = await _lookupService.ResolveSubsidiaryIdAsync(request.Subsidiary);
+            var targetSub = subsidiaryId ?? "1";
+            var hierarchySubs = await _lookupService.GetSubsidiaryHierarchyAsync(targetSub);
+            var subFilter = string.Join(", ", hierarchySubs);
+            
+            var departmentId = await _lookupService.ResolveDimensionIdAsync("department", request.Department);
+            var classId = await _lookupService.ResolveDimensionIdAsync("class", request.Class);
+            var locationId = await _lookupService.ResolveDimensionIdAsync("location", request.Location);
+            var accountingBook = request.Book ?? DefaultAccountingBook;
+
+            // Build segment filters
+            var segmentFilters = new List<string> { $"COALESCE(tl.subsidiary, t.subsidiary) IN ({subFilter})" };
+            if (!string.IsNullOrEmpty(departmentId))
+                segmentFilters.Add($"COALESCE(tl.department, t.department) = {departmentId}");
+            if (!string.IsNullOrEmpty(classId))
+                segmentFilters.Add($"COALESCE(tl.class, t.class) = {classId}");
+            if (!string.IsNullOrEmpty(locationId))
+                segmentFilters.Add($"COALESCE(tl.location, t.location) = {locationId}");
+            var segmentWhere = string.Join(" AND ", segmentFilters);
+
+            // Get period data
+            var periodData = await _netSuiteService.GetPeriodAsync(request.Period);
+            if (periodData?.EndDate == null)
+                return BadRequest(new { error = $"Could not find period: {request.Period}" });
+
+            var periodEndDate = ConvertToYYYYMMDD(periodData.EndDate);
+            var targetPeriodId = periodData.Id ?? "NULL";
+
+            _logger.LogDebug("Balance Sheet Report: period end={EndDate}, period ID={PeriodId}", periodEndDate, targetPeriodId);
+
+            // Section mapping based on accttype (exact NetSuite behavior)
+            var currentAssetTypes = new[] { AccountType.Bank, AccountType.AcctRec, AccountType.OthCurrAsset };
+            var fixedAssetTypes = new[] { AccountType.FixedAsset };
+            var otherAssetTypes = new[] { AccountType.OthAsset };
+            var currentLiabilityTypes = new[] { AccountType.AcctPay, AccountType.CredCard, AccountType.OthCurrLiab };
+            var longTermLiabilityTypes = new[] { AccountType.LongTermLiab };
+            var equityTypes = new[] { AccountType.Equity };
+
+            // Query all BS accounts with balances for the period
+            // Using the same query structure as bs_preload but returning account details
+            var bsQuery = $@"
+                SELECT 
+                    a.acctnumber,
+                    a.fullname AS account_name,
+                    a.accttype,
+                    p.acctnumber AS parent_number,
+                    SUM(
+                        TO_NUMBER(
+                            BUILTIN.CONSOLIDATE(
+                                tal.amount,
+                                'LEDGER',
+                                'DEFAULT',
+                                'DEFAULT',
+                                {targetSub},
+                                {targetPeriodId},
+                                'DEFAULT'
+                            )
+                        ) * CASE WHEN a.accttype IN ({AccountType.SignFlipTypesSql}) THEN -1 ELSE 1 END
+                    ) AS balance
+                FROM transactionaccountingline tal
+                JOIN transaction t ON t.id = tal.transaction
+                JOIN account a ON a.id = tal.account
+                LEFT JOIN account p ON a.parent = p.id
+                LEFT JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id
+                WHERE t.posting = 'T'
+                  AND tal.posting = 'T'
+                  AND a.accttype IN ({AccountType.BsTypesSql})
+                  AND a.isinactive = 'F'
+                  AND t.trandate <= TO_DATE('{periodEndDate}', 'YYYY-MM-DD')
+                  AND tal.accountingbook = {accountingBook}
+                  AND {segmentWhere}
+                GROUP BY a.acctnumber, a.fullname, a.accttype, p.acctnumber
+                HAVING SUM(
+                    TO_NUMBER(
+                        BUILTIN.CONSOLIDATE(
+                            tal.amount,
+                            'LEDGER',
+                            'DEFAULT',
+                            'DEFAULT',
+                            {targetSub},
+                            {targetPeriodId},
+                            'DEFAULT'
+                        )
+                    ) * CASE WHEN a.accttype IN ({AccountType.SignFlipTypesSql}) THEN -1 ELSE 1 END
+                ) != 0
+                ORDER BY a.acctnumber";
+
+            _logger.LogDebug("Executing Balance Sheet accounts query...");
+            var accountResults = await _netSuiteService.QueryRawAsync(bsQuery, 180);
+            
+            _logger.LogInformation("Found {Count} BS accounts with non-zero balances", accountResults.Count);
+
+            // Build account map with parent relationships
+            var accountMap = new Dictionary<string, BalanceSheetRow>();
+            var parentChildMap = new Dictionary<string, List<string>>(); // parent -> children
+            var parentAccountNumbers = new HashSet<string>(); // Track parent accounts that need to be included
+
+            // First pass: process accounts with non-zero balances
+            foreach (var row in accountResults)
+            {
+                var acctNum = row.TryGetProperty("acctnumber", out var acctProp) ? acctProp.GetString() ?? "" : "";
+                var acctName = row.TryGetProperty("account_name", out var nameProp) ? nameProp.GetString() ?? "" : "";
+                var acctType = row.TryGetProperty("accttype", out var typeProp) ? typeProp.GetString() ?? "" : "";
+                var parentNum = row.TryGetProperty("parent_number", out var parentProp) && parentProp.ValueKind != JsonValueKind.Null 
+                    ? parentProp.GetString() : null;
+                var balance = ParseBalance(row.TryGetProperty("balance", out var balProp) ? balProp : default);
+
+                if (string.IsNullOrEmpty(acctNum) || string.IsNullOrEmpty(acctType))
+                    continue;
+                
+                // Track parent accounts that have children with non-zero balances
+                if (!string.IsNullOrEmpty(parentNum))
+                {
+                    parentAccountNumbers.Add(parentNum);
+                }
+
+                // Determine section and subsection
+                string section, subsection;
+                if (currentAssetTypes.Contains(acctType))
+                {
+                    section = "Assets";
+                    subsection = "Current Assets";
+                }
+                else if (fixedAssetTypes.Contains(acctType))
+                {
+                    section = "Assets";
+                    subsection = "Fixed Assets";
+                }
+                else if (otherAssetTypes.Contains(acctType))
+                {
+                    section = "Assets";
+                    subsection = "Other Assets";
+                }
+                else if (currentLiabilityTypes.Contains(acctType))
+                {
+                    section = "Liabilities";
+                    subsection = "Current Liabilities";
+                }
+                else if (longTermLiabilityTypes.Contains(acctType))
+                {
+                    section = "Liabilities";
+                    subsection = "Long Term Liabilities";
+                }
+                else if (equityTypes.Contains(acctType))
+                {
+                    section = "Equity";
+                    subsection = "Equity";
+                }
+                else
+                {
+                    // DeferExpense, DeferRevenue, RetainedEarnings, UnbilledRec - map appropriately
+                    if (acctType == AccountType.DeferExpense || acctType == AccountType.UnbilledRec)
+                    {
+                        section = "Assets";
+                        subsection = "Current Assets";
+                    }
+                    else if (acctType == AccountType.DeferRevenue)
+                    {
+                        section = "Liabilities";
+                        subsection = "Current Liabilities";
+                    }
+                    else if (acctType == AccountType.RetainedEarnings)
+                    {
+                        section = "Equity";
+                        subsection = "Equity";
+                    }
+                    else
+                    {
+                        continue; // Skip unknown types
+                    }
+                }
+
+                var bsRow = new BalanceSheetRow
+                {
+                    Section = section,
+                    Subsection = subsection,
+                    AccountNumber = acctNum,
+                    AccountName = acctName,
+                    AccountType = acctType,
+                    ParentAccount = parentNum,
+                    Balance = balance,
+                    IsCalculated = false,
+                    Source = "Account",
+                    Level = 0 // Will be calculated later
+                };
+
+                accountMap[acctNum] = bsRow;
+
+                // Track parent-child relationships
+                if (!string.IsNullOrEmpty(parentNum))
+                {
+                    if (!parentChildMap.ContainsKey(parentNum))
+                        parentChildMap[parentNum] = new List<string>();
+                    parentChildMap[parentNum].Add(acctNum);
+                    parentAccountNumbers.Add(parentNum); // Track parents that have children with balances
+                }
+            }
+
+            // Fetch parent accounts that have children with non-zero balances (even if parent has zero balance)
+            var missingParents = parentAccountNumbers.Where(p => !accountMap.ContainsKey(p)).ToList();
+            if (missingParents.Any())
+            {
+                _logger.LogDebug("Fetching {Count} parent accounts that have children with balances", missingParents.Count);
+                
+                var parentNumbersList = string.Join(", ", missingParents.Select(p => $"'{NetSuiteService.EscapeSql(p)}'"));
+                var parentQuery = $@"
+                    SELECT 
+                        a.acctnumber,
+                        a.fullname AS account_name,
+                        a.accttype,
+                        p.acctnumber AS parent_number,
+                        0 AS balance
+                    FROM account a
+                    LEFT JOIN account p ON a.parent = p.id
+                    WHERE a.acctnumber IN ({parentNumbersList})
+                      AND a.isinactive = 'F'";
+                
+                var parentResults = await _netSuiteService.QueryRawAsync(parentQuery, 30);
+                
+                foreach (var row in parentResults)
+                {
+                    var acctNum = row.TryGetProperty("acctnumber", out var acctProp) ? acctProp.GetString() ?? "" : "";
+                    var acctName = row.TryGetProperty("account_name", out var nameProp) ? nameProp.GetString() ?? "" : "";
+                    var acctType = row.TryGetProperty("accttype", out var typeProp) ? typeProp.GetString() ?? "" : "";
+                    var parentNum = row.TryGetProperty("parent_number", out var parentProp) && parentProp.ValueKind != JsonValueKind.Null 
+                        ? parentProp.GetString() : null;
+
+                    if (string.IsNullOrEmpty(acctNum) || string.IsNullOrEmpty(acctType))
+                        continue;
+
+                    // Determine section and subsection (same logic as above)
+                    string section, subsection;
+                    if (currentAssetTypes.Contains(acctType))
+                    {
+                        section = "Assets";
+                        subsection = "Current Assets";
+                    }
+                    else if (fixedAssetTypes.Contains(acctType))
+                    {
+                        section = "Assets";
+                        subsection = "Fixed Assets";
+                    }
+                    else if (otherAssetTypes.Contains(acctType))
+                    {
+                        section = "Assets";
+                        subsection = "Other Assets";
+                    }
+                    else if (currentLiabilityTypes.Contains(acctType))
+                    {
+                        section = "Liabilities";
+                        subsection = "Current Liabilities";
+                    }
+                    else if (longTermLiabilityTypes.Contains(acctType))
+                    {
+                        section = "Liabilities";
+                        subsection = "Long Term Liabilities";
+                    }
+                    else if (equityTypes.Contains(acctType))
+                    {
+                        section = "Equity";
+                        subsection = "Equity";
+                    }
+                    else
+                    {
+                        if (acctType == AccountType.DeferExpense || acctType == AccountType.UnbilledRec)
+                        {
+                            section = "Assets";
+                            subsection = "Current Assets";
+                        }
+                        else if (acctType == AccountType.DeferRevenue)
+                        {
+                            section = "Liabilities";
+                            subsection = "Current Liabilities";
+                        }
+                        else if (acctType == AccountType.RetainedEarnings)
+                        {
+                            section = "Equity";
+                            subsection = "Equity";
+                        }
+                        else
+                        {
+                            continue;
+                        }
+                    }
+
+                    var bsRow = new BalanceSheetRow
+                    {
+                        Section = section,
+                        Subsection = subsection,
+                        AccountNumber = acctNum,
+                        AccountName = acctName,
+                        AccountType = acctType,
+                        ParentAccount = parentNum,
+                        Balance = 0, // Parent has zero balance but included because children have balances
+                        IsCalculated = false,
+                        Source = "Account",
+                        Level = 0
+                    };
+
+                    accountMap[acctNum] = bsRow;
+                    
+                    // Track parent's parent if exists
+                    if (!string.IsNullOrEmpty(parentNum))
+                    {
+                        if (!parentChildMap.ContainsKey(parentNum))
+                            parentChildMap[parentNum] = new List<string>();
+                        parentChildMap[parentNum].Add(acctNum);
+                    }
+                }
+            }
+
+            // Calculate levels based on parent-child hierarchy
+            void SetLevels(string accountNum, int level)
+            {
+                if (accountMap.ContainsKey(accountNum))
+                {
+                    accountMap[accountNum].Level = level;
+                    if (parentChildMap.ContainsKey(accountNum))
+                    {
+                        foreach (var child in parentChildMap[accountNum])
+                        {
+                            SetLevels(child, level + 1);
+                        }
+                    }
+                }
+            }
+
+            // Set levels starting from top-level accounts (no parent)
+            foreach (var accountNum in accountMap.Keys)
+            {
+                if (string.IsNullOrEmpty(accountMap[accountNum].ParentAccount))
+                {
+                    SetLevels(accountNum, 0);
+                }
+            }
+
+            // Build ordered list of rows
+            var rows = new List<BalanceSheetRow>();
+
+            // Section order: Assets, Liabilities, Equity
+            var sectionOrder = new[] { "Assets", "Liabilities", "Equity" };
+            var subsectionOrder = new Dictionary<string, int>
+            {
+                { "Current Assets", 1 },
+                { "Fixed Assets", 2 },
+                { "Other Assets", 3 },
+                { "Current Liabilities", 1 },
+                { "Long Term Liabilities", 2 },
+                { "Equity", 1 }
+            };
+
+            foreach (var section in sectionOrder)
+            {
+                var sectionAccounts = accountMap.Values
+                    .Where(r => r.Section == section)
+                    .OrderBy(r => subsectionOrder.GetValueOrDefault(r.Subsection, 999))
+                    .ThenBy(r => r.Level)
+                    .ThenBy(r => r.AccountNumber)
+                    .ToList();
+
+                rows.AddRange(sectionAccounts);
+            }
+
+            // Calculate special formulas
+            _logger.LogDebug("Calculating NETINCOME, RETAINEDEARNINGS, and CTA...");
+
+            // Get fiscal year info for special formulas
+            var fyInfo = await GetFiscalYearInfoAsync(request.Period, accountingBook);
+            if (fyInfo == null)
+            {
+                _logger.LogWarning("Could not get fiscal year info - skipping calculated rows");
+            }
+            else
+            {
+                // Calculate NETINCOME
+                decimal netIncome = 0;
+                try
+                {
+                    var netIncomeRequest = new NetIncomeRequest
+                    {
+                        Period = request.Period,
+                        Subsidiary = request.Subsidiary,
+                        Department = request.Department,
+                        Class = request.Class,
+                        Location = request.Location,
+                        Book = request.Book
+                    };
+                    // Call net-income endpoint logic inline (simplified)
+                    var plTypesSql = "'Income', 'COGS', 'Expense', 'OthIncome', 'OthExpense'";
+                    var fyStartDate = ConvertToYYYYMMDD(fyInfo.FyStart);
+                    var netIncomeQuery = $@"
+                        SELECT SUM(
+                            TO_NUMBER(BUILTIN.CONSOLIDATE(tal.amount, 'LEDGER', 'DEFAULT', 'DEFAULT', {targetSub}, {targetPeriodId}, 'DEFAULT'))
+                            * -1
+                        ) AS value
+                        FROM transactionaccountingline tal
+                        JOIN transaction t ON t.id = tal.transaction
+                        JOIN account a ON a.id = tal.account
+                        JOIN accountingperiod ap ON ap.id = t.postingperiod
+                        JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id
+                        WHERE t.posting = 'T'
+                          AND tal.posting = 'T'
+                          AND a.accttype IN ({plTypesSql})
+                          AND ap.startdate >= TO_DATE('{fyStartDate}', 'YYYY-MM-DD')
+                          AND ap.enddate <= TO_DATE('{periodEndDate}', 'YYYY-MM-DD')
+                          AND tal.accountingbook = {accountingBook}
+                          AND {segmentWhere}";
+                    var niResults = await _netSuiteService.QueryRawAsync(netIncomeQuery, 120);
+                    if (niResults.Any())
+                    {
+                        var niRow = niResults.First();
+                        netIncome = ParseBalance(niRow.TryGetProperty("value", out var niProp) ? niProp : default);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Error calculating Net Income");
+                }
+
+                // Calculate RETAINEDEARNINGS
+                decimal retainedEarnings = 0;
+                try
+                {
+                    var plTypesSql = "'Income', 'COGS', 'Expense', 'OthIncome', 'OthExpense'";
+                    var fyStartDate = ConvertToYYYYMMDD(fyInfo.FyStart);
+                    // Prior P&L
+                    var priorPlQuery = $@"
+                        SELECT SUM(
+                            TO_NUMBER(BUILTIN.CONSOLIDATE(tal.amount, 'LEDGER', 'DEFAULT', 'DEFAULT', {targetSub}, {targetPeriodId}, 'DEFAULT'))
+                            * -1
+                        ) AS value
+                        FROM transactionaccountingline tal
+                        JOIN transaction t ON t.id = tal.transaction
+                        JOIN account a ON a.id = tal.account
+                        JOIN accountingperiod ap ON ap.id = t.postingperiod
+                        JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id
+                        WHERE t.posting = 'T'
+                          AND tal.posting = 'T'
+                          AND a.accttype IN ({plTypesSql})
+                          AND ap.enddate < TO_DATE('{fyStartDate}', 'YYYY-MM-DD')
+                          AND tal.accountingbook = {accountingBook}
+                          AND {segmentWhere}";
+                    var priorPlResults = await _netSuiteService.QueryRawAsync(priorPlQuery, 120);
+                    decimal priorPl = priorPlResults.Any() 
+                        ? ParseBalance(priorPlResults.First().TryGetProperty("value", out var ppProp) ? ppProp : default)
+                        : 0;
+                    
+                    // Posted RE
+                    var postedReQuery = $@"
+                        SELECT SUM(
+                            TO_NUMBER(BUILTIN.CONSOLIDATE(tal.amount, 'LEDGER', 'DEFAULT', 'DEFAULT', {targetSub}, {targetPeriodId}, 'DEFAULT'))
+                            * -1
+                        ) AS value
+                        FROM transactionaccountingline tal
+                        JOIN transaction t ON t.id = tal.transaction
+                        JOIN account a ON a.id = tal.account
+                        JOIN accountingperiod ap ON ap.id = t.postingperiod
+                        JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id
+                        WHERE t.posting = 'T'
+                          AND tal.posting = 'T'
+                          AND (a.accttype = 'RetainedEarnings' OR LOWER(a.fullname) LIKE '%retained earnings%')
+                          AND ap.enddate <= TO_DATE('{periodEndDate}', 'YYYY-MM-DD')
+                          AND tal.accountingbook = {accountingBook}
+                          AND {segmentWhere}";
+                    var postedReResults = await _netSuiteService.QueryRawAsync(postedReQuery, 120);
+                    decimal postedRe = postedReResults.Any()
+                        ? ParseBalance(postedReResults.First().TryGetProperty("value", out var prProp) ? prProp : default)
+                        : 0;
+                    
+                    retainedEarnings = priorPl + postedRe;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Error calculating Retained Earnings");
+                }
+
+                // Calculate CTA using plug method
+                decimal cta = 0;
+                try
+                {
+                    var assetTypesSql = AccountType.BsAssetTypesSql;
+                    var liabilityTypesSql = AccountType.BsLiabilityTypesSql;
+                    var plTypesSql = "'Income', 'COGS', 'Expense', 'OthIncome', 'OthExpense'";
+                    
+                    // Total Assets
+                    var assetsQuery = $@"
+                        SELECT SUM(
+                            TO_NUMBER(BUILTIN.CONSOLIDATE(tal.amount, 'LEDGER', 'DEFAULT', 'DEFAULT', {targetSub}, {targetPeriodId}, 'DEFAULT'))
+                        ) AS value
+                        FROM transactionaccountingline tal
+                        JOIN transaction t ON t.id = tal.transaction
+                        JOIN account a ON a.id = tal.account
+                        JOIN accountingperiod ap ON ap.id = t.postingperiod
+                        WHERE t.posting = 'T'
+                          AND tal.posting = 'T'
+                          AND a.accttype IN ({assetTypesSql})
+                          AND ap.enddate <= TO_DATE('{periodEndDate}', 'YYYY-MM-DD')
+                          AND ap.isyear = 'F'
+                          AND ap.isquarter = 'F'
+                          AND tal.accountingbook = {accountingBook}";
+                    
+                    // Total Liabilities
+                    var liabilitiesQuery = $@"
+                        SELECT SUM(
+                            TO_NUMBER(BUILTIN.CONSOLIDATE(tal.amount, 'LEDGER', 'DEFAULT', 'DEFAULT', {targetSub}, {targetPeriodId}, 'DEFAULT'))
+                            * -1
+                        ) AS value
+                        FROM transactionaccountingline tal
+                        JOIN transaction t ON t.id = tal.transaction
+                        JOIN account a ON a.id = tal.account
+                        JOIN accountingperiod ap ON ap.id = t.postingperiod
+                        WHERE t.posting = 'T'
+                          AND tal.posting = 'T'
+                          AND a.accttype IN ({liabilityTypesSql})
+                          AND ap.enddate <= TO_DATE('{periodEndDate}', 'YYYY-MM-DD')
+                          AND ap.isyear = 'F'
+                          AND ap.isquarter = 'F'
+                          AND tal.accountingbook = {accountingBook}";
+                    
+                    // Posted Equity (excluding RE)
+                    var equityQuery = $@"
+                        SELECT SUM(
+                            TO_NUMBER(BUILTIN.CONSOLIDATE(tal.amount, 'LEDGER', 'DEFAULT', 'DEFAULT', {targetSub}, {targetPeriodId}, 'DEFAULT'))
+                            * -1
+                        ) AS value
+                        FROM transactionaccountingline tal
+                        JOIN transaction t ON t.id = tal.transaction
+                        JOIN account a ON a.id = tal.account
+                        JOIN accountingperiod ap ON ap.id = t.postingperiod
+                        WHERE t.posting = 'T'
+                          AND tal.posting = 'T'
+                          AND a.accttype = 'Equity'
+                          AND LOWER(a.fullname) NOT LIKE '%retained earnings%'
+                          AND ap.enddate <= TO_DATE('{periodEndDate}', 'YYYY-MM-DD')
+                          AND ap.isyear = 'F'
+                          AND ap.isquarter = 'F'
+                          AND tal.accountingbook = {accountingBook}";
+                    
+                    var assetsTask = _netSuiteService.QueryRawAsync(assetsQuery, 120);
+                    var liabilitiesTask = _netSuiteService.QueryRawAsync(liabilitiesQuery, 120);
+                    var equityTask = _netSuiteService.QueryRawAsync(equityQuery, 120);
+                    
+                    await Task.WhenAll(assetsTask, liabilitiesTask, equityTask);
+                    
+                    decimal ctaTotalAssets = assetsTask.Result.Any()
+                        ? ParseBalance(assetsTask.Result.First().TryGetProperty("value", out var aProp) ? aProp : default)
+                        : 0;
+                    decimal ctaTotalLiabilities = liabilitiesTask.Result.Any()
+                        ? ParseBalance(liabilitiesTask.Result.First().TryGetProperty("value", out var lProp) ? lProp : default)
+                        : 0;
+                    decimal ctaPostedEquity = equityTask.Result.Any()
+                        ? ParseBalance(equityTask.Result.First().TryGetProperty("value", out var eProp) ? eProp : default)
+                        : 0;
+                    
+                    // Prior P&L (for CTA calculation)
+                    var fyStartDate = ConvertToYYYYMMDD(fyInfo.FyStart);
+                    var priorPlQuery = $@"
+                        SELECT SUM(
+                            TO_NUMBER(BUILTIN.CONSOLIDATE(tal.amount, 'LEDGER', 'DEFAULT', 'DEFAULT', {targetSub}, {targetPeriodId}, 'DEFAULT'))
+                            * -1
+                        ) AS value
+                        FROM transactionaccountingline tal
+                        JOIN transaction t ON t.id = tal.transaction
+                        JOIN account a ON a.id = tal.account
+                        JOIN accountingperiod ap ON ap.id = t.postingperiod
+                        WHERE t.posting = 'T'
+                          AND tal.posting = 'T'
+                          AND a.accttype IN ({plTypesSql})
+                          AND ap.enddate < TO_DATE('{fyStartDate}', 'YYYY-MM-DD')
+                          AND ap.isyear = 'F'
+                          AND ap.isquarter = 'F'
+                          AND tal.accountingbook = {accountingBook}";
+                    
+                    // Posted RE (for CTA)
+                    var postedReQuery = $@"
+                        SELECT SUM(
+                            TO_NUMBER(BUILTIN.CONSOLIDATE(tal.amount, 'LEDGER', 'DEFAULT', 'DEFAULT', {targetSub}, {targetPeriodId}, 'DEFAULT'))
+                            * -1
+                        ) AS value
+                        FROM transactionaccountingline tal
+                        JOIN transaction t ON t.id = tal.transaction
+                        JOIN account a ON a.id = tal.account
+                        JOIN accountingperiod ap ON ap.id = t.postingperiod
+                        WHERE t.posting = 'T'
+                          AND tal.posting = 'T'
+                          AND (a.accttype = 'RetainedEarnings' OR LOWER(a.fullname) LIKE '%retained earnings%')
+                          AND ap.enddate <= TO_DATE('{periodEndDate}', 'YYYY-MM-DD')
+                          AND ap.isyear = 'F'
+                          AND ap.isquarter = 'F'
+                          AND tal.accountingbook = {accountingBook}";
+                    
+                    var priorPlTask = _netSuiteService.QueryRawAsync(priorPlQuery, 120);
+                    var postedReTask = _netSuiteService.QueryRawAsync(postedReQuery, 120);
+                    await Task.WhenAll(priorPlTask, postedReTask);
+                    
+                    decimal priorPl = priorPlTask.Result.Any()
+                        ? ParseBalance(priorPlTask.Result.First().TryGetProperty("value", out var ppProp) ? ppProp : default)
+                        : 0;
+                    decimal postedRe = postedReTask.Result.Any()
+                        ? ParseBalance(postedReTask.Result.First().TryGetProperty("value", out var prProp) ? prProp : default)
+                        : 0;
+                    
+                    // CTA = Assets - Liabilities - Equity - Prior P&L - Posted RE - Net Income
+                    cta = ctaTotalAssets - ctaTotalLiabilities - ctaPostedEquity - priorPl - postedRe - netIncome;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Error calculating CTA");
+                }
+
+                // Add calculated rows to Equity section (in correct order)
+                var equityRows = rows.Where(r => r.Section == "Equity").ToList();
+                var equityInsertIndex = rows.FindIndex(r => r.Section == "Equity");
+                
+                // Insert NETINCOME before retained earnings accounts
+                var retainedEarningsAccounts = equityRows.Where(r => r.AccountType == AccountType.RetainedEarnings).ToList();
+                int netIncomeIndex = retainedEarningsAccounts.Any()
+                    ? rows.FindIndex(r => r.AccountNumber == retainedEarningsAccounts.First().AccountNumber)
+                    : equityInsertIndex + equityRows.Count;
+
+                rows.Insert(netIncomeIndex, new BalanceSheetRow
+                {
+                    Section = "Equity",
+                    Subsection = "Equity",
+                    AccountNumber = null,
+                    AccountName = "Net Income",
+                    AccountType = "Calculated",
+                    ParentAccount = null,
+                    Balance = netIncome,
+                    IsCalculated = true,
+                    Source = "Calculated",
+                    Level = 0
+                });
+
+                // Insert RETAINEDEARNINGS after NETINCOME
+                int reIndex = rows.FindIndex(r => r.IsCalculated && r.AccountName == "Net Income") + 1;
+                rows.Insert(reIndex, new BalanceSheetRow
+                {
+                    Section = "Equity",
+                    Subsection = "Equity",
+                    AccountNumber = null,
+                    AccountName = "Retained Earnings",
+                    AccountType = "Calculated",
+                    ParentAccount = null,
+                    Balance = retainedEarnings,
+                    IsCalculated = true,
+                    Source = "Calculated",
+                    Level = 0
+                });
+
+                // Insert CTA after RETAINEDEARNINGS
+                int ctaIndex = rows.FindIndex(r => r.IsCalculated && r.AccountName == "Retained Earnings") + 1;
+                rows.Insert(ctaIndex, new BalanceSheetRow
+                {
+                    Section = "Equity",
+                    Subsection = "Equity",
+                    AccountNumber = null,
+                    AccountName = "Cumulative Translation Adjustment",
+                    AccountType = "Calculated",
+                    ParentAccount = null,
+                    Balance = cta,
+                    IsCalculated = true,
+                    Source = "Calculated",
+                    Level = 0
+                });
+            }
+
+            // Calculate totals
+            var totalAssets = rows.Where(r => r.Section == "Assets").Sum(r => r.Balance);
+            var totalLiabilities = rows.Where(r => r.Section == "Liabilities").Sum(r => r.Balance);
+            var totalEquity = rows.Where(r => r.Section == "Equity").Sum(r => r.Balance);
+
+            var elapsed = (DateTime.UtcNow - startTime).TotalSeconds;
+            _logger.LogInformation("✅ Balance Sheet report generated: {AccountCount} accounts, {RowCount} rows in {Elapsed:F1}s",
+                accountMap.Count, rows.Count, elapsed);
+
+            return Ok(new BalanceSheetReportResponse
+            {
+                Rows = rows,
+                Period = request.Period,
+                TotalAssets = totalAssets,
+                TotalLiabilities = totalLiabilities,
+                TotalEquity = totalEquity
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error generating Balance Sheet report");
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+    
+    /// <summary>
+    /// Helper to get fiscal year info for a period (used by special formulas).
+    /// </summary>
+    private async Task<FiscalYearInfo?> GetFiscalYearInfoAsync(string periodName, int accountingBook)
+    {
+        try
+        {
+            var periodData = await _netSuiteService.GetPeriodAsync(periodName);
+            if (periodData == null)
+                return null;
+
+            // Get fiscal year start
+            var fyQuery = $@"
+                SELECT MIN(startdate) AS fy_start
+                FROM accountingperiod
+                WHERE EXTRACT(YEAR FROM startdate) = EXTRACT(YEAR FROM TO_DATE('{ConvertToYYYYMMDD(periodData.StartDate)}', 'YYYY-MM-DD'))
+                  AND isyear = 'F'
+                  AND isquarter = 'F'
+                  AND isadjust = 'F'";
+            
+            var fyResults = await _netSuiteService.QueryRawAsync(fyQuery);
+            if (!fyResults.Any())
+                return null;
+
+            var fyStartStr = fyResults.First().TryGetProperty("fy_start", out var fyProp) 
+                ? fyProp.GetString() : null;
+            
+            if (string.IsNullOrEmpty(fyStartStr))
+                return null;
+
+            return new FiscalYearInfo
+            {
+                FyStart = ConvertToYYYYMMDD(fyStartStr),
+                PeriodEnd = ConvertToYYYYMMDD(periodData.EndDate),
+                PeriodId = periodData.Id
+            };
+        }
+        catch
+        {
+            return null;
+        }
+    }
+    
+    private class FiscalYearInfo
+    {
+        public string FyStart { get; set; } = "";
+        public string PeriodEnd { get; set; } = "";
+        public string? PeriodId { get; set; }
+    }
 }
 
 /// <summary>

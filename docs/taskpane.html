@@ -5314,7 +5314,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=3.0.5.267"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=3.0.5.268"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -10541,41 +10541,47 @@ For licensing inquiries, contact: legal@celigo.com
                 // Determine currency format
                 let currencyFormat = '"$"#,##0.00';
                 
-                // Step 1: Fetch all accounts to get BS account types
-                updateProgress(5, '📥 Step 1 of 4: Loading Accounts', 'Fetching Balance Sheet accounts from NetSuite...');
+                // Get default subsidiary and other filters
+                let defaultSubsidiary = '';
+                let defaultDepartment = '';
+                let defaultLocation = '';
+                let defaultClass = '';
+                try {
+                    defaultSubsidiary = localStorage.getItem('netsuite_subsidiary') || '';
+                    defaultDepartment = localStorage.getItem('netsuite_department') || '';
+                    defaultLocation = localStorage.getItem('netsuite_location') || '';
+                    defaultClass = localStorage.getItem('netsuite_class') || '';
+                } catch(e) {}
                 
-                const accountsResponse = await fetch(`${SERVER_URL}/netsuite/accounts`);
-                if (!accountsResponse.ok) {
-                    throw new Error('Failed to fetch accounts');
+                // Step 1: Fetch Balance Sheet report data from backend
+                updateProgress(10, '📥 Step 1 of 3: Loading Balance Sheet Data', 'Fetching structured Balance Sheet from NetSuite...');
+                
+                const reportResponse = await fetch(`${SERVER_URL}/balance-sheet/report`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        period: periodFormatted,
+                        subsidiary: defaultSubsidiary || null,
+                        department: defaultDepartment || null,
+                        location: defaultLocation || null,
+                        class: defaultClass || null,
+                        book: null
+                    })
+                });
+                
+                if (!reportResponse.ok) {
+                    const errorData = await reportResponse.json().catch(() => ({ error: 'Unknown error' }));
+                    throw new Error(errorData.error || 'Failed to fetch Balance Sheet data');
                 }
-                const accountsData = await accountsResponse.json();
-                const allAccounts = accountsData.accounts || [];
                 
-                // Balance Sheet account types
-                const bsTypes = ['Bank', 'AcctRec', 'OthCurrAsset', 'FixedAsset', 'OthAsset', 'DeferExpense', 
-                                'AcctPay', 'CredCard', 'OthCurrLiab', 'LongTermLiab', 'DeferRevenue', 
-                                'Equity', 'RetainedEarnings'];
+                const reportData = await reportResponse.json();
+                const rows = reportData.rows || [];
                 
-                // Filter to BS accounts only
-                const bsAccounts = allAccounts.filter(a => bsTypes.includes(a.type));
-                console.log(`📊 Balance Sheet: Found ${bsAccounts.length} BS accounts out of ${allAccounts.length} total`);
-                
-                updateProgress(15, '📥 Step 1 of 4: Loading Accounts', `Found ${bsAccounts.length} Balance Sheet accounts...`);
-                
-                // Group accounts by type for organized display
-                const assetTypes = ['Bank', 'AcctRec', 'OthCurrAsset', 'FixedAsset', 'OthAsset', 'DeferExpense'];
-                const liabilityTypes = ['AcctPay', 'CredCard', 'OthCurrLiab', 'LongTermLiab', 'DeferRevenue'];
-                const equityTypes = ['Equity', 'RetainedEarnings'];
-                
-                const assets = bsAccounts.filter(a => assetTypes.includes(a.type)).sort((a, b) => 
-                    assetTypes.indexOf(a.type) - assetTypes.indexOf(b.type) || a.number.localeCompare(b.number));
-                const liabilities = bsAccounts.filter(a => liabilityTypes.includes(a.type)).sort((a, b) => 
-                    liabilityTypes.indexOf(a.type) - liabilityTypes.indexOf(b.type) || a.number.localeCompare(b.number));
-                const equity = bsAccounts.filter(a => equityTypes.includes(a.type)).sort((a, b) => 
-                    equityTypes.indexOf(a.type) - equityTypes.indexOf(b.type) || a.number.localeCompare(b.number));
+                console.log(`📊 Balance Sheet: Received ${rows.length} rows from backend`);
+                updateProgress(50, '📥 Step 1 of 3: Loading Balance Sheet Data', `Loaded ${rows.length} accounts and calculated rows...`);
                 
                 // Step 2: Build the spreadsheet
-                updateProgress(30, '📝 Step 2 of 4: Building Structure', 'Creating Balance Sheet layout...');
+                updateProgress(60, '📝 Step 2 of 3: Building Structure', 'Creating Balance Sheet layout...');
                 
                 await Excel.run(async (context) => {
                     // Create new sheet
@@ -10648,16 +10654,50 @@ For licensing inquiries, contact: legal@celigo.com
                         currentRow++;
                     }
                     
-                    // Helper to add account row with BALANCE formula
-                    function addAccountRow(account) {
-                        const formula = defaultSubsidiary 
-                            ? `=XAVI.BALANCE("${account.number}", "$D$2", "$B$2")`
-                            : `=XAVI.BALANCE("${account.number}", "$D$2")`;
-                        
-                        sheet.getRange(`A${currentRow}`).values = [[account.number]];
-                        sheet.getRange(`B${currentRow}`).values = [[account.name]];
-                        sheet.getRange(`C${currentRow}`).formulas = [[formula]];
-                        sheet.getRange(`C${currentRow}`).numberFormat = [[currencyFormat]];
+                    // Helper to add account row with BALANCE formula or calculated value
+                    function addAccountRow(row) {
+                        if (row.is_calculated) {
+                            // For calculated rows (NETINCOME, RETAINEDEARNINGS, CTA), use the appropriate formula
+                            let formula;
+                            if (row.account_name === 'Net Income') {
+                                formula = defaultSubsidiary 
+                                    ? `=XAVI.NETINCOME("$D$2", "$B$2")`
+                                    : `=XAVI.NETINCOME("$D$2")`;
+                            } else if (row.account_name === 'Retained Earnings') {
+                                formula = defaultSubsidiary 
+                                    ? `=XAVI.RETAINEDEARNINGS("$D$2", "$B$2")`
+                                    : `=XAVI.RETAINEDEARNINGS("$D$2")`;
+                            } else if (row.account_name === 'Cumulative Translation Adjustment') {
+                                formula = defaultSubsidiary 
+                                    ? `=XAVI.CTA("$D$2", "$B$2")`
+                                    : `=XAVI.CTA("$D$2")`;
+                            } else {
+                                // Fallback: use the balance value directly
+                                sheet.getRange(`A${currentRow}`).values = [['']];
+                                sheet.getRange(`B${currentRow}`).values = [[row.account_name]];
+                                sheet.getRange(`C${currentRow}`).values = [[row.balance]];
+                                sheet.getRange(`C${currentRow}`).numberFormat = [[currencyFormat]];
+                                currentRow++;
+                                return;
+                            }
+                            
+                            sheet.getRange(`A${currentRow}`).values = [['']];
+                            sheet.getRange(`B${currentRow}`).values = [[row.account_name]];
+                            sheet.getRange(`C${currentRow}`).formulas = [[formula]];
+                            sheet.getRange(`C${currentRow}`).numberFormat = [[currencyFormat]];
+                        } else {
+                            // Regular account row
+                            const formula = defaultSubsidiary 
+                                ? `=XAVI.BALANCE("${row.account_number}", "$D$2", "$B$2")`
+                                : `=XAVI.BALANCE("${row.account_number}", "$D$2")`;
+                            
+                            // Indent based on level (parent-child hierarchy)
+                            const indent = '  '.repeat(row.level || 0);
+                            sheet.getRange(`A${currentRow}`).values = [[row.account_number || '']];
+                            sheet.getRange(`B${currentRow}`).values = [[indent + row.account_name]];
+                            sheet.getRange(`C${currentRow}`).formulas = [[formula]];
+                            sheet.getRange(`C${currentRow}`).numberFormat = [[currencyFormat]];
+                        }
                         currentRow++;
                     }
                     
@@ -10672,91 +10712,110 @@ For licensing inquiries, contact: legal@celigo.com
                         currentRow++;
                     }
                     
-                    updateProgress(40, '📝 Step 2 of 4: Building Structure', 'Adding Assets section...');
+                    // Build sheet from structured rows
+                    let currentSection = '';
+                    let currentSubsection = '';
+                    let subsectionStartRow = 0;
+                    const sectionColors = {
+                        'Assets': '#10B981',
+                        'Liabilities': '#EF4444',
+                        'Equity': '#3B82F6'
+                    };
                     
-                    // ===== ASSETS SECTION =====
-                    addSectionHeader('ASSETS', '#10B981');
                     const assetsStartRow = currentRow;
+                    let liabilitiesStartRow = 0;
+                    let equityStartRow = 0;
+                    let totalAssetsRow = 0;
+                    let totalLiabilitiesRow = 0;
+                    let totalEquityRow = 0;
                     
-                    // Current Assets
-                    addSubsectionHeader('Current Assets');
-                    const currentAssetsStart = currentRow;
-                    const currentAssetTypes = ['Bank', 'AcctRec', 'OthCurrAsset'];
-                    assets.filter(a => currentAssetTypes.includes(a.type)).forEach(addAccountRow);
-                    if (currentRow > currentAssetsStart) {
-                        addSubtotalRow('Total Current Assets', currentAssetsStart, currentRow);
+                    for (let i = 0; i < rows.length; i++) {
+                        const row = rows[i];
+                        const nextRow = i < rows.length - 1 ? rows[i + 1] : null;
+                        
+                        // Add section header when section changes
+                        if (row.section !== currentSection) {
+                            // Add subsection subtotal for previous subsection if needed
+                            if (currentSubsection !== '' && subsectionStartRow > 0 && currentRow > subsectionStartRow) {
+                                const subsectionLabel = `Total ${currentSubsection}`;
+                                addSubtotalRow(subsectionLabel, subsectionStartRow, currentRow);
+                            }
+                            
+                            // Add section total for previous section
+                            if (currentSection !== '') {
+                                const sectionTotalLabel = `TOTAL ${currentSection.toUpperCase()}`;
+                                sheet.getRange(`B${currentRow}`).values = [[sectionTotalLabel]];
+                                
+                                let sectionStartRow;
+                                if (currentSection === 'Assets') {
+                                    sectionStartRow = assetsStartRow;
+                                    totalAssetsRow = currentRow;
+                                } else if (currentSection === 'Liabilities') {
+                                    sectionStartRow = liabilitiesStartRow;
+                                    totalLiabilitiesRow = currentRow;
+                                } else {
+                                    sectionStartRow = equityStartRow;
+                                    totalEquityRow = currentRow;
+                                }
+                                
+                                sheet.getRange(`C${currentRow}`).formulas = [[`=SUBTOTAL(109,C${sectionStartRow}:C${currentRow-1})`]];
+                                sheet.getRange(`A${currentRow}:C${currentRow}`).format.font.bold = true;
+                                sheet.getRange(`A${currentRow}:C${currentRow}`).format.fill.color = 
+                                    currentSection === 'Assets' ? '#D1FAE5' : 
+                                    currentSection === 'Liabilities' ? '#FEE2E2' : '#DBEAFE';
+                                sheet.getRange(`C${currentRow}`).numberFormat = [[currencyFormat]];
+                                sheet.getRange(`C${currentRow}`).format.borders.getItem('EdgeTop').style = 'Double';
+                                currentRow += 2;
+                            }
+                            
+                            currentSection = row.section;
+                            addSectionHeader(currentSection.toUpperCase(), sectionColors[currentSection] || '#6B7280');
+                            
+                            if (currentSection === 'Liabilities') {
+                                liabilitiesStartRow = currentRow;
+                            } else if (currentSection === 'Equity') {
+                                equityStartRow = currentRow;
+                            }
+                            
+                            // Reset subsection tracking
+                            currentSubsection = '';
+                            subsectionStartRow = 0;
+                        }
+                        
+                        // Add subsection header when subsection changes
+                        if (row.subsection !== currentSubsection) {
+                            // Add subtotal for previous subsection if needed
+                            if (currentSubsection !== '' && subsectionStartRow > 0 && currentRow > subsectionStartRow) {
+                                const subsectionLabel = `Total ${currentSubsection}`;
+                                addSubtotalRow(subsectionLabel, subsectionStartRow, currentRow);
+                            }
+                            
+                            currentSubsection = row.subsection;
+                            addSubsectionHeader(currentSubsection);
+                            subsectionStartRow = currentRow;
+                        }
+                        
+                        // Add the account row
+                        addAccountRow(row);
                     }
                     
-                    // Non-Current Assets
-                    addSubsectionHeader('Non-Current Assets');
-                    const nonCurrentAssetsStart = currentRow;
-                    const nonCurrentAssetTypes = ['FixedAsset', 'OthAsset', 'DeferExpense'];
-                    assets.filter(a => nonCurrentAssetTypes.includes(a.type)).forEach(addAccountRow);
-                    if (currentRow > nonCurrentAssetsStart) {
-                        addSubtotalRow('Total Non-Current Assets', nonCurrentAssetsStart, currentRow);
+                    // Add final subsection subtotal
+                    if (currentSubsection !== '' && subsectionStartRow > 0 && currentRow > subsectionStartRow) {
+                        const subsectionLabel = `Total ${currentSubsection}`;
+                        addSubtotalRow(subsectionLabel, subsectionStartRow, currentRow);
                     }
                     
-                    // Total Assets
-                    const totalAssetsRow = currentRow;
-                    sheet.getRange(`B${currentRow}`).values = [['TOTAL ASSETS']];
-                    sheet.getRange(`C${currentRow}`).formulas = [[`=SUBTOTAL(109,C${assetsStartRow}:C${currentRow-1})`]];
-                    sheet.getRange(`A${currentRow}:C${currentRow}`).format.font.bold = true;
-                    sheet.getRange(`A${currentRow}:C${currentRow}`).format.fill.color = "#D1FAE5";
-                    sheet.getRange(`C${currentRow}`).numberFormat = [[currencyFormat]];
-                    sheet.getRange(`C${currentRow}`).format.borders.getItem('EdgeTop').style = 'Double';
-                    currentRow += 2; // Add blank row
-                    
-                    updateProgress(55, '📝 Step 2 of 4: Building Structure', 'Adding Liabilities section...');
-                    
-                    // ===== LIABILITIES SECTION =====
-                    addSectionHeader('LIABILITIES', '#EF4444');
-                    const liabilitiesStartRow = currentRow;
-                    
-                    // Current Liabilities
-                    addSubsectionHeader('Current Liabilities');
-                    const currentLiabStart = currentRow;
-                    const currentLiabTypes = ['AcctPay', 'CredCard', 'OthCurrLiab'];
-                    liabilities.filter(a => currentLiabTypes.includes(a.type)).forEach(addAccountRow);
-                    if (currentRow > currentLiabStart) {
-                        addSubtotalRow('Total Current Liabilities', currentLiabStart, currentRow);
+                    // Add final section total (Equity)
+                    if (currentSection === 'Equity') {
+                        totalEquityRow = currentRow;
+                        sheet.getRange(`B${currentRow}`).values = [['TOTAL EQUITY']];
+                        sheet.getRange(`C${currentRow}`).formulas = [[`=SUBTOTAL(109,C${equityStartRow}:C${currentRow-1})`]];
+                        sheet.getRange(`A${currentRow}:C${currentRow}`).format.font.bold = true;
+                        sheet.getRange(`A${currentRow}:C${currentRow}`).format.fill.color = '#DBEAFE';
+                        sheet.getRange(`C${currentRow}`).numberFormat = [[currencyFormat]];
+                        sheet.getRange(`C${currentRow}`).format.borders.getItem('EdgeTop').style = 'Double';
+                        currentRow += 2;
                     }
-                    
-                    // Long-Term Liabilities
-                    addSubsectionHeader('Long-Term Liabilities');
-                    const longTermLiabStart = currentRow;
-                    const longTermLiabTypes = ['LongTermLiab', 'DeferRevenue'];
-                    liabilities.filter(a => longTermLiabTypes.includes(a.type)).forEach(addAccountRow);
-                    if (currentRow > longTermLiabStart) {
-                        addSubtotalRow('Total Long-Term Liabilities', longTermLiabStart, currentRow);
-                    }
-                    
-                    // Total Liabilities
-                    const totalLiabilitiesRow = currentRow;
-                    sheet.getRange(`B${currentRow}`).values = [['TOTAL LIABILITIES']];
-                    sheet.getRange(`C${currentRow}`).formulas = [[`=SUBTOTAL(109,C${liabilitiesStartRow}:C${currentRow-1})`]];
-                    sheet.getRange(`A${currentRow}:C${currentRow}`).format.font.bold = true;
-                    sheet.getRange(`A${currentRow}:C${currentRow}`).format.fill.color = "#FEE2E2";
-                    sheet.getRange(`C${currentRow}`).numberFormat = [[currencyFormat]];
-                    sheet.getRange(`C${currentRow}`).format.borders.getItem('EdgeTop').style = 'Double';
-                    currentRow += 2; // Add blank row
-                    
-                    updateProgress(70, '📝 Step 2 of 4: Building Structure', 'Adding Equity section...');
-                    
-                    // ===== EQUITY SECTION =====
-                    addSectionHeader('EQUITY', '#3B82F6');
-                    const equityStartRow = currentRow;
-                    
-                    equity.forEach(addAccountRow);
-                    
-                    // Total Equity
-                    const totalEquityRow = currentRow;
-                    sheet.getRange(`B${currentRow}`).values = [['TOTAL EQUITY']];
-                    sheet.getRange(`C${currentRow}`).formulas = [[`=SUBTOTAL(109,C${equityStartRow}:C${currentRow-1})`]];
-                    sheet.getRange(`A${currentRow}:C${currentRow}`).format.font.bold = true;
-                    sheet.getRange(`A${currentRow}:C${currentRow}`).format.fill.color = "#DBEAFE";
-                    sheet.getRange(`C${currentRow}`).numberFormat = [[currencyFormat]];
-                    sheet.getRange(`C${currentRow}`).format.borders.getItem('EdgeTop').style = 'Double';
-                    currentRow += 2;
                     
                     // ===== TOTAL LIABILITIES + EQUITY =====
                     sheet.getRange(`B${currentRow}`).values = [['TOTAL LIABILITIES + EQUITY']];
@@ -10777,7 +10836,7 @@ For licensing inquiries, contact: legal@celigo.com
                     
                     await context.sync();
                     
-                    updateProgress(85, '🎨 Step 3 of 4: Formatting', 'Auto-fitting columns...');
+                    updateProgress(85, '🎨 Step 3 of 3: Formatting', 'Auto-fitting columns...');
                     
                     // Auto-fit columns
                     sheet.getRange("A:C").format.autofitColumns();

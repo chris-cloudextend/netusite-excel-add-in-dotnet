@@ -320,3 +320,83 @@ public class AccountBalance
 
 #endregion
 
+#region Balance Sheet Report
+
+/// <summary>Request for Balance Sheet report generation</summary>
+public class BalanceSheetReportRequest
+{
+    [JsonPropertyName("period")]
+    public string Period { get; set; } = string.Empty;
+    
+    [JsonPropertyName("subsidiary")]
+    public string? Subsidiary { get; set; }
+    
+    [JsonPropertyName("department")]
+    public string? Department { get; set; }
+    
+    [JsonPropertyName("class")]
+    public string? Class { get; set; }
+    
+    [JsonPropertyName("location")]
+    public string? Location { get; set; }
+    
+    [JsonPropertyName("book")]
+    [JsonConverter(typeof(FlexibleIntConverter))]
+    public int? Book { get; set; }
+}
+
+/// <summary>Balance Sheet report row</summary>
+public class BalanceSheetRow
+{
+    [JsonPropertyName("section")]
+    public string Section { get; set; } = string.Empty; // Assets, Liabilities, Equity
+    
+    [JsonPropertyName("subsection")]
+    public string Subsection { get; set; } = string.Empty; // Current Assets, Fixed Assets, etc.
+    
+    [JsonPropertyName("account_number")]
+    public string? AccountNumber { get; set; }
+    
+    [JsonPropertyName("account_name")]
+    public string AccountName { get; set; } = string.Empty;
+    
+    [JsonPropertyName("account_type")]
+    public string AccountType { get; set; } = string.Empty;
+    
+    [JsonPropertyName("parent_account")]
+    public string? ParentAccount { get; set; }
+    
+    [JsonPropertyName("balance")]
+    public decimal Balance { get; set; }
+    
+    [JsonPropertyName("is_calculated")]
+    public bool IsCalculated { get; set; }
+    
+    [JsonPropertyName("source")]
+    public string Source { get; set; } = "Account"; // "Account" or "Calculated"
+    
+    [JsonPropertyName("level")]
+    public int Level { get; set; } // 0 = top level, 1 = child, etc.
+}
+
+/// <summary>Balance Sheet report response</summary>
+public class BalanceSheetReportResponse
+{
+    [JsonPropertyName("rows")]
+    public List<BalanceSheetRow> Rows { get; set; } = new();
+    
+    [JsonPropertyName("period")]
+    public string Period { get; set; } = string.Empty;
+    
+    [JsonPropertyName("total_assets")]
+    public decimal TotalAssets { get; set; }
+    
+    [JsonPropertyName("total_liabilities")]
+    public decimal TotalLiabilities { get; set; }
+    
+    [JsonPropertyName("total_equity")]
+    public decimal TotalEquity { get; set; }
+}
+
+#endregion
+
