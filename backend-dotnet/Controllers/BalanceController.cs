@@ -1073,6 +1073,100 @@ public class BalanceController : ControllerBase
 
             _logger.LogDebug("Balance Sheet Report: period end={EndDate}, period ID={PeriodId}", periodEndDate, targetPeriodId);
 
+            // OPTIMIZATION: Use bs_preload to get balances (cached and faster)
+            // Then build report structure from cached data + fetch parent relationships
+            _logger.LogDebug("Step 1: Calling bs_preload to get/cache all BS account balances...");
+            
+            var preloadRequest = new BsPreloadRequest
+            {
+                Period = request.Period,
+                Subsidiary = request.Subsidiary,
+                Department = request.Department,
+                Class = request.Class,
+                Location = request.Location,
+                Book = request.Book
+            };
+            
+            var preloadResult = await PreloadBalanceSheetAccounts(preloadRequest);
+            if (preloadResult is not OkObjectResult okResult)
+            {
+                _logger.LogError("bs_preload failed - cannot build Balance Sheet report");
+                return preloadResult;
+            }
+            
+            var preloadData = okResult.Value;
+            var preloadType = preloadData.GetType();
+            var balancesProperty = preloadType.GetProperty("balances");
+            var accountTypesProperty = preloadType.GetProperty("account_types");
+            var accountNamesProperty = preloadType.GetProperty("account_names");
+            
+            if (balancesProperty?.GetValue(preloadData) is not Dictionary<string, Dictionary<string, decimal>> allBalances ||
+                accountTypesProperty?.GetValue(preloadData) is not Dictionary<string, string> allAccountTypes ||
+                accountNamesProperty?.GetValue(preloadData) is not Dictionary<string, string> allAccountNames)
+            {
+                return StatusCode(500, new { error = "Failed to parse bs_preload response" });
+            }
+            
+            // Get balances for the requested period
+            var periodBalances = new Dictionary<string, decimal>();
+            foreach (var (account, periodBalancesDict) in allBalances)
+            {
+                if (periodBalancesDict.TryGetValue(request.Period, out var balance) && balance != 0)
+                {
+                    periodBalances[account] = balance;
+                }
+            }
+            
+            _logger.LogInformation("Step 1 complete: Got {Count} BS accounts with non-zero balances from bs_preload", periodBalances.Count);
+            
+            // Step 2: Fetch parent relationships and account names for accounts with balances
+            var accountNumbers = periodBalances.Keys.ToList();
+            
+            Dictionary<string, string?> parentMap = new();
+            Dictionary<string, string> accountNameMap = new();
+            Dictionary<string, string> accountTypeMap = new();
+            
+            if (accountNumbers.Any())
+            {
+                var parentNumbersList = string.Join(", ", accountNumbers.Select(n => $"'{NetSuiteService.EscapeSql(n)}'"));
+                var accountInfoQuery = $@"
+                    SELECT 
+                        a.acctnumber,
+                        a.accountsearchdisplaynamecopy AS account_name,
+                        a.accttype,
+                        p.acctnumber AS parent_number
+                    FROM account a
+                    LEFT JOIN account p ON a.parent = p.id
+                    WHERE a.acctnumber IN ({parentNumbersList})
+                      AND a.isinactive = 'F'";
+                
+                _logger.LogDebug("Step 2: Fetching account info and parent relationships for {Count} accounts...", accountNumbers.Count);
+                var accountInfoResults = await _netSuiteService.QueryRawAsync(accountInfoQuery, 30);
+                
+                foreach (var row in accountInfoResults)
+                {
+                    var acctNum = row.TryGetProperty("acctnumber", out var numProp) ? numProp.GetString() ?? "" : "";
+                    var acctName = row.TryGetProperty("account_name", out var nameProp) ? nameProp.GetString() ?? "" : "";
+                    var acctType = row.TryGetProperty("accttype", out var typeProp) ? typeProp.GetString() ?? "" : "";
+                    var parentNum = row.TryGetProperty("parent_number", out var pProp) && pProp.ValueKind != JsonValueKind.Null 
+                        ? pProp.GetString() : null;
+                    
+                    if (!string.IsNullOrEmpty(acctNum))
+                    {
+                        parentMap[acctNum] = parentNum;
+                        if (!string.IsNullOrEmpty(acctName))
+                            accountNameMap[acctNum] = acctName;
+                        else if (allAccountNames.TryGetValue(acctNum, out var cachedName))
+                            accountNameMap[acctNum] = cachedName;
+                        
+                        if (!string.IsNullOrEmpty(acctType))
+                            accountTypeMap[acctNum] = acctType;
+                        else if (allAccountTypes.TryGetValue(acctNum, out var cachedType))
+                            accountTypeMap[acctNum] = cachedType;
+                    }
+                }
+            }
+            
             // Section mapping based on accttype (exact NetSuite behavior)
             var currentAssetTypes = new[] { AccountType.Bank, AccountType.AcctRec, AccountType.OthCurrAsset };
             var fixedAssetTypes = new[] { AccountType.FixedAsset };
@@ -1081,106 +1175,26 @@ public class BalanceController : ControllerBase
             var longTermLiabilityTypes = new[] { AccountType.LongTermLiab };
             var equityTypes = new[] { AccountType.Equity };
 
-            // Query all BS accounts with balances using the proven bs_preload pattern
-            // This avoids duplicate BUILTIN.CONSOLIDATE calls (HAVING clause) which is much faster
-            var signFlipSql = AccountType.SignFlipTypesSql;
-            var bsTypesSql = AccountType.BsTypesSql;
-            
-            var bsQuery = $@"
-                SELECT 
-                    a.acctnumber,
-                    a.accountsearchdisplaynamecopy AS account_name,
-                    a.accttype,
-                    SUM(
-                        TO_NUMBER(
-                            BUILTIN.CONSOLIDATE(
-                                tal.amount,
-                                'LEDGER',
-                                'DEFAULT',
-                                'DEFAULT',
-                                {targetSub},
-                                {targetPeriodId},
-                                'DEFAULT'
-                            )
-                        ) * CASE WHEN a.accttype IN ({signFlipSql}) THEN -1 ELSE 1 END
-                    ) AS balance
-                FROM transactionaccountingline tal
-                JOIN transaction t ON t.id = tal.transaction
-                JOIN account a ON a.id = tal.account
-                JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id
-                WHERE t.posting = 'T'
-                  AND tal.posting = 'T'
-                  AND a.accttype IN ({bsTypesSql})
-                  AND a.isinactive = 'F'
-                  AND t.trandate <= TO_DATE('{periodEndDate}', 'YYYY-MM-DD')
-                  AND tal.accountingbook = {accountingBook}
-                  AND {segmentWhere}
-                GROUP BY a.acctnumber, a.accountsearchdisplaynamecopy, a.accttype
-                ORDER BY a.acctnumber";
-
-            _logger.LogDebug("Executing Balance Sheet accounts query (bs_preload pattern - no HAVING clause)...");
-            var accountResults = await _netSuiteService.QueryRawAsync(bsQuery, 180);
-            
-            // Filter zero balances in code (same result as HAVING, but avoids duplicate BUILTIN.CONSOLIDATE call)
-            var accountsWithBalances = accountResults
-                .Where(row => {
-                    var balance = ParseBalance(row.TryGetProperty("balance", out var balProp) ? balProp : default);
-                    return balance != 0;
-                })
-                .ToList();
-            
-            _logger.LogInformation("Found {Count} BS accounts with non-zero balances (from {Total} total)", 
-                accountsWithBalances.Count, accountResults.Count);
-            
-            // Step 2: Fetch parent relationships in a separate simple query
-            var accountNumbers = accountsWithBalances
-                .Select(row => row.TryGetProperty("acctnumber", out var numProp) ? numProp.GetString() : null)
-                .Where(num => !string.IsNullOrEmpty(num))
-                .ToList();
-            
-            Dictionary<string, string?> parentMap = new();
-            if (accountNumbers.Any())
-            {
-                var parentNumbersList = string.Join(", ", accountNumbers.Select(n => $"'{NetSuiteService.EscapeSql(n)}'"));
-                var parentQuery = $@"
-                    SELECT 
-                        a.acctnumber,
-                        p.acctnumber AS parent_number
-                    FROM account a
-                    LEFT JOIN account p ON a.parent = p.id
-                    WHERE a.acctnumber IN ({parentNumbersList})
-                      AND a.isinactive = 'F'";
-                
-                _logger.LogDebug("Fetching parent relationships for {Count} accounts...", accountNumbers.Count);
-                var parentResults = await _netSuiteService.QueryRawAsync(parentQuery, 30);
-                
-                parentMap = parentResults
-                    .ToDictionary(
-                        row => row.TryGetProperty("acctnumber", out var numProp) ? numProp.GetString() ?? "" : "",
-                        row => row.TryGetProperty("parent_number", out var pProp) && pProp.ValueKind != JsonValueKind.Null 
-                            ? pProp.GetString() : null,
-                        StringComparer.OrdinalIgnoreCase
-                    );
-            }
-
-            // Build account map with parent relationships
+            // Build account map with parent relationships from cached data
             var accountMap = new Dictionary<string, BalanceSheetRow>();
             var parentChildMap = new Dictionary<string, List<string>>(); // parent -> children
             var parentAccountNumbers = new HashSet<string>(); // Track parent accounts that need to be included
 
-            // Process accounts with non-zero balances
-            foreach (var row in accountsWithBalances)
+            // Process accounts with non-zero balances (from bs_preload cache)
+            foreach (var (acctNum, balance) in periodBalances)
             {
-                var acctNum = row.TryGetProperty("acctnumber", out var acctProp) ? acctProp.GetString() ?? "" : "";
-                var acctName = row.TryGetProperty("account_name", out var nameProp) ? nameProp.GetString() ?? "" : "";
-                var acctType = row.TryGetProperty("accttype", out var typeProp) ? typeProp.GetString() ?? "" : "";
-                var balance = ParseBalance(row.TryGetProperty("balance", out var balProp) ? balProp : default);
-                
-                // Get parent from the separate parent map
+                // Get account info - prefer from accountInfoQuery, fallback to bs_preload cache
+                var acctName = accountNameMap.GetValueOrDefault(acctNum, 
+                    allAccountNames.GetValueOrDefault(acctNum, ""));
+                var acctType = accountTypeMap.GetValueOrDefault(acctNum, 
+                    allAccountTypes.GetValueOrDefault(acctNum, ""));
                 var parentNum = parentMap.GetValueOrDefault(acctNum);
 
                 if (string.IsNullOrEmpty(acctNum) || string.IsNullOrEmpty(acctType))
+                {
+                    _logger.LogWarning("Skipping account {Account} - missing account number or type", acctNum);
                     continue;
+                }
                 
                 // Track parent accounts that have children with non-zero balances
                 if (!string.IsNullOrEmpty(parentNum))
