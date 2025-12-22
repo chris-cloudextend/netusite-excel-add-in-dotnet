@@ -10554,9 +10554,13 @@ For licensing inquiries, contact: legal@celigo.com
                 } catch(e) {}
                 
                 // Step 1: Fetch Balance Sheet report data from backend
+                // Note: This endpoint only exists on local backend via tunnel, not on Cloudflare Worker
+                // TODO: Add this endpoint to Cloudflare Worker or use tunnel URL
                 updateProgress(10, '📥 Step 1 of 3: Loading Balance Sheet Data', 'Fetching structured Balance Sheet from NetSuite...');
                 
-                const reportResponse = await fetch(`${SERVER_URL}/balance-sheet/report`, {
+                // Use tunnel URL for this endpoint (tunnel URL changes - may need to update)
+                const BACKEND_TUNNEL_URL = 'https://keeps-store-sally-planet.trycloudflare.com';
+                const reportResponse = await fetch(`${BACKEND_TUNNEL_URL}/balance-sheet/report`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
