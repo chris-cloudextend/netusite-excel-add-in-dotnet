@@ -10608,6 +10608,9 @@ For licensing inquiries, contact: legal@celigo.com
                 console.log(`⏱️  Request started at: ${new Date().toISOString()}`);
                 console.log(`═══════════════════════════════════════════════════════`);
                 
+                // Declare rows variable in outer scope so it's accessible in Excel.run callback
+                let rows = [];
+                
                 // Create AbortController for timeout
                 const controller = new AbortController();
                 const timeoutId = setTimeout(() => {
@@ -10638,7 +10641,7 @@ For licensing inquiries, contact: legal@celigo.com
                     }
                     
                     const reportData = await reportResponse.json();
-                    const rows = reportData.rows || [];
+                    rows = reportData.rows || [];
                     
                     const requestElapsed = ((Date.now() - requestStartTime) / 1000).toFixed(1);
                     console.log(`✅ Balance Sheet: Received ${rows.length} rows from backend`);
