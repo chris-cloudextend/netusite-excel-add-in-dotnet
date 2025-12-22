@@ -1774,6 +1774,7 @@ public class BalanceController : ControllerBase
                     Source = "Calculated",
                     Level = 0
                 });
+                }
             }
 
             // Calculate totals
