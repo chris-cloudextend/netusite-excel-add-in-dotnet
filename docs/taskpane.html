@@ -11087,13 +11087,18 @@ For licensing inquiries, contact: legal@celigo.com
                         }
                     } else if (currentSection === 'Equity') {
                         // Equity section exists but no equityStartRow - just add the total
-                        totalEquityRow = currentRow;
-                        sheet.getRange(`B${currentRow}`).values = [['TOTAL EQUITY']];
-                        sheet.getRange(`C${currentRow}`).values = [[0]];
-                        sheet.getRange(`A${currentRow}:C${currentRow}`).format.font.bold = true;
-                        sheet.getRange(`A${currentRow}:C${currentRow}`).format.fill.color = '#DBEAFE';
-                        sheet.getRange(`C${currentRow}`).numberFormat = [[currencyFormat]];
-                        currentRow += 2;
+                        try {
+                            totalEquityRow = currentRow;
+                            sheet.getRange(`B${currentRow}`).values = [['TOTAL EQUITY']];
+                            sheet.getRange(`C${currentRow}`).values = [[0]];
+                            sheet.getRange(`A${currentRow}:C${currentRow}`).format.font.bold = true;
+                            sheet.getRange(`A${currentRow}:C${currentRow}`).format.fill.color = '#DBEAFE';
+                            sheet.getRange(`C${currentRow}`).numberFormat = [[String(currencyFormat || '$#,##0.00')]];
+                            currentRow += 2;
+                        } catch (e) {
+                            console.error('Error adding Equity total (else branch):', e.message);
+                            currentRow += 2;
+                        }
                     }
                     
                     // ===== TOTAL LIABILITIES + EQUITY =====
