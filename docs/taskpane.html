@@ -11547,7 +11547,8 @@ For licensing inquiries, contact: legal@celigo.com
                 if (document.getElementById('balanceSheetOverlay')) {
                     document.getElementById('balanceSheetOverlay').remove();
                 }
-                showToast({ type: 'error', title: 'Balance Sheet Error', message: error.message });
+                // Use persistent error that stays until user closes it
+                showPersistentError('Balance Sheet Error', error.message, `URL: ${dotNetBackendUrl}/balance-sheet/report`);
                 
                 setTimeout(() => {
                     isSyncInProgress = false;
