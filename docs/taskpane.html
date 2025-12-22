@@ -10808,33 +10808,38 @@ For licensing inquiries, contact: legal@celigo.com
                         try {
                         if (row.is_calculated) {
                             // For calculated rows (NETINCOME, RETAINEDEARNINGS, CTA), use the appropriate formula
+                            // Cell references must NOT be quoted in Excel formulas
                             let formula;
                             if (row.account_name === 'Net Income') {
+                                // NETINCOME(fromPeriod, toPeriod, subsidiary, ...)
+                                // For single period, use period for both fromPeriod and toPeriod
                                 formula = defaultSubsidiary 
-                                    ? `=XAVI.NETINCOME("$D$2", "$B$2")`
-                                    : `=XAVI.NETINCOME("$D$2")`;
+                                    ? `=XAVI.NETINCOME($D$2, $D$2, $B$2)`
+                                    : `=XAVI.NETINCOME($D$2, $D$2)`;
                             } else if (row.account_name === 'Retained Earnings') {
+                                // RETAINEDEARNINGS(period, subsidiary, ...)
                                 formula = defaultSubsidiary 
-                                    ? `=XAVI.RETAINEDEARNINGS("$D$2", "$B$2")`
-                                    : `=XAVI.RETAINEDEARNINGS("$D$2")`;
+                                    ? `=XAVI.RETAINEDEARNINGS($D$2, $B$2)`
+                                    : `=XAVI.RETAINEDEARNINGS($D$2)`;
                             } else if (row.account_name === 'Cumulative Translation Adjustment') {
+                                // CTA(period, subsidiary, ...)
                                 formula = defaultSubsidiary 
-                                    ? `=XAVI.CTA("$D$2", "$B$2")`
-                                    : `=XAVI.CTA("$D$2")`;
+                                    ? `=XAVI.CTA($D$2, $B$2)`
+                                    : `=XAVI.CTA($D$2)`;
                             } else {
                                 // Fallback: use the balance value directly
                                 sheet.getRange(`A${currentRow}`).values = [['']];
-                                sheet.getRange(`B${currentRow}`).values = [[row.account_name]];
-                                sheet.getRange(`C${currentRow}`).values = [[row.balance]];
-                                sheet.getRange(`C${currentRow}`).numberFormat = [[currencyFormat]];
+                                sheet.getRange(`B${currentRow}`).values = [[String(row.account_name || '')]];
+                                sheet.getRange(`C${currentRow}`).values = [[Number(row.balance) || 0]];
+                                sheet.getRange(`C${currentRow}`).numberFormat = [[String(currencyFormat || '$#,##0.00')]];
                                 currentRow++;
                                 return;
                             }
                             
                             sheet.getRange(`A${currentRow}`).values = [['']];
-                            sheet.getRange(`B${currentRow}`).values = [[row.account_name]];
-                            sheet.getRange(`C${currentRow}`).formulas = [[formula]];
-                            sheet.getRange(`C${currentRow}`).numberFormat = [[currencyFormat]];
+                            sheet.getRange(`B${currentRow}`).values = [[String(row.account_name || '')]];
+                            sheet.getRange(`C${currentRow}`).formulas = [[String(formula)]];
+                            sheet.getRange(`C${currentRow}`).numberFormat = [[String(currencyFormat || '$#,##0.00')]];
                         } else {
                             // Regular account row - guard against missing data
                             if (!row.account_number || !row.account_name) {
@@ -10844,16 +10849,18 @@ For licensing inquiries, contact: legal@celigo.com
                             
                             // Escape quotes in account number for formula
                             const accountNum = String(row.account_number).replace(/"/g, '""');
+                            // BALANCE(account, fromPeriod, toPeriod, subsidiary, ...)
+                            // For single period, use period as toPeriod, leave fromPeriod empty
                             const formula = defaultSubsidiary 
-                                ? `=XAVI.BALANCE("${accountNum}", "$D$2", "$B$2")`
-                                : `=XAVI.BALANCE("${accountNum}", "$D$2")`;
+                                ? `=XAVI.BALANCE("${accountNum}", , $D$2, $B$2)`
+                                : `=XAVI.BALANCE("${accountNum}", , $D$2)`;
                             
                             // Indent based on level (parent-child hierarchy)
-                            const indent = '  '.repeat(row.level || 0);
+                            const indent = '  '.repeat(Math.max(0, Number(row.level) || 0));
                             const accountName = String(row.account_name || '').replace(/"/g, '""');
                             sheet.getRange(`A${currentRow}`).values = [[String(row.account_number || '')]];
-                            sheet.getRange(`B${currentRow}`).values = [[String(indent + accountName || '')]];
-                            sheet.getRange(`C${currentRow}`).formulas = [[String(formula || '')]];
+                            sheet.getRange(`B${currentRow}`).values = [[String(indent + accountName)]];
+                            sheet.getRange(`C${currentRow}`).formulas = [[String(formula)]];
                             sheet.getRange(`C${currentRow}`).numberFormat = [[String(currencyFormat || '$#,##0.00')]];
                         }
                         currentRow++;
@@ -11019,55 +11026,58 @@ For licensing inquiries, contact: legal@celigo.com
                         const ctaRow = currentRow + 2;
                         
                         // Add NETINCOME
-                        if (netIncomeRow > 0) {
+                        if (netIncomeRow > 0 && Number.isInteger(netIncomeRow) && netIncomeRow > 0) {
                             try {
                                 sheet.getRange(`A${netIncomeRow}`).values = [['']];
                                 sheet.getRange(`B${netIncomeRow}`).values = [['Net Income']];
+                                // NETINCOME(fromPeriod, toPeriod, subsidiary, ...)
                                 const netIncomeFormula = defaultSubsidiary 
-                                    ? `=XAVI.NETINCOME("$D$2", "$B$2")`
-                                    : `=XAVI.NETINCOME("$D$2")`;
+                                    ? `=XAVI.NETINCOME($D$2, $D$2, $B$2)`
+                                    : `=XAVI.NETINCOME($D$2, $D$2)`;
                                 sheet.getRange(`C${netIncomeRow}`).formulas = [[String(netIncomeFormula)]];
                                 sheet.getRange(`B${netIncomeRow}`).format.font.italic = true;
                                 sheet.getRange(`C${netIncomeRow}`).numberFormat = [[String(currencyFormat || '$#,##0.00')]];
                                 currentRow++;
                             } catch (e) {
-                                console.error('Error adding NETINCOME:', e.message);
+                                console.error('Error adding NETINCOME:', e.message, 'row:', netIncomeRow);
                                 currentRow++;
                             }
                         }
                         
                         // Add RETAINEDEARNINGS
-                        if (retainedEarningsRow > 0) {
+                        if (retainedEarningsRow > 0 && Number.isInteger(retainedEarningsRow) && retainedEarningsRow > 0) {
                             try {
                                 sheet.getRange(`A${retainedEarningsRow}`).values = [['']];
                                 sheet.getRange(`B${retainedEarningsRow}`).values = [['Retained Earnings']];
+                                // RETAINEDEARNINGS(period, subsidiary, ...)
                                 const retainedEarningsFormula = defaultSubsidiary 
-                                    ? `=XAVI.RETAINEDEARNINGS("$D$2", "$B$2")`
-                                    : `=XAVI.RETAINEDEARNINGS("$D$2")`;
+                                    ? `=XAVI.RETAINEDEARNINGS($D$2, $B$2)`
+                                    : `=XAVI.RETAINEDEARNINGS($D$2)`;
                                 sheet.getRange(`C${retainedEarningsRow}`).formulas = [[String(retainedEarningsFormula)]];
                                 sheet.getRange(`B${retainedEarningsRow}`).format.font.italic = true;
                                 sheet.getRange(`C${retainedEarningsRow}`).numberFormat = [[String(currencyFormat || '$#,##0.00')]];
                                 currentRow++;
                             } catch (e) {
-                                console.error('Error adding RETAINEDEARNINGS:', e.message);
+                                console.error('Error adding RETAINEDEARNINGS:', e.message, 'row:', retainedEarningsRow);
                                 currentRow++;
                             }
                         }
                         
                         // Add CTA
-                        if (ctaRow > 0) {
+                        if (ctaRow > 0 && Number.isInteger(ctaRow) && ctaRow > 0) {
                             try {
                                 sheet.getRange(`A${ctaRow}`).values = [['']];
                                 sheet.getRange(`B${ctaRow}`).values = [['Cumulative Translation Adjustment']];
+                                // CTA(period, subsidiary, ...)
                                 const ctaFormula = defaultSubsidiary 
-                                    ? `=XAVI.CTA("$D$2", "$B$2")`
-                                    : `=XAVI.CTA("$D$2")`;
+                                    ? `=XAVI.CTA($D$2, $B$2)`
+                                    : `=XAVI.CTA($D$2)`;
                                 sheet.getRange(`C${ctaRow}`).formulas = [[String(ctaFormula)]];
                                 sheet.getRange(`B${ctaRow}`).format.font.italic = true;
                                 sheet.getRange(`C${ctaRow}`).numberFormat = [[String(currencyFormat || '$#,##0.00')]];
                                 currentRow++;
                             } catch (e) {
-                                console.error('Error adding CTA:', e.message);
+                                console.error('Error adding CTA:', e.message, 'row:', ctaRow);
                                 currentRow++;
                             }
                         }
