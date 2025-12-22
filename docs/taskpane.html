@@ -10675,9 +10675,6 @@ For licensing inquiries, contact: legal@celigo.com
                 
                 try {
                 await Excel.run(async (context) => {
-                    // #region agent log
-                    fetch('http://127.0.0.1:7242/ingest/e97b1944-c101-4b82-829f-4e5331e3d29e',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'taskpane.html:10677',message:'Excel.run entry',data:{rowsCount:rows?.length,periodFormatted},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-                    // #endregion
                     // Create new sheet (delete existing if it exists)
                     let sheet;
                     const sheetName = `Balance Sheet ${periodFormatted.replace(' ', '_')}`;
@@ -10703,16 +10700,10 @@ For licensing inquiries, contact: legal@celigo.com
                     // Now create the new sheet
                     try {
                         sheet = context.workbook.worksheets.add(sheetName);
-                        // #region agent log
-                        fetch('http://127.0.0.1:7242/ingest/e97b1944-c101-4b82-829f-4e5331e3d29e',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'taskpane.html:10702',message:'Sheet created',data:{sheetName},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
-                        // #endregion
                     } catch (e) {
                         // Fallback: use timestamp if name conflict persists
                         console.log('Sheet name conflict, using timestamp:', e.message);
                         sheet = context.workbook.worksheets.add(`BS_${Date.now()}`);
-                        // #region agent log
-                        fetch('http://127.0.0.1:7242/ingest/e97b1944-c101-4b82-829f-4e5331e3d29e',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'taskpane.html:10706',message:'Sheet created (fallback)',data:{sheetName},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
-                        // #endregion
                     }
                     sheet.activate();
                     
@@ -10773,15 +10764,6 @@ For licensing inquiries, contact: legal@celigo.com
                     sheet.getRange("A5:C5").format.font.color = "#FFFFFF";
                     
                     let currentRow = 6; // Start after header rows (1-5)
-                    
-                    // Validate currentRow is a valid positive integer
-                    if (!Number.isInteger(currentRow) || currentRow <= 0) {
-                        console.error('Invalid initial currentRow:', currentRow);
-                        currentRow = 6; // Reset to safe default
-                    }
-                    // #region agent log
-                    fetch('http://127.0.0.1:7242/ingest/e97b1944-c101-4b82-829f-4e5331e3d29e',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'taskpane.html:10760',message:'Starting row loop',data:{currentRow,rowsLength:rows?.length,currencyFormat},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
-                    // #endregion
                     
                     // Helper to add section header
                     function addSectionHeader(title, color) {
@@ -10887,52 +10869,19 @@ For licensing inquiries, contact: legal@celigo.com
                             // Escape quotes in account number for formula
                             const accountNum = String(row.account_number).replace(/"/g, '""');
                             // BALANCE(account, fromPeriod, toPeriod, subsidiary, ...)
-                            // For Balance Sheet accounts, fromPeriod is empty (use empty string, not blank)
-                            // Excel doesn't accept ", ," syntax, so we use "" for empty fromPeriod
+                            // For Balance Sheet accounts, fromPeriod is empty (Excel accepts empty parameters)
                             const formula = defaultSubsidiary 
-                                ? `=XAVI.BALANCE("${accountNum}", "", $D$2, $B$2)`
-                                : `=XAVI.BALANCE("${accountNum}", "", $D$2)`;
+                                ? `=XAVI.BALANCE("${accountNum}", , $D$2, $B$2)`
+                                : `=XAVI.BALANCE("${accountNum}", , $D$2)`;
                             
                             // Indent based on level (parent-child hierarchy)
                             const indent = '  '.repeat(Math.max(0, Number(row.level) || 0));
                             const accountName = String(row.account_name || '').replace(/"/g, '""');
                             
-                            // Validate all values before setting
-                            if (!Number.isInteger(currentRow) || currentRow <= 0) {
-                                console.error(`Invalid currentRow: ${currentRow} for account ${row.account_number}`);
-                                return;
-                            }
-                            if (!formula || typeof formula !== 'string' || formula.trim() === '') {
-                                console.error(`Invalid formula for account ${row.account_number}:`, formula);
-                                return;
-                            }
-                            const safeCurrencyFormat = String(currencyFormat || '$#,##0.00').trim();
-                            if (!safeCurrencyFormat || safeCurrencyFormat === '') {
-                                console.error(`Invalid currencyFormat:`, currencyFormat);
-                                return;
-                            }
-                            
-                            // #region agent log
-                            if (i < 3) {
-                                fetch('http://127.0.0.1:7242/ingest/e97b1944-c101-4b82-829f-4e5331e3d29e',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'taskpane.html:10892',message:'Before setting account row',data:{currentRow,accountNum,formula,accountName,currencyFormat:safeCurrencyFormat,typeCurrentRow:typeof currentRow,isInteger:Number.isInteger(currentRow)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-                            }
-                            // #endregion
-                            
-                            try {
-                                sheet.getRange(`A${currentRow}`).values = [[String(row.account_number || '')]];
-                                sheet.getRange(`B${currentRow}`).values = [[String(indent + accountName)]];
-                                sheet.getRange(`C${currentRow}`).formulas = [[formula]];
-                                sheet.getRange(`C${currentRow}`).numberFormat = [[safeCurrencyFormat]];
-                            } catch (setError) {
-                                console.error(`Error setting row ${currentRow} for account ${row.account_number}:`, setError.message);
-                                throw setError; // Re-throw to be caught by outer try-catch
-                            }
-                            
-                            // #region agent log
-                            if (i < 3) {
-                                fetch('http://127.0.0.1:7242/ingest/e97b1944-c101-4b82-829f-4e5331e3d29e',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'taskpane.html:10905',message:'After setting account row',data:{currentRow},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-                            }
-                            // #endregion
+                            sheet.getRange(`A${currentRow}`).values = [[String(row.account_number || '')]];
+                            sheet.getRange(`B${currentRow}`).values = [[String(indent + accountName)]];
+                            sheet.getRange(`C${currentRow}`).formulas = [[formula]];
+                            sheet.getRange(`C${currentRow}`).numberFormat = [[String(currencyFormat || '$#,##0.00')]];
                         }
                         currentRow++;
                         } catch (e) {
@@ -10987,11 +10936,6 @@ For licensing inquiries, contact: legal@celigo.com
                     for (let i = 0; i < rows.length; i++) {
                         const row = rows[i];
                         const nextRow = i < rows.length - 1 ? rows[i + 1] : null;
-                        // #region agent log
-                        if (i < 3 || i % 20 === 0) { // Log first 3 and every 20th row
-                            fetch('http://127.0.0.1:7242/ingest/e97b1944-c101-4b82-829f-4e5331e3d29e',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'taskpane.html:10922',message:'Processing row',data:{i,currentRow,section:row?.section,subsection:row?.subsection,accountNumber:row?.account_number,accountName:row?.account_name,isCalculated:row?.is_calculated},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-                        }
-                        // #endregion
                         
                         // Add section header when section changes
                         if (row.section !== currentSection) {
