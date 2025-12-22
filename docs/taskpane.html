@@ -10990,6 +10990,7 @@ For licensing inquiries, contact: legal@celigo.com
                             // Add section total for previous section
                             if (currentSection !== '' && currentRow > 0) {
                                 const sectionTotalLabel = `TOTAL ${currentSection.toUpperCase()}`;
+                                console.log(`🔍 Adding section total for ${currentSection} at row ${currentRow}`);
                                 try {
                                     sheet.getRange(`B${currentRow}`).values = [[sectionTotalLabel]];
                                 
@@ -11007,8 +11008,11 @@ For licensing inquiries, contact: legal@celigo.com
                                 
                                 // Guard against invalid row references
                                 if (sectionStartRow > 0 && currentRow > sectionStartRow) {
-                                    sheet.getRange(`C${currentRow}`).formulas = [[`=SUBTOTAL(109,C${sectionStartRow}:C${currentRow-1})`]];
+                                    const subtotalFormula = `=SUBTOTAL(109,C${sectionStartRow}:C${currentRow-1})`;
+                                    console.log(`  Setting subtotal formula: ${subtotalFormula}`);
+                                    sheet.getRange(`C${currentRow}`).formulas = [[subtotalFormula]];
                                 } else {
+                                    console.log(`  Using 0 (invalid row refs: start=${sectionStartRow}, current=${currentRow})`);
                                     sheet.getRange(`C${currentRow}`).values = [[0]];
                                 }
                                 sheet.getRange(`A${currentRow}:C${currentRow}`).format.font.bold = true;
@@ -11022,9 +11026,10 @@ For licensing inquiries, contact: legal@celigo.com
                                     // Border might not exist, that's okay
                                     console.log('Could not set border style:', borderError.message);
                                 }
+                                console.log(`✅ Section total for ${currentSection} added`);
                                 currentRow += 2;
                                 } catch (sectionError) {
-                                    console.error('Error adding section total:', sectionError.message, 'section:', currentSection, 'row:', currentRow);
+                                    console.error('❌ Error adding section total:', sectionError.message, 'section:', currentSection, 'row:', currentRow);
                                     // Continue anyway - don't break the entire report
                                     currentRow += 2;
                                 }
@@ -11088,20 +11093,24 @@ For licensing inquiries, contact: legal@celigo.com
                         const ctaRow = currentRow + 2;
                         
                         // Add NETINCOME
+                        console.log(`🔍 Adding calculated rows starting at row ${netIncomeRow}`);
                         if (netIncomeRow > 0 && Number.isInteger(netIncomeRow) && netIncomeRow > 0) {
                             try {
+                                console.log(`  Adding NETINCOME at row ${netIncomeRow}`);
                                 sheet.getRange(`A${netIncomeRow}`).values = [['']];
                                 sheet.getRange(`B${netIncomeRow}`).values = [['Net Income']];
                                 // NETINCOME(fromPeriod, toPeriod, subsidiary, ...)
                                 const netIncomeFormula = defaultSubsidiary 
                                     ? `=XAVI.NETINCOME($D$2, $D$2, $B$2)`
                                     : `=XAVI.NETINCOME($D$2, $D$2)`;
+                                console.log(`    Formula: ${netIncomeFormula}`);
                                 sheet.getRange(`C${netIncomeRow}`).formulas = [[String(netIncomeFormula)]];
                                 sheet.getRange(`B${netIncomeRow}`).format.font.italic = true;
                                 sheet.getRange(`C${netIncomeRow}`).numberFormat = [[String(currencyFormat || '$#,##0.00')]];
+                                console.log(`  ✅ NETINCOME added`);
                                 currentRow++;
                             } catch (e) {
-                                console.error('Error adding NETINCOME:', e.message, 'row:', netIncomeRow);
+                                console.error('❌ Error adding NETINCOME:', e.message, 'row:', netIncomeRow);
                                 currentRow++;
                             }
                         }
@@ -11109,18 +11118,21 @@ For licensing inquiries, contact: legal@celigo.com
                         // Add RETAINEDEARNINGS
                         if (retainedEarningsRow > 0 && Number.isInteger(retainedEarningsRow) && retainedEarningsRow > 0) {
                             try {
+                                console.log(`  Adding RETAINEDEARNINGS at row ${retainedEarningsRow}`);
                                 sheet.getRange(`A${retainedEarningsRow}`).values = [['']];
                                 sheet.getRange(`B${retainedEarningsRow}`).values = [['Retained Earnings']];
                                 // RETAINEDEARNINGS(period, subsidiary, ...)
                                 const retainedEarningsFormula = defaultSubsidiary 
                                     ? `=XAVI.RETAINEDEARNINGS($D$2, $B$2)`
                                     : `=XAVI.RETAINEDEARNINGS($D$2)`;
+                                console.log(`    Formula: ${retainedEarningsFormula}`);
                                 sheet.getRange(`C${retainedEarningsRow}`).formulas = [[String(retainedEarningsFormula)]];
                                 sheet.getRange(`B${retainedEarningsRow}`).format.font.italic = true;
                                 sheet.getRange(`C${retainedEarningsRow}`).numberFormat = [[String(currencyFormat || '$#,##0.00')]];
+                                console.log(`  ✅ RETAINEDEARNINGS added`);
                                 currentRow++;
                             } catch (e) {
-                                console.error('Error adding RETAINEDEARNINGS:', e.message, 'row:', retainedEarningsRow);
+                                console.error('❌ Error adding RETAINEDEARNINGS:', e.message, 'row:', retainedEarningsRow);
                                 currentRow++;
                             }
                         }
@@ -11128,18 +11140,21 @@ For licensing inquiries, contact: legal@celigo.com
                         // Add CTA
                         if (ctaRow > 0 && Number.isInteger(ctaRow) && ctaRow > 0) {
                             try {
+                                console.log(`  Adding CTA at row ${ctaRow}`);
                                 sheet.getRange(`A${ctaRow}`).values = [['']];
                                 sheet.getRange(`B${ctaRow}`).values = [['Cumulative Translation Adjustment']];
                                 // CTA(period, subsidiary, ...)
                                 const ctaFormula = defaultSubsidiary 
                                     ? `=XAVI.CTA($D$2, $B$2)`
                                     : `=XAVI.CTA($D$2)`;
+                                console.log(`    Formula: ${ctaFormula}`);
                                 sheet.getRange(`C${ctaRow}`).formulas = [[String(ctaFormula)]];
                                 sheet.getRange(`B${ctaRow}`).format.font.italic = true;
                                 sheet.getRange(`C${ctaRow}`).numberFormat = [[String(currencyFormat || '$#,##0.00')]];
+                                console.log(`  ✅ CTA added`);
                                 currentRow++;
                             } catch (e) {
-                                console.error('Error adding CTA:', e.message, 'row:', ctaRow);
+                                console.error('❌ Error adding CTA:', e.message, 'row:', ctaRow);
                                 currentRow++;
                             }
                         }
@@ -11184,12 +11199,16 @@ For licensing inquiries, contact: legal@celigo.com
                     }
                     
                     // ===== TOTAL LIABILITIES + EQUITY =====
+                    console.log(`🔍 Adding TOTAL LIABILITIES + EQUITY at row ${currentRow}`);
                     try {
                         sheet.getRange(`B${currentRow}`).values = [['TOTAL LIABILITIES + EQUITY']];
                         // Guard against invalid row references
                         if (totalLiabilitiesRow > 0 && totalEquityRow > 0) {
-                            sheet.getRange(`C${currentRow}`).formulas = [[`=C${totalLiabilitiesRow}+C${totalEquityRow}`]];
+                            const totalFormula = `=C${totalLiabilitiesRow}+C${totalEquityRow}`;
+                            console.log(`  Formula: ${totalFormula}`);
+                            sheet.getRange(`C${currentRow}`).formulas = [[totalFormula]];
                         } else {
+                            console.log(`  Using 0 (invalid row refs: liabilities=${totalLiabilitiesRow}, equity=${totalEquityRow})`);
                             sheet.getRange(`C${currentRow}`).values = [[0]];
                         }
                         sheet.getRange(`A${currentRow}:C${currentRow}`).format.font.bold = true;
@@ -11197,26 +11216,32 @@ For licensing inquiries, contact: legal@celigo.com
                         sheet.getRange(`A${currentRow}:C${currentRow}`).format.fill.color = "#09235C";
                         sheet.getRange(`A${currentRow}:C${currentRow}`).format.font.color = "#FFFFFF";
                         sheet.getRange(`C${currentRow}`).numberFormat = [[String(currencyFormat || '$#,##0.00')]];
+                        console.log(`✅ TOTAL LIABILITIES + EQUITY added`);
                         currentRow += 2;
                     } catch (e) {
-                        console.error('Error adding TOTAL LIABILITIES + EQUITY:', e.message);
+                        console.error('❌ Error adding TOTAL LIABILITIES + EQUITY:', e.message);
                         currentRow += 2;
                     }
                     
                     // ===== BALANCE CHECK =====
+                    console.log(`🔍 Adding Balance Check at row ${currentRow}`);
                     try {
                         sheet.getRange(`B${currentRow}`).values = [['Balance Check (should be 0):']];
                         // Guard against invalid row references
                         if (totalAssetsRow > 0 && currentRow > 2) {
-                            sheet.getRange(`C${currentRow}`).formulas = [[`=C${totalAssetsRow}-C${currentRow-2}`]];
+                            const balanceCheckFormula = `=C${totalAssetsRow}-C${currentRow-2}`;
+                            console.log(`  Formula: ${balanceCheckFormula}`);
+                            sheet.getRange(`C${currentRow}`).formulas = [[balanceCheckFormula]];
                         } else {
+                            console.log(`  Using 0 (invalid row refs: assets=${totalAssetsRow}, current=${currentRow})`);
                             sheet.getRange(`C${currentRow}`).values = [[0]];
                         }
                         sheet.getRange(`B${currentRow}`).format.font.italic = true;
                         sheet.getRange(`B${currentRow}`).format.font.color = "#6B7280";
                         sheet.getRange(`C${currentRow}`).numberFormat = [[String(currencyFormat || '$#,##0.00')]];
+                        console.log(`✅ Balance Check added`);
                     } catch (e) {
-                        console.error('Error adding Balance Check:', e.message);
+                        console.error('❌ Error adding Balance Check:', e.message);
                     }
                     
                     await context.sync();
