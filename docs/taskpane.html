@@ -7402,23 +7402,35 @@ For licensing inquiries, contact: legal@celigo.com
                     return false;
                 }
             } catch (error) {
-                statusBadge.className = 'status-badge disconnected';
-                if (error.name === 'AbortError') {
-                    statusText.textContent = 'Timeout';
-                    lastConnectionCheck = { status: 'timeout', time: Date.now() };
-                    if (!silent) {
-                        showToast({ type: 'error', title: 'Connection Timeout', 
-                            message: 'Could not reach the backend. The tunnel may have expired.', duration: 8000 });
-                    }
-                } else {
-                    statusText.textContent = 'Disconnected';
-                    lastConnectionCheck = { status: 'disconnected', time: Date.now(), error: error.message };
-                    if (!silent) {
-                        showToast({ type: 'error', title: 'Connection Failed', 
-                            message: `Could not connect: ${error.message}`, duration: 8000 });
+                // #region agent log
+                fetch('http://127.0.0.1:7242/ingest/e97b1944-c101-4b82-829f-4e5331e3d29e',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'taskpane.html:7404',message:'Outer catch block',data:{errorName:error.name,errorMessage:error.message,hasStatusBadge:!!statusBadge,hasStatusText:!!statusText},timestamp:Date.now(),sessionId:'debug-session',runId:'connection-check',hypothesisId:'H'})}).catch(()=>{});
+                // #endregion
+                // Ensure we always clear the checking state
+                if (statusBadge && statusText) {
+                    statusBadge.className = 'status-badge disconnected';
+                    if (error.name === 'AbortError') {
+                        statusText.textContent = 'Timeout';
+                        lastConnectionCheck = { status: 'timeout', time: Date.now() };
+                        if (!silent) {
+                            showToast({ type: 'error', title: 'Connection Timeout', 
+                                message: 'Could not reach the backend. The tunnel may have expired.', duration: 8000 });
+                        }
+                    } else {
+                        statusText.textContent = 'Disconnected';
+                        lastConnectionCheck = { status: 'disconnected', time: Date.now(), error: error.message };
+                        if (!silent) {
+                            showToast({ type: 'error', title: 'Connection Failed', 
+                                message: `Could not connect: ${error.message}`, duration: 8000 });
+                        }
                     }
                 }
                 return false;
+            } finally {
+                // Always clear the checking flag
+                // #region agent log
+                fetch('http://127.0.0.1:7242/ingest/e97b1944-c101-4b82-829f-4e5331e3d29e',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'taskpane.html:7427',message:'Finally block, clearing flag',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'connection-check',hypothesisId:'G'})}).catch(()=>{});
+                // #endregion
+                isCheckingConnection = false;
             }
         }
         
