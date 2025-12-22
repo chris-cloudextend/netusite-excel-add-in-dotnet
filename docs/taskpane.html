@@ -10751,16 +10751,16 @@ For licensing inquiries, contact: legal@celigo.com
                         }
                         try {
                             const range = sheet.getRange(`A${currentRow}:C${currentRow}`);
-                            range.values = [[title || '', '', '']];
+                            range.values = [[String(title || ''), '', '']];
                             range.merge(true);
                             range.format.font.bold = true;
                             range.format.font.size = 14;
-                            range.format.fill.color = color || '#6B7280';
+                            range.format.fill.color = String(color || '#6B7280');
                             range.format.font.color = "#FFFFFF";
                             currentRow++;
                         } catch (e) {
                             console.error('Error adding section header:', e.message, 'row:', currentRow);
-                            throw e;
+                            currentRow++; // Continue anyway
                         }
                     }
                     
@@ -10772,7 +10772,7 @@ For licensing inquiries, contact: legal@celigo.com
                         }
                         try {
                             const range = sheet.getRange(`A${currentRow}:C${currentRow}`);
-                            range.values = [[title || '', '', '']];
+                            range.values = [[String(title || ''), '', '']];
                             range.merge(true);
                             range.format.font.bold = true;
                             range.format.font.size = 11;
@@ -10781,7 +10781,7 @@ For licensing inquiries, contact: legal@celigo.com
                             currentRow++;
                         } catch (e) {
                             console.error('Error adding subsection header:', e.message, 'row:', currentRow);
-                            throw e;
+                            currentRow++; // Continue anyway
                         }
                     }
                     
@@ -10841,10 +10841,10 @@ For licensing inquiries, contact: legal@celigo.com
                             // Indent based on level (parent-child hierarchy)
                             const indent = '  '.repeat(row.level || 0);
                             const accountName = String(row.account_name || '').replace(/"/g, '""');
-                            sheet.getRange(`A${currentRow}`).values = [[row.account_number]];
-                            sheet.getRange(`B${currentRow}`).values = [[indent + accountName]];
-                            sheet.getRange(`C${currentRow}`).formulas = [[formula]];
-                            sheet.getRange(`C${currentRow}`).numberFormat = [[currencyFormat]];
+                            sheet.getRange(`A${currentRow}`).values = [[String(row.account_number || '')]];
+                            sheet.getRange(`B${currentRow}`).values = [[String(indent + accountName || '')]];
+                            sheet.getRange(`C${currentRow}`).formulas = [[String(formula || '')]];
+                            sheet.getRange(`C${currentRow}`).numberFormat = [[String(currencyFormat || '$#,##0.00')]];
                         }
                         currentRow++;
                         } catch (e) {
@@ -10861,13 +10861,22 @@ For licensing inquiries, contact: legal@celigo.com
                             console.warn(`Invalid subtotal row reference: startRow=${startRow}, endRow=${endRow}, currentRow=${currentRow}`);
                             return;
                         }
-                        sheet.getRange(`A${currentRow}`).values = [['']];
-                        sheet.getRange(`B${currentRow}`).values = [[label || 'Subtotal']];
-                        sheet.getRange(`C${currentRow}`).formulas = [[`=SUBTOTAL(109,C${startRow}:C${endRow-1})`]];
-                        sheet.getRange(`A${currentRow}:C${currentRow}`).format.font.bold = true;
-                        sheet.getRange(`C${currentRow}`).numberFormat = [[currencyFormat]];
-                        sheet.getRange(`C${currentRow}`).format.borders.getItem('EdgeTop').style = 'Thin';
-                        currentRow++;
+                        try {
+                            sheet.getRange(`A${currentRow}`).values = [['']];
+                            sheet.getRange(`B${currentRow}`).values = [[String(label || 'Subtotal')]];
+                            sheet.getRange(`C${currentRow}`).formulas = [[`=SUBTOTAL(109,C${startRow}:C${endRow-1})`]];
+                            sheet.getRange(`A${currentRow}:C${currentRow}`).format.font.bold = true;
+                            sheet.getRange(`C${currentRow}`).numberFormat = [[String(currencyFormat || '$#,##0.00')]];
+                            try {
+                                sheet.getRange(`C${currentRow}`).format.borders.getItem('EdgeTop').style = 'Thin';
+                            } catch (borderError) {
+                                // Border might not exist, that's okay
+                            }
+                            currentRow++;
+                        } catch (e) {
+                            console.error('Error in addSubtotalRow:', e.message, 'row:', currentRow);
+                            currentRow++; // Continue anyway
+                        }
                     }
                     
                     // Build sheet from structured rows
@@ -10928,8 +10937,18 @@ For licensing inquiries, contact: legal@celigo.com
                                     currentSection === 'Assets' ? '#D1FAE5' : 
                                     currentSection === 'Liabilities' ? '#FEE2E2' : '#DBEAFE';
                                 sheet.getRange(`C${currentRow}`).numberFormat = [[currencyFormat]];
-                                sheet.getRange(`C${currentRow}`).format.borders.getItem('EdgeTop').style = 'Double';
+                                try {
+                                    sheet.getRange(`C${currentRow}`).format.borders.getItem('EdgeTop').style = 'Double';
+                                } catch (borderError) {
+                                    // Border might not exist, that's okay
+                                    console.log('Could not set border style:', borderError.message);
+                                }
                                 currentRow += 2;
+                                } catch (sectionError) {
+                                    console.error('Error adding section total:', sectionError.message, 'section:', currentSection, 'row:', currentRow);
+                                    // Continue anyway - don't break the entire report
+                                    currentRow += 2;
+                                }
                             }
                             
                             currentSection = row.section;
@@ -11054,31 +11073,40 @@ For licensing inquiries, contact: legal@celigo.com
                     }
                     
                     // ===== TOTAL LIABILITIES + EQUITY =====
-                    sheet.getRange(`B${currentRow}`).values = [['TOTAL LIABILITIES + EQUITY']];
-                    // Guard against invalid row references
-                    if (totalLiabilitiesRow > 0 && totalEquityRow > 0) {
-                        sheet.getRange(`C${currentRow}`).formulas = [[`=C${totalLiabilitiesRow}+C${totalEquityRow}`]];
-                    } else {
-                        sheet.getRange(`C${currentRow}`).values = [[0]];
+                    try {
+                        sheet.getRange(`B${currentRow}`).values = [['TOTAL LIABILITIES + EQUITY']];
+                        // Guard against invalid row references
+                        if (totalLiabilitiesRow > 0 && totalEquityRow > 0) {
+                            sheet.getRange(`C${currentRow}`).formulas = [[`=C${totalLiabilitiesRow}+C${totalEquityRow}`]];
+                        } else {
+                            sheet.getRange(`C${currentRow}`).values = [[0]];
+                        }
+                        sheet.getRange(`A${currentRow}:C${currentRow}`).format.font.bold = true;
+                        sheet.getRange(`A${currentRow}:C${currentRow}`).format.font.size = 12;
+                        sheet.getRange(`A${currentRow}:C${currentRow}`).format.fill.color = "#09235C";
+                        sheet.getRange(`A${currentRow}:C${currentRow}`).format.font.color = "#FFFFFF";
+                        sheet.getRange(`C${currentRow}`).numberFormat = [[String(currencyFormat || '$#,##0.00')]];
+                        currentRow += 2;
+                    } catch (e) {
+                        console.error('Error adding TOTAL LIABILITIES + EQUITY:', e.message);
+                        currentRow += 2;
                     }
-                    sheet.getRange(`A${currentRow}:C${currentRow}`).format.font.bold = true;
-                    sheet.getRange(`A${currentRow}:C${currentRow}`).format.font.size = 12;
-                    sheet.getRange(`A${currentRow}:C${currentRow}`).format.fill.color = "#09235C";
-                    sheet.getRange(`A${currentRow}:C${currentRow}`).format.font.color = "#FFFFFF";
-                    sheet.getRange(`C${currentRow}`).numberFormat = [[currencyFormat]];
-                    currentRow += 2;
                     
                     // ===== BALANCE CHECK =====
-                    sheet.getRange(`B${currentRow}`).values = [['Balance Check (should be 0):']];
-                    // Guard against invalid row references
-                    if (totalAssetsRow > 0 && currentRow > 2) {
-                        sheet.getRange(`C${currentRow}`).formulas = [[`=C${totalAssetsRow}-C${currentRow-2}`]];
-                    } else {
-                        sheet.getRange(`C${currentRow}`).values = [[0]];
+                    try {
+                        sheet.getRange(`B${currentRow}`).values = [['Balance Check (should be 0):']];
+                        // Guard against invalid row references
+                        if (totalAssetsRow > 0 && currentRow > 2) {
+                            sheet.getRange(`C${currentRow}`).formulas = [[`=C${totalAssetsRow}-C${currentRow-2}`]];
+                        } else {
+                            sheet.getRange(`C${currentRow}`).values = [[0]];
+                        }
+                        sheet.getRange(`B${currentRow}`).format.font.italic = true;
+                        sheet.getRange(`B${currentRow}`).format.font.color = "#6B7280";
+                        sheet.getRange(`C${currentRow}`).numberFormat = [[String(currencyFormat || '$#,##0.00')]];
+                    } catch (e) {
+                        console.error('Error adding Balance Check:', e.message);
                     }
-                    sheet.getRange(`B${currentRow}`).format.font.italic = true;
-                    sheet.getRange(`B${currentRow}`).format.font.color = "#6B7280";
-                    sheet.getRange(`C${currentRow}`).numberFormat = [[currencyFormat]];
                     
                     await context.sync();
                     
