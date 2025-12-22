@@ -11072,6 +11072,16 @@ For licensing inquiries, contact: legal@celigo.com
                         addSubtotalRow(subsectionLabel, subsectionStartRow, currentRow);
                     }
                     
+                    // CHECKPOINT: Sync after all account rows are added
+                    console.log(`🔍 CHECKPOINT: Syncing after all ${rows.length} account rows added (currentRow=${currentRow})...`);
+                    try {
+                        await context.sync();
+                        console.log(`✅ CHECKPOINT: All account rows synced successfully`);
+                    } catch (checkpointError) {
+                        console.error(`❌ CHECKPOINT ERROR: Failed at account rows sync:`, checkpointError.message);
+                        throw checkpointError;
+                    }
+                    
                     // Find where to insert calculated rows (before Equity total)
                     // We'll insert NETINCOME, RETAINEDEARNINGS, and CTA before the Equity total
                     let equityCalculatedInsertRow = currentRow; // Default: before Equity total
@@ -11162,11 +11172,15 @@ For licensing inquiries, contact: legal@celigo.com
                         // Now add Equity total
                         try {
                             totalEquityRow = currentRow;
+                            console.log(`🔍 Adding Equity total at row ${currentRow}`);
                             sheet.getRange(`B${currentRow}`).values = [['TOTAL EQUITY']];
                             // Guard against invalid row references
                             if (equityStartRow > 0 && currentRow > equityStartRow) {
-                                sheet.getRange(`C${currentRow}`).formulas = [[`=SUBTOTAL(109,C${equityStartRow}:C${currentRow-1})`]];
+                                const equityTotalFormula = `=SUBTOTAL(109,C${equityStartRow}:C${currentRow-1})`;
+                                console.log(`  Formula: ${equityTotalFormula}`);
+                                sheet.getRange(`C${currentRow}`).formulas = [[equityTotalFormula]];
                             } else {
+                                console.log(`  Using 0 (invalid row refs: start=${equityStartRow}, current=${currentRow})`);
                                 sheet.getRange(`C${currentRow}`).values = [[0]];
                             }
                             sheet.getRange(`A${currentRow}:C${currentRow}`).format.font.bold = true;
@@ -11177,10 +11191,21 @@ For licensing inquiries, contact: legal@celigo.com
                             } catch (borderError) {
                                 // Border might not exist, that's okay
                             }
+                            console.log(`✅ Equity total added`);
                             currentRow += 2;
                         } catch (e) {
-                            console.error('Error adding Equity total:', e.message);
+                            console.error('❌ Error adding Equity total:', e.message);
                             currentRow += 2;
+                        }
+                        
+                        // CHECKPOINT: Sync after calculated rows and Equity total
+                        console.log(`🔍 CHECKPOINT: Syncing after calculated rows and Equity total (currentRow=${currentRow})...`);
+                        try {
+                            await context.sync();
+                            console.log(`✅ CHECKPOINT: Calculated rows and Equity total synced successfully`);
+                        } catch (checkpointError) {
+                            console.error(`❌ CHECKPOINT ERROR: Failed at calculated rows sync:`, checkpointError.message);
+                            throw checkpointError;
                         }
                     } else if (currentSection === 'Equity') {
                         // Equity section exists but no equityStartRow - just add the total
