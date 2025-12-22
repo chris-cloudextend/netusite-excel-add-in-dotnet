@@ -59,20 +59,32 @@ export default {
       // Route balance-sheet/report to .NET backend
       // All other requests go to Python backend
       let targetUrl;
+      let backendType;
       if (pathname.startsWith('/balance-sheet/report')) {
         targetUrl = DOTNET_TUNNEL_URL + pathname + url.search;
+        backendType = '.NET';
       } else {
         targetUrl = PYTHON_TUNNEL_URL + pathname + url.search;
+        backendType = 'Python';
       }
       
       const headers = new Headers(request.headers);
       headers.delete('host');
 
+      // Increase timeout for balance-sheet/report (can take 60-90 seconds)
+      const timeout = pathname.startsWith('/balance-sheet/report') ? 300000 : 30000; // 5 min for BS, 30s for others
+      
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), timeout);
+
       const response = await fetch(targetUrl, {
         method: request.method,
         headers,
-        body: request.method !== 'GET' && request.method !== 'HEAD' ? request.body : undefined
+        body: request.method !== 'GET' && request.method !== 'HEAD' ? request.body : undefined,
+        signal: controller.signal
       });
+      
+      clearTimeout(timeoutId);
 
       // Add CORS headers to response
       const newHeaders = new Headers(response.headers);
@@ -90,12 +102,19 @@ export default {
       
     } catch (error) {
       // Error response with CORS
+      const url = new URL(request.url);
+      const pathname = url.pathname;
+      const backendType = pathname.startsWith('/balance-sheet/report') ? '.NET' : 'Python';
+      const tunnelUrl = pathname.startsWith('/balance-sheet/report') ? DOTNET_TUNNEL_URL : PYTHON_TUNNEL_URL;
+      
       return new Response(JSON.stringify({
         error: 'Proxy error',
         message: error.message,
+        path: pathname,
+        backendType: backendType,
+        tunnelUrl: tunnelUrl,
         pythonTunnel: PYTHON_TUNNEL_URL,
         dotNetTunnel: DOTNET_TUNNEL_URL,
-        path: new URL(request.url).pathname,
         timestamp: new Date().toISOString()
       }), {
         status: 502,
