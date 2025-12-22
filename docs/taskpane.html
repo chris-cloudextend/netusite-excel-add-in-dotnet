@@ -10616,8 +10616,54 @@ For licensing inquiries, contact: legal@celigo.com
                 
                 <div class="loading-step" id="bsStep">Initializing...</div>
                 <div class="loading-tip" id="bsTip">💡 ${tips[0]}</div>
+                
+                <details style="margin-top: 20px; text-align: left; max-width: 90%; margin-left: auto; margin-right: auto;">
+                    <summary style="cursor: pointer; color: #666; font-size: 12px; padding: 8px; background: #f5f5f5; border-radius: 4px;">
+                        🔍 Show Debug Logs
+                    </summary>
+                    <div id="bsDebugLogs" style="max-height: 200px; overflow-y: auto; background: #1e1e1e; color: #d4d4d4; padding: 10px; border-radius: 4px; font-family: 'Courier New', monospace; font-size: 11px; margin-top: 8px; text-align: left;">
+                        <div style="color: #888;">Debug logs will appear here...</div>
+                    </div>
+                </details>
             `;
             document.body.appendChild(overlay);
+            
+            // Debug log capture - intercept console.log/error and display in UI
+            const debugLogsEl = document.getElementById('bsDebugLogs');
+            const originalLog = console.log;
+            const originalError = console.error;
+            const debugMessages = [];
+            const maxDebugMessages = 100;
+            
+            function addDebugLog(message, type = 'log') {
+                if (!debugLogsEl) return;
+                const timestamp = new Date().toLocaleTimeString();
+                const color = type === 'error' ? '#f48771' : type === 'warn' ? '#dcdcaa' : '#4ec9b0';
+                debugMessages.push({ timestamp, message, type, color });
+                if (debugMessages.length > maxDebugMessages) {
+                    debugMessages.shift();
+                }
+                debugLogsEl.innerHTML = debugMessages.map(m => 
+                    `<div style="color: ${m.color}; margin: 2px 0;">[${m.timestamp}] ${m.message}</div>`
+                ).join('');
+                debugLogsEl.scrollTop = debugLogsEl.scrollHeight;
+            }
+            
+            console.log = function(...args) {
+                originalLog.apply(console, args);
+                addDebugLog(args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' '), 'log');
+            };
+            
+            console.error = function(...args) {
+                originalError.apply(console, args);
+                addDebugLog(args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' '), 'error');
+            };
+            
+            // Restore console functions when done
+            const restoreConsole = () => {
+                console.log = originalLog;
+                console.error = originalError;
+            };
             
             // Update progress helper
             function updateProgress(percent, step, tip = null) {
@@ -11505,6 +11551,9 @@ For licensing inquiries, contact: legal@celigo.com
                 clearInterval(tipInterval);
                 const elapsed = Math.round((Date.now() - startTime) / 1000);
                 
+                // Restore console functions
+                restoreConsole();
+                
                 if (document.getElementById('balanceSheetOverlay')) {
                     document.getElementById('balanceSheetOverlay').remove();
                 }
@@ -11535,6 +11584,8 @@ For licensing inquiries, contact: legal@celigo.com
             } catch (error) {
                 console.error('Balance Sheet error:', error);
                 clearInterval(tipInterval);
+                // Restore console functions
+                restoreConsole();
                 if (document.getElementById('balanceSheetOverlay')) {
                     document.getElementById('balanceSheetOverlay').remove();
                 }
