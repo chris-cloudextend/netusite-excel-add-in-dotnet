@@ -10751,7 +10751,13 @@ For licensing inquiries, contact: legal@celigo.com
                     sheet.getRange("A5:C5").format.fill.color = "#09235C";
                     sheet.getRange("A5:C5").format.font.color = "#FFFFFF";
                     
-                    let currentRow = 6;
+                    let currentRow = 6; // Start after header rows (1-5)
+                    
+                    // Validate currentRow is a valid positive integer
+                    if (!Number.isInteger(currentRow) || currentRow <= 0) {
+                        console.error('Invalid initial currentRow:', currentRow);
+                        currentRow = 6; // Reset to safe default
+                    }
                     
                     // Helper to add section header
                     function addSectionHeader(title, color) {
