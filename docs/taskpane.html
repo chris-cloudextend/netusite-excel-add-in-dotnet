@@ -4241,7 +4241,8 @@ For licensing inquiries, contact: legal@celigo.com
                     <h4 style="color: var(--deep-dive); margin: 16px 0 10px; font-size: 14px;">Available Formulas</h4>
                     
                     <div class="formula-example-box">
-                        <code>=XAVI.BALANCE(account, startPeriod, endPeriod, [subsidiary], [dept], [location], [class])</code>
+                        <code>=XAVI.BALANCE(account, startPeriod, endPeriod, [subsidiary], [dept], [location], [class])</code><br>
+                        <code>=XAVI.BALANCEBETA(account, startPeriod, endPeriod, [subsidiary], [currency], [dept], [location], [class])</code>
                         <span class="result">Returns: Account balance for the period</span>
                     </div>
                     
@@ -4454,10 +4455,18 @@ For licensing inquiries, contact: legal@celigo.com
                     
                     <div class="filter-group">
                         <label class="filter-label">Subsidiary Context</label>
-                        <select id="subsidiarySelect" class="filter-select">
+                        <select id="subsidiarySelect" class="filter-select" onchange="updateCurrencyDropdown()">
                             <option value="">Loading...</option>
                         </select>
                         <button class="btn-filter" onclick="insertLookupValue('subsidiary')">Insert</button>
+                    </div>
+                    
+                    <div class="filter-group">
+                        <label class="filter-label">Currency <span style="font-size:10px;color:#888;">(for BALANCEBETA)</span></label>
+                        <select id="currencySelect" class="filter-select">
+                            <option value="">-- Default (No Currency) --</option>
+                        </select>
+                        <button class="btn-filter" onclick="insertLookupValue('currency')">Insert</button>
                     </div>
                     
                     <div class="filter-group">
@@ -5314,7 +5323,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=3.0.5.285"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=3.0.5.286"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -5926,7 +5935,10 @@ For licensing inquiries, contact: legal@celigo.com
                     const selectedFormula = selection.formulas[0][0];
                     if (selectedFormula && typeof selectedFormula === 'string') {
                         const upper = selectedFormula.toUpperCase();
-                        if (upper.includes('XAVI.BALANCE')) {
+                        if (upper.includes('XAVI.BALANCEBETA')) {
+                            selectedCellHasXavi = true;
+                            selectedFormulaType = 'BALANCEBETA';
+                        } else if (upper.includes('XAVI.BALANCE')) {
                             selectedCellHasXavi = true;
                             selectedFormulaType = 'BALANCE';
                         } else if (upper.includes('XAVI.TYPEBALANCE')) {
@@ -6060,6 +6072,7 @@ For licensing inquiries, contact: legal@celigo.com
                 statusEl.classList.add('has-selection');
                 
                 if (contextualState.selectedFormulaType === 'BALANCE' || 
+                    contextualState.selectedFormulaType === 'BALANCEBETA' ||
                     contextualState.selectedFormulaType === 'TYPEBALANCE') {
                     iconEl.textContent = '🔍';
                     textEl.textContent = `${contextualState.selectedFormulaType} selected • Drill Down ready`;
@@ -15004,11 +15017,12 @@ export default {
                 console.log('Lookups loaded:', data);
                 
                 // Populate subsidiary dropdown - Show NAMES with hierarchical indentation
+                // Filter out elimination subsidiaries (backend already filters, but ensure frontend doesn't show them)
                 const subSelect = document.getElementById('subsidiarySelect');
                 subSelect.innerHTML = '<option value="">-- All (No Filter) --</option>';
                 
                 // Sort subsidiaries hierarchically
-                const subsidiaries = data.subsidiaries || [];
+                const subsidiaries = (data.subsidiaries || []).filter(sub => !sub.isElimination);
                 const sortedSubs = sortSubsidiariesHierarchically(subsidiaries);
                 
                 sortedSubs.forEach(item => {
@@ -15020,6 +15034,10 @@ export default {
                     option.textContent = indent + prefix + item.name;
                     subSelect.appendChild(option);
                 });
+                
+                // Populate currency dropdown (initially with all valid currencies)
+                // Note: This will be called again when subsidiary changes via onchange handler
+                await updateCurrencyDropdown();
                 
                 // Populate department dropdown - Show NAMES only
                 const deptSelect = document.getElementById('departmentSelect');
@@ -15088,6 +15106,76 @@ export default {
             }
         }
 
+        // Update currency dropdown based on selected subsidiary
+        async function updateCurrencyDropdown() {
+            const currencySelect = document.getElementById('currencySelect');
+            const subsidiarySelect = document.getElementById('subsidiarySelect');
+            
+            if (!currencySelect || !subsidiarySelect) return;
+            
+            try {
+                const selectedSubsidiary = subsidiarySelect.value;
+                const url = selectedSubsidiary 
+                    ? `${getServerUrl()}/lookups/currencies?subsidiary=${encodeURIComponent(selectedSubsidiary)}`
+                    : `${getServerUrl()}/lookups/currencies`;
+                
+                const response = await fetch(url);
+                if (!response.ok) {
+                    console.error('Error fetching currencies:', response.status);
+                    currencySelect.innerHTML = '<option value="">Error loading currencies</option>';
+                    return;
+                }
+                
+                const data = await response.json();
+                currencySelect.innerHTML = '<option value="">-- Default (No Currency) --</option>';
+                
+                (data.currencies || []).forEach(currency => {
+                    const option = document.createElement('option');
+                    option.value = currency.name || currency.code || '';  // Use currency code (USD, EUR, etc.)
+                    option.textContent = `${currency.name || currency.code || ''} (${currency.symbol || ''})`;
+                    currencySelect.appendChild(option);
+                });
+            } catch (error) {
+                console.error('Error updating currency dropdown:', error);
+                currencySelect.innerHTML = '<option value="">Error loading currencies</option>';
+            }
+        }
+
+        // Update currency dropdown based on selected subsidiary
+        async function updateCurrencyDropdown() {
+            const currencySelect = document.getElementById('currencySelect');
+            const subsidiarySelect = document.getElementById('subsidiarySelect');
+            
+            if (!currencySelect || !subsidiarySelect) return;
+            
+            try {
+                const selectedSubsidiary = subsidiarySelect.value;
+                const url = selectedSubsidiary 
+                    ? `${getServerUrl()}/lookups/currencies?subsidiary=${encodeURIComponent(selectedSubsidiary)}`
+                    : `${getServerUrl()}/lookups/currencies`;
+                
+                const response = await fetch(url);
+                if (!response.ok) {
+                    console.error('Error fetching currencies:', response.status);
+                    currencySelect.innerHTML = '<option value="">Error loading currencies</option>';
+                    return;
+                }
+                
+                const data = await response.json();
+                currencySelect.innerHTML = '<option value="">-- Default (No Currency) --</option>';
+                
+                (data.currencies || []).forEach(currency => {
+                    const option = document.createElement('option');
+                    option.value = currency.name || currency.code || '';  // Use currency code (USD, EUR, etc.)
+                    option.textContent = `${currency.name || currency.code || ''} (${currency.symbol || ''})`;
+                    currencySelect.appendChild(option);
+                });
+            } catch (error) {
+                console.error('Error updating currency dropdown:', error);
+                currencySelect.innerHTML = '<option value="">Error loading currencies</option>';
+            }
+        }
+
         // Insert lookup value into selected cell with auto-comment
         async function insertLookupValue(type) {
             const statusEl = document.getElementById('lookupStatus');
@@ -15098,6 +15186,10 @@ export default {
                     selectId = 'subsidiarySelect';
                     typeName = 'Subsidiary';
                     commentText = 'SUBSIDIARY FILTER: Reference this cell in your XAVI formulas to filter by subsidiary. Add "(Consolidated)" to include child subsidiaries.';
+                } else if (type === 'currency') {
+                    selectId = 'currencySelect';
+                    typeName = 'Currency';
+                    commentText = 'CURRENCY: Reference this cell in your XAVI.BALANCEBETA formulas to specify consolidation currency (e.g., USD, EUR).';
                 } else if (type === 'department') {
                     selectId = 'departmentSelect';
                     typeName = 'Department';

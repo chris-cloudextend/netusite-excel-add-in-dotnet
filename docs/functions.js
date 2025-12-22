@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '3.0.5.281';  // Balance Sheet report implementation
+const FUNCTIONS_VERSION = '3.0.5.286';  // BALANCEBETA implementation with currency control
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -3606,6 +3606,115 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
 }
 
 // ============================================================================
+// BALANCEBETA - Get balance with explicit currency control for consolidation
+// ============================================================================
+/**
+ * Get GL account balance with explicit currency control for consolidation.
+ * Currency parameter determines consolidation root, while subsidiary filters transactions.
+ * 
+ * @customfunction BALANCEBETA
+ * @param {any} account Account number or wildcard pattern (e.g., "10034" or "4*")
+ * @param {any} fromPeriod Starting period (required for P&L, ignored for BS)
+ * @param {any} toPeriod Ending period (required)
+ * @param {any} subsidiary Subsidiary filter (use "" for all)
+ * @param {any} currency Currency code for consolidation root (e.g., "USD", "EUR") - optional
+ * @param {any} department Department filter (use "" for all)
+ * @param {any} location Location filter (use "" for all)
+ * @param {any} classId Class filter (use "" for all)
+ * @param {any} accountingBook Accounting Book ID (use "" for Primary Book)
+ * @returns {Promise<number|string>} The account balance, or error code
+ * @requiresAddress
+ */
+async function BALANCEBETA(account, fromPeriod, toPeriod, subsidiary, currency, department, location, classId, accountingBook) {
+    try {
+        // Normalize account number
+        account = normalizeAccountNumber(account);
+        
+        if (!account) {
+            console.error('❌ BALANCEBETA: account parameter is required');
+            return '#MISSING_ACCT#';
+        }
+        
+        // Convert date values to "Mon YYYY" format
+        fromPeriod = convertToMonthYear(fromPeriod, true);
+        toPeriod = convertToMonthYear(toPeriod, false);
+        
+        if (!toPeriod) {
+            console.error('❌ BALANCEBETA: toPeriod is required');
+            return '#MISSING_PERIOD#';
+        }
+        
+        // Other parameters as strings
+        subsidiary = String(subsidiary || '').trim();
+        currency = String(currency || '').trim();
+        department = String(department || '').trim();
+        location = String(location || '').trim();
+        classId = String(classId || '').trim();
+        accountingBook = String(accountingBook || '').trim();
+        
+        // Build cache key (include currency)
+        const cacheKey = JSON.stringify({
+            type: 'balancebeta',
+            account, fromPeriod, toPeriod, 
+            subsidiary, currency, department, location, classId, accountingBook
+        });
+        
+        // Check cache
+        if (cache.balance.has(cacheKey)) {
+            const cached = cache.balance.get(cacheKey);
+            console.log(`✅ BALANCEBETA cache hit: ${account} = ${cached}`);
+            return cached;
+        }
+        
+        // Make API call
+        const apiParams = new URLSearchParams({
+            account: account,
+            from_period: fromPeriod || '',
+            to_period: toPeriod,
+            subsidiary: subsidiary,
+            currency: currency,
+            department: department,
+            class: classId,
+            location: location,
+            book: accountingBook
+        });
+        
+        const response = await fetch(`${SERVER_URL}/balancebeta?${apiParams.toString()}`);
+        
+        if (!response.ok) {
+            const errorCode = [408, 504, 522, 523, 524].includes(response.status) ? 'TIMEOUT' :
+                             response.status === 429 ? 'RATELIMIT' :
+                             response.status === 401 || response.status === 403 ? 'AUTHERR' :
+                             response.status >= 500 ? 'SERVERR' :
+                             'APIERR';
+            console.error(`❌ BALANCEBETA API error: ${response.status} → ${errorCode}`);
+            return errorCode;
+        }
+        
+        const data = await response.json();
+        
+        // Check for error in response
+        if (data.error) {
+            console.log(`⚠️ BALANCEBETA: ${account} = ${data.error}`);
+            cache.balance.set(cacheKey, data.error);
+            return data.error; // Return one-word error (e.g., INVALIDCURRENCY)
+        }
+        
+        const balance = parseFloat(data.balance) || 0;
+        
+        // Cache the result
+        cache.balance.set(cacheKey, balance);
+        
+        console.log(`✅ BALANCEBETA: ${account} = ${balance} (currency: ${currency || 'default'})`);
+        return balance;
+        
+    } catch (error) {
+        console.error('BALANCEBETA error:', error);
+        return '#ERROR#';
+    }
+}
+
+// ============================================================================
 // BALANCECHANGE - Get the change in a Balance Sheet account between two dates
 // ============================================================================
 /**
@@ -5920,6 +6029,7 @@ if (typeof CustomFunctions !== 'undefined') {
     CustomFunctions.associate('TYPE', TYPE);
     CustomFunctions.associate('PARENT', PARENT);
     CustomFunctions.associate('BALANCE', BALANCE);
+    CustomFunctions.associate('BALANCEBETA', BALANCEBETA);
     CustomFunctions.associate('BALANCECHANGE', BALANCECHANGE);
     CustomFunctions.associate('BUDGET', BUDGET);
     CustomFunctions.associate('RETAINEDEARNINGS', RETAINEDEARNINGS);

@@ -96,6 +96,58 @@ public class BalanceController : ControllerBase
     }
 
     /// <summary>
+    /// Get GL account balance with explicit currency control for consolidation (BALANCEBETA).
+    /// Currency parameter determines consolidation root, while subsidiary filters transactions to exact match.
+    /// </summary>
+    /// <remarks>
+    /// Examples:
+    /// - BS with currency: GET /balancebeta?account=10034&amp;to_period=Jan%202025&amp;subsidiary=2&amp;currency=USD
+    /// - P&L with currency: GET /balancebeta?account=4010&amp;from_period=Jan%202025&amp;to_period=Mar%202025&amp;subsidiary=2&amp;currency=EUR
+    /// </remarks>
+    [HttpGet("/balancebeta")]
+    public async Task<IActionResult> GetBalanceBeta(
+        [FromQuery] string account,
+        [FromQuery] string? from_period = null,
+        [FromQuery] string? to_period = null,
+        [FromQuery] string? subsidiary = null,
+        [FromQuery] string? currency = null,
+        [FromQuery] string? department = null,
+        [FromQuery(Name = "class")] string? classFilter = null,
+        [FromQuery] string? location = null,
+        [FromQuery] int? book = null)
+    {
+        if (string.IsNullOrEmpty(account))
+            return BadRequest(new { error = "Account number is required" });
+
+        if (string.IsNullOrEmpty(from_period) && string.IsNullOrEmpty(to_period))
+            return BadRequest(new { error = "At least one period (from_period or to_period) is required" });
+
+        try
+        {
+            var request = new BalanceBetaRequest
+            {
+                Account = account,
+                FromPeriod = from_period ?? "",
+                ToPeriod = to_period ?? from_period ?? "",
+                Subsidiary = subsidiary,
+                Currency = currency,
+                Department = department,
+                Class = classFilter,
+                Location = location,
+                Book = book
+            };
+
+            var result = await _balanceService.GetBalanceBetaAsync(request);
+            return Ok(result);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting balancebeta for account {Account}", account);
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
     /// Get the CHANGE in a balance sheet account between two points in time.
     /// Calculated as: balance(toDate) - balance(fromDate)
     /// 

@@ -36,7 +36,7 @@ public class LookupService : ILookupService
         return await _netSuiteService.GetOrSetCacheAsync("lookups:subsidiaries", async () =>
         {
             var query = @"
-                SELECT s.id, s.name, s.fullname, s.parent, c.symbol as currency_symbol
+                SELECT s.id, s.name, s.fullname, s.parent, s.elimination, c.symbol as currency_symbol, c.name as currency_code
                 FROM subsidiary s
                 LEFT JOIN currency c ON s.currency = c.id
                 WHERE s.isinactive = 'F'
@@ -49,8 +49,12 @@ public class LookupService : ILookupService
                 Name = r.TryGetProperty("name", out var name) ? name.GetString() ?? "" : "",
                 FullName = r.TryGetProperty("fullname", out var fn) ? fn.GetString() : null,
                 Parent = r.TryGetProperty("parent", out var p) && p.ValueKind != JsonValueKind.Null ? p.ToString() : null,
-                CurrencySymbol = r.TryGetProperty("currency_symbol", out var cs) ? cs.GetString() : null
-            }).ToList();
+                CurrencySymbol = r.TryGetProperty("currency_symbol", out var cs) ? cs.GetString() : null,
+                Currency = r.TryGetProperty("currency_code", out var cc) ? cc.GetString() : null,
+                IsElimination = r.TryGetProperty("elimination", out var elim) && elim.ValueKind == JsonValueKind.String 
+                    ? elim.GetString() == "T" 
+                    : false
+            }).Where(s => !s.IsElimination).ToList(); // Filter out elimination subsidiaries
             
             // Identify parent subsidiaries (those that have children)
             var parentIds = new HashSet<string>(
@@ -88,8 +92,10 @@ public class LookupService : ILookupService
                         FullName = sub.FullName != null ? $"{sub.FullName} (Consolidated)" : null,
                         Parent = sub.Parent,
                         CurrencySymbol = sub.CurrencySymbol,
+                        Currency = sub.Currency,
                         Depth = sub.Depth,
-                        IsConsolidated = true
+                        IsConsolidated = true,
+                        IsElimination = sub.IsElimination
                     });
                 }
             }
@@ -512,6 +518,142 @@ public class LookupService : ILookupService
 
         return null;
     }
+
+    /// <summary>
+    /// Get all ancestor subsidiaries (parent chain upward) for a given subsidiary.
+    /// Used to find valid consolidation roots.
+    /// </summary>
+    public async Task<List<string>> GetSubsidiaryAncestorsAsync(string subsidiaryId)
+    {
+        var ancestors = new List<string>();
+        var subsidiaries = await GetSubsidiariesAsync();
+        
+        // Build a map for quick lookup
+        var subMap = subsidiaries.ToDictionary(s => s.Id, s => s);
+        
+        // Traverse parent chain upward
+        var current = subMap.GetValueOrDefault(subsidiaryId);
+        while (current != null && !string.IsNullOrEmpty(current.Parent))
+        {
+            if (subMap.TryGetValue(current.Parent, out var parent))
+            {
+                ancestors.Add(parent.Id);
+                current = parent;
+            }
+            else
+            {
+                break; // Parent not found (shouldn't happen, but safe)
+            }
+        }
+        
+        _logger.LogDebug("Subsidiary {Id} ancestors: {Ancestors}", subsidiaryId, string.Join(", ", ancestors));
+        return ancestors;
+    }
+
+    /// <summary>
+    /// Resolve currency code to a valid consolidation root subsidiary.
+    /// Consolidation root must: match currency, be ancestor of filtered subsidiary, not be elimination.
+    /// </summary>
+    public async Task<string?> ResolveCurrencyToConsolidationRootAsync(string currencyCode, string filteredSubsidiaryId)
+    {
+        var subsidiaries = await GetSubsidiariesAsync();
+        var ancestors = await GetSubsidiaryAncestorsAsync(filteredSubsidiaryId);
+        
+        // Find subsidiaries with matching currency that are ancestors
+        var validRoots = subsidiaries
+            .Where(s => !string.IsNullOrEmpty(s.Currency) && 
+                       s.Currency.Equals(currencyCode, StringComparison.OrdinalIgnoreCase) &&
+                       ancestors.Contains(s.Id) &&
+                       !s.IsElimination)
+            .OrderBy(s => s.Depth) // Prefer closer ancestors (lower depth = higher in hierarchy)
+            .ToList();
+        
+        if (validRoots.Any())
+        {
+            var root = validRoots.First();
+            _logger.LogInformation("Resolved currency {Currency} to consolidation root {SubId} ({SubName}) for filtered subsidiary {FilteredSubId}",
+                currencyCode, root.Id, root.Name, filteredSubsidiaryId);
+            return root.Id;
+        }
+        
+        _logger.LogWarning("Could not resolve currency {Currency} to valid consolidation root for subsidiary {SubId}",
+            currencyCode, filteredSubsidiaryId);
+        return null;
+    }
+
+    /// <summary>
+    /// Get available currencies for dropdown.
+    /// If subsidiaryId provided, return only currencies valid for that subsidiary.
+    /// Otherwise, return currencies valid for at least one subsidiary.
+    /// </summary>
+    public async Task<List<CurrencyItem>> GetCurrenciesAsync(string? subsidiaryId = null)
+    {
+        var cacheKey = subsidiaryId != null 
+            ? $"lookups:currencies:sub:{subsidiaryId}"
+            : "lookups:currencies:all";
+        
+        return await _netSuiteService.GetOrSetCacheAsync(cacheKey, async () =>
+        {
+            var subsidiaries = await GetSubsidiariesAsync();
+            var validCurrencies = new HashSet<string>();
+            
+            if (!string.IsNullOrEmpty(subsidiaryId))
+            {
+                // Get currencies valid for this specific subsidiary
+                var ancestors = await GetSubsidiaryAncestorsAsync(subsidiaryId);
+                var validRoots = subsidiaries
+                    .Where(s => ancestors.Contains(s.Id) && 
+                               !s.IsElimination && 
+                               !string.IsNullOrEmpty(s.Currency))
+                    .Select(s => s.Currency!)
+                    .Distinct();
+                
+                foreach (var currency in validRoots)
+                {
+                    validCurrencies.Add(currency);
+                }
+            }
+            else
+            {
+                // Get all currencies that are valid consolidation roots for at least one subsidiary
+                foreach (var sub in subsidiaries.Where(s => !s.IsElimination && !string.IsNullOrEmpty(s.Currency)))
+                {
+                    // Check if this currency is a valid consolidation root for any subsidiary
+                    var ancestors = await GetSubsidiaryAncestorsAsync(sub.Id);
+                    var hasValidRoot = subsidiaries.Any(s => 
+                        ancestors.Contains(s.Id) && 
+                        !s.IsElimination && 
+                        s.Currency == sub.Currency);
+                    
+                    if (hasValidRoot)
+                    {
+                        validCurrencies.Add(sub.Currency!);
+                    }
+                }
+            }
+            
+            // Query currency details
+            if (!validCurrencies.Any())
+            {
+                return new List<CurrencyItem>();
+            }
+            
+            var currencyCodes = string.Join(", ", validCurrencies.Select(c => $"'{NetSuiteService.EscapeSql(c)}'"));
+            var query = $@"
+                SELECT id, name, symbol
+                FROM currency
+                WHERE name IN ({currencyCodes})
+                ORDER BY name";
+            
+            var results = await _netSuiteService.QueryRawAsync(query);
+            return results.Select(r => new CurrencyItem
+            {
+                Id = r.TryGetProperty("id", out var id) ? id.ToString() : "",
+                Name = r.TryGetProperty("name", out var name) ? name.GetString() ?? "" : "",
+                Symbol = r.TryGetProperty("symbol", out var symbol) ? symbol.GetString() ?? "" : ""
+            }).ToList();
+        }) ?? new List<CurrencyItem>();
+    }
 }
 
 /// <summary>
@@ -525,6 +667,9 @@ public interface ILookupService
     Task<List<LookupItem>> GetLocationsAsync();
     Task<List<AccountingBookItem>> GetAccountingBooksAsync();
     Task<List<BudgetCategoryItem>> GetBudgetCategoriesAsync();
+    Task<List<string>> GetSubsidiaryAncestorsAsync(string subsidiaryId);
+    Task<string?> ResolveCurrencyToConsolidationRootAsync(string currencyCode, string filteredSubsidiaryId);
+    Task<List<CurrencyItem>> GetCurrenciesAsync(string? subsidiaryId = null);
     Task<AllLookupsResponse> GetAllLookupsAsync();
     Task<string?> GetAccountNameAsync(string accountNumber);
     Task<string?> GetAccountTypeAsync(string accountNumber);

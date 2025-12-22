@@ -400,6 +400,249 @@ public class BalanceService : IBalanceService
     }
 
     /// <summary>
+    /// Get balance for BALANCEBETA with explicit currency control for consolidation.
+    /// Currency parameter determines consolidation root, while subsidiary filters transactions.
+    /// Transaction filtering uses exact subsidiary match (not hierarchy).
+    /// </summary>
+    public async Task<BalanceBetaResponse> GetBalanceBetaAsync(BalanceBetaRequest request)
+    {
+        var fromPeriod = request.FromPeriod;
+        var toPeriod = string.IsNullOrEmpty(request.ToPeriod) ? request.FromPeriod : request.ToPeriod;
+
+        // Handle year-only format
+        if (NetSuiteService.IsYearOnly(fromPeriod))
+        {
+            var (from, to) = NetSuiteService.ExpandYearToPeriods(fromPeriod);
+            fromPeriod = from;
+            toPeriod = to;
+        }
+
+        // Auto-detect Balance Sheet accounts (same as BALANCE)
+        bool isBsAccount = false;
+        string? detectedAccountType = null;
+        
+        if (!string.IsNullOrEmpty(request.Account) && !request.Account.Contains('*'))
+        {
+            var typeQuery = $"SELECT accttype FROM Account WHERE acctnumber = '{NetSuiteService.EscapeSql(request.Account)}'";
+            var typeResult = await _netSuiteService.QueryRawAsync(typeQuery);
+            if (typeResult.Any())
+            {
+                var acctType = typeResult.First().TryGetProperty("accttype", out var typeProp) 
+                    ? typeProp.GetString() ?? "" : "";
+                detectedAccountType = acctType;
+                isBsAccount = AccountType.IsBalanceSheet(acctType);
+            }
+        }
+        else if (!string.IsNullOrEmpty(request.Account) && request.Account.Contains('*'))
+        {
+            var wildcardFilter = NetSuiteService.BuildAccountFilter(new[] { request.Account }, "acctnumber");
+            var typeQuery = $"SELECT DISTINCT accttype FROM Account WHERE {wildcardFilter}";
+            var typeResult = await _netSuiteService.QueryRawAsync(typeQuery);
+            if (typeResult.Any())
+            {
+                var types = typeResult.Select(r => r.TryGetProperty("accttype", out var p) ? p.GetString() ?? "" : "").ToList();
+                var bsTypes = types.Where(AccountType.IsBalanceSheet).ToList();
+                var plTypes = types.Where(t => !AccountType.IsBalanceSheet(t)).ToList();
+                
+                if (bsTypes.Any() && !plTypes.Any())
+                    isBsAccount = true;
+            }
+        }
+
+        if (isBsAccount && !string.IsNullOrEmpty(fromPeriod) && !string.IsNullOrEmpty(toPeriod))
+        {
+            fromPeriod = ""; // Clear from_period for cumulative calculation
+        }
+
+        // Get period dates
+        var toPeriodData = await _netSuiteService.GetPeriodAsync(toPeriod);
+        if (toPeriodData?.EndDate == null)
+        {
+            return new BalanceBetaResponse
+            {
+                Account = request.Account,
+                FromPeriod = request.FromPeriod,
+                ToPeriod = toPeriod,
+                Balance = 0
+            };
+        }
+
+        var toEndDate = ConvertToYYYYMMDD(toPeriodData.EndDate);
+        var fromStartDate = "";
+        if (!string.IsNullOrEmpty(fromPeriod))
+        {
+            var fromPeriodData = await _netSuiteService.GetPeriodAsync(fromPeriod);
+            if (fromPeriodData?.StartDate != null)
+                fromStartDate = ConvertToYYYYMMDD(fromPeriodData.StartDate);
+        }
+
+        // Resolve filtered subsidiary (for transaction filtering)
+        var subsidiaryId = await _lookupService.ResolveSubsidiaryIdAsync(request.Subsidiary);
+        var filteredSubId = subsidiaryId ?? "1";
+
+        // Resolve currency to consolidation root
+        string consolidationRootId;
+        if (!string.IsNullOrEmpty(request.Currency))
+        {
+            var resolvedRoot = await _lookupService.ResolveCurrencyToConsolidationRootAsync(request.Currency, filteredSubId);
+            if (resolvedRoot == null)
+            {
+                _logger.LogWarning("Could not resolve currency {Currency} to consolidation root for subsidiary {SubId}",
+                    request.Currency, filteredSubId);
+                return new BalanceBetaResponse
+                {
+                    Account = request.Account,
+                    FromPeriod = request.FromPeriod,
+                    ToPeriod = toPeriod,
+                    Balance = 0,
+                    Error = "INVALIDCURRENCY",
+                    Currency = request.Currency
+                };
+            }
+            consolidationRootId = resolvedRoot;
+        }
+        else
+        {
+            // No currency provided: use filtered subsidiary as consolidation root (matches BALANCE behavior)
+            consolidationRootId = filteredSubId;
+        }
+
+        // Resolve other dimension names to IDs
+        var departmentId = await _lookupService.ResolveDimensionIdAsync("department", request.Department);
+        var classId = await _lookupService.ResolveDimensionIdAsync("class", request.Class);
+        var locationId = await _lookupService.ResolveDimensionIdAsync("location", request.Location);
+
+        var accountingBook = request.Book ?? DefaultAccountingBook;
+
+        // Build segment filters - always need TransactionLine join for exact subsidiary match
+        var segmentFilters = new List<string> { $"tl.subsidiary = {filteredSubId}" }; // Exact match, not hierarchy
+        if (!string.IsNullOrEmpty(departmentId))
+            segmentFilters.Add($"tl.department = {departmentId}");
+        if (!string.IsNullOrEmpty(classId))
+            segmentFilters.Add($"tl.class = {classId}");
+        if (!string.IsNullOrEmpty(locationId))
+            segmentFilters.Add($"tl.location = {locationId}");
+        var segmentWhere = string.Join(" AND ", segmentFilters);
+
+        string query;
+        int queryTimeout;
+        
+        if (isBsAccount)
+        {
+            var signFlip = $"CASE WHEN a.accttype IN ({AccountType.SignFlipTypesSql}) THEN -1 ELSE 1 END";
+            queryTimeout = 180;
+            
+            query = $@"
+                SELECT SUM(x.cons_amt) AS balance
+                FROM (
+                    SELECT
+                        TO_NUMBER(
+                            BUILTIN.CONSOLIDATE(
+                                tal.amount,
+                                'LEDGER',
+                                'DEFAULT',
+                                'DEFAULT',
+                                {consolidationRootId},
+                                t.postingperiod,
+                                'DEFAULT'
+                            )
+                        ) * {signFlip} AS cons_amt
+                    FROM transactionaccountingline tal
+                    JOIN transaction t ON t.id = tal.transaction
+                    JOIN account a ON a.id = tal.account
+                    JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id
+                    WHERE t.posting = 'T'
+                      AND tal.posting = 'T'
+                      AND {NetSuiteService.BuildAccountFilter(new[] { request.Account })}
+                      AND t.trandate <= TO_DATE('{toEndDate}', 'YYYY-MM-DD')
+                      AND tal.accountingbook = {accountingBook}
+                      AND {segmentWhere}
+                ) x";
+        }
+        else
+        {
+            var signFlip = $"CASE WHEN a.accttype IN ({AccountType.IncomeTypesSql}) THEN -1 ELSE 1 END";
+            queryTimeout = 30;
+            
+            if (string.IsNullOrEmpty(fromStartDate))
+            {
+                fromStartDate = ConvertToYYYYMMDD(toPeriodData.StartDate ?? toPeriodData.EndDate!);
+            }
+
+            query = $@"
+                SELECT SUM(x.cons_amt) AS balance
+                FROM (
+                    SELECT
+                        TO_NUMBER(
+                            BUILTIN.CONSOLIDATE(
+                                tal.amount,
+                                'LEDGER',
+                                'DEFAULT',
+                                'DEFAULT',
+                                {consolidationRootId},
+                                t.postingperiod,
+                                'DEFAULT'
+                            )
+                        ) * {signFlip} AS cons_amt
+                    FROM transactionaccountingline tal
+                    JOIN transaction t ON t.id = tal.transaction
+                    JOIN account a ON a.id = tal.account
+                    JOIN accountingperiod ap ON ap.id = t.postingperiod
+                    JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id
+                    WHERE t.posting = 'T'
+                      AND tal.posting = 'T'
+                      AND {NetSuiteService.BuildAccountFilter(new[] { request.Account })}
+                      AND ap.startdate >= TO_DATE('{fromStartDate}', 'YYYY-MM-DD')
+                      AND ap.enddate <= TO_DATE('{toEndDate}', 'YYYY-MM-DD')
+                      AND tal.accountingbook = {accountingBook}
+                      AND {segmentWhere}
+                ) x";
+        }
+
+        var queryResult = await _netSuiteService.QueryRawWithErrorAsync(query, queryTimeout);
+        
+        if (!queryResult.Success)
+        {
+            return new BalanceBetaResponse
+            {
+                Account = request.Account,
+                FromPeriod = request.FromPeriod,
+                ToPeriod = toPeriod,
+                Balance = 0,
+                Error = queryResult.ErrorCode,
+                Currency = request.Currency,
+                ConsolidationRoot = consolidationRootId
+            };
+        }
+
+        decimal balance = 0;
+        if (queryResult.Items.Any())
+        {
+            var row = queryResult.Items.First();
+            if (row.TryGetProperty("balance", out var balProp))
+            {
+                balance = ParseBalance(balProp);
+            }
+        }
+
+        var accountName = await _lookupService.GetAccountNameAsync(request.Account);
+        if (detectedAccountType == null)
+            detectedAccountType = await _lookupService.GetAccountTypeAsync(request.Account);
+
+        return new BalanceBetaResponse
+        {
+            Account = request.Account,
+            AccountName = accountName,
+            AccountType = detectedAccountType,
+            FromPeriod = request.FromPeriod,
+            ToPeriod = toPeriod,
+            Balance = balance,
+            Currency = request.Currency,
+            ConsolidationRoot = consolidationRootId
+        };
+    }
+
+    /// <summary>
     /// Get balances for multiple accounts and periods in a single batch.
     /// Uses proper TransactionLine join and subsidiary hierarchy.
     /// 
@@ -1266,6 +1509,7 @@ public class BalanceService : IBalanceService
 public interface IBalanceService
 {
     Task<BalanceResponse> GetBalanceAsync(BalanceRequest request);
+    Task<BalanceBetaResponse> GetBalanceBetaAsync(BalanceBetaRequest request);
     Task<BatchBalanceResponse> GetBatchBalanceAsync(BatchBalanceRequest request);
     Task<TypeBalanceResponse> GetTypeBalanceAsync(TypeBalanceRequest request);
 

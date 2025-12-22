@@ -39,6 +39,9 @@ public class SubsidiaryItem : LookupItem
     
     [JsonPropertyName("isConsolidated")]
     public bool IsConsolidated { get; set; }
+    
+    [JsonPropertyName("isElimination")]
+    public bool IsElimination { get; set; }
 }
 
 /// <summary>Account lookup item</summary>

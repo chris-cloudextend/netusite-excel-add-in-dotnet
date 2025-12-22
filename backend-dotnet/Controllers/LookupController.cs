@@ -154,12 +154,27 @@ public class LookupController : ControllerBase
     /// <summary>
     /// Get currencies for each subsidiary.
     /// Returns format expected by frontend for currency formatting.
+    /// If subsidiary parameter provided, returns currencies for BALANCEBETA dropdown.
     /// </summary>
     [HttpGet("/lookups/currencies")]
-    public async Task<IActionResult> GetCurrencies()
+    public async Task<IActionResult> GetCurrencies([FromQuery] string? subsidiary = null)
     {
         try
         {
+            // If subsidiary provided, return BALANCEBETA format
+            if (!string.IsNullOrEmpty(subsidiary))
+            {
+                string? subsidiaryId = await _lookupService.ResolveSubsidiaryIdAsync(subsidiary);
+                if (subsidiaryId == null)
+                {
+                    return BadRequest(new { error = $"Could not resolve subsidiary: {subsidiary}" });
+                }
+
+                var result = await _lookupService.GetCurrenciesAsync(subsidiaryId);
+                return Ok(new { currencies = result });
+            }
+
+            // Otherwise, return existing format for backward compatibility
             var subsidiaries = await _lookupService.GetSubsidiariesAsync();
             
             // Map ISO currency codes to display symbols
@@ -242,5 +257,6 @@ public class LookupController : ControllerBase
             return StatusCode(500, new { error = ex.Message });
         }
     }
+
 }
 

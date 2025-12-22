@@ -41,6 +41,13 @@ public class BalanceRequest
     public int? Book { get; set; }
 }
 
+/// <summary>Request for BALANCEBETA with explicit currency control</summary>
+public class BalanceBetaRequest : BalanceRequest
+{
+    [JsonPropertyName("currency")]
+    public string? Currency { get; set; }
+}
+
 /// <summary>Request for batch balance retrieval</summary>
 public class BatchBalanceRequest
 {
@@ -150,6 +157,14 @@ public class BalanceResponse
     [JsonPropertyName("error")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Error { get; set; }
+}
+
+/// <summary>Response for BALANCEBETA query with consolidation root info</summary>
+public class BalanceBetaResponse : BalanceResponse
+{
+    [JsonPropertyName("consolidation_root")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ConsolidationRoot { get; set; }
 }
 
 /// <summary>Response for batch balance retrieval</summary>
