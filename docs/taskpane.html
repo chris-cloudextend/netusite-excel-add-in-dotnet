@@ -10625,7 +10625,8 @@ For licensing inquiries, contact: legal@celigo.com
                             department: defaultDepartment || null,
                             location: defaultLocation || null,
                             class: defaultClass || null,
-                            book: null
+                            book: null,
+                            skip_calculated_rows: true  // Skip NETINCOME/RETAINEDEARNINGS/CTA for now - add separately
                         }),
                         signal: controller.signal
                     });
@@ -10882,8 +10883,60 @@ For licensing inquiries, contact: legal@celigo.com
                         addSubtotalRow(subsectionLabel, subsectionStartRow, currentRow);
                     }
                     
-                    // Add final section total (Equity)
+                    // Find where to insert calculated rows (before Equity total)
+                    // We'll insert NETINCOME, RETAINEDEARNINGS, and CTA before the Equity total
+                    let equityCalculatedInsertRow = currentRow; // Default: before Equity total
+                    
+                    // Try to find the first Equity account row to insert before it
+                    for (let i = rows.length - 1; i >= 0; i--) {
+                        if (rows[i].section === 'Equity' && !rows[i].is_calculated && rows[i].account_number) {
+                            // Find the row number for this account (approximate)
+                            // We'll recalculate this after building the sheet
+                            break;
+                        }
+                    }
+                    
+                    // Add final section total (Equity) - but we'll add calculated rows before this
                     if (currentSection === 'Equity') {
+                        // Insert calculated rows BEFORE the Equity total
+                        const netIncomeRow = currentRow;
+                        const retainedEarningsRow = currentRow + 1;
+                        const ctaRow = currentRow + 2;
+                        
+                        // Add NETINCOME
+                        sheet.getRange(`A${netIncomeRow}`).values = [['']];
+                        sheet.getRange(`B${netIncomeRow}`).values = [['Net Income']];
+                        const netIncomeFormula = defaultSubsidiary 
+                            ? `=XAVI.NETINCOME("$D$2", "$B$2")`
+                            : `=XAVI.NETINCOME("$D$2")`;
+                        sheet.getRange(`C${netIncomeRow}`).formulas = [[netIncomeFormula]];
+                        sheet.getRange(`B${netIncomeRow}`).format.font.italic = true;
+                        sheet.getRange(`C${netIncomeRow}`).numberFormat = [[currencyFormat]];
+                        currentRow++;
+                        
+                        // Add RETAINEDEARNINGS
+                        sheet.getRange(`A${retainedEarningsRow}`).values = [['']];
+                        sheet.getRange(`B${retainedEarningsRow}`).values = [['Retained Earnings']];
+                        const retainedEarningsFormula = defaultSubsidiary 
+                            ? `=XAVI.RETAINEDEARNINGS("$D$2", "$B$2")`
+                            : `=XAVI.RETAINEDEARNINGS("$D$2")`;
+                        sheet.getRange(`C${retainedEarningsRow}`).formulas = [[retainedEarningsFormula]];
+                        sheet.getRange(`B${retainedEarningsRow}`).format.font.italic = true;
+                        sheet.getRange(`C${retainedEarningsRow}`).numberFormat = [[currencyFormat]];
+                        currentRow++;
+                        
+                        // Add CTA
+                        sheet.getRange(`A${ctaRow}`).values = [['']];
+                        sheet.getRange(`B${ctaRow}`).values = [['Cumulative Translation Adjustment']];
+                        const ctaFormula = defaultSubsidiary 
+                            ? `=XAVI.CTA("$D$2", "$B$2")`
+                            : `=XAVI.CTA("$D$2")`;
+                        sheet.getRange(`C${ctaRow}`).formulas = [[ctaFormula]];
+                        sheet.getRange(`B${ctaRow}`).format.font.italic = true;
+                        sheet.getRange(`C${ctaRow}`).numberFormat = [[currencyFormat]];
+                        currentRow++;
+                        
+                        // Now add Equity total
                         totalEquityRow = currentRow;
                         sheet.getRange(`B${currentRow}`).values = [['TOTAL EQUITY']];
                         sheet.getRange(`C${currentRow}`).formulas = [[`=SUBTOTAL(109,C${equityStartRow}:C${currentRow-1})`]];
@@ -10924,15 +10977,15 @@ For licensing inquiries, contact: legal@celigo.com
                     await context.sync();
                 });
                 
-                updateProgress(95, '📊 Step 4 of 4: Finalizing', 'Waiting for formulas to calculate...');
+                updateProgress(95, '✅ Report Complete!', 'Balance Sheet structure built successfully...');
                 
-                // Wait for formulas to complete (shorter timeout since cache should hit)
-                await waitForFormulasToComplete(45000, null);
+                // Wait for account balance formulas to complete (skip calculated rows for now)
+                await waitForFormulasToComplete(30000, null);
                 
-                // Auto-fit columns AFTER all formulas have resolved
+                // Auto-fit columns AFTER account formulas have resolved
                 await autoFitColumns();
                 
-                // Show success
+                // Show success message (report structure is complete)
                 clearInterval(tipInterval);
                 const elapsed = Math.round((Date.now() - startTime) / 1000);
                 
@@ -10944,11 +10997,18 @@ For licensing inquiries, contact: legal@celigo.com
                     elapsed: elapsed,
                     subtitle: `As of ${periodFormatted}`,
                     tips: [
+                        'Report structure complete!',
+                        'NETINCOME, RETAINEDEARNINGS, and CTA formulas are calculating in the background...',
+                        'They may show #BUSY while calculating (this can take 1-2 minutes)',
                         'Formulas reference cell D2 for period - change it to update all balances',
                         'Filter by subsidiary using cell B2',
                         'Balance Check row should equal $0 (Assets = Liabilities + Equity)'
                     ]
                 });
+                
+                // Note: NETINCOME, RETAINEDEARNINGS, and CTA formulas are already in the sheet
+                // They will calculate in the background and may show #BUSY initially
+                console.log('✅ Balance Sheet report structure complete. Calculated formulas (NETINCOME, RETAINEDEARNINGS, CTA) are calculating in the background...');
                 
                 // Release sync lock
                 setTimeout(() => {

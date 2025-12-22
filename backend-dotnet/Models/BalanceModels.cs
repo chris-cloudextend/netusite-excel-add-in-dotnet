@@ -343,6 +343,10 @@ public class BalanceSheetReportRequest
     [JsonPropertyName("book")]
     [JsonConverter(typeof(FlexibleIntConverter))]
     public int? Book { get; set; }
+    
+    /// <summary>If true, skip calculating NETINCOME, RETAINEDEARNINGS, and CTA (for faster report generation)</summary>
+    [JsonPropertyName("skip_calculated_rows")]
+    public bool SkipCalculatedRows { get; set; } = false;
 }
 
 /// <summary>Balance Sheet report row</summary>

@@ -1460,18 +1460,24 @@ public class BalanceController : ControllerBase
                 rows.AddRange(sectionAccounts);
             }
 
-            // Calculate special formulas
-            _logger.LogInformation("🔄 Step 3: Calculating special rows (NETINCOME, RETAINEDEARNINGS, CTA)...");
-            var calcStartTime = DateTime.UtcNow;
-
-            // Get fiscal year info for special formulas
-            var fyInfo = await GetFiscalYearInfoAsync(request.Period, accountingBook);
-            if (fyInfo == null)
+            // Calculate special formulas (only if not skipped)
+            if (request.SkipCalculatedRows)
             {
-                _logger.LogWarning("Could not get fiscal year info - skipping calculated rows");
+                _logger.LogInformation("⏭️  Step 3: Skipping calculated rows (NETINCOME, RETAINEDEARNINGS, CTA) - will be added separately");
             }
             else
             {
+                _logger.LogInformation("🔄 Step 3: Calculating special rows (NETINCOME, RETAINEDEARNINGS, CTA)...");
+                var calcStartTime = DateTime.UtcNow;
+
+                // Get fiscal year info for special formulas
+                var fyInfo = await GetFiscalYearInfoAsync(request.Period, accountingBook);
+                if (fyInfo == null)
+                {
+                    _logger.LogWarning("Could not get fiscal year info - skipping calculated rows");
+                }
+                else
+                {
                 // Calculate NETINCOME
                 decimal netIncome = 0;
                 try
