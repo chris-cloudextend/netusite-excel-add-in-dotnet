@@ -68,23 +68,20 @@ export default {
         backendType = 'Python';
       }
       
+      // Log routing decision (remove in production if needed)
+      console.log(`[Worker] Routing ${pathname} to ${backendType} backend: ${targetUrl}`);
+      
       const headers = new Headers(request.headers);
       headers.delete('host');
 
-      // Increase timeout for balance-sheet/report (can take 60-90 seconds)
-      const timeout = pathname.startsWith('/balance-sheet/report') ? 300000 : 30000; // 5 min for BS, 30s for others
-      
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), timeout);
-
+      // Note: Cloudflare Tunnel has a ~100s timeout limit
+      // For balance-sheet/report, we need to work within this constraint
+      // The Workers proxy timeout is less restrictive, but tunnel is the bottleneck
       const response = await fetch(targetUrl, {
         method: request.method,
         headers,
-        body: request.method !== 'GET' && request.method !== 'HEAD' ? request.body : undefined,
-        signal: controller.signal
+        body: request.method !== 'GET' && request.method !== 'HEAD' ? request.body : undefined
       });
-      
-      clearTimeout(timeoutId);
 
       // Add CORS headers to response
       const newHeaders = new Headers(response.headers);
