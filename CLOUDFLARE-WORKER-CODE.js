@@ -34,9 +34,9 @@ export default {
     
     // .NET backend tunnel (for balance-sheet/report endpoint)
     // ⚠️ UPDATE THIS when .NET backend tunnel URL changes
-    // To get the URL, run: cloudflared tunnel --url http://localhost:5002
+    // To get the URL, run: cloudflared tunnel --url http://localhost:5003
     // Copy the https://xxxxx.trycloudflare.com URL and paste it here
-    const DOTNET_TUNNEL_URL = 'https://comfortable-honest-garage-desired.trycloudflare.com'; // TODO: Update with actual .NET tunnel URL
+    const DOTNET_TUNNEL_URL = 'https://partially-var-currency-nation.trycloudflare.com';
 
     // Handle CORS preflight requests
     if (request.method === 'OPTIONS') {
