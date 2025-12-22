@@ -1117,16 +1117,19 @@ public class BalanceController : ControllerBase
             }
             
             // Get balances for the requested period
+            // Include ALL accounts from bs_preload, even with zero balance
+            // This ensures parent accounts and accounts that should appear in the report are included
             var periodBalances = new Dictionary<string, decimal>();
             foreach (var (account, periodBalancesDict) in allBalances)
             {
-                if (periodBalancesDict.TryGetValue(request.Period, out var balance) && balance != 0)
+                if (periodBalancesDict.TryGetValue(request.Period, out var balance))
                 {
                     periodBalances[account] = balance;
                 }
             }
             
-            _logger.LogInformation("📊 Step 1 data: Got {Count} BS accounts with non-zero balances from bs_preload", periodBalances.Count);
+            _logger.LogInformation("📊 Step 1 data: Got {Count} BS accounts from bs_preload ({NonZero} with non-zero balances)", 
+                periodBalances.Count, periodBalances.Values.Count(b => b != 0));
             
             // Step 2: Fetch parent relationships and account names for accounts with balances
             _logger.LogInformation("🔄 Step 2: Fetching account info and parent relationships...");
@@ -1191,7 +1194,8 @@ public class BalanceController : ControllerBase
             var parentChildMap = new Dictionary<string, List<string>>(); // parent -> children
             var parentAccountNumbers = new HashSet<string>(); // Track parent accounts that need to be included
 
-            // Process accounts with non-zero balances (from bs_preload cache)
+            // Process ALL accounts from bs_preload (including zero balance accounts)
+            // Zero balance accounts may be parent accounts or accounts that should appear in the report
             foreach (var (acctNum, balance) in periodBalances)
             {
                 // Get account info - prefer from accountInfoQuery, fallback to bs_preload cache
@@ -1433,7 +1437,82 @@ public class BalanceController : ControllerBase
                 }
             }
 
-            // Build ordered list of rows
+            // Build hierarchical tree structure
+            var accountTree = new Dictionary<string, List<string>>(); // parent -> children
+            var topLevelAccounts = new List<string>();
+
+            foreach (var account in accountMap.Values)
+            {
+                if (string.IsNullOrEmpty(account.ParentAccount))
+                {
+                    topLevelAccounts.Add(account.AccountNumber ?? "");
+                }
+                else
+                {
+                    if (!accountTree.ContainsKey(account.ParentAccount))
+                        accountTree[account.ParentAccount] = new List<string>();
+                    accountTree[account.ParentAccount].Add(account.AccountNumber ?? "");
+                }
+            }
+
+            // Mark parent accounts that have children as headers
+            foreach (var accountNum in accountMap.Keys)
+            {
+                if (accountTree.ContainsKey(accountNum) && accountTree[accountNum].Any())
+                {
+                    accountMap[accountNum].IsParentHeader = true;
+                }
+            }
+
+            // Recursive function to build ordered list hierarchically
+            void AddAccountHierarchy(string accountNum, List<BalanceSheetRow> orderedRows, string currentSection, string currentSubsection)
+            {
+                if (!accountMap.ContainsKey(accountNum))
+                    return;
+
+                var account = accountMap[accountNum];
+                
+                // Only add if it matches the current section/subsection (for proper grouping)
+                if (account.Section == currentSection && account.Subsection == currentSubsection)
+                {
+                    orderedRows.Add(account);
+                    
+                    // Add children recursively
+                    if (accountTree.ContainsKey(accountNum))
+                    {
+                        var children = accountTree[accountNum].OrderBy(n => n).ToList();
+                        foreach (var childNum in children)
+                        {
+                            AddAccountHierarchy(childNum, orderedRows, currentSection, currentSubsection);
+                        }
+                        
+                        // Add subtotal after children
+                        if (children.Any())
+                        {
+                            var childBalances = children
+                                .Where(c => accountMap.ContainsKey(c))
+                                .Select(c => accountMap[c].Balance)
+                                .ToList();
+                            
+                            var subtotal = new BalanceSheetRow
+                            {
+                                Section = account.Section,
+                                Subsection = account.Subsection,
+                                AccountName = $"Total {account.AccountName}",
+                                IsSubtotal = true,
+                                SubtotalFor = accountNum,
+                                Balance = childBalances.Sum(),
+                                IsCalculated = true,
+                                Source = "Subtotal",
+                                Level = account.Level + 1
+                            };
+                            orderedRows.Add(subtotal);
+                        }
+                    }
+                }
+            }
+
+            // Build ordered list of rows using hierarchical traversal
             var rows = new List<BalanceSheetRow>();
 
             // Section order: Assets, Liabilities, Equity
@@ -1450,14 +1529,87 @@ public class BalanceController : ControllerBase
 
             foreach (var section in sectionOrder)
             {
-                var sectionAccounts = accountMap.Values
+                var subsections = accountMap.Values
                     .Where(r => r.Section == section)
-                    .OrderBy(r => subsectionOrder.GetValueOrDefault(r.Subsection, 999))
-                    .ThenBy(r => r.Level)
-                    .ThenBy(r => r.AccountNumber)
+                    .Select(r => r.Subsection)
+                    .Distinct()
+                    .OrderBy(s => subsectionOrder.GetValueOrDefault(s, 999))
                     .ToList();
 
-                rows.AddRange(sectionAccounts);
+                foreach (var subsection in subsections)
+                {
+                    // Get top-level accounts for this section/subsection (no parent, or parent not in this section/subsection)
+                    var sectionTopLevel = topLevelAccounts
+                        .Where(acctNum => accountMap.ContainsKey(acctNum) &&
+                                         accountMap[acctNum].Section == section &&
+                                         accountMap[acctNum].Subsection == subsection)
+                        .OrderBy(acctNum => accountMap[acctNum].AccountNumber)
+                        .ToList();
+
+                    // Also include accounts that have parents, but their parent is in a different section/subsection
+                    var orphanedAccounts = accountMap.Values
+                        .Where(r => r.Section == section && 
+                                   r.Subsection == subsection &&
+                                   !string.IsNullOrEmpty(r.ParentAccount) &&
+                                   (!accountMap.ContainsKey(r.ParentAccount) ||
+                                    accountMap[r.ParentAccount].Section != section ||
+                                    accountMap[r.ParentAccount].Subsection != subsection))
+                        .Select(r => r.AccountNumber ?? "")
+                        .OrderBy(acctNum => acctNum)
+                        .ToList();
+
+                    // Add top-level accounts hierarchically
+                    foreach (var topLevelAcct in sectionTopLevel)
+                    {
+                        AddAccountHierarchy(topLevelAcct, rows, section, subsection);
+                    }
+
+                    // Add orphaned accounts (parent in different section/subsection)
+                    foreach (var orphanAcct in orphanedAccounts)
+                    {
+                        if (accountMap.ContainsKey(orphanAcct))
+                        {
+                            rows.Add(accountMap[orphanAcct]);
+                            // Add children if any
+                            if (accountTree.ContainsKey(orphanAcct))
+                            {
+                                var children = accountTree[orphanAcct]
+                                    .Where(c => accountMap.ContainsKey(c) &&
+                                               accountMap[c].Section == section &&
+                                               accountMap[c].Subsection == subsection)
+                                    .OrderBy(n => n)
+                                    .ToList();
+                                
+                                foreach (var childNum in children)
+                                {
+                                    AddAccountHierarchy(childNum, rows, section, subsection);
+                                }
+                                
+                                // Add subtotal if there are children in this section/subsection
+                                if (children.Any())
+                                {
+                                    var childBalances = children
+                                        .Select(c => accountMap[c].Balance)
+                                        .ToList();
+                                    
+                                    var subtotal = new BalanceSheetRow
+                                    {
+                                        Section = section,
+                                        Subsection = subsection,
+                                        AccountName = $"Total {accountMap[orphanAcct].AccountName}",
+                                        IsSubtotal = true,
+                                        SubtotalFor = orphanAcct,
+                                        Balance = childBalances.Sum(),
+                                        IsCalculated = true,
+                                        Source = "Subtotal",
+                                        Level = accountMap[orphanAcct].Level + 1
+                                    };
+                                    rows.Add(subtotal);
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             // Calculate special formulas (only if not skipped)
