@@ -10562,40 +10562,49 @@ For licensing inquiries, contact: legal@celigo.com
                     defaultClass = localStorage.getItem('netsuite_class') || '';
                 } catch(e) {}
                 
+                // DEBUG: Skip preload for faster debugging (set in localStorage or URL param)
+                const skipPreload = localStorage.getItem('BS_DEBUG_SKIP_PRELOAD') === 'true' || 
+                                   new URLSearchParams(window.location.search).get('skip_preload') === 'true';
+                
                 // Step 1: Preload BS account balances (can take 60-90s, but data gets cached)
                 // Step 2: Build report structure from cached data (fast, <5s)
-                updateProgress(10, '📥 Step 1 of 3: Preloading Balance Sheet Data', 'Fetching all BS account balances from NetSuite (this may take 60-90 seconds)...');
-                
-                // First, call bs_preload to cache all balances
-                console.log(`🔄 Step 1a: Calling bs_preload to cache all BS account balances...`);
-                const preloadStartTime = Date.now();
-                try {
-                    const preloadResponse = await fetch(`${SERVER_URL}/batch/bs_preload`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            period: periodFormatted,
-                            subsidiary: defaultSubsidiary || null,
-                            department: defaultDepartment || null,
-                            location: defaultLocation || null,
-                            class: defaultClass || null,
-                            book: null
-                        })
-                    });
+                if (!skipPreload) {
+                    updateProgress(10, '📥 Step 1 of 3: Preloading Balance Sheet Data', 'Fetching all BS account balances from NetSuite (this may take 60-90 seconds)...');
                     
-                    if (!preloadResponse.ok) {
-                        const errorData = await preloadResponse.json().catch(() => ({ error: `HTTP ${preloadResponse.status}` }));
-                        throw new Error(errorData.error || `Failed to preload BS balances (${preloadResponse.status})`);
+                    // First, call bs_preload to cache all balances
+                    console.log(`🔄 Step 1a: Calling bs_preload to cache all BS account balances...`);
+                    const preloadStartTime = Date.now();
+                    try {
+                        const preloadResponse = await fetch(`${getServerUrl()}/batch/bs_preload`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                period: periodFormatted,
+                                subsidiary: defaultSubsidiary || null,
+                                department: defaultDepartment || null,
+                                location: defaultLocation || null,
+                                class: defaultClass || null,
+                                book: null
+                            })
+                        });
+                        
+                        if (!preloadResponse.ok) {
+                            const errorData = await preloadResponse.json().catch(() => ({ error: `HTTP ${preloadResponse.status}` }));
+                            throw new Error(errorData.error || `Failed to preload BS balances (${preloadResponse.status})`);
+                        }
+                        
+                        const preloadData = await preloadResponse.json();
+                        const preloadElapsed = ((Date.now() - preloadStartTime) / 1000).toFixed(1);
+                        console.log(`✅ Step 1a complete: bs_preload finished in ${preloadElapsed}s`);
+                        console.log(`   Cached ${Object.keys(preloadData.balances || {}).length} accounts`);
+                        updateProgress(40, '📥 Step 1 of 3: Preloading Balance Sheet Data', `Cached ${Object.keys(preloadData.balances || {}).length} accounts...`);
+                    } catch (preloadError) {
+                        console.error('❌ bs_preload failed:', preloadError);
+                        // Continue anyway - report builder will fetch data on-demand
                     }
-                    
-                    const preloadData = await preloadResponse.json();
-                    const preloadElapsed = ((Date.now() - preloadStartTime) / 1000).toFixed(1);
-                    console.log(`✅ Step 1a complete: bs_preload finished in ${preloadElapsed}s`);
-                    console.log(`   Cached ${Object.keys(preloadData.balances || {}).length} accounts`);
-                    updateProgress(40, '📥 Step 1 of 3: Preloading Balance Sheet Data', `Cached ${Object.keys(preloadData.balances || {}).length} accounts...`);
-                } catch (preloadError) {
-                    console.error('❌ bs_preload failed:', preloadError);
-                    // Continue anyway - report builder will fetch data on-demand
+                } else {
+                    console.log(`⚡ DEBUG MODE: Skipping bs_preload for faster debugging`);
+                    updateProgress(40, '📥 Step 1 of 3: Preloading Balance Sheet Data', 'DEBUG: Skipping preload...');
                 }
                 
                 // Step 1b: Fetch Balance Sheet report structure from backend (uses cached data)
@@ -10734,13 +10743,20 @@ For licensing inquiries, contact: legal@celigo.com
                     // Row 2: Subsidiary & Period reference
                     const subsidiaryText = String(defaultSubsidiary || 'All Subsidiaries').trim();
                     const periodText = String(periodFormatted || '').trim();
-                    sheet.getRange("A2").values = [["Subsidiary:"]];
-                    sheet.getRange("B2").values = [[subsidiaryText]];
-                    sheet.getRange("C2").values = [["Period:"]];
-                    sheet.getRange("D2").values = [[periodText]];
-                    sheet.getRange("A2:D2").format.font.size = 11;
-                    sheet.getRange("A2").format.font.bold = true;
-                    sheet.getRange("C2").format.font.bold = true;
+                    console.log('🔍 Setting row 2...', { subsidiaryText, periodText });
+                    try {
+                        sheet.getRange("A2").values = [["Subsidiary:"]];
+                        sheet.getRange("B2").values = [[subsidiaryText]];
+                        sheet.getRange("C2").values = [["Period:"]];
+                        sheet.getRange("D2").values = [[periodText]];
+                        sheet.getRange("A2:D2").format.font.size = 11;
+                        sheet.getRange("A2").format.font.bold = true;
+                        sheet.getRange("C2").format.font.bold = true;
+                        console.log('✅ Row 2 set');
+                    } catch (e) {
+                        console.error('❌ Error setting row 2:', e.message);
+                        throw e;
+                    }
                     
                     // Row 3: Sync marker (hidden)
                     sheet.getRange("A3").values = [["=Balance_Sheet_Report="]];
