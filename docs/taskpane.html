@@ -10557,9 +10557,11 @@ For licensing inquiries, contact: legal@celigo.com
                 // Use SERVER_URL (Cloudflare Worker) which handles CORS and proxies to tunnel
                 updateProgress(10, '📥 Step 1 of 3: Loading Balance Sheet Data', 'Fetching structured Balance Sheet from NetSuite...');
                 
-                console.log(`📡 Calling Balance Sheet endpoint: ${SERVER_URL}/balance-sheet/report`);
-                console.log(`📅 Period being sent: "${periodFormatted}" (year=${year}, month=${month})`);
-                console.log(`📦 Request body:`, {
+                console.log(`═══════════════════════════════════════════════════════`);
+                console.log(`📊 BALANCE SHEET REPORT - Starting`);
+                console.log(`📡 Endpoint: ${SERVER_URL}/balance-sheet/report`);
+                console.log(`📅 Period: "${periodFormatted}" (year=${year}, month=${month})`);
+                console.log(`📦 Request:`, {
                     period: periodFormatted,
                     subsidiary: defaultSubsidiary || null,
                     department: defaultDepartment || null,
@@ -10567,6 +10569,9 @@ For licensing inquiries, contact: legal@celigo.com
                     class: defaultClass || null,
                     book: null
                 });
+                const requestStartTime = Date.now();
+                console.log(`⏱️  Request started at: ${new Date().toISOString()}`);
+                console.log(`═══════════════════════════════════════════════════════`);
                 
                 // Create AbortController for timeout
                 const controller = new AbortController();
@@ -10599,7 +10604,15 @@ For licensing inquiries, contact: legal@celigo.com
                     const reportData = await reportResponse.json();
                     const rows = reportData.rows || [];
                     
-                    console.log(`📊 Balance Sheet: Received ${rows.length} rows from backend`);
+                    const requestElapsed = ((Date.now() - requestStartTime) / 1000).toFixed(1);
+                    console.log(`✅ Balance Sheet: Received ${rows.length} rows from backend`);
+                    console.log(`⏱️  Request completed in: ${requestElapsed}s`);
+                    console.log(`📊 Response data:`, {
+                        rowCount: rows.length,
+                        totalAssets: reportData.total_assets || 0,
+                        totalLiabilities: reportData.total_liabilities || 0,
+                        totalEquity: reportData.total_equity || 0
+                    });
                     updateProgress(50, '📥 Step 1 of 3: Loading Balance Sheet Data', `Loaded ${rows.length} accounts and calculated rows...`);
                 } catch (fetchError) {
                     clearTimeout(timeoutId);

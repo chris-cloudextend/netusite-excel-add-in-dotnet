@@ -1038,9 +1038,14 @@ public class BalanceController : ControllerBase
             if (string.IsNullOrEmpty(request.Period))
                 return BadRequest(new { error = "period is required" });
 
-            _logger.LogInformation("📊 Generating Balance Sheet report for period: '{Period}'", request.Period);
-            _logger.LogDebug("Request details: Period={Period}, Subsidiary={Sub}, Department={Dept}, Class={Class}, Location={Loc}", 
-                request.Period, request.Subsidiary ?? "null", request.Department ?? "null", request.Class ?? "null", request.Location ?? "null");
+            _logger.LogInformation("═══════════════════════════════════════════════════════");
+            _logger.LogInformation("📊 BALANCE SHEET REPORT - Starting (using bs_preload cache)");
+            _logger.LogInformation("   Period: '{Period}'", request.Period);
+            _logger.LogInformation("   Subsidiary: {Sub}", request.Subsidiary ?? "(all)");
+            _logger.LogInformation("   Department: {Dept}", request.Department ?? "(all)");
+            _logger.LogInformation("   Class: {Class}", request.Class ?? "(all)");
+            _logger.LogInformation("   Location: {Loc}", request.Location ?? "(all)");
+            _logger.LogInformation("═══════════════════════════════════════════════════════");
 
             // Resolve filters
             var subsidiaryId = await _lookupService.ResolveSubsidiaryIdAsync(request.Subsidiary);
@@ -1075,7 +1080,8 @@ public class BalanceController : ControllerBase
 
             // OPTIMIZATION: Use bs_preload to get balances (cached and faster)
             // Then build report structure from cached data + fetch parent relationships
-            _logger.LogDebug("Step 1: Calling bs_preload to get/cache all BS account balances...");
+            _logger.LogInformation("🔄 Step 1: Calling bs_preload to get/cache all BS account balances...");
+            var preloadStartTime = DateTime.UtcNow;
             
             var preloadRequest = new BsPreloadRequest
             {
@@ -1088,9 +1094,12 @@ public class BalanceController : ControllerBase
             };
             
             var preloadResult = await PreloadBalanceSheetAccounts(preloadRequest);
+            var preloadElapsed = (DateTime.UtcNow - preloadStartTime).TotalSeconds;
+            _logger.LogInformation("✅ Step 1 complete: bs_preload finished in {Elapsed:F1}s", preloadElapsed);
+            
             if (preloadResult is not OkObjectResult okResult)
             {
-                _logger.LogError("bs_preload failed - cannot build Balance Sheet report");
+                _logger.LogError("❌ bs_preload failed - cannot build Balance Sheet report");
                 return preloadResult;
             }
             
@@ -1117,9 +1126,10 @@ public class BalanceController : ControllerBase
                 }
             }
             
-            _logger.LogInformation("Step 1 complete: Got {Count} BS accounts with non-zero balances from bs_preload", periodBalances.Count);
+            _logger.LogInformation("📊 Step 1 data: Got {Count} BS accounts with non-zero balances from bs_preload", periodBalances.Count);
             
             // Step 2: Fetch parent relationships and account names for accounts with balances
+            _logger.LogInformation("🔄 Step 2: Fetching account info and parent relationships...");
             var accountNumbers = periodBalances.Keys.ToList();
             
             Dictionary<string, string?> parentMap = new();
@@ -1140,8 +1150,9 @@ public class BalanceController : ControllerBase
                     WHERE a.acctnumber IN ({parentNumbersList})
                       AND a.isinactive = 'F'";
                 
-                _logger.LogDebug("Step 2: Fetching account info and parent relationships for {Count} accounts...", accountNumbers.Count);
+                _logger.LogInformation("   Querying account table for {Count} accounts...", accountNumbers.Count);
                 var accountInfoResults = await _netSuiteService.QueryRawAsync(accountInfoQuery, 30);
+                _logger.LogInformation("✅ Step 2 complete: Got account info for {Count} accounts", accountInfoResults.Count);
                 
                 foreach (var row in accountInfoResults)
                 {
