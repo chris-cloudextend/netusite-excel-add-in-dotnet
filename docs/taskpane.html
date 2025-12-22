@@ -10665,12 +10665,21 @@ For licensing inquiries, contact: legal@celigo.com
                 updateProgress(70, '📝 Step 3 of 3: Building Structure', 'Creating Balance Sheet layout...');
                 
                 await Excel.run(async (context) => {
-                    // Create new sheet
+                    // Create new sheet (delete existing if it exists)
                     let sheet;
                     const sheetName = `Balance Sheet ${periodFormatted.replace(' ', '_')}`;
                     try {
+                        // Try to get existing sheet first
+                        try {
+                            const existingSheet = context.workbook.worksheets.getItem(sheetName);
+                            existingSheet.delete();
+                        } catch (e) {
+                            // Sheet doesn't exist, that's fine
+                        }
+                        // Now create the new sheet
                         sheet = context.workbook.worksheets.add(sheetName);
                     } catch (e) {
+                        // Fallback: use timestamp if name conflict persists
                         sheet = context.workbook.worksheets.add(`BS_${Date.now()}`);
                     }
                     sheet.activate();
