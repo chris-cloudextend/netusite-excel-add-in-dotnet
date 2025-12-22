@@ -10763,6 +10763,11 @@ For licensing inquiries, contact: legal@celigo.com
                         throw e;
                     }
                     
+                    // CRITICAL: Sync after setting D2 so formulas can reference it
+                    console.log('🔍 Syncing after setting D2...');
+                    await context.sync();
+                    console.log('✅ D2 synced, period value is now available for formulas');
+                    
                     // Row 3: Sync marker (hidden)
                     sheet.getRange("A3").values = [["=Balance_Sheet_Report="]];
                     sheet.getRange("A3").format.font.color = "#FFFFFF";
