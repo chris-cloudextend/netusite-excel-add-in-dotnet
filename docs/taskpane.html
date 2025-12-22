@@ -10675,10 +10675,20 @@ For licensing inquiries, contact: legal@celigo.com
                     }
                     sheet.activate();
                     
-                    // Get default subsidiary
+                    // Get default subsidiary and currency format
                     let defaultSubsidiary = '';
+                    let currencyFormat = '$#,##0.00';  // Default to USD
                     try {
                         defaultSubsidiary = localStorage.getItem('netsuite_subsidiary') || '';
+                        // Try to get currency format from cache
+                        const currencyData = localStorage.getItem('netsuite_currency_cache');
+                        if (currencyData) {
+                            const parsed = JSON.parse(currencyData);
+                            if (parsed.default_subsidiary && parsed.formats) {
+                                const symbol = parsed.currencies?.[parsed.default_subsidiary] || 'USD';
+                                currencyFormat = parsed.formats[symbol] || '$#,##0.00';
+                            }
+                        }
                     } catch(e) {}
                     
                     // Row 1: Title
