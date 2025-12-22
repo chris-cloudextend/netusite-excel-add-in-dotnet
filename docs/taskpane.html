@@ -10847,6 +10847,11 @@ For licensing inquiries, contact: legal@celigo.com
                             sheet.getRange(`C${currentRow}`).numberFormat = [[currencyFormat]];
                         }
                         currentRow++;
+                        } catch (e) {
+                            console.error('Error adding account row:', e.message, 'row data:', row, 'currentRow:', currentRow);
+                            // Don't throw - skip this row and continue to avoid breaking entire report
+                            currentRow++; // Increment to avoid infinite loop
+                        }
                     }
                     
                     // Helper to add subtotal row
