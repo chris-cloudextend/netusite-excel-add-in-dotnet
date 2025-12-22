@@ -224,7 +224,7 @@
       "description": "Get the CHANGE in a Balance Sheet account between two dates. Returns balance(toDate) - balance(fromDate). ONLY for BS accounts - returns INVALIDACCT for P&L.",
       "helpUrl": "https://www.example.com/help",
       "result": {
-        "type": "any",
+        "type": "number",
         "dimensionality": "scalar"
       },
       "parameters": [
@@ -395,7 +395,7 @@
       "description": "Get calculated retained earnings (prior years' cumulative P&L). NetSuite calculates this dynamically - no account number needed.",
       "helpUrl": "https://www.example.com/help",
       "result": {
-        "type": "any",
+        "type": "number",
         "dimensionality": "scalar"
       },
       "parameters": [
@@ -597,7 +597,7 @@
       "description": "Get cumulative translation adjustment for consolidated multi-currency reports. This is a 'plug' figure that balances the Balance Sheet after currency translation.",
       "helpUrl": "https://www.example.com/help",
       "result": {
-        "type": "any",
+        "type": "number",
         "dimensionality": "scalar"
       },
       "parameters": [
