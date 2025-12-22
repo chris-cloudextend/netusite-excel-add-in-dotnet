@@ -11010,57 +11010,81 @@ For licensing inquiries, contact: legal@celigo.com
                         
                         // Add NETINCOME
                         if (netIncomeRow > 0) {
-                            sheet.getRange(`A${netIncomeRow}`).values = [['']];
-                            sheet.getRange(`B${netIncomeRow}`).values = [['Net Income']];
-                            const netIncomeFormula = defaultSubsidiary 
-                                ? `=XAVI.NETINCOME("$D$2", "$B$2")`
-                                : `=XAVI.NETINCOME("$D$2")`;
-                            sheet.getRange(`C${netIncomeRow}`).formulas = [[netIncomeFormula]];
-                            sheet.getRange(`B${netIncomeRow}`).format.font.italic = true;
-                            sheet.getRange(`C${netIncomeRow}`).numberFormat = [[currencyFormat]];
-                            currentRow++;
+                            try {
+                                sheet.getRange(`A${netIncomeRow}`).values = [['']];
+                                sheet.getRange(`B${netIncomeRow}`).values = [['Net Income']];
+                                const netIncomeFormula = defaultSubsidiary 
+                                    ? `=XAVI.NETINCOME("$D$2", "$B$2")`
+                                    : `=XAVI.NETINCOME("$D$2")`;
+                                sheet.getRange(`C${netIncomeRow}`).formulas = [[String(netIncomeFormula)]];
+                                sheet.getRange(`B${netIncomeRow}`).format.font.italic = true;
+                                sheet.getRange(`C${netIncomeRow}`).numberFormat = [[String(currencyFormat || '$#,##0.00')]];
+                                currentRow++;
+                            } catch (e) {
+                                console.error('Error adding NETINCOME:', e.message);
+                                currentRow++;
+                            }
                         }
                         
                         // Add RETAINEDEARNINGS
                         if (retainedEarningsRow > 0) {
-                            sheet.getRange(`A${retainedEarningsRow}`).values = [['']];
-                            sheet.getRange(`B${retainedEarningsRow}`).values = [['Retained Earnings']];
-                            const retainedEarningsFormula = defaultSubsidiary 
-                                ? `=XAVI.RETAINEDEARNINGS("$D$2", "$B$2")`
-                                : `=XAVI.RETAINEDEARNINGS("$D$2")`;
-                            sheet.getRange(`C${retainedEarningsRow}`).formulas = [[retainedEarningsFormula]];
-                            sheet.getRange(`B${retainedEarningsRow}`).format.font.italic = true;
-                            sheet.getRange(`C${retainedEarningsRow}`).numberFormat = [[currencyFormat]];
-                            currentRow++;
+                            try {
+                                sheet.getRange(`A${retainedEarningsRow}`).values = [['']];
+                                sheet.getRange(`B${retainedEarningsRow}`).values = [['Retained Earnings']];
+                                const retainedEarningsFormula = defaultSubsidiary 
+                                    ? `=XAVI.RETAINEDEARNINGS("$D$2", "$B$2")`
+                                    : `=XAVI.RETAINEDEARNINGS("$D$2")`;
+                                sheet.getRange(`C${retainedEarningsRow}`).formulas = [[String(retainedEarningsFormula)]];
+                                sheet.getRange(`B${retainedEarningsRow}`).format.font.italic = true;
+                                sheet.getRange(`C${retainedEarningsRow}`).numberFormat = [[String(currencyFormat || '$#,##0.00')]];
+                                currentRow++;
+                            } catch (e) {
+                                console.error('Error adding RETAINEDEARNINGS:', e.message);
+                                currentRow++;
+                            }
                         }
                         
                         // Add CTA
                         if (ctaRow > 0) {
-                            sheet.getRange(`A${ctaRow}`).values = [['']];
-                            sheet.getRange(`B${ctaRow}`).values = [['Cumulative Translation Adjustment']];
-                            const ctaFormula = defaultSubsidiary 
-                                ? `=XAVI.CTA("$D$2", "$B$2")`
-                                : `=XAVI.CTA("$D$2")`;
-                            sheet.getRange(`C${ctaRow}`).formulas = [[ctaFormula]];
-                            sheet.getRange(`B${ctaRow}`).format.font.italic = true;
-                            sheet.getRange(`C${ctaRow}`).numberFormat = [[currencyFormat]];
-                            currentRow++;
+                            try {
+                                sheet.getRange(`A${ctaRow}`).values = [['']];
+                                sheet.getRange(`B${ctaRow}`).values = [['Cumulative Translation Adjustment']];
+                                const ctaFormula = defaultSubsidiary 
+                                    ? `=XAVI.CTA("$D$2", "$B$2")`
+                                    : `=XAVI.CTA("$D$2")`;
+                                sheet.getRange(`C${ctaRow}`).formulas = [[String(ctaFormula)]];
+                                sheet.getRange(`B${ctaRow}`).format.font.italic = true;
+                                sheet.getRange(`C${ctaRow}`).numberFormat = [[String(currencyFormat || '$#,##0.00')]];
+                                currentRow++;
+                            } catch (e) {
+                                console.error('Error adding CTA:', e.message);
+                                currentRow++;
+                            }
                         }
                         
                         // Now add Equity total
-                        totalEquityRow = currentRow;
-                        sheet.getRange(`B${currentRow}`).values = [['TOTAL EQUITY']];
-                        // Guard against invalid row references
-                        if (equityStartRow > 0 && currentRow > equityStartRow) {
-                            sheet.getRange(`C${currentRow}`).formulas = [[`=SUBTOTAL(109,C${equityStartRow}:C${currentRow-1})`]];
-                        } else {
-                            sheet.getRange(`C${currentRow}`).values = [[0]];
+                        try {
+                            totalEquityRow = currentRow;
+                            sheet.getRange(`B${currentRow}`).values = [['TOTAL EQUITY']];
+                            // Guard against invalid row references
+                            if (equityStartRow > 0 && currentRow > equityStartRow) {
+                                sheet.getRange(`C${currentRow}`).formulas = [[`=SUBTOTAL(109,C${equityStartRow}:C${currentRow-1})`]];
+                            } else {
+                                sheet.getRange(`C${currentRow}`).values = [[0]];
+                            }
+                            sheet.getRange(`A${currentRow}:C${currentRow}`).format.font.bold = true;
+                            sheet.getRange(`A${currentRow}:C${currentRow}`).format.fill.color = '#DBEAFE';
+                            sheet.getRange(`C${currentRow}`).numberFormat = [[String(currencyFormat || '$#,##0.00')]];
+                            try {
+                                sheet.getRange(`C${currentRow}`).format.borders.getItem('EdgeTop').style = 'Double';
+                            } catch (borderError) {
+                                // Border might not exist, that's okay
+                            }
+                            currentRow += 2;
+                        } catch (e) {
+                            console.error('Error adding Equity total:', e.message);
+                            currentRow += 2;
                         }
-                        sheet.getRange(`A${currentRow}:C${currentRow}`).format.font.bold = true;
-                        sheet.getRange(`A${currentRow}:C${currentRow}`).format.fill.color = '#DBEAFE';
-                        sheet.getRange(`C${currentRow}`).numberFormat = [[currencyFormat]];
-                        sheet.getRange(`C${currentRow}`).format.borders.getItem('EdgeTop').style = 'Double';
-                        currentRow += 2;
                     } else if (currentSection === 'Equity') {
                         // Equity section exists but no equityStartRow - just add the total
                         totalEquityRow = currentRow;
