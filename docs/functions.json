@@ -151,17 +151,17 @@
           "dimensionality": "scalar"
         },
         {
+          "name": "toPeriod",
+          "description": "Ending period name (required)",
+          "type": "any",
+          "dimensionality": "scalar"
+        },
+        {
           "name": "fromPeriod",
           "description": "Starting period name (required for P&L, ignored for BS - can be null/comma/empty)",
           "type": "any",
           "dimensionality": "scalar",
           "optional": true
-        },
-        {
-          "name": "toPeriod",
-          "description": "Ending period name (required)",
-          "type": "any",
-          "dimensionality": "scalar"
         },
         {
           "name": "subsidiary",
