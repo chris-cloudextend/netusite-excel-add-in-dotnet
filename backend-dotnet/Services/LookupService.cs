@@ -633,9 +633,19 @@ public class LookupService : ILookupService
             if (!string.IsNullOrEmpty(subsidiaryId))
             {
                 // Get currencies valid for this specific subsidiary
+                // Find the subsidiary and its ancestors, then get all currencies from those subsidiaries
                 var ancestors = await GetSubsidiaryAncestorsAsync(subsidiaryId);
+                
+                // Include the subsidiary itself and all its ancestors
+                var relevantSubIds = new HashSet<string> { subsidiaryId };
+                foreach (var ancestorId in ancestors)
+                {
+                    relevantSubIds.Add(ancestorId);
+                }
+                
+                // Get all currencies from relevant subsidiaries
                 var validRoots = subsidiaries
-                    .Where(s => ancestors.Contains(s.Id) && 
+                    .Where(s => relevantSubIds.Contains(s.Id) && 
                                !s.IsElimination && 
                                !string.IsNullOrEmpty(s.Currency))
                     .Select(s => s.Currency!)
@@ -645,6 +655,9 @@ public class LookupService : ILookupService
                 {
                     validCurrencies.Add(currency);
                 }
+                
+                _logger.LogInformation("GetCurrenciesAsync for subsidiary {SubId}: Found {Count} valid currencies", 
+                    subsidiaryId, validCurrencies.Count);
             }
             else
             {
