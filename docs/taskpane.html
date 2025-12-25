@@ -15008,13 +15008,20 @@ export default {
             statusEl.style.color = '#0284c7';
             
             try {
-                const response = await fetch(`${getServerUrl()}/lookups/all`);
+                const serverUrl = getServerUrl();
+                console.log('🔍 Loading lookups from:', `${serverUrl}/lookups/all`);
+                const response = await fetch(`${serverUrl}/lookups/all`);
+                
                 if (!response.ok) {
-                    throw new Error(`API error: ${response.status}`);
+                    const errorText = await response.text();
+                    console.error('❌ API error response:', response.status, errorText);
+                    throw new Error(`API error: ${response.status} - ${errorText}`);
                 }
                 
                 const data = await response.json();
-                console.log('Lookups loaded:', data);
+                console.log('✅ Lookups loaded:', data);
+                console.log('   Subsidiaries:', data.subsidiaries?.length || 0);
+                console.log('   Currencies:', data.currencies?.length || 0);
                 
                 // Populate subsidiary dropdown - Show NAMES with hierarchical indentation
                 // Filter out elimination subsidiaries (backend already filters, but ensure frontend doesn't show them)
@@ -15022,19 +15029,28 @@ export default {
                 if (subSelect) {
                     subSelect.innerHTML = '<option value="">-- All (No Filter) --</option>';
                     
-                    // Sort subsidiaries hierarchically
-                    const subsidiaries = (data.subsidiaries || []).filter(sub => !sub.isElimination);
-                    const sortedSubs = sortSubsidiariesHierarchically(subsidiaries);
-                    
-                    sortedSubs.forEach(item => {
-                        const option = document.createElement('option');
-                        option.value = item.name;  // Use NAME as value (backend converts)
-                        // Add visual indentation based on depth
-                        const indent = '\u00A0\u00A0\u00A0\u00A0'.repeat(item.depth || 0);  // 4 non-breaking spaces per level
-                        const prefix = (item.depth || 0) > 0 ? '└─ ' : '';
-                        option.textContent = indent + prefix + item.name;
-                        subSelect.appendChild(option);
-                    });
+                    // Check if subsidiaries data exists
+                    if (!data.subsidiaries || data.subsidiaries.length === 0) {
+                        console.warn('⚠️ No subsidiaries returned from API');
+                        subSelect.innerHTML = '<option value="">-- No subsidiaries available --</option>';
+                    } else {
+                        // Sort subsidiaries hierarchically
+                        const subsidiaries = (data.subsidiaries || []).filter(sub => !sub.isElimination);
+                        const sortedSubs = sortSubsidiariesHierarchically(subsidiaries);
+                        
+                        console.log(`   Adding ${sortedSubs.length} subsidiaries to dropdown`);
+                        sortedSubs.forEach(item => {
+                            const option = document.createElement('option');
+                            option.value = item.name;  // Use NAME as value (backend converts)
+                            // Add visual indentation based on depth
+                            const indent = '\u00A0\u00A0\u00A0\u00A0'.repeat(item.depth || 0);  // 4 non-breaking spaces per level
+                            const prefix = (item.depth || 0) > 0 ? '└─ ' : '';
+                            option.textContent = indent + prefix + item.name;
+                            subSelect.appendChild(option);
+                        });
+                    }
+                } else {
+                    console.error('❌ subsidiarySelect element not found');
                 }
                 
                 // Populate currency dropdown (initially with all valid currencies)
@@ -15129,26 +15145,31 @@ export default {
             
             // Currency select must exist, but subsidiary select is optional (currency can work independently)
             if (!currencySelect) {
-                console.warn('Currency select not found');
+                console.warn('⚠️ Currency select element not found');
                 return;
             }
             
             try {
                 // Get subsidiary value if select exists, otherwise use empty string
                 const selectedSubsidiary = subsidiarySelect ? subsidiarySelect.value : '';
+                const serverUrl = getServerUrl();
                 const url = selectedSubsidiary 
-                    ? `${getServerUrl()}/lookups/currencies?subsidiary=${encodeURIComponent(selectedSubsidiary)}`
-                    : `${getServerUrl()}/lookups/currencies`;
+                    ? `${serverUrl}/lookups/currencies?subsidiary=${encodeURIComponent(selectedSubsidiary)}`
+                    : `${serverUrl}/lookups/currencies`;
                 
+                console.log('🔍 Fetching currencies from:', url);
                 const response = await fetch(url);
+                
                 if (!response.ok) {
-                    console.error('Error fetching currencies:', response.status);
+                    const errorText = await response.text();
+                    console.error('❌ Error fetching currencies:', response.status, errorText);
                     // Keep dropdown usable with default option even on error
-                    currencySelect.innerHTML = '<option value="">-- Default (No Currency) --</option>';
+                    currencySelect.innerHTML = '<option value="">-- Error loading currencies --</option>';
                     return;
                 }
                 
                 const data = await response.json();
+                console.log('✅ Currencies data received:', data);
                 currencySelect.innerHTML = '<option value="">-- Default (No Currency) --</option>';
                 
                 // Handle both response formats:
@@ -15158,6 +15179,7 @@ export default {
                 if (Array.isArray(data.currencies)) {
                     // BALANCECURRENCY format - array of currency objects
                     currencies = data.currencies;
+                    console.log(`   Found ${currencies.length} currencies (array format)`);
                 } else if (data.currencies && typeof data.currencies === 'object') {
                     // Legacy format - object mapping, convert to array format
                     // This happens when no subsidiary is selected
@@ -15166,13 +15188,17 @@ export default {
                         symbol: symbol || code,
                         name: code
                     }));
+                    console.log(`   Found ${currencies.length} currencies (object format, converted)`);
+                } else {
+                    console.warn('⚠️ Unexpected currency data format:', typeof data.currencies, data.currencies);
                 }
                 
                 // Always ensure at least the default option is available
                 if (currencies.length === 0) {
                     // If no currencies returned, at least keep the default option
-                    console.warn('No currencies returned from API, keeping default option only');
+                    console.warn('⚠️ No currencies returned from API, keeping default option only');
                 } else {
+                    console.log(`   Adding ${currencies.length} currencies to dropdown`);
                     currencies.forEach(currency => {
                         const option = document.createElement('option');
                         option.value = currency.name || currency.code || '';  // Use currency code (USD, EUR, etc.)
@@ -15181,9 +15207,9 @@ export default {
                     });
                 }
             } catch (error) {
-                console.error('Error updating currency dropdown:', error);
+                console.error('❌ Error updating currency dropdown:', error);
                 // Keep dropdown usable with default option even on error
-                currencySelect.innerHTML = '<option value="">-- Default (No Currency) --</option>';
+                currencySelect.innerHTML = '<option value="">-- Error loading currencies --</option>';
             }
         }
 
