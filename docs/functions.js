@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.0.4';  // Restored to pre-parameter-order-change + version bump
+const FUNCTIONS_VERSION = '4.0.0.5';  // Fixed: Office.onReady() registration + parameter order fix
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -3614,8 +3614,8 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
  * 
  * @customfunction BALANCEBETA
  * @param {any} account Account number or wildcard pattern (e.g., "10034" or "4*")
- * @param {any} fromPeriod Starting period (required for P&L, ignored for BS)
  * @param {any} toPeriod Ending period (required)
+ * @param {any} fromPeriod Starting period (required for P&L, ignored for BS) - optional
  * @param {any} subsidiary Subsidiary filter (use "" for all)
  * @param {any} currency Currency code for consolidation root (e.g., "USD", "EUR") - optional
  * @param {any} department Department filter (use "" for all)
@@ -3625,7 +3625,7 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
  * @returns {Promise<number|string>} The account balance, or error code
  * @requiresAddress
  */
-async function BALANCEBETA(account, fromPeriod, toPeriod, subsidiary, currency, department, location, classId, accountingBook) {
+async function BALANCEBETA(account, toPeriod, fromPeriod, subsidiary, currency, department, location, classId, accountingBook) {
     try {
         // Normalize account number
         account = normalizeAccountNumber(account);
@@ -6022,22 +6022,77 @@ function CLEARCACHE(itemsJson) {
 // ============================================================================
 // REGISTER FUNCTIONS WITH EXCEL
 // ============================================================================
-// CRITICAL: The manifest ALREADY defines namespace 'NS'
+// CRITICAL: The manifest ALREADY defines namespace 'XAVI'
 // We just register individual functions - Excel adds the XAVI. prefix automatically!
-if (typeof CustomFunctions !== 'undefined') {
-    CustomFunctions.associate('NAME', NAME);
-    CustomFunctions.associate('TYPE', TYPE);
-    CustomFunctions.associate('PARENT', PARENT);
-    CustomFunctions.associate('BALANCE', BALANCE);
-    CustomFunctions.associate('BALANCEBETA', BALANCEBETA);
-    CustomFunctions.associate('BALANCECHANGE', BALANCECHANGE);
-    CustomFunctions.associate('BUDGET', BUDGET);
-    CustomFunctions.associate('RETAINEDEARNINGS', RETAINEDEARNINGS);
-    CustomFunctions.associate('NETINCOME', NETINCOME);
-    CustomFunctions.associate('TYPEBALANCE', TYPEBALANCE);
-    CustomFunctions.associate('CTA', CTA);
-    CustomFunctions.associate('CLEARCACHE', CLEARCACHE);
-    console.log('✅ Custom functions registered with Excel');
-} else {
-    console.error('❌ CustomFunctions not available!');
-}
+// 
+// MICROSOFT BEST PRACTICE: CustomFunctions.associate() MUST be called AFTER Office.onReady()
+// This ensures Office.js is fully initialized before registration
+// ============================================================================
+
+(function registerCustomFunctions() {
+    function doRegistration() {
+        if (typeof CustomFunctions !== 'undefined' && CustomFunctions.associate) {
+            try {
+                CustomFunctions.associate('NAME', NAME);
+                CustomFunctions.associate('TYPE', TYPE);
+                CustomFunctions.associate('PARENT', PARENT);
+                CustomFunctions.associate('BALANCE', BALANCE);
+                CustomFunctions.associate('BALANCEBETA', BALANCEBETA);
+                CustomFunctions.associate('BALANCECHANGE', BALANCECHANGE);
+                CustomFunctions.associate('BUDGET', BUDGET);
+                CustomFunctions.associate('RETAINEDEARNINGS', RETAINEDEARNINGS);
+                CustomFunctions.associate('NETINCOME', NETINCOME);
+                CustomFunctions.associate('TYPEBALANCE', TYPEBALANCE);
+                CustomFunctions.associate('CTA', CTA);
+                CustomFunctions.associate('CLEARCACHE', CLEARCACHE);
+                console.log('✅ Custom functions registered with Excel');
+                return true;
+            } catch (error) {
+                console.error('❌ Error registering custom functions:', error);
+                return false;
+            }
+        } else {
+            console.warn('⚠️ CustomFunctions not available yet');
+            return false;
+        }
+    }
+    
+    // MICROSOFT BEST PRACTICE: Wait for Office.onReady() before registering
+    // This is critical for SharedRuntime mode on Mac
+    if (typeof Office !== 'undefined' && Office.onReady) {
+        Office.onReady(function(info) {
+            console.log('📋 Office.onReady() fired - registering custom functions');
+            console.log('   Platform:', info.platform);
+            console.log('   Host:', info.host);
+            
+            if (doRegistration()) {
+                // Signal successful registration
+                if (typeof window !== 'undefined') {
+                    window.xaviFunctionsRegistered = true;
+                }
+            }
+        });
+    } else {
+        // Fallback: Office.js not loaded yet, wait for it
+        if (typeof window !== 'undefined') {
+            var checkOffice = setInterval(function() {
+                if (typeof Office !== 'undefined' && Office.onReady) {
+                    clearInterval(checkOffice);
+                    Office.onReady(function(info) {
+                        console.log('📋 Office.onReady() fired (delayed) - registering custom functions');
+                        doRegistration();
+                    });
+                }
+            }, 50);
+            
+            // Timeout after 5 seconds
+            setTimeout(function() {
+                clearInterval(checkOffice);
+                if (typeof CustomFunctions !== 'undefined') {
+                    console.warn('⚠️ Office.onReady() timeout - attempting registration anyway');
+                    doRegistration();
+                }
+            }, 5000);
+        }
+    }
+})();

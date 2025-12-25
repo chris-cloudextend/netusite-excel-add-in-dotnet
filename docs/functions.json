@@ -1,11 +1,9 @@
 {
-  "_copyright": "Copyright (c) 2025 Celigo, Inc. All rights reserved. This source code is proprietary and confidential. Unauthorized use prohibited. Contact: legal@celigo.com",
   "functions": [
     {
       "id": "NAME",
       "name": "NAME",
       "description": "Get account name from account number",
-      "helpUrl": "https://www.example.com/help",
       "result": {
         "type": "string",
         "dimensionality": "scalar"
@@ -28,7 +26,6 @@
       "id": "TYPE",
       "name": "TYPE",
       "description": "Get account type (Income, Expense, Bank, etc.)",
-      "helpUrl": "https://www.example.com/help",
       "result": {
         "type": "string",
         "dimensionality": "scalar"
@@ -51,7 +48,6 @@
       "id": "PARENT",
       "name": "PARENT",
       "description": "Get parent account number",
-      "helpUrl": "https://www.example.com/help",
       "result": {
         "type": "string",
         "dimensionality": "scalar"
@@ -74,7 +70,6 @@
       "id": "BALANCE",
       "name": "BALANCE",
       "description": "Get GL account balance with filters (non-volatile - only recalculates when explicitly refreshed)",
-      "helpUrl": "https://www.example.com/help",
       "result": {
         "type": "number",
         "dimensionality": "scalar"
@@ -144,7 +139,6 @@
       "id": "BALANCEBETA",
       "name": "BALANCEBETA",
       "description": "Get GL account balance with explicit currency control for consolidation. Currency parameter determines consolidation root, while subsidiary filters transactions to exact match.",
-      "helpUrl": "https://www.example.com/help",
       "result": {
         "type": "number",
         "dimensionality": "scalar"
@@ -157,17 +151,17 @@
           "dimensionality": "scalar"
         },
         {
+          "name": "toPeriod",
+          "description": "Ending period name (required)",
+          "type": "any",
+          "dimensionality": "scalar"
+        },
+        {
           "name": "fromPeriod",
           "description": "Starting period name (required for P&L, ignored for BS)",
           "type": "any",
           "dimensionality": "scalar",
           "optional": true
-        },
-        {
-          "name": "toPeriod",
-          "description": "Ending period name (required)",
-          "type": "any",
-          "dimensionality": "scalar"
         },
         {
           "name": "subsidiary",
@@ -222,7 +216,6 @@
       "id": "BALANCECHANGE",
       "name": "BALANCECHANGE",
       "description": "Get the CHANGE in a Balance Sheet account between two dates. Returns balance(toDate) - balance(fromDate). ONLY for BS accounts - returns INVALIDACCT for P&L.",
-      "helpUrl": "https://www.example.com/help",
       "result": {
         "type": "number",
         "dimensionality": "scalar"
@@ -292,7 +285,6 @@
       "id": "BUDGET",
       "name": "BUDGET",
       "description": "Get budget amount with filters",
-      "helpUrl": "https://www.example.com/help",
       "result": {
         "type": "number",
         "dimensionality": "scalar"
@@ -369,7 +361,6 @@
       "id": "CLEARCACHE",
       "name": "CLEARCACHE",
       "description": "Internal: Clear in-memory cache (used by Refresh Selected)",
-      "helpUrl": "https://www.example.com/help",
       "result": {
         "type": "string",
         "dimensionality": "scalar"
@@ -393,7 +384,6 @@
       "id": "RETAINEDEARNINGS",
       "name": "RETAINEDEARNINGS",
       "description": "Get calculated retained earnings (prior years' cumulative P&L). NetSuite calculates this dynamically - no account number needed.",
-      "helpUrl": "https://www.example.com/help",
       "result": {
         "type": "number",
         "dimensionality": "scalar"
@@ -451,7 +441,6 @@
       "id": "NETINCOME",
       "name": "NETINCOME",
       "description": "Get net income for a period range. Use fromPeriod and toPeriod explicitly.",
-      "helpUrl": "https://www.example.com/help",
       "result": {
         "type": "number",
         "dimensionality": "scalar"
@@ -516,7 +505,6 @@
       "id": "TYPEBALANCE",
       "name": "TYPEBALANCE",
       "description": "Get total balance for all accounts of a specific type. Use useSpecialAccount=1 for special types (AcctRec, InvtAsset, etc.) for cash flow statements.",
-      "helpUrl": "https://www.example.com/help",
       "result": {
         "type": "number",
         "dimensionality": "scalar"
@@ -595,7 +583,6 @@
       "id": "CTA",
       "name": "CTA",
       "description": "Get cumulative translation adjustment for consolidated multi-currency reports. This is a 'plug' figure that balances the Balance Sheet after currency translation.",
-      "helpUrl": "https://www.example.com/help",
       "result": {
         "type": "number",
         "dimensionality": "scalar"
