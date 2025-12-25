@@ -136,9 +136,9 @@
       }
     },
     {
-      "id": "BALANCEBETA",
-      "name": "BALANCEBETA",
-      "description": "Get GL account balance with explicit currency control for consolidation. Currency parameter determines consolidation root, while subsidiary filters transactions to exact match.",
+      "id": "BALANCECURRENCY",
+      "name": "BALANCECURRENCY",
+      "description": "Get GL account balance with explicit currency control for consolidation. Currency parameter determines consolidation root, while subsidiary filters transactions to exact match. For Balance Sheet accounts, fromPeriod can be null/comma/empty (calculates from inception).",
       "result": {
         "type": "number",
         "dimensionality": "scalar"
@@ -151,17 +151,17 @@
           "dimensionality": "scalar"
         },
         {
+          "name": "fromPeriod",
+          "description": "Starting period name (required for P&L, ignored for BS - can be null/comma/empty)",
+          "type": "any",
+          "dimensionality": "scalar",
+          "optional": true
+        },
+        {
           "name": "toPeriod",
           "description": "Ending period name (required)",
           "type": "any",
           "dimensionality": "scalar"
-        },
-        {
-          "name": "fromPeriod",
-          "description": "Starting period name (required for P&L, ignored for BS)",
-          "type": "any",
-          "dimensionality": "scalar",
-          "optional": true
         },
         {
           "name": "subsidiary",

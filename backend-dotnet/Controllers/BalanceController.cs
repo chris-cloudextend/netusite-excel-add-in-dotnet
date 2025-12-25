@@ -96,6 +96,7 @@ public class BalanceController : ControllerBase
     }
 
     /// <summary>
+    /// <summary>
     /// Get GL account balance with explicit currency control for consolidation (BALANCEBETA).
     /// Currency parameter determines consolidation root, while subsidiary filters transactions to exact match.
     /// </summary>
@@ -143,6 +144,59 @@ public class BalanceController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error getting balancebeta for account {Account}", account);
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Get GL account balance with explicit currency control for consolidation (BALANCECURRENCY).
+    /// Currency parameter determines consolidation root, while subsidiary filters transactions to exact match.
+    /// For Balance Sheet accounts, fromPeriod can be null/comma/empty (calculates from inception).
+    /// </summary>
+    /// <remarks>
+    /// Examples:
+    /// - BS with currency: GET /balancecurrency?account=10034&amp;from_period=&amp;to_period=Jan%202025&amp;subsidiary=2&amp;currency=USD
+    /// - P&L with currency: GET /balancecurrency?account=4010&amp;from_period=Jan%202025&amp;to_period=Mar%202025&amp;subsidiary=2&amp;currency=EUR
+    /// </remarks>
+    [HttpGet("/balancecurrency")]
+    public async Task<IActionResult> GetBalanceCurrency(
+        [FromQuery] string account,
+        [FromQuery] string? from_period = null,
+        [FromQuery] string? to_period = null,
+        [FromQuery] string? subsidiary = null,
+        [FromQuery] string? currency = null,
+        [FromQuery] string? department = null,
+        [FromQuery(Name = "class")] string? classFilter = null,
+        [FromQuery] string? location = null,
+        [FromQuery] int? book = null)
+    {
+        if (string.IsNullOrEmpty(account))
+            return BadRequest(new { error = "Account number is required" });
+
+        if (string.IsNullOrEmpty(to_period))
+            return BadRequest(new { error = "to_period is required" });
+
+        try
+        {
+            var request = new BalanceBetaRequest
+            {
+                Account = account,
+                FromPeriod = from_period ?? "",
+                ToPeriod = to_period ?? "",
+                Subsidiary = subsidiary,
+                Currency = currency,
+                Department = department,
+                Class = classFilter,
+                Location = location,
+                Book = book
+            };
+
+            var result = await _balanceService.GetBalanceBetaAsync(request);
+            return Ok(result);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting balancecurrency for account {Account}", account);
             return StatusCode(500, new { error = ex.Message });
         }
     }

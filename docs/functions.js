@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.0.5';  // Fixed: Office.onReady() registration + parameter order fix
+const FUNCTIONS_VERSION = '4.0.0.6';  // Replaced BALANCEBETA with BALANCECURRENCY (fromPeriod before toPeriod, BS logic)
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -3606,16 +3606,19 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
 }
 
 // ============================================================================
-// BALANCEBETA - Get balance with explicit currency control for consolidation
+// BALANCECURRENCY - Get balance with explicit currency control for consolidation
 // ============================================================================
 /**
  * Get GL account balance with explicit currency control for consolidation.
  * Currency parameter determines consolidation root, while subsidiary filters transactions.
  * 
- * @customfunction BALANCEBETA
+ * For Balance Sheet accounts: fromPeriod can be null/comma/empty (calculates from inception).
+ * For P&L accounts: fromPeriod is required.
+ * 
+ * @customfunction BALANCECURRENCY
  * @param {any} account Account number or wildcard pattern (e.g., "10034" or "4*")
- * @param {any} toPeriod Ending period (required)
  * @param {any} fromPeriod Starting period (required for P&L, ignored for BS) - optional
+ * @param {any} toPeriod Ending period (required)
  * @param {any} subsidiary Subsidiary filter (use "" for all)
  * @param {any} currency Currency code for consolidation root (e.g., "USD", "EUR") - optional
  * @param {any} department Department filter (use "" for all)
@@ -3625,13 +3628,13 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
  * @returns {Promise<number|string>} The account balance, or error code
  * @requiresAddress
  */
-async function BALANCEBETA(account, toPeriod, fromPeriod, subsidiary, currency, department, location, classId, accountingBook) {
+async function BALANCECURRENCY(account, fromPeriod, toPeriod, subsidiary, currency, department, location, classId, accountingBook) {
     try {
         // Normalize account number
         account = normalizeAccountNumber(account);
         
         if (!account) {
-            console.error('❌ BALANCEBETA: account parameter is required');
+            console.error('❌ BALANCECURRENCY: account parameter is required');
             return '#MISSING_ACCT#';
         }
         
@@ -3640,8 +3643,17 @@ async function BALANCEBETA(account, toPeriod, fromPeriod, subsidiary, currency, 
         toPeriod = convertToMonthYear(toPeriod, false);
         
         if (!toPeriod) {
-            console.error('❌ BALANCEBETA: toPeriod is required');
+            console.error('❌ BALANCECURRENCY: toPeriod is required');
             return '#MISSING_PERIOD#';
+        }
+        
+        // Balance Sheet detection: If fromPeriod is empty/null, treat as cumulative (BS account)
+        // This matches the logic in BALANCE function
+        const isBSRequest = isCumulativeRequest(fromPeriod);
+        if (isBSRequest) {
+            // For BS accounts, clear fromPeriod to signal cumulative calculation
+            fromPeriod = '';
+            console.log(`📊 BALANCECURRENCY: BS account detected - using cumulative through ${toPeriod}`);
         }
         
         // Other parameters as strings
@@ -3654,7 +3666,7 @@ async function BALANCEBETA(account, toPeriod, fromPeriod, subsidiary, currency, 
         
         // Build cache key (include currency)
         const cacheKey = JSON.stringify({
-            type: 'balancebeta',
+            type: 'balancecurrency',
             account, fromPeriod, toPeriod, 
             subsidiary, currency, department, location, classId, accountingBook
         });
@@ -3662,7 +3674,7 @@ async function BALANCEBETA(account, toPeriod, fromPeriod, subsidiary, currency, 
         // Check cache
         if (cache.balance.has(cacheKey)) {
             const cached = cache.balance.get(cacheKey);
-            console.log(`✅ BALANCEBETA cache hit: ${account} = ${cached}`);
+            console.log(`✅ BALANCECURRENCY cache hit: ${account} = ${cached}`);
             return cached;
         }
         
@@ -3679,7 +3691,7 @@ async function BALANCEBETA(account, toPeriod, fromPeriod, subsidiary, currency, 
             book: accountingBook
         });
         
-        const response = await fetch(`${SERVER_URL}/balancebeta?${apiParams.toString()}`);
+        const response = await fetch(`${SERVER_URL}/balancecurrency?${apiParams.toString()}`);
         
         if (!response.ok) {
             const errorCode = [408, 504, 522, 523, 524].includes(response.status) ? 'TIMEOUT' :
@@ -3687,7 +3699,7 @@ async function BALANCEBETA(account, toPeriod, fromPeriod, subsidiary, currency, 
                              response.status === 401 || response.status === 403 ? 'AUTHERR' :
                              response.status >= 500 ? 'SERVERR' :
                              'APIERR';
-            console.error(`❌ BALANCEBETA API error: ${response.status} → ${errorCode}`);
+            console.error(`❌ BALANCECURRENCY API error: ${response.status} → ${errorCode}`);
             return errorCode;
         }
         
@@ -3695,7 +3707,7 @@ async function BALANCEBETA(account, toPeriod, fromPeriod, subsidiary, currency, 
         
         // Check for error in response
         if (data.error) {
-            console.log(`⚠️ BALANCEBETA: ${account} = ${data.error}`);
+            console.log(`⚠️ BALANCECURRENCY: ${account} = ${data.error}`);
             cache.balance.set(cacheKey, data.error);
             return data.error; // Return one-word error (e.g., INVALIDCURRENCY)
         }
@@ -3705,11 +3717,11 @@ async function BALANCEBETA(account, toPeriod, fromPeriod, subsidiary, currency, 
         // Cache the result
         cache.balance.set(cacheKey, balance);
         
-        console.log(`✅ BALANCEBETA: ${account} = ${balance} (currency: ${currency || 'default'})`);
+        console.log(`✅ BALANCECURRENCY: ${account} = ${balance} (currency: ${currency || 'default'})`);
         return balance;
         
     } catch (error) {
-        console.error('BALANCEBETA error:', error);
+        console.error('BALANCECURRENCY error:', error);
         return '#ERROR#';
     }
 }
@@ -6037,7 +6049,7 @@ function CLEARCACHE(itemsJson) {
                 CustomFunctions.associate('TYPE', TYPE);
                 CustomFunctions.associate('PARENT', PARENT);
                 CustomFunctions.associate('BALANCE', BALANCE);
-                CustomFunctions.associate('BALANCEBETA', BALANCEBETA);
+                CustomFunctions.associate('BALANCECURRENCY', BALANCECURRENCY);
                 CustomFunctions.associate('BALANCECHANGE', BALANCECHANGE);
                 CustomFunctions.associate('BUDGET', BUDGET);
                 CustomFunctions.associate('RETAINEDEARNINGS', RETAINEDEARNINGS);

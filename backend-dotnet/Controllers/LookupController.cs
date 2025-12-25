@@ -154,14 +154,14 @@ public class LookupController : ControllerBase
     /// <summary>
     /// Get currencies for each subsidiary.
     /// Returns format expected by frontend for currency formatting.
-    /// If subsidiary parameter provided, returns currencies for BALANCEBETA dropdown.
+    /// If subsidiary parameter provided, returns currencies for BALANCECURRENCY dropdown.
     /// </summary>
     [HttpGet("/lookups/currencies")]
     public async Task<IActionResult> GetCurrencies([FromQuery] string? subsidiary = null)
     {
         try
         {
-            // If subsidiary provided, return BALANCEBETA format
+            // If subsidiary provided, return BALANCECURRENCY format
             if (!string.IsNullOrEmpty(subsidiary))
             {
                 string? subsidiaryId = await _lookupService.ResolveSubsidiaryIdAsync(subsidiary);

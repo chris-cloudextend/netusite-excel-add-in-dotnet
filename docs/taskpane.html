@@ -4242,7 +4242,7 @@ For licensing inquiries, contact: legal@celigo.com
                     
                     <div class="formula-example-box">
                         <code>=XAVI.BALANCE(account, startPeriod, endPeriod, [subsidiary], [dept], [location], [class])</code><br>
-                        <code>=XAVI.BALANCEBETA(account, startPeriod, endPeriod, [subsidiary], [currency], [dept], [location], [class])</code>
+                        <code>=XAVI.BALANCECURRENCY(account, startPeriod, endPeriod, [subsidiary], [currency], [dept], [location], [class])</code>
                         <span class="result">Returns: Account balance for the period</span>
                     </div>
                     
@@ -4462,7 +4462,7 @@ For licensing inquiries, contact: legal@celigo.com
                     </div>
                     
                     <div class="filter-group">
-                        <label class="filter-label">Currency <span style="font-size:10px;color:#888;">(for BALANCEBETA)</span></label>
+                        <label class="filter-label">Currency <span style="font-size:10px;color:#888;">(for BALANCECURRENCY)</span></label>
                         <select id="currencySelect" class="filter-select">
                             <option value="">-- Default (No Currency) --</option>
                         </select>
@@ -5935,9 +5935,9 @@ For licensing inquiries, contact: legal@celigo.com
                     const selectedFormula = selection.formulas[0][0];
                     if (selectedFormula && typeof selectedFormula === 'string') {
                         const upper = selectedFormula.toUpperCase();
-                        if (upper.includes('XAVI.BALANCEBETA')) {
+                        if (upper.includes('XAVI.BALANCECURRENCY')) {
                             selectedCellHasXavi = true;
-                            selectedFormulaType = 'BALANCEBETA';
+                            selectedFormulaType = 'BALANCECURRENCY';
                         } else if (upper.includes('XAVI.BALANCE')) {
                             selectedCellHasXavi = true;
                             selectedFormulaType = 'BALANCE';
@@ -6072,7 +6072,7 @@ For licensing inquiries, contact: legal@celigo.com
                 statusEl.classList.add('has-selection');
                 
                 if (contextualState.selectedFormulaType === 'BALANCE' || 
-                    contextualState.selectedFormulaType === 'BALANCEBETA' ||
+                    contextualState.selectedFormulaType === 'BALANCECURRENCY' ||
                     contextualState.selectedFormulaType === 'TYPEBALANCE') {
                     iconEl.textContent = '🔍';
                     textEl.textContent = `${contextualState.selectedFormulaType} selected • Drill Down ready`;
@@ -15165,11 +15165,11 @@ export default {
                 currencySelect.innerHTML = '<option value="">-- Default (No Currency) --</option>';
                 
                 // Handle both response formats:
-                // 1. BALANCEBETA format (with subsidiary param): { currencies: [{name, symbol, code}] }
+                // 1. BALANCECURRENCY format (with subsidiary param): { currencies: [{name, symbol, code}] }
                 // 2. Legacy format (no subsidiary param): { currencies: {subId: symbol}, formats: {...} }
                 let currencies = [];
                 if (Array.isArray(data.currencies)) {
-                    // BALANCEBETA format - array of currency objects
+                    // BALANCECURRENCY format - array of currency objects
                     currencies = data.currencies;
                 } else if (data.currencies && typeof data.currencies === 'object') {
                     // Legacy format - object mapping, skip it (shouldn't happen with subsidiary param)
@@ -15202,7 +15202,7 @@ export default {
                 } else if (type === 'currency') {
                     selectId = 'currencySelect';
                     typeName = 'Currency';
-                    commentText = 'CURRENCY: Reference this cell in your XAVI.BALANCEBETA formulas to specify consolidation currency (e.g., USD, EUR).';
+                    commentText = 'CURRENCY: Reference this cell in your XAVI.BALANCECURRENCY formulas to specify consolidation currency (e.g., USD, EUR).';
                 } else if (type === 'department') {
                     selectId = 'departmentSelect';
                     typeName = 'Department';
