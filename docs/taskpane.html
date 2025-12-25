@@ -7364,8 +7364,8 @@ For licensing inquiries, contact: legal@celigo.com
                         errorTitle = '🖥️ Server Not Responding';
                         errorMsg = `Error 502: The backend server may not be running.\n\n` +
                             `To fix:\n` +
-                            `1. Check if server.py is running on port 5002\n` +
-                            `2. Run: cd backend && python3 server.py`;
+                            `1. Check if .NET backend is running on port 5002\n` +
+                            `2. Run: cd backend-dotnet && dotnet run`;
                     } else {
                         // 524 = Timeout
                         statusText.textContent = 'Tunnel Timeout';
@@ -18800,8 +18800,8 @@ export default {
                                     errorDesc = 'The backend server is not responding.';
                                     errorAction = `
                                         <strong>To fix:</strong><br>
-                                        1. Check if server.py is running on port 5002<br>
-                                        2. Run: <code>cd backend && python3 server.py</code>`;
+                                        1. Check if .NET backend is running on port 5002<br>
+                                        2. Run: <code>cd backend-dotnet && dotnet run</code>`;
                                 } else {
                                     errorTitle = '⏱️ Connection Timeout (Error ' + response.status + ')';
                                     errorDesc = 'The connection timed out. Server may be overloaded.';
