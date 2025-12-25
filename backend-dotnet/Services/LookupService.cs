@@ -42,7 +42,17 @@ public class LookupService : ILookupService
                 WHERE s.isinactive = 'F'
                 ORDER BY s.fullname";
 
-            var results = await _netSuiteService.QueryRawAsync(query);
+            // Use QueryRawWithErrorAsync to get proper error information
+            var queryResult = await _netSuiteService.QueryRawWithErrorAsync(query);
+            
+            if (!queryResult.Success)
+            {
+                _logger.LogError("Failed to query subsidiaries: {Error}", queryResult.ErrorCode);
+                throw new Exception($"Subsidiary query failed: {queryResult.ErrorCode}");
+            }
+            
+            var results = queryResult.Items ?? new List<JsonElement>();
+            _logger.LogInformation("Subsidiary query returned {Count} results", results.Count);
             var allSubs = results.Select(r => new SubsidiaryItem
             {
                 Id = r.TryGetProperty("id", out var id) ? id.ToString() : "",
@@ -595,6 +605,14 @@ public class LookupService : ILookupService
         return await _netSuiteService.GetOrSetCacheAsync(cacheKey, async () =>
         {
             var subsidiaries = await GetSubsidiariesAsync();
+            _logger.LogInformation("GetCurrenciesAsync: Found {Count} subsidiaries", subsidiaries.Count);
+            
+            if (subsidiaries.Count == 0)
+            {
+                _logger.LogWarning("No subsidiaries found - cannot determine valid currencies");
+                return new List<CurrencyItem>();
+            }
+            
             var validCurrencies = new HashSet<string>();
             
             if (!string.IsNullOrEmpty(subsidiaryId))
