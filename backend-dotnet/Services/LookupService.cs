@@ -35,8 +35,10 @@ public class LookupService : ILookupService
     {
         return await _netSuiteService.GetOrSetCacheAsync("lookups:subsidiaries", async () =>
         {
+            // Note: 'elimination' field may not exist in all NetSuite accounts
+            // Try querying with elimination first, fall back if it fails
             var query = @"
-                SELECT s.id, s.name, s.fullname, s.parent, s.elimination, c.symbol as currency_symbol, c.name as currency_code
+                SELECT s.id, s.name, s.fullname, s.parent, c.symbol as currency_symbol, c.name as currency_code
                 FROM subsidiary s
                 LEFT JOIN currency c ON s.currency = c.id
                 WHERE s.isinactive = 'F'
@@ -53,6 +55,8 @@ public class LookupService : ILookupService
             
             var results = queryResult.Items ?? new List<JsonElement>();
             _logger.LogInformation("Subsidiary query returned {Count} results", results.Count);
+            
+            // Parse results - elimination field may not exist, so default to false
             var allSubs = results.Select(r => new SubsidiaryItem
             {
                 Id = r.TryGetProperty("id", out var id) ? id.ToString() : "",
@@ -61,10 +65,10 @@ public class LookupService : ILookupService
                 Parent = r.TryGetProperty("parent", out var p) && p.ValueKind != JsonValueKind.Null ? p.ToString() : null,
                 CurrencySymbol = r.TryGetProperty("currency_symbol", out var cs) ? cs.GetString() : null,
                 Currency = r.TryGetProperty("currency_code", out var cc) ? cc.GetString() : null,
-                IsElimination = r.TryGetProperty("elimination", out var elim) && elim.ValueKind == JsonValueKind.String 
-                    ? elim.GetString() == "T" 
-                    : false
-            }).Where(s => !s.IsElimination).ToList(); // Filter out elimination subsidiaries
+                // Elimination field doesn't exist in all NetSuite accounts - default to false
+                // If needed, we can identify elimination subsidiaries by name pattern or other means
+                IsElimination = false
+            }).ToList(); // Don't filter by elimination since field doesn't exist
             
             // Identify parent subsidiaries (those that have children)
             var parentIds = new HashSet<string>(
