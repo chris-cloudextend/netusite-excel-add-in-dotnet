@@ -224,10 +224,17 @@ public class LookupController : ControllerBase
             };
 
             // Build currencies map: subsidiary_id -> symbol
+            // Handle duplicate IDs (consolidated versions) by using first occurrence
             var currencies = new Dictionary<string, string>();
             string defaultSubsidiary = "1";
             
-            foreach (var sub in subsidiaries)
+            // Group by ID to handle duplicates (consolidated versions have same ID)
+            var uniqueSubs = subsidiaries
+                .GroupBy(s => s.Id)
+                .Select(g => g.First())
+                .ToList();
+            
+            foreach (var sub in uniqueSubs)
             {
                 // Get symbol from currency code
                 var symbol = sub.CurrencySymbol ?? "$";

@@ -542,11 +542,21 @@ public class LookupService : ILookupService
         var ancestors = new List<string>();
         var subsidiaries = await GetSubsidiariesAsync();
         
+        // Resolve subsidiary ID if it's a name (e.g., "Celigo Inc. (Consolidated)")
+        var resolvedId = await ResolveSubsidiaryIdAsync(subsidiaryId);
+        if (string.IsNullOrEmpty(resolvedId))
+        {
+            resolvedId = subsidiaryId; // Fallback to original if resolution fails
+        }
+        
         // Build a map for quick lookup
-        var subMap = subsidiaries.ToDictionary(s => s.Id, s => s);
+        // Handle duplicate IDs (consolidated versions have same ID) by taking first occurrence
+        var subMap = subsidiaries
+            .GroupBy(s => s.Id)
+            .ToDictionary(g => g.Key, g => g.First());
         
         // Traverse parent chain upward
-        var current = subMap.GetValueOrDefault(subsidiaryId);
+        var current = subMap.GetValueOrDefault(resolvedId);
         while (current != null && !string.IsNullOrEmpty(current.Parent))
         {
             if (subMap.TryGetValue(current.Parent, out var parent))
@@ -560,7 +570,8 @@ public class LookupService : ILookupService
             }
         }
         
-        _logger.LogDebug("Subsidiary {Id} ancestors: {Ancestors}", subsidiaryId, string.Join(", ", ancestors));
+        _logger.LogDebug("Subsidiary {Id} (resolved: {ResolvedId}) ancestors: {Ancestors}", 
+            subsidiaryId, resolvedId, string.Join(", ", ancestors));
         return ancestors;
     }
 
