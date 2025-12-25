@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.0.8';  // Fixed BALANCECURRENCY: both periods required in metadata (like BALANCE), optional handling in JS
+const FUNCTIONS_VERSION = '4.0.0.9';  // BALANCECURRENCY: Added currency formatting, build mode precaching, empty cell validation
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -3630,6 +3630,49 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
  */
 async function BALANCECURRENCY(account, fromPeriod, toPeriod, subsidiary, currency, department, location, classId, accountingBook) {
     try {
+        // ================================================================
+        // VALIDATION: Check for empty cell references (CPA perspective)
+        // If a cell reference is provided but points to an empty cell,
+        // return an error to prevent silent 0 values that could be mistakes
+        // ================================================================
+        // Note: Excel passes undefined for empty cells, but we also check for empty strings
+        // We allow explicit null/empty (using ,,) but not cell references to empty cells
+        const rawAccount = account;
+        const rawFromPeriod = fromPeriod;
+        const rawToPeriod = toPeriod;
+        const rawSubsidiary = subsidiary;
+        const rawCurrency = currency;
+        const rawDepartment = department;
+        const rawLocation = location;
+        const rawClassId = classId;
+        const rawAccountingBook = accountingBook;
+        
+        // Check if account is a cell reference that's empty
+        // Cell references are typically Range objects or strings like "A1", not undefined
+        // If it's undefined, it means the parameter was omitted (OK), but if it's a string/object and empty, that's an error
+        if (account !== undefined && account !== null && account !== '' && 
+            (typeof account === 'string' || typeof account === 'object') &&
+            String(account).trim() === '') {
+            console.error('❌ BALANCECURRENCY: Account cell reference is empty. Please provide an account number or use "" for wildcard.');
+            return '#EMPTY_CELL: Account cell is empty. Provide account number or use "" for all accounts.';
+        }
+        
+        // Check toPeriod - this is required and cannot be empty
+        if (toPeriod !== undefined && toPeriod !== null && toPeriod !== '' &&
+            (typeof toPeriod === 'string' || typeof toPeriod === 'object') &&
+            String(toPeriod).trim() === '') {
+            console.error('❌ BALANCECURRENCY: ToPeriod cell reference is empty. This parameter is required.');
+            return '#EMPTY_CELL: ToPeriod cell is empty. This parameter is required (e.g., "Jan 2025").';
+        }
+        
+        // Check currency - if provided as cell reference, it should not be empty
+        if (currency !== undefined && currency !== null && currency !== '' &&
+            (typeof currency === 'string' || typeof currency === 'object') &&
+            String(currency).trim() === '') {
+            console.error('❌ BALANCECURRENCY: Currency cell reference is empty. Use "" to omit currency or provide a currency code.');
+            return '#EMPTY_CELL: Currency cell is empty. Use "" to omit currency, or provide a code like "USD" or "EUR".';
+        }
+        
         // Normalize account number
         account = normalizeAccountNumber(account);
         
@@ -3664,19 +3707,88 @@ async function BALANCECURRENCY(account, fromPeriod, toPeriod, subsidiary, curren
         classId = String(classId || '').trim();
         accountingBook = String(accountingBook || '').trim();
         
+        // ================================================================
+        // BUILD MODE DETECTION: Detect rapid formula creation (drag/paste)
+        // Same logic as BALANCE function for precaching
+        // ================================================================
+        const now = Date.now();
+        buildModeLastEvent = now;
+        
+        // Count formulas created in the current window
+        formulaCreationCount++;
+        
+        // Reset counter after inactivity
+        if (formulaCountResetTimer) clearTimeout(formulaCountResetTimer);
+        formulaCountResetTimer = setTimeout(() => {
+            formulaCreationCount = 0;
+        }, BUILD_MODE_WINDOW_MS);
+        
+        // Enter build mode if we see rapid formula creation
+        if (!buildMode && formulaCreationCount >= BUILD_MODE_THRESHOLD) {
+            console.log(`🔨 BUILD MODE: Detected ${formulaCreationCount} formulas in ${BUILD_MODE_WINDOW_MS}ms (BALANCECURRENCY)`);
+            enterBuildMode();
+        }
+        
+        // Reset the settle timer on every formula (we'll process after user stops)
+        if (buildModeTimer) {
+            clearTimeout(buildModeTimer);
+        }
+        buildModeTimer = setTimeout(() => {
+            buildModeTimer = null;
+            formulaCreationCount = 0;
+            if (buildMode) {
+                exitBuildModeAndProcess();
+            }
+        }, BUILD_MODE_SETTLE_MS);
+        
         // Build cache key (include currency)
+        const params = { account, fromPeriod, toPeriod, subsidiary, currency, department, location, classId, accountingBook };
         const cacheKey = JSON.stringify({
             type: 'balancecurrency',
-            account, fromPeriod, toPeriod, 
-            subsidiary, currency, department, location, classId, accountingBook
+            ...params
         });
         
-        // Check cache
+        // ================================================================
+        // CACHE CHECKS
+        // ================================================================
+        // Check in-memory cache FIRST
         if (cache.balance.has(cacheKey)) {
-            const cached = cache.balance.get(cacheKey);
-            console.log(`✅ BALANCECURRENCY cache hit: ${account} = ${cached}`);
-            return cached;
+            cacheStats.hits++;
+            return cache.balance.get(cacheKey);
         }
+        
+        // ================================================================
+        // BUILD MODE: Queue with Promise (will be resolved after batch)
+        // Same precaching logic as BALANCE function
+        // ================================================================
+        if (buildMode) {
+            // Skip requests where toPeriod is empty (cell reference not resolved yet)
+            if (!toPeriod || toPeriod === '') {
+                console.log(`⏳ BUILD MODE: Skipping ${account} - period not yet resolved (BALANCECURRENCY)`);
+                return new Promise((resolve) => {
+                    setTimeout(() => resolve('#BUSY'), 100);
+                });
+            }
+            
+            console.log(`🔨 BUILD MODE: Queuing ${account}/${fromPeriod || '(cumulative)'} → ${toPeriod} (BALANCECURRENCY)`);
+            return new Promise((resolve, reject) => {
+                buildModePending.push({ cacheKey, params, resolve, reject });
+            });
+        }
+        
+        // ================================================================
+        // NORMAL MODE: Cache miss - add to batch queue and return Promise
+        // ================================================================
+        // For cumulative (BS) requests: toPeriod required
+        // For period-range (P&L) requests: both required (toPeriod at minimum)
+        if (!toPeriod || toPeriod === '') {
+            console.log(`⏳ Skipping ${account} - period not yet resolved, will retry (BALANCECURRENCY)`);
+            return new Promise((resolve) => {
+                setTimeout(() => resolve('#BUSY'), 100);
+            });
+        }
+        
+        cacheStats.misses++;
         
         // Make API call
         const apiParams = new URLSearchParams({
@@ -3691,34 +3803,31 @@ async function BALANCECURRENCY(account, fromPeriod, toPeriod, subsidiary, curren
             book: accountingBook
         });
         
-        const response = await fetch(`${SERVER_URL}/balancecurrency?${apiParams.toString()}`);
-        
-        if (!response.ok) {
-            const errorCode = [408, 504, 522, 523, 524].includes(response.status) ? 'TIMEOUT' :
-                             response.status === 429 ? 'RATELIMIT' :
-                             response.status === 401 || response.status === 403 ? 'AUTHERR' :
-                             response.status >= 500 ? 'SERVERR' :
-                             'APIERR';
-            console.error(`❌ BALANCECURRENCY API error: ${response.status} → ${errorCode}`);
-            return errorCode;
-        }
-        
-        const data = await response.json();
-        
-        // Check for error in response
-        if (data.error) {
-            console.log(`⚠️ BALANCECURRENCY: ${account} = ${data.error}`);
-            cache.balance.set(cacheKey, data.error);
-            return data.error; // Return one-word error (e.g., INVALIDCURRENCY)
-        }
-        
-        const balance = parseFloat(data.balance) || 0;
-        
-        // Cache the result
-        cache.balance.set(cacheKey, balance);
-        
-        console.log(`✅ BALANCECURRENCY: ${account} = ${balance} (currency: ${currency || 'default'})`);
-        return balance;
+        // Return a Promise that will be resolved by the batch processor
+        return new Promise((resolve, reject) => {
+            console.log(`📥 QUEUED [balancecurrency]: ${account} for ${fromPeriod || '(cumulative)'} → ${toPeriod} (currency: ${currency || 'default'})`);
+            
+            pendingRequests.balance.set(cacheKey, {
+                params,
+                resolve,
+                reject,
+                timestamp: Date.now(),
+                endpoint: '/balancecurrency',
+                apiParams: apiParams.toString()
+            });
+            
+            // Start batch timer if not already running
+            if (!isFullRefreshMode && !batchTimer) {
+                console.log(`⏱️ STARTING batch timer (${BATCH_DELAY}ms) for BALANCECURRENCY`);
+                batchTimer = setTimeout(() => {
+                    console.log('⏱️ Batch timer FIRED!');
+                    batchTimer = null;
+                    processBatchQueue().catch(err => {
+                        console.error('❌ Batch processing error:', err);
+                    });
+                }, BATCH_DELAY);
+            }
+        });
         
     } catch (error) {
         console.error('BALANCECURRENCY error:', error);
@@ -4380,7 +4489,11 @@ async function processBatchQueue() {
         
         // Process each UNIQUE cumulative request once
         for (const [cacheKey, { params, requests }] of uniqueRequests) {
-            const { account, fromPeriod, toPeriod, subsidiary, department, location, classId, accountingBook } = params;
+            const { account, fromPeriod, toPeriod, subsidiary, department, location, classId, accountingBook, currency } = params;
+            
+            // Get endpoint from first request (all requests in group should have same endpoint)
+            const endpoint = requests[0]?.endpoint || '/balance';
+            const isBalanceCurrency = endpoint === '/balancecurrency';
             
             // ================================================================
             // TRY WILDCARD CACHE RESOLUTION FIRST
@@ -4415,13 +4528,19 @@ async function processBatchQueue() {
                     accountingbook: accountingBook || ''
                 });
                 
+                // Add currency parameter for BALANCECURRENCY
+                if (isBalanceCurrency && currency) {
+                    apiParams.append('currency', currency);
+                }
+                
                 // Request breakdown for wildcards so we can cache individual accounts
                 if (isWildcard) {
                     apiParams.append('include_breakdown', 'true');
                 }
                 
                 const waitingCount = requests.length > 1 ? ` (${requests.length} formulas waiting)` : '';
-                console.log(`   📤 Cumulative API: ${account} through ${toPeriod}${isWildcard ? ' (with breakdown)' : ''}${waitingCount}`);
+                const currencyInfo = isBalanceCurrency && currency ? ` (currency: ${currency})` : '';
+                console.log(`   📤 Cumulative API: ${account} through ${toPeriod}${isWildcard ? ' (with breakdown)' : ''}${currencyInfo}${waitingCount}`);
                 
                 // Rate limit: wait before making request if we've already made calls
                 // Prevents NetSuite 429 CONCURRENCY_LIMIT_EXCEEDED errors
@@ -4432,7 +4551,7 @@ async function processBatchQueue() {
                 
                 // Track query timing for slow query detection
                 const queryStartTime = Date.now();
-                const response = await fetch(`${SERVER_URL}/balance?${apiParams.toString()}`);
+                const response = await fetch(`${SERVER_URL}${endpoint}?${apiParams.toString()}`);
                 
                 if (response.ok) {
                     const contentType = response.headers.get('content-type') || '';

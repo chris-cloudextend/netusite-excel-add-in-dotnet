@@ -17523,8 +17523,21 @@ export default {
                         const upperFormula = formula.toUpperCase();
                         let subsidiaryParam = '';
                         
-                        if (upperFormula.includes('XAVI.BALANCE') && !upperFormula.includes('XAVI.TYPEBALANCE')) {
+                        if (upperFormula.includes('XAVI.BALANCE') && !upperFormula.includes('XAVI.TYPEBALANCE') && !upperFormula.includes('XAVI.BALANCECURRENCY')) {
                             subsidiaryParam = extractFormulaParam(formula, 3);
+                        } else if (upperFormula.includes('XAVI.BALANCECURRENCY')) {
+                            // BALANCECURRENCY: currency param is at index 4, subsidiary at index 3
+                            // For currency formatting, use currency param if provided, else subsidiary
+                            const currencyParam = extractFormulaParam(formula, 4);
+                            subsidiaryParam = extractFormulaParam(formula, 3);
+                            // If currency is provided, we'll use it for formatting instead of subsidiary
+                            if (currencyParam && currencyParam !== '""' && currencyParam !== "''" && currencyParam.trim() !== '') {
+                                // Store currency param for later use in formatting
+                                pendingCells.push({ row, col, subsidiaryParam, currencyParam, isBalanceCurrency: true });
+                            } else {
+                                pendingCells.push({ row, col, subsidiaryParam, isBalanceCurrency: true });
+                            }
+                            continue; // Skip to next iteration, already added to pendingCells
                         } else if (upperFormula.includes('XAVI.TYPEBALANCE')) {
                             subsidiaryParam = extractFormulaParam(formula, 3);
                         } else if (upperFormula.includes('XAVI.NETINCOME')) {
@@ -17569,25 +17582,73 @@ export default {
                 // Get subsidiary lookup (cached)
                 const subsidiaryNameToId = await getSubsidiaryLookup();
                 
-                // Apply formats to XAVI.BALANCE cells
+                // Apply formats to XAVI.BALANCE and XAVI.BALANCECURRENCY cells
                 let formatted = 0;
-                for (const { row, col, subsidiaryParam } of pendingCells) {
-                    let subId = '';
+                // Currency code to symbol mapping (for BALANCECURRENCY)
+                const currencyCodeToSymbol = {
+                    'USD': '$', 'EUR': '€', 'GBP': '£', 'JPY': '¥', 'CNY': '¥',
+                    'INR': '₹', 'AUD': 'A$', 'CAD': 'C$', 'HKD': 'HK$', 'SGD': 'S$',
+                    'NZD': 'NZ$', 'CHF': 'CHF', 'SEK': 'kr', 'NOK': 'kr', 'DKK': 'kr',
+                    'BRL': 'R$', 'ZAR': 'R', 'KRW': '₩', 'MXN': '$', 'PLN': 'zł',
+                    'CZK': 'Kč', 'HUF': 'Ft', 'RON': 'lei', 'THB': '฿', 'PHP': '₱',
+                    'MYR': 'RM', 'IDR': 'Rp', 'VND': '₫', 'TWD': 'NT$', 'ILS': '₪',
+                    'TRY': '₺', 'RUB': '₽', 'SAR': '﷼'
+                };
+                
+                for (const cell of pendingCells) {
+                    const { row, col, subsidiaryParam, currencyParam, isBalanceCurrency } = cell;
+                    let symbol = defaultSymbol;
+                    let format = defaultFormat;
                     
-                    if (subsidiaryParam) {
-                        if (/^\d+$/.test(subsidiaryParam)) {
-                            subId = subsidiaryParam;
-                        } else if (subsidiaryParam.startsWith('"') || subsidiaryParam.startsWith("'")) {
-                            const cleaned = subsidiaryParam.replace(/['"]/g, '').trim();
-                            subId = /^\d+$/.test(cleaned) ? cleaned : (subsidiaryNameToId[cleaned.toLowerCase()] || '');
-                        } else if (resolvedRefs[subsidiaryParam] !== undefined) {
-                            const resolvedValue = resolvedRefs[subsidiaryParam];
-                            subId = /^\d+$/.test(resolvedValue) ? resolvedValue : (subsidiaryNameToId[resolvedValue.toLowerCase()] || '');
+                    // For BALANCECURRENCY with currency parameter, use currency code to get symbol
+                    if (isBalanceCurrency && currencyParam) {
+                        let currencyCode = '';
+                        if (currencyParam.startsWith('"') || currencyParam.startsWith("'")) {
+                            currencyCode = currencyParam.replace(/['"]/g, '').trim().toUpperCase();
+                        } else if (resolvedRefs[currencyParam] !== undefined) {
+                            currencyCode = resolvedRefs[currencyParam].toUpperCase();
+                        } else {
+                            currencyCode = currencyParam.toUpperCase();
                         }
+                        
+                        if (currencyCode && currencyCodeToSymbol[currencyCode]) {
+                            symbol = currencyCodeToSymbol[currencyCode];
+                            format = formats[symbol] || defaultFormat;
+                            console.log(`💱 BALANCECURRENCY: Using currency ${currencyCode} → ${symbol}`);
+                        } else {
+                            // Fall back to subsidiary-based formatting
+                            let subId = '';
+                            if (subsidiaryParam) {
+                                if (/^\d+$/.test(subsidiaryParam)) {
+                                    subId = subsidiaryParam;
+                                } else if (subsidiaryParam.startsWith('"') || subsidiaryParam.startsWith("'")) {
+                                    const cleaned = subsidiaryParam.replace(/['"]/g, '').trim();
+                                    subId = /^\d+$/.test(cleaned) ? cleaned : (subsidiaryNameToId[cleaned.toLowerCase()] || '');
+                                } else if (resolvedRefs[subsidiaryParam] !== undefined) {
+                                    const resolvedValue = resolvedRefs[subsidiaryParam];
+                                    subId = /^\d+$/.test(resolvedValue) ? resolvedValue : (subsidiaryNameToId[resolvedValue.toLowerCase()] || '');
+                                }
+                            }
+                            symbol = subId && currencies[subId] ? currencies[subId] : defaultSymbol;
+                            format = formats[symbol] || defaultFormat;
+                        }
+                    } else {
+                        // Regular BALANCE or BALANCECURRENCY without currency param - use subsidiary
+                        let subId = '';
+                        if (subsidiaryParam) {
+                            if (/^\d+$/.test(subsidiaryParam)) {
+                                subId = subsidiaryParam;
+                            } else if (subsidiaryParam.startsWith('"') || subsidiaryParam.startsWith("'")) {
+                                const cleaned = subsidiaryParam.replace(/['"]/g, '').trim();
+                                subId = /^\d+$/.test(cleaned) ? cleaned : (subsidiaryNameToId[cleaned.toLowerCase()] || '');
+                            } else if (resolvedRefs[subsidiaryParam] !== undefined) {
+                                const resolvedValue = resolvedRefs[subsidiaryParam];
+                                subId = /^\d+$/.test(resolvedValue) ? resolvedValue : (subsidiaryNameToId[resolvedValue.toLowerCase()] || '');
+                            }
+                        }
+                        symbol = subId && currencies[subId] ? currencies[subId] : defaultSymbol;
+                        format = formats[symbol] || defaultFormat;
                     }
-                    
-                    const symbol = subId && currencies[subId] ? currencies[subId] : defaultSymbol;
-                    const format = formats[symbol] || defaultFormat;
                     
                     const range = usedRange.getCell(row, col);
                     range.numberFormat = [[format]];
@@ -17736,8 +17797,27 @@ export default {
                             const upperFormula = formula.toUpperCase();
                             let subsidiaryParam = '';
                             
-                            if (upperFormula.includes('XAVI.BALANCE') && !upperFormula.includes('XAVI.TYPEBALANCE')) {
+                            if (upperFormula.includes('XAVI.BALANCE') && !upperFormula.includes('XAVI.TYPEBALANCE') && !upperFormula.includes('XAVI.BALANCECURRENCY')) {
                                 subsidiaryParam = extractFormulaParam(formula, 3);
+                            } else if (upperFormula.includes('XAVI.BALANCECURRENCY')) {
+                                // BALANCECURRENCY: currency param is at index 4, subsidiary at index 3
+                                const currencyParam = extractFormulaParam(formula, 4);
+                                subsidiaryParam = extractFormulaParam(formula, 3);
+                                // If currency is provided, we'll use it for formatting instead of subsidiary
+                                if (currencyParam && currencyParam !== '""' && currencyParam !== "''" && currencyParam.trim() !== '') {
+                                    pendingCells.push({ row, col, subsidiaryParam, currencyParam, isBalanceCurrency: true });
+                                    // Also resolve currency cell reference if it's a cell ref
+                                    if (!currencyParam.startsWith('"') && !currencyParam.startsWith("'") && !/^[A-Z]{3}$/i.test(currencyParam.trim())) {
+                                        cellRefsToResolve.add(currencyParam);
+                                    }
+                                } else {
+                                    pendingCells.push({ row, col, subsidiaryParam, isBalanceCurrency: true });
+                                }
+                                // Also resolve subsidiary cell reference if needed
+                                if (subsidiaryParam && !subsidiaryParam.startsWith('"') && !subsidiaryParam.startsWith("'") && !/^\d+$/.test(subsidiaryParam)) {
+                                    cellRefsToResolve.add(subsidiaryParam);
+                                }
+                                continue; // Skip to next iteration, already added to pendingCells
                             } else if (upperFormula.includes('XAVI.TYPEBALANCE')) {
                                 subsidiaryParam = extractFormulaParam(formula, 3);
                             } else if (upperFormula.includes('XAVI.NETINCOME')) {
@@ -17786,45 +17866,95 @@ export default {
                     
                     updateLoading('Determining currencies...', 50);
                     
+                    // Currency code to symbol mapping (for BALANCECURRENCY)
+                    const currencyCodeToSymbol = {
+                        'USD': '$', 'EUR': '€', 'GBP': '£', 'JPY': '¥', 'CNY': '¥',
+                        'INR': '₹', 'AUD': 'A$', 'CAD': 'C$', 'HKD': 'HK$', 'SGD': 'S$',
+                        'NZD': 'NZ$', 'CHF': 'CHF', 'SEK': 'kr', 'NOK': 'kr', 'DKK': 'kr',
+                        'BRL': 'R$', 'ZAR': 'R', 'KRW': '₩', 'MXN': '$', 'PLN': 'zł',
+                        'CZK': 'Kč', 'HUF': 'Ft', 'RON': 'lei', 'THB': '฿', 'PHP': '₱',
+                        'MYR': 'RM', 'IDR': 'Rp', 'VND': '₫', 'TWD': 'NT$', 'ILS': '₪',
+                        'TRY': '₺', 'RUB': '₽', 'SAR': '﷼'
+                    };
+                    
                     // Third pass: Determine currency for each cell
-                    for (const { row, col, subsidiaryParam } of pendingCells) {
-                        let subId = '';
+                    for (const cell of pendingCells) {
+                        const { row, col, subsidiaryParam, currencyParam, isBalanceCurrency } = cell;
+                        let symbol = defaultSymbol;
+                        let format = defaultFormat;
                         
-                        if (subsidiaryParam) {
-                            // If it's a number, use directly
-                            if (/^\d+$/.test(subsidiaryParam)) {
-                                subId = subsidiaryParam;
-                            } else if (subsidiaryParam.startsWith('"') || subsidiaryParam.startsWith("'")) {
-                                // It's a quoted string - could be name or ID
-                                const cleaned = subsidiaryParam.replace(/['"]/g, '').trim();
-                                if (/^\d+$/.test(cleaned)) {
-                                    subId = cleaned;
-                                } else {
-                                    // Look up name to ID
-                                    subId = subsidiaryNameToId[cleaned.toLowerCase()] || '';
+                        // For BALANCECURRENCY with currency parameter, use currency code to get symbol
+                        if (isBalanceCurrency && currencyParam) {
+                            let currencyCode = '';
+                            if (currencyParam.startsWith('"') || currencyParam.startsWith("'")) {
+                                currencyCode = currencyParam.replace(/['"]/g, '').trim().toUpperCase();
+                            } else if (resolvedRefs[currencyParam] !== undefined) {
+                                currencyCode = resolvedRefs[currencyParam].toUpperCase();
+                            } else {
+                                currencyCode = currencyParam.toUpperCase();
+                            }
+                            
+                            if (currencyCode && currencyCodeToSymbol[currencyCode]) {
+                                symbol = currencyCodeToSymbol[currencyCode];
+                                format = formats[symbol] || defaultFormat;
+                                console.log(`   💱 BALANCECURRENCY: Using currency ${currencyCode} → ${symbol}`);
+                            } else {
+                                // Fall back to subsidiary-based formatting
+                                let subId = '';
+                                if (subsidiaryParam) {
+                                    if (/^\d+$/.test(subsidiaryParam)) {
+                                        subId = subsidiaryParam;
+                                    } else if (subsidiaryParam.startsWith('"') || subsidiaryParam.startsWith("'")) {
+                                        const cleaned = subsidiaryParam.replace(/['"]/g, '').trim();
+                                        if (/^\d+$/.test(cleaned)) {
+                                            subId = cleaned;
+                                        } else {
+                                            subId = subsidiaryNameToId[cleaned.toLowerCase()] || '';
+                                        }
+                                    } else if (resolvedRefs[subsidiaryParam] !== undefined) {
+                                        const resolvedValue = resolvedRefs[subsidiaryParam];
+                                        if (/^\d+$/.test(resolvedValue)) {
+                                            subId = resolvedValue;
+                                        } else {
+                                            subId = subsidiaryNameToId[resolvedValue.toLowerCase()] || '';
+                                        }
+                                    }
                                 }
-                            } else if (resolvedRefs[subsidiaryParam] !== undefined) {
-                                // It's a cell reference we resolved
-                                const resolvedValue = resolvedRefs[subsidiaryParam];
-                                if (/^\d+$/.test(resolvedValue)) {
-                                    subId = resolvedValue;
-                                } else {
-                                    // Look up the resolved name to ID
-                                    subId = subsidiaryNameToId[resolvedValue.toLowerCase()] || '';
+                                symbol = subId && currencies[subId] ? currencies[subId] : defaultSymbol;
+                                format = formats[symbol] || defaultFormat;
+                            }
+                        } else {
+                            // Regular BALANCE or BALANCECURRENCY without currency param - use subsidiary
+                            let subId = '';
+                            if (subsidiaryParam) {
+                                if (/^\d+$/.test(subsidiaryParam)) {
+                                    subId = subsidiaryParam;
+                                } else if (subsidiaryParam.startsWith('"') || subsidiaryParam.startsWith("'")) {
+                                    const cleaned = subsidiaryParam.replace(/['"]/g, '').trim();
+                                    if (/^\d+$/.test(cleaned)) {
+                                        subId = cleaned;
+                                    } else {
+                                        subId = subsidiaryNameToId[cleaned.toLowerCase()] || '';
+                                    }
+                                } else if (resolvedRefs[subsidiaryParam] !== undefined) {
+                                    const resolvedValue = resolvedRefs[subsidiaryParam];
+                                    if (/^\d+$/.test(resolvedValue)) {
+                                        subId = resolvedValue;
+                                    } else {
+                                        subId = subsidiaryNameToId[resolvedValue.toLowerCase()] || '';
+                                    }
                                 }
                             }
+                            symbol = subId && currencies[subId] ? currencies[subId] : defaultSymbol;
+                            format = formats[symbol] || defaultFormat;
                         }
-                        
-                        // Determine currency symbol and format
-                        const symbol = subId && currencies[subId] ? currencies[subId] : defaultSymbol;
-                        const format = formats[symbol] || defaultFormat;
                         
                         cellsToFormat.push({
                             row: row,
                             col: col,
                             format: format,
                             symbol: symbol,
-                            subId: subId
+                            subId: subId || ''
                         });
                     }
                     
