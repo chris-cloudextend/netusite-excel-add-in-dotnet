@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.0.7';  // Fixed BALANCECURRENCY parameter order (toPeriod before fromPeriod for Microsoft validation)
+const FUNCTIONS_VERSION = '4.0.0.8';  // Fixed BALANCECURRENCY: both periods required in metadata (like BALANCE), optional handling in JS
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -3617,8 +3617,8 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
  * 
  * @customfunction BALANCECURRENCY
  * @param {any} account Account number or wildcard pattern (e.g., "10034" or "4*")
+ * @param {any} fromPeriod Starting period (required for P&L, can be empty "" for BS)
  * @param {any} toPeriod Ending period (required)
- * @param {any} fromPeriod Starting period (required for P&L, ignored for BS) - optional
  * @param {any} subsidiary Subsidiary filter (use "" for all)
  * @param {any} currency Currency code for consolidation root (e.g., "USD", "EUR") - optional
  * @param {any} department Department filter (use "" for all)
@@ -3628,7 +3628,7 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
  * @returns {Promise<number|string>} The account balance, or error code
  * @requiresAddress
  */
-async function BALANCECURRENCY(account, toPeriod, fromPeriod, subsidiary, currency, department, location, classId, accountingBook) {
+async function BALANCECURRENCY(account, fromPeriod, toPeriod, subsidiary, currency, department, location, classId, accountingBook) {
     try {
         // Normalize account number
         account = normalizeAccountNumber(account);
