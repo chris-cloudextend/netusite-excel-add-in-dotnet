@@ -3169,6 +3169,76 @@ For licensing inquiries, contact: legal@celigo.com
             font-weight: 700;
         }
         
+        /* ============================================
+           INTERACTIVE TUTORIAL INFO BOXES - HIGH CONTRAST
+           Color blind accessible - light backgrounds, dark text
+           ============================================ */
+        .onboarding-info-box {
+            padding: 12px;
+            margin: 12px 0;
+            border-radius: 6px;
+            font-size: 12px;
+            line-height: 1.6;
+        }
+        
+        /* Info/Process boxes - Light blue background, dark blue text */
+        .onboarding-info-box.info,
+        .onboarding-multi-step-guide {
+            background: #e0f2fe !important; /* Light blue - high contrast */
+            border-left: 3px solid #0284c7 !important; /* Medium blue border */
+            color: #0c4a6e !important; /* Dark blue text - high contrast */
+        }
+        
+        .onboarding-info-box.info p,
+        .onboarding-multi-step-guide p,
+        .onboarding-multi-step-guide ol,
+        .onboarding-multi-step-guide li {
+            color: #0c4a6e !important; /* Dark blue text */
+            margin: 0;
+        }
+        
+        .onboarding-info-box.info strong,
+        .onboarding-multi-step-guide strong {
+            color: #0c4a6e !important; /* Dark blue for emphasis */
+            font-weight: 700;
+        }
+        
+        /* Action Card boxes - Light yellow/orange background, dark brown text (matches wildcards style) */
+        .onboarding-info-box.action {
+            background: #fef3c7 !important; /* Light yellow - high contrast */
+            border-left: 3px solid #f59e0b !important; /* Orange border */
+            color: #92400e !important; /* Dark brown text - high contrast (matches wildcards) */
+        }
+        
+        .onboarding-info-box.action p,
+        .onboarding-info-box.action span {
+            color: #92400e !important; /* Dark brown text */
+            margin: 0;
+        }
+        
+        .onboarding-info-box.action strong {
+            color: #92400e !important; /* Dark brown for emphasis */
+            font-weight: 700;
+        }
+        
+        /* Learning Card boxes - Light blue background, dark blue text */
+        .onboarding-info-box.learning {
+            background: #e0f2fe !important; /* Light blue - high contrast */
+            border-left: 3px solid #0284c7 !important; /* Medium blue border */
+            color: #0c4a6e !important; /* Dark blue text - high contrast */
+        }
+        
+        .onboarding-info-box.learning p,
+        .onboarding-info-box.learning span {
+            color: #0c4a6e !important; /* Dark blue text */
+            margin: 0;
+        }
+        
+        .onboarding-info-box.learning strong {
+            color: #0c4a6e !important; /* Dark blue for emphasis */
+            font-weight: 700;
+        }
+        
         .onboarding-step {
             display: none;
             text-align: center;
@@ -5310,9 +5380,9 @@ For licensing inquiries, contact: legal@celigo.com
                     <div class="overwrite-warning">
                         <span><strong>Important:</strong> This tutorial will write to your active sheet and may overwrite existing data. Use a blank sheet if you want to preserve your current work.</span>
                     </div>
-                    <div class="onboarding-multi-step-guide" style="background: linear-gradient(135deg, rgba(59, 130, 246, 0.1) 0%, rgba(37, 99, 235, 0.1) 100%); border-left: 3px solid #3b82f6; padding: 12px; margin: 12px 0; border-radius: 6px;">
-                        <p style="margin: 0; font-size: 12px; color: #1e40af; font-weight: 600; margin-bottom: 8px;">📋 Two-Step Process:</p>
-                        <ol style="margin: 0; padding-left: 20px; font-size: 12px; color: #1e40af; line-height: 1.8;">
+                    <div class="onboarding-multi-step-guide onboarding-info-box info">
+                        <p style="font-weight: 600; margin-bottom: 8px;">📋 Two-Step Process:</p>
+                        <ol style="padding-left: 20px; line-height: 1.8;">
                             <li>Click <strong>"🔍 Find Accounts With Activity"</strong> to see available accounts</li>
                             <li>Then <strong>select an account</strong> from the list that appears</li>
                         </ol>
@@ -5364,8 +5434,8 @@ For licensing inquiries, contact: legal@celigo.com
                     <p class="onboarding-desc">
                         We added 3 more accounts. <strong>Drag the formula corner down</strong> to fill them — or we'll do it for you!
                     </p>
-                    <div style="background: linear-gradient(135deg, rgba(245, 158, 11, 0.1) 0%, rgba(217, 119, 6, 0.1) 100%); border-left: 3px solid #f59e0b; padding: 12px; margin: 12px 0; border-radius: 6px;">
-                        <p style="margin: 0; font-size: 12px; color: #92400e; display: flex; align-items: center; gap: 8px;">
+                    <div class="onboarding-info-box action">
+                        <p style="display: flex; align-items: center; gap: 8px;">
                             <span style="font-size: 16px;">✨</span>
                             <span><strong>Action Card:</strong> Click <strong>"✨ Auto-Fill Rows"</strong> to perform an action, or <strong>"Continue →"</strong> to proceed.</span>
                         </p>
@@ -5398,8 +5468,8 @@ For licensing inquiries, contact: legal@celigo.com
                     <p class="onboarding-desc">
                         Now <strong>drag right</strong> across the columns to fill all 12 months! This is the power of Excel + XAVI.
                     </p>
-                    <div style="background: linear-gradient(135deg, rgba(245, 158, 11, 0.1) 0%, rgba(217, 119, 6, 0.1) 100%); border-left: 3px solid #f59e0b; padding: 12px; margin: 12px 0; border-radius: 6px;">
-                        <p style="margin: 0; font-size: 12px; color: #92400e; display: flex; align-items: center; gap: 8px;">
+                    <div class="onboarding-info-box action">
+                        <p style="display: flex; align-items: center; gap: 8px;">
                             <span style="font-size: 16px;">✨</span>
                             <span><strong>Action Card:</strong> Click <strong>"✨ Auto-Fill Months"</strong> to perform an action, or <strong>"Continue →"</strong> to proceed.</span>
                         </p>
@@ -5456,8 +5526,8 @@ For licensing inquiries, contact: legal@celigo.com
                     <p class="onboarding-desc">
                         Use <strong>TYPEBALANCE</strong> to sum all accounts of a type!
                     </p>
-                    <div style="background: linear-gradient(135deg, rgba(59, 130, 246, 0.1) 0%, rgba(37, 99, 235, 0.1) 100%); border-left: 3px solid #3b82f6; padding: 12px; margin: 12px 0; border-radius: 6px;">
-                        <p style="margin: 0; font-size: 12px; color: #1e40af; display: flex; align-items: center; gap: 8px;">
+                    <div class="onboarding-info-box learning">
+                        <p style="display: flex; align-items: center; gap: 8px;">
                             <span style="font-size: 16px;">📖</span>
                             <span><strong>Learning Card:</strong> This section teaches you about TYPEBALANCE. Click <strong>"Continue →"</strong> to proceed.</span>
                         </p>
@@ -5485,8 +5555,8 @@ For licensing inquiries, contact: legal@celigo.com
                     <p class="onboarding-desc">
                         Need a list of your accounts? Use <strong>Bulk Add</strong>!
                     </p>
-                    <div style="background: linear-gradient(135deg, rgba(245, 158, 11, 0.1) 0%, rgba(217, 119, 6, 0.1) 100%); border-left: 3px solid #f59e0b; padding: 12px; margin: 12px 0; border-radius: 6px;">
-                        <p style="margin: 0; font-size: 12px; color: #92400e; display: flex; align-items: center; gap: 8px;">
+                    <div class="onboarding-info-box action">
+                        <p style="display: flex; align-items: center; gap: 8px;">
                             <span style="font-size: 16px;">✨</span>
                             <span><strong>Action Card:</strong> Click <strong>"➕ Bulk Add Accounts Now"</strong> to perform an action, or <strong>"Continue →"</strong> to proceed.</span>
                         </p>
@@ -5516,8 +5586,8 @@ For licensing inquiries, contact: legal@celigo.com
                     <p class="onboarding-desc">
                         Use <strong>cell references</strong> for dynamic reports!
                     </p>
-                    <div style="background: linear-gradient(135deg, rgba(59, 130, 246, 0.1) 0%, rgba(37, 99, 235, 0.1) 100%); border-left: 3px solid #3b82f6; padding: 12px; margin: 12px 0; border-radius: 6px;">
-                        <p style="margin: 0; font-size: 12px; color: #1e40af; display: flex; align-items: center; gap: 8px;">
+                    <div class="onboarding-info-box learning">
+                        <p style="display: flex; align-items: center; gap: 8px;">
                             <span style="font-size: 16px;">📖</span>
                             <span><strong>Learning Card:</strong> This section teaches you about dynamic parameters. Click <strong>"Continue →"</strong> to proceed.</span>
                         </p>
@@ -5545,8 +5615,8 @@ For licensing inquiries, contact: legal@celigo.com
                     <p class="onboarding-desc">
                         Want to see the transactions behind any number? Use <strong>View Transactions</strong>!
                     </p>
-                    <div style="background: linear-gradient(135deg, rgba(245, 158, 11, 0.1) 0%, rgba(217, 119, 6, 0.1) 100%); border-left: 3px solid #f59e0b; padding: 12px; margin: 12px 0; border-radius: 6px;">
-                        <p style="margin: 0; font-size: 12px; color: #92400e; display: flex; align-items: center; gap: 8px;">
+                    <div class="onboarding-info-box action">
+                        <p style="display: flex; align-items: center; gap: 8px;">
                             <span style="font-size: 16px;">✨</span>
                             <span><strong>Action Card:</strong> Click <strong>"🔍 Drill Down Now"</strong> to perform an action, or <strong>"Continue →"</strong> to proceed.</span>
                         </p>
