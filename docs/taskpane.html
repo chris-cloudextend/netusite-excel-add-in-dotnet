@@ -15245,20 +15245,20 @@ export default {
                 // Handle both response formats:
                 // 1. BALANCECURRENCY format (with subsidiary param): { currencies: [{name, symbol, code}] }
                 // 2. Legacy format (no subsidiary param): { currencies: {subId: symbol}, formats: {...} }
+                //    NOTE: Legacy format keys are SUBSIDIARY IDs, not currency codes! Cannot be used for dropdown.
                 let currencies = [];
                 if (Array.isArray(data.currencies)) {
-                    // BALANCECURRENCY format - array of currency objects
+                    // BALANCECURRENCY format - array of currency objects with name (code), symbol, etc.
                     currencies = data.currencies;
                     console.log(`   Found ${currencies.length} currencies (array format)`);
                 } else if (data.currencies && typeof data.currencies === 'object') {
-                    // Legacy format - object mapping, convert to array format
-                    // This happens when no subsidiary is selected
-                    currencies = Object.entries(data.currencies).map(([code, symbol]) => ({
-                        code: code,
-                        symbol: symbol || code,
-                        name: code
-                    }));
-                    console.log(`   Found ${currencies.length} currencies (object format, converted)`);
+                    // Legacy format - object mapping {subId: symbol}
+                    // This format is for currency formatting, NOT for currency selection dropdown
+                    // Keys are subsidiary IDs (1, 2, 3), not currency codes (USD, AUD)
+                    // We cannot use this format for the dropdown - it doesn't have currency codes
+                    console.warn('⚠️ Legacy currency format received (subsidiary IDs, not codes). Cannot use for dropdown.');
+                    console.warn('   Legacy format is for currency formatting only. Currency dropdown requires a selected subsidiary.');
+                    currencies = []; // Empty array - cannot convert subsidiary IDs to currency codes
                 } else {
                     console.warn('⚠️ Unexpected currency data format:', typeof data.currencies, data.currencies);
                 }
