@@ -36,7 +36,7 @@ XAVI.RETAINEDEARNINGS(period, [subsidiary], [accountingBook], [classId], [depart
 - **accountingBook**: Optional. Defaults to Primary Book
 - **classId, department, location**: Optional segment filters
 
-**Backend Logic (server.py):**
+**Backend Logic (.NET Backend):**
 ```
 RE = Sum of all P&L from inception through prior fiscal year end
    + Any manual journal entries posted directly to RetainedEarnings accounts
@@ -397,27 +397,32 @@ BUILTIN.CONSOLIDATE(
 RE = Prior Years' P&L + Posted RE Adjustments
 ```
 
-### Backend Endpoint (server.py)
+### Backend Endpoint (.NET Backend)
 
-```python
-@app.route('/retained-earnings', methods=['POST'])
-def calculate_retained_earnings():
-    """
-    Calculate Retained Earnings (prior years' cumulative P&L)
+**Controller:** `backend-dotnet/Controllers/SpecialFormulaController.cs`
+
+**Endpoint:** `POST /retained-earnings`
+
+```csharp
+[HttpPost("retained-earnings")]
+public async Task<IActionResult> CalculateRetainedEarnings([FromBody] RetainedEarningsRequest request)
+{
+    // Calculate Retained Earnings (prior years' cumulative P&L)
+    // RE = Sum of all P&L transactions from inception through prior fiscal year end
+    //    + Any manual journal entries posted directly to RetainedEarnings accounts
     
-    RE = Sum of all P&L transactions from inception through prior fiscal year end
-       + Any manual journal entries posted directly to RetainedEarnings accounts
-    
-    Request body: {
-        period: "Mar 2025",
-        subsidiary: "1" or "Celigo Inc." (optional),
-        accountingBook: "1" (optional),
-        classId: "1" (optional),
-        department: "1" (optional),
-        location: "1" (optional)
-    }
-    """
+    // Request body: {
+    //     period: "Mar 2025",
+    //     subsidiary: "1" or "Celigo Inc." (optional),
+    //     accountingBook: "1" (optional),
+    //     classId: "1" (optional),
+    //     department: "1" (optional),
+    //     location: "1" (optional)
+    // }
+}
 ```
+
+**Note:** Legacy Python implementation (`backend/server.py`) is kept for reference only.
 
 ### Query 1: Prior Years' P&L
 
@@ -501,25 +506,27 @@ retained_earnings = prior_pl + posted_re
 NI = Sum of all P&L from fiscal year start through target period end
 ```
 
-### Backend Endpoint (server.py)
+### Backend Endpoint (.NET Backend)
 
-```python
-@app.route('/net-income', methods=['POST'])
-def calculate_net_income():
-    """
-    Calculate Net Income (current fiscal year P&L through target period)
-    
-    NI = Sum of all P&L transactions from FY start through target period end
-    
-    Request body: {
-        period: "Mar 2025",
-        subsidiary: "1" or "Celigo Inc." (optional),
-        accountingBook: "1" (optional),
-        classId: "1" (optional),
-        department: "1" (optional),
-        location: "1" (optional)
-    }
-    """
+**Controller:** `backend-dotnet/Controllers/SpecialFormulaController.cs`
+
+**Endpoint:** `POST /net-income`
+
+```csharp
+[HttpPost("net-income")]
+public async Task<IActionResult> CalculateNetIncome([FromBody] NetIncomeRequest request)
+{
+    // Calculate Net Income (current fiscal year P&L through target period)
+    // NI = Sum of all P&L transactions from FY start through target period end
+    //
+    // Request body: {
+    //     period: "Mar 2025",
+    //     subsidiary: "1" or "Celigo Inc." (optional),
+    //     accountingBook: "1" (optional),
+    //     classId: "1" (optional),
+    //     department: "1" (optional),
+    //     location: "1" (optional)
+    // }
 ```
 
 ### Single Query
@@ -559,26 +566,28 @@ CTA = (Total Assets - Total Liabilities) - Posted Equity - Retained Earnings - N
 
 This is the **only way** to get 100% accuracy because NetSuite calculates additional translation adjustments at runtime that are never posted to accounts.
 
-### Backend Endpoint (server.py)
+### Backend Endpoint (.NET Backend)
 
-```python
-@app.route('/cta', methods=['POST'])
-def calculate_cta():
-    """
-    Calculate Cumulative Translation Adjustment (CTA) using the PLUG METHOD
-    
-    CTA = (Total Assets - Total Liabilities) - Posted Equity - RE - NI
-    
-    This is the only way to get 100% accuracy because NetSuite calculates
-    additional translation adjustments at runtime that are never posted to accounts.
-    The plug method guarantees the Balance Sheet balances.
-    
-    Request body: {
-        period: "Mar 2025",
-        subsidiary: "1" or "Celigo Inc." (optional),
-        accountingBook: "1" (optional)
-    }
-    """
+**Controller:** `backend-dotnet/Controllers/SpecialFormulaController.cs`
+
+**Endpoint:** `POST /cta`
+
+```csharp
+[HttpPost("cta")]
+public async Task<IActionResult> CalculateCta([FromBody] CtaRequest request)
+{
+    // Calculate Cumulative Translation Adjustment (CTA) using the PLUG METHOD
+    // CTA = (Total Assets - Total Liabilities) - Posted Equity - RE - NI
+    //
+    // This is the only way to get 100% accuracy because NetSuite calculates
+    // additional translation adjustments at runtime that are never posted to accounts.
+    // The plug method guarantees the Balance Sheet balances.
+    //
+    // Request body: {
+    //     period: "Mar 2025",
+    //     subsidiary: "1" or "Celigo Inc." (optional),
+    //     accountingBook: "1" (optional)
+    // }
 ```
 
 **Note:** CTA omits segment filters (classId, department, location) because translation adjustments apply at entity level only.
@@ -997,7 +1006,7 @@ async function CTA(period, subsidiary, accountingBook) {
 |------|------------------|
 | `docs/functions.js` | Frontend formula functions, caching, in-flight deduplication |
 | `docs/taskpane.html` | Refresh All logic with special formula sequencing |
-| `backend/server.py` | `/retained-earnings`, `/net-income`, `/cta` endpoints with SuiteQL |
+| `backend-dotnet/Controllers/SpecialFormulaController.cs` | `/retained-earnings`, `/net-income`, `/cta` endpoints with SuiteQL |
 | `backend/constants.py` | Account type constants and SQL-ready strings |
 
 ---

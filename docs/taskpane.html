@@ -3963,7 +3963,7 @@ For licensing inquiries, contact: legal@celigo.com
                     <h3>ℹ️ Version Info</h3>
                     <div style="font-size: 12px; color: #4b5563;">
                         <p>Add-in Version: <strong id="settingsVersion">loading...</strong></p>
-                        <p style="margin-top: 4px;">Manifest Version: <strong>3.0.5.240</strong></p>
+                        <p style="margin-top: 4px;">Manifest Version: <strong>4.0.0.29</strong></p>
                         <p style="margin-top: 4px;">Proxy: <code style="font-size: 10px; background: #f3f4f6; padding: 2px 6px; border-radius: 4px;">netsuite-proxy.chris-corcoran.workers.dev</code></p>
                     </div>
                 </div>
@@ -4241,9 +4241,13 @@ For licensing inquiries, contact: legal@celigo.com
                     <h4 style="color: var(--deep-dive); margin: 16px 0 10px; font-size: 14px;">Available Formulas</h4>
                     
                     <div class="formula-example-box">
-                        <code>=XAVI.BALANCE(account, startPeriod, endPeriod, [subsidiary], [dept], [location], [class])</code><br>
-                        <code>=XAVI.BALANCECURRENCY(account, startPeriod, endPeriod, [subsidiary], [currency], [dept], [location], [class])</code>
+                        <code>=XAVI.BALANCE(account, startPeriod, endPeriod, [subsidiary], [dept], [location], [class])</code>
                         <span class="result">Returns: Account balance for the period</span>
+                    </div>
+                    
+                    <div class="formula-example-box">
+                        <code>=XAVI.BALANCECURRENCY(account, startPeriod, endPeriod, [subsidiary], [currency], [dept], [location], [class])</code>
+                        <span class="result">Returns: Account balance with explicit currency control for consolidation</span>
                     </div>
                     
                     <div class="formula-example-box">
@@ -4745,6 +4749,28 @@ For licensing inquiries, contact: legal@celigo.com
                 </div>
             </div>
 
+            <!-- XAVI.BALANCECURRENCY -->
+            <div class="formula-card" onclick="this.classList.toggle('expanded')">
+                <div class="formula-header">
+                    <div class="formula-header-left">
+                        <span class="formula-name">BALANCECURRENCY</span>
+                        <span class="formula-brief">Balance with currency control • Wildcards ✓</span>
+                    </div>
+                    <svg class="formula-expand-icon" viewBox="0 0 24 24"><path fill="currentColor" d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z"/></svg>
+                </div>
+                <div class="formula-details">
+                    <div class="formula-syntax">=XAVI.BALANCECURRENCY(acct, from, to, [sub], [currency], [dept], [loc], [class])</div>
+                    <div class="param-item"><span class="param-name">acct</span> - Account # or wildcard ("4*")</div>
+                    <div class="param-item"><span class="param-name">from/to</span> - Period ("Jan 2025" or "2025")</div>
+                    <div class="param-item"><span class="param-name">currency</span> - Currency code for consolidation root (e.g., "USD", "EUR") - optional</div>
+                    <div class="param-item" style="color: var(--bottlenose); font-size: 10px;">⚠️ Currency parameter is in position 5 (after subsidiary, before department)</div>
+                    <div class="example">
+                        <div class="example-code">=XAVI.BALANCECURRENCY("60010", , "Jan 2025", "Celigo Australia Pty Ltd", "USD")</div>
+                        <div class="example-code">=XAVI.BALANCECURRENCY("4*", "Jan 2025", "Dec 2025", "", "EUR")</div> <span class="example-result">← All subsidiaries, EUR consolidation</span>
+                    </div>
+                </div>
+            </div>
+
             <!-- XAVI.BALANCECHANGE -->
             <div class="formula-card" onclick="this.classList.toggle('expanded')">
                 <div class="formula-header">
@@ -5027,7 +5053,7 @@ For licensing inquiries, contact: legal@celigo.com
                     </div>
                     <div class="onboarding-nav">
                         <button class="onboarding-btn text" onclick="goToOnboardingStep(3)">← Back</button>
-                        <button class="onboarding-btn secondary" onclick="autoFillFormulas()">Auto-Fill Rows</button>
+                        <button class="onboarding-btn secondary" onclick="autoFillFormulas()" title="Click to automatically fill formulas for the 3 rows we added">✨ Auto-Fill Rows</button>
                         <button class="onboarding-btn primary" onclick="validateStep4AndContinue()">Next: Months →</button>
                     </div>
                     </div>
@@ -5055,8 +5081,8 @@ For licensing inquiries, contact: legal@celigo.com
                 </div>
                     <div class="onboarding-nav">
                         <button class="onboarding-btn text" onclick="goToOnboardingStep(4)">← Back</button>
-                        <button class="onboarding-btn secondary" onclick="autoFillMonths()">Auto-Fill Months</button>
-                        <button class="onboarding-btn primary" onclick="validateStep4bAndContinue()">Wildcards →</button>
+                        <button class="onboarding-btn secondary" onclick="autoFillMonths()" title="Click to automatically fill all 12 months for all accounts">✨ Auto-Fill Months</button>
+                        <button class="onboarding-btn primary" onclick="validateStep4bAndContinue()" title="Continue to learn about wildcards">Wildcards →</button>
                 </div>
             </div>
 
@@ -5068,6 +5094,11 @@ For licensing inquiries, contact: legal@celigo.com
                     <p class="onboarding-desc">
                         Use <strong>wildcards (*)</strong> to sum multiple accounts at once!
                     </p>
+                    <div style="background: #fef3c7; border-left: 3px solid #f59e0b; padding: 10px; margin: 12px 0; border-radius: 4px;">
+                        <p style="margin: 0; font-size: 12px; color: #92400e;">
+                            <strong>📖 Learning:</strong> This section teaches you about wildcards. Click <strong>"Continue"</strong> below to proceed to the next step.
+                        </p>
+                    </div>
                     <div class="onboarding-highlight-box">
                         <div class="formula-display">=XAVI.BALANCE("40*", "Jan 2025", "Jan 2025")</div>
                         <div class="result-display">→ Sum of ALL accounts starting with 40</div>
@@ -5323,7 +5354,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=3.0.5.292"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.0.29"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -6920,17 +6951,38 @@ For licensing inquiries, contact: legal@celigo.com
                 await Excel.run(async (context) => {
                     const sheet = context.workbook.worksheets.getActiveWorksheet();
                     
+                    // Get the user's initially selected account to avoid duplicating it
+                    const userSelectedAccount = onboardingState.selectedAccount;
+                    
                     // Use accounts from the list if available, otherwise fallback
                     let accounts = [];
                     if (onboardingState.selectedAccounts && onboardingState.selectedAccounts.length > 1) {
-                        // Take different accounts from the fetched list (skip first which was already used)
-                        accounts = onboardingState.selectedAccounts.slice(1, 4).map(a => a.accountnumber);
+                        // Filter out the user's selected account to prevent duplication
+                        const availableAccounts = onboardingState.selectedAccounts
+                            .map(a => a.accountnumber)
+                            .filter(acctNum => acctNum !== userSelectedAccount);
+                        
+                        // Take up to 3 accounts (excluding the user's selected one)
+                        accounts = availableAccounts.slice(0, 3);
                     }
                     
-                    // Fallback if we don't have enough
+                    // Fallback if we don't have enough (also exclude user's selected account)
                     while (accounts.length < 3) {
                         const fallbacks = ['51000', '62000', '70000'];
-                        accounts.push(fallbacks[accounts.length]);
+                        const fallback = fallbacks[accounts.length];
+                        // Only add fallback if it's not the user's selected account
+                        if (fallback !== userSelectedAccount) {
+                            accounts.push(fallback);
+                        } else {
+                            // If fallback matches user's account, try next one
+                            const nextIndex = accounts.length + 1;
+                            if (nextIndex < fallbacks.length) {
+                                accounts.push(fallbacks[nextIndex]);
+                            } else {
+                                // Last resort: use a different account
+                                accounts.push('60000');
+                            }
+                        }
                     }
                     
                     // Insert account numbers in A3:A5
@@ -6990,7 +7042,23 @@ For licensing inquiries, contact: legal@celigo.com
             goToOnboardingStep('4b');
         }
         
-        async function autoFillMonths() {
+        async function autoFillMonths(event) {
+            // IMMEDIATE UI FEEDBACK: Show loading state right away
+            const button = event?.target || document.querySelector('button[onclick*="autoFillMonths"]');
+            if (button) {
+                const originalText = button.textContent;
+                button.disabled = true;
+                button.textContent = '⏳ Filling...';
+                button.style.opacity = '0.7';
+                
+                // Restore button after completion
+                setTimeout(() => {
+                    button.disabled = false;
+                    button.textContent = originalText;
+                    button.style.opacity = '1';
+                }, 3000);
+            }
+            
             try {
                 // PRE-CACHE: Trigger full_year_refresh to preload all data before inserting formulas
                 // This ensures formulas resolve instantly instead of taking a long time
@@ -9821,8 +9889,9 @@ For licensing inquiries, contact: legal@celigo.com
                 hideLoading();
                 hideStatus();
                 
-                // Wait for formulas to complete (shorter timeout since cache should hit)
-                const formulaStatus = await waitForFormulasToComplete(45000, null);
+                // Wait for formulas to complete - let queries run until NetSuite/Excel times out naturally
+                // .NET backend allows 300s per query, so we set a high limit (15 min) to allow multiple queries
+                const formulaStatus = await waitForFormulasToComplete(900000, null);
                 
                 if (!formulaStatus.resolved) {
                     // Warn user; do NOT show success overlay
@@ -10692,8 +10761,9 @@ For licensing inquiries, contact: legal@celigo.com
                 hideLoading();
                 hideStatus();
                 
-                // Wait for formulas to complete (shorter timeout since cache should hit)
-                const formulaStatusIS = await waitForFormulasToComplete(45000, null);
+                // Wait for formulas to complete - let queries run until NetSuite/Excel times out naturally
+                // .NET backend allows 300s per query, so we set a high limit (15 min) to allow multiple queries
+                const formulaStatusIS = await waitForFormulasToComplete(900000, null);
                 
                 if (!formulaStatusIS.resolved) {
                     if (overlayProgressText) overlayProgressText.textContent = 'Incomplete';
@@ -11925,8 +11995,9 @@ For licensing inquiries, contact: legal@celigo.com
                 
                 updateProgress(95, '✅ Report Complete!', 'Balance Sheet structure built successfully...');
                 
-                // Wait for account balance formulas to complete (skip calculated rows for now)
-                await waitForFormulasToComplete(30000, null);
+                // Wait for account balance formulas to complete - let queries run until NetSuite/Excel times out naturally
+                // .NET backend allows 300s per query, so we set a high limit (15 min) to allow multiple queries
+                await waitForFormulasToComplete(900000, null);
                 
                 // Auto-fit columns AFTER account formulas have resolved
                 await autoFitColumns();
@@ -14840,7 +14911,9 @@ export default {
         // PRIMARY GATE: If #BUSY is found, keep waiting regardless of other checks
         // SECONDARY: Smart detection checks if formula cells have resolved to numbers
         // Returns: { resolved: boolean, reason: string }
-        async function waitForFormulasToComplete(maxWaitMs = 120000, updateOverlayFn = null) {
+        // Default timeout: 15 minutes (900000ms) to allow queries to complete naturally
+        // Only times out if NetSuite (300s per query) or Excel times out
+        async function waitForFormulasToComplete(maxWaitMs = 900000, updateOverlayFn = null) {
             const startTime = Date.now();
             
             console.log('⏳ Waiting for formulas to complete...');
@@ -17035,8 +17108,9 @@ export default {
                 if (loadingStep) loadingStep.innerHTML = '<span class="spreadsheet-animation">📊</span> Tucking everything into place...';
                 if (loadingDesc) loadingDesc.textContent = 'Formulas are refreshing with cached data.';
                 
-                // Wait for 100% of formulas to complete
-                await waitForFormulasToComplete(90000, null);
+                // Wait for 100% of formulas to complete - let queries run until NetSuite/Excel times out naturally
+                // .NET backend allows 300s per query, so we set a high limit (15 min) to allow multiple queries
+                await waitForFormulasToComplete(900000, null);
                 
                 // Auto-fit columns AFTER all formulas have resolved
                 await autoFitColumns();
@@ -17600,8 +17674,9 @@ export default {
                 // Track start time for elapsed calculation
                 const syncStartTime = Date.now();
                 
-                // Wait for formulas to resolve before showing success
-                await waitForFormulasToComplete(120000, null);
+                // Wait for formulas to resolve before showing success - let queries run until NetSuite/Excel times out naturally
+                // .NET backend allows 300s per query, so we set a high limit (15 min) to allow multiple queries
+                await waitForFormulasToComplete(900000, null);
                 
                 // Auto-fit columns AFTER all formulas have resolved
                 await autoFitColumns();

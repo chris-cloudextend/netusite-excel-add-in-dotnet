@@ -1621,7 +1621,7 @@ async function runBuildModeBatch() {
     let totalResolved = 0;
     let totalZeros = 0;
     
-    for (const [filterKey, groupItems] of filterGroups) {
+    for (const [filterKey, groupItemsArray] of filterGroups) {
         groupIndex++;
         const filters = parseFilterKey(filterKey);
         
@@ -1631,7 +1631,8 @@ async function runBuildModeBatch() {
         const balanceCurrencyItems = [];
         const regularBalanceItems = [];
         
-        for (const item of groupItems) {
+        // Use groupItemsArray to avoid variable shadowing issues
+        for (const item of groupItemsArray) {
             // Check if this is a BALANCECURRENCY request
             const isBalanceCurrency = item.cacheKey && item.cacheKey.includes('"type":"balancecurrency"') ||
                                      (item.params && 'currency' in item.params && item.params.currency);
@@ -1711,13 +1712,17 @@ async function runBuildModeBatch() {
         }
         
         // Continue with regular BALANCE processing for non-BALANCECURRENCY items
-        const groupItems = regularBalanceItems; // Use only regular items for batch processing
+        // Note: groupItems is already declared in the loop destructuring above, so we reassign it
+        // groupItems = regularBalanceItems; // Use only regular items for batch processing
+        // Actually, we should use regularBalanceItems directly instead of reassigning groupItems
+        // to avoid confusion. Let's create a new variable for clarity.
+        const regularGroupItems = regularBalanceItems; // Use only regular items for batch processing
         
         // Collect unique accounts and periods for THIS filter group (regular items only)
         const accounts = new Set();
         const periods = new Set();
         
-        for (const item of groupItems) {
+        for (const item of regularGroupItems) {
             const p = item.params;
             accounts.add(p.account);
             
@@ -2100,8 +2105,9 @@ async function runBuildModeBatch() {
             }
         }
         
-        // STEP 6: Resolve all pending promises for THIS filter group
-        for (const item of groupItems) {
+        // STEP 6: Resolve all pending promises for THIS filter group (regular items only)
+        // Note: balanceCurrencyItems were already resolved individually above
+        for (const item of regularGroupItems) {
             const { params, resolve, cacheKey } = item;
             const { account, fromPeriod, toPeriod } = params;
             
@@ -3309,14 +3315,18 @@ async function PARENT(accountNumber, invocation) {
     
     if (!account) return '#N/A';
     
+    // DEBUG: Log the account number being used
+    console.log(`🔍 PARENT: Looking up parent for account "${account}" (normalized from "${accountNumber}")`);
+    
     const cacheKey = getCacheKey('parent', { account });
     
     // Check cache FIRST
     if (!cache.parent) cache.parent = new Map();
     if (cache.parent.has(cacheKey)) {
         cacheStats.hits++;
-        console.log(`⚡ CACHE HIT [parent]: ${account}`);
-        return cache.parent.get(cacheKey);
+        const cachedParent = cache.parent.get(cacheKey);
+        console.log(`⚡ CACHE HIT [parent]: ${account} → "${cachedParent || '(no parent)'}"`);
+        return cachedParent;
     }
     
     cacheStats.misses++;
@@ -3336,6 +3346,7 @@ async function PARENT(accountNumber, invocation) {
         }
         
         // Use POST to avoid exposing account numbers in URLs/logs
+        console.log(`📤 PARENT API: Requesting parent for account "${account}"`);
         const response = await fetch(`${SERVER_URL}/account/parent`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -3343,7 +3354,7 @@ async function PARENT(accountNumber, invocation) {
             signal
         });
         if (!response.ok) {
-            console.error(`Parent API error: ${response.status}`);
+            console.error(`❌ Parent API error: ${response.status} for account "${account}"`);
             return '#N/A';
         }
         
@@ -3351,6 +3362,7 @@ async function PARENT(accountNumber, invocation) {
         // Handle empty response (account has no parent) - return empty string, not #N/A
         // Empty string is valid - it means the account is a top-level account
         const parentValue = parent.trim();
+        console.log(`✅ PARENT API: Account "${account}" → Parent "${parentValue || '(no parent)'}"`);
         cache.parent.set(cacheKey, parentValue);
         console.log(`💾 Cached parent: ${account} → "${parentValue || '(no parent)'}"`);
         return parentValue;

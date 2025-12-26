@@ -107,6 +107,9 @@ public class CurrencyItem
     
     [JsonPropertyName("symbol")]
     public string Symbol { get; set; } = string.Empty;
+    
+    [JsonPropertyName("displayname")]
+    public string? DisplayName { get; set; }
 }
 
 /// <summary>Response containing all lookups</summary>

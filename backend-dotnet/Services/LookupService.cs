@@ -759,8 +759,9 @@ public class LookupService : ILookupService
             }
             
             var currencyCodes = string.Join(", ", validCurrencies.Select(c => $"'{NetSuiteService.EscapeSql(c)}'"));
+            // Try to get displayname field - if it doesn't exist, it will be null
             var query = $@"
-                SELECT id, name, symbol
+                SELECT id, name, symbol, displayname
                 FROM currency
                 WHERE name IN ({currencyCodes})
                 ORDER BY name";
@@ -770,7 +771,8 @@ public class LookupService : ILookupService
             {
                 Id = r.TryGetProperty("id", out var id) ? id.ToString() : "",
                 Name = r.TryGetProperty("name", out var name) ? name.GetString() ?? "" : "",
-                Symbol = r.TryGetProperty("symbol", out var symbol) ? symbol.GetString() ?? "" : ""
+                Symbol = r.TryGetProperty("symbol", out var symbol) ? symbol.GetString() ?? "" : "",
+                DisplayName = r.TryGetProperty("displayname", out var displayName) ? displayName.GetString() : null
             }).ToList();
         }) ?? new List<CurrencyItem>();
     }

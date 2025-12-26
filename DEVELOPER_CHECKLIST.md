@@ -115,6 +115,11 @@ The add-in uses Office's **Shared Runtime** where all components share a single 
 > If you need a "skippable" parameter in the middle, mark ALL subsequent parameters as `optional: true`  
 > and validate required values in JavaScript instead.
 
+> ⚠️ **CRITICAL #3**: **DO NOT CHANGE PARAMETER ORDER AFTER DEPLOYMENT (Mac Excel will crash!)**  
+> Mac Excel caches function parameter metadata aggressively. Changing parameter order after a function  
+> has been used will cause Excel to crash on startup. See [MAC_PARAMETER_ORDER_ISSUE.md](MAC_PARAMETER_ORDER_ISSUE.md)  
+> for details. If you must change parameter order, use `remove-office-keep-edge.sh` to reset Office caches.
+
 ### 3. Frontend - Taskpane Integration
 | File | Location | What to Update |
 |------|----------|----------------|
@@ -129,12 +134,12 @@ The add-in uses Office's **Shared Runtime** where all components share a single 
 ### 4. Backend - Server Implementation
 | File | Location | What to Update |
 |------|----------|----------------|
-| `backend/server.py` | New `@app.route` | API endpoint for the formula |
-| `backend/server.py` | Query logic | SuiteQL query construction |
-| `backend/server.py` | Default handling | `default_subsidiary_id` usage |
-| `backend/server.py` | Consolidation | `get_subsidiaries_in_hierarchy()` if needed |
-| `backend/server.py` | Name-to-ID conversion | `convert_name_to_id()` for filters |
-| `backend/server.py` | Response format | JSON structure returned |
+| `backend-dotnet/Controllers/` | New `[HttpPost]` or `[HttpGet]` controller | API endpoint for the formula |
+| `backend-dotnet/Services/` | Service class (e.g., `BalanceService.cs`) | SuiteQL query construction |
+| `backend-dotnet/Services/` | Service method | Default handling, subsidiary resolution |
+| `backend-dotnet/Services/LookupService.cs` | `ResolveSubsidiaryIdAsync()` | Consolidation hierarchy if needed |
+| `backend-dotnet/Services/LookupService.cs` | `ResolveDimensionIdAsync()` | Name-to-ID conversion for filters |
+| `backend-dotnet/Models/` | Response model class | JSON structure returned |
 
 ### 5. Manifest & Versioning ⚠️ CRITICAL
 | File | Location | What to Update |
@@ -248,8 +253,8 @@ These formulas have additional integration points:
 - [ ] `functions.js` - Uses `broadcastToast()` for progress notifications
 - [ ] `taskpane.html` - Listed in `recalculateSpecialFormulas()` 
 - [ ] `taskpane.html` - Detected in `refreshSelected()` special formulas array
-- [ ] `server.py` - Uses `get_fiscal_year_for_period()` for date boundaries
-- [ ] `server.py` - Uses `BUILTIN.CONSOLIDATE()` for multi-currency
+- [ ] `backend-dotnet/Services/` - Uses period resolution for date boundaries
+- [ ] `backend-dotnet/Services/` - Uses `BUILTIN.CONSOLIDATE()` for multi-currency
 
 ---
 

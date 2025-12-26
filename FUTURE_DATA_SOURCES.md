@@ -90,17 +90,19 @@ Sage Intacct is a cloud-native ERP focused on finance and accounting. It's the c
 - ✅ **Statistical accounts** supported
 
 ### Implementation Approach
-```python
-class SageIntacctAdapter(ERPAdapter):
-    def get_balance(self, account, from_period, to_period, filters):
-        # Use readByQuery on GLENTRY or GLACCOUNTBALANCE object
-        # GLACCOUNTBALANCE provides period-end balances directly
-        query = f"""
-            ACCOUNTNO = '{account}' 
-            AND REPORTINGPERIODNAME >= '{from_period}'
-            AND REPORTINGPERIODNAME <= '{to_period}'
-        """
-        # Handle entity (subsidiary) filter via LOCATIONID or DEPTID
+```csharp
+public class SageIntacctAdapter : IERPAdapter
+{
+    public async Task<BalanceResult> GetBalanceAsync(string account, string fromPeriod, string toPeriod, FilterOptions filters)
+    {
+        // Use readByQuery on GLENTRY or GLACCOUNTBALANCE object
+        // GLACCOUNTBALANCE provides period-end balances directly
+        var query = $"ACCOUNTNO = '{account}' " +
+                   $"AND REPORTINGPERIODNAME >= '{fromPeriod}' " +
+                   $"AND REPORTINGPERIODNAME <= '{toPeriod}'";
+        // Handle entity (subsidiary) filter via LOCATIONID or DEPTID
+    }
+}
 ```
 
 ### Effort Estimate
@@ -168,18 +170,20 @@ GET /entity/Default/23.200.001/GenericInquiry/GLTransactionDetails
 - ✅ **On-premise option** for customers who need it
 
 ### Implementation Approach
-```python
-class AcumaticaAdapter(ERPAdapter):
-    def get_balance(self, account, from_period, to_period, filters):
-        # Option 1: Query GLTran directly with OData
-        # Option 2: Use a Generic Inquiry for GL balances
-        # Option 3: Use Financial Period Summary endpoint
+```csharp
+public class AcumaticaAdapter : IERPAdapter
+{
+    public async Task<BalanceResult> GetBalanceAsync(string account, string fromPeriod, string toPeriod, FilterOptions filters)
+    {
+        // Option 1: Query GLTran directly with OData
+        // Option 2: Use a Generic Inquiry for GL balances
+        // Option 3: Use Financial Period Summary endpoint
         
-        endpoint = f"/entity/Default/23.200.001/GLTran"
-        params = {
-            "$filter": f"Account eq '{account}' and FinPeriodID ge '{period}'",
-            "$select": "Account,DebitAmt,CreditAmt,FinPeriodID,Branch"
-        }
+        var endpoint = "/entity/Default/23.200.001/GLTran";
+        var filter = $"Account eq '{account}' and FinPeriodID ge '{fromPeriod}'";
+        var select = "Account,DebitAmt,CreditAmt,FinPeriodID,Branch";
+    }
+}
 ```
 
 ### Effort Estimate
@@ -262,18 +266,22 @@ Response is a structured report (not raw data):
 6. **Report-Only Balances**: Can't query arbitrary date ranges easily
 
 ### Implementation Approach
-```python
-class XeroAdapter(ERPAdapter):
-    def get_balance(self, account, from_period, to_period, filters):
-        # Must use Reports API and parse the structured response
-        # Balance Sheet: GET /Reports/BalanceSheet?date={to_period}
-        # P&L: GET /Reports/ProfitAndLoss?fromDate={from}&toDate={to}
+```csharp
+public class XeroAdapter : IERPAdapter
+{
+    public async Task<BalanceResult> GetBalanceAsync(string account, string fromPeriod, string toPeriod, FilterOptions filters)
+    {
+        // Must use Reports API and parse the structured response
+        // Balance Sheet: GET /Reports/BalanceSheet?date={to_period}
+        // P&L: GET /Reports/ProfitAndLoss?fromDate={from}&toDate={to}
         
-        # Parse the Rows/Cells structure to find the account
-        # This is significantly more complex than SQL-based ERPs
+        // Parse the Rows/Cells structure to find the account
+        // This is significantly more complex than SQL-based ERPs
         
-        report = self.client.get_balance_sheet(as_of_date=to_period)
-        return self._find_account_in_report(report, account)
+        var report = await _client.GetBalanceSheetAsync(toPeriod);
+        return FindAccountInReport(report, account);
+    }
+}
 ```
 
 ### Effort Estimate
@@ -360,23 +368,29 @@ GET /v3/company/{companyId}/reports/BalanceSheet
 6. **Report Parsing**: Similar to Xero - structured reports, not raw data
 
 ### Implementation Approach
-```python
-class QuickBooksAdapter(ERPAdapter):
-    def get_balance(self, account, from_period, to_period, filters):
-        # For P&L: GET /reports/ProfitAndLoss
-        # For BS: GET /reports/BalanceSheet
+```csharp
+public class QuickBooksAdapter : IERPAdapter
+{
+    public async Task<BalanceResult> GetBalanceAsync(string account, string fromPeriod, string toPeriod, FilterOptions filters)
+    {
+        // For P&L: GET /reports/ProfitAndLoss
+        // For BS: GET /reports/BalanceSheet
         
-        # Must parse the Rows/Columns structure
-        # Account names in QBO may not match account numbers
+        // Must parse the Rows/Columns structure
+        // Account names in QBO may not match account numbers
         
-        if self._is_balance_sheet_account(account):
-            report = self.client.get_balance_sheet(as_of=to_period)
-        else:
-            report = self.client.get_profit_and_loss(
-                start_date=from_period, 
-                end_date=to_period
-            )
-        return self._extract_account_balance(report, account)
+        Report report;
+        if (IsBalanceSheetAccount(account))
+        {
+            report = await _client.GetBalanceSheetAsync(toPeriod);
+        }
+        else
+        {
+            report = await _client.GetProfitAndLossAsync(fromPeriod, toPeriod);
+        }
+        return ExtractAccountBalance(report, account);
+    }
+}
 ```
 
 ### Effort Estimate
@@ -463,43 +477,49 @@ Similar challenges to Xero. The main advantage over Xero is higher rate limits a
 
 ### Proposed Adapter Pattern
 
-```python
-# backend/adapters/base.py
-from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from typing import Optional, Dict, List
+```csharp
+// backend-dotnet/Adapters/IERPAdapter.cs
+public interface IERPAdapter
+{
+    Task<BalanceResult> GetBalanceAsync(string account, string fromPeriod, string toPeriod, FilterOptions filters);
+    Task<List<Account>> GetAccountsAsync();
+    Task<List<Period>> GetPeriodsAsync();
+}
 
-@dataclass
-class BalanceResult:
-    account: str
-    period: str
-    balance: float
-    currency: str = "USD"
+public class BalanceResult
+{
+    public string Account { get; set; }
+    public string Period { get; set; }
+    public decimal Balance { get; set; }
+    public string Currency { get; set; } = "USD";
+}
 
-@dataclass
-class AccountInfo:
-    number: str
-    name: str
-    type: str
-    parent: Optional[str] = None
+public class FilterOptions
+{
+    public string? Subsidiary { get; set; }
+    public string? Department { get; set; }
+    public string? Location { get; set; }
+    public string? ClassId { get; set; }
+    public int? AccountingBook { get; set; }
+}
 
-class ERPAdapter(ABC):
-    """Base class for all ERP adapters"""
-    
-    @abstractmethod
-    def get_balance(
-        self, 
-        account: str, 
-        from_period: str, 
-        to_period: str,
-        subsidiary: Optional[str] = None,
-        department: Optional[str] = None,
-        location: Optional[str] = None,
-        class_id: Optional[str] = None,
-        accounting_book: Optional[int] = None
-    ) -> float:
-        """Get account balance for a period"""
-        pass
+public class AccountInfo
+{
+    public string Number { get; set; }
+    public string Name { get; set; }
+    public string Type { get; set; }
+    public string? Parent { get; set; }
+}
+
+public interface IERPAdapter
+{
+    // Base interface for all ERP adapters
+    Task<BalanceResult> GetBalanceAsync(
+        string account,
+        string fromPeriod,
+        string toPeriod,
+        FilterOptions? filters = null
+    );
     
     @abstractmethod
     def get_batch_balances(
@@ -552,36 +572,36 @@ class Features:
 
 ### Connection Management
 
-```python
-# backend/connections.py
-from typing import Dict
-from adapters.netsuite import NetSuiteAdapter
-from adapters.intacct import SageIntacctAdapter
-from adapters.acumatica import AcumaticaAdapter
-from adapters.qbo import QuickBooksAdapter
-from adapters.xero import XeroAdapter
+```csharp
+// backend-dotnet/Services/ConnectionManager.cs
+using backend_dotnet.Adapters;
 
-class ConnectionManager:
-    """Manages ERP connections and routes requests to correct adapter"""
+public class ConnectionManager
+{
+    // Manages ERP connections and routes requests to correct adapter
+    private readonly Dictionary<string, IERPAdapter> _adapters = new()
+    {
+        { "netsuite", new NetSuiteAdapter() },
+        { "intacct", new SageIntacctAdapter() },
+        { "acumatica", new AcumaticaAdapter() },
+        { "quickbooks", new QuickBooksAdapter() },
+        { "xero", new XeroAdapter() }
+    };
     
-    ADAPTERS = {
-        'netsuite': NetSuiteAdapter,
-        'intacct': SageIntacctAdapter,
-        'acumatica': AcumaticaAdapter,
-        'quickbooks': QuickBooksAdapter,
-        'xero': XeroAdapter
+    private readonly Dictionary<string, IERPAdapter> _connections = new();
+    
+    public IERPAdapter GetAdapter(string connectionId)
+    {
+        // Get adapter for a connection
+        if (!_connections.ContainsKey(connectionId))
+        {
+            var config = LoadConfig(connectionId);
+            var adapter = _adapters[config.ErpType];
+            _connections[connectionId] = adapter;
+        }
+        return _connections[connectionId];
     }
-    
-    def __init__(self):
-        self._connections: Dict[str, ERPAdapter] = {}
-    
-    def get_adapter(self, connection_id: str) -> ERPAdapter:
-        """Get adapter for a connection"""
-        if connection_id not in self._connections:
-            config = self._load_config(connection_id)
-            adapter_class = self.ADAPTERS[config['erp_type']]
-            self._connections[connection_id] = adapter_class(config)
-        return self._connections[connection_id]
+}
 ```
 
 ---

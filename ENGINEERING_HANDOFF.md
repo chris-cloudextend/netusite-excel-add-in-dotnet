@@ -4,7 +4,7 @@
 
 XAVI is an Excel Add-in that provides financial reporting formulas for NetSuite. Users can type formulas like `=XAVI.BALANCE("4010", "Jan 2025", "Dec 2025")` directly in Excel cells to pull live data from their NetSuite account.
 
-**Current Version:** 3.0.5.193
+**Current Version:** 4.0.0.25
 
 ---
 
@@ -28,7 +28,7 @@ Excel Add-in → GitHub Pages (static files) → Cloudflare Worker (proxy) → C
 | **Frontend (Taskpane)** | `docs/taskpane.html` | The sidebar UI users interact with |
 | **Custom Functions** | `docs/functions.js` + `docs/functions.json` | Excel formulas (XAVI.BALANCE, etc.) |
 | **Shared Runtime** | `docs/sharedruntime.html` | Blank page hosting shared runtime (no UI) |
-| **Backend Server** | `backend/server.py` | Flask server that queries NetSuite |
+| **Backend Server** | `backend-dotnet/` | .NET backend server that queries NetSuite (Python `backend/` is legacy, kept for reference) |
 | **Cloudflare Worker** | `CLOUDFLARE-WORKER-CODE.js` | Proxy that routes requests to the tunnel |
 
 ### Current Request Flow
@@ -38,14 +38,14 @@ Excel Add-in → GitHub Pages (static files) → Cloudflare Worker (proxy) → C
 2. Excel calls functions.js (via shared runtime)
 3. functions.js calls Cloudflare Worker (netsuite-proxy.chris-corcoran.workers.dev)
 4. Worker proxies to Cloudflare Tunnel (*.trycloudflare.com)
-5. Tunnel connects to local Flask backend (localhost:5002)
+5. Tunnel connects to local .NET backend (localhost:5002)
 6. Backend authenticates with NetSuite REST API using OAuth 1.0
 7. Response flows back through the chain to Excel
 ```
 
 ### Why Cloudflare Tunnel?
 
-The backend needs to connect to NetSuite using OAuth 1.0 credentials stored in `netsuite_config.json`. During development:
+The backend needs to connect to NetSuite using OAuth 1.0 credentials stored in `appsettings.Development.json`. During development:
 - The backend runs locally on the developer's machine
 - Cloudflare Tunnel exposes it to the internet with a temporary URL
 - The Cloudflare Worker provides a stable URL that forwards to whatever tunnel is active
@@ -90,6 +90,20 @@ On Mac Excel, `ExecuteFunction` commands can cause a "Developer Window" to appea
 ---
 
 ## Known Platform Issues
+
+### ⚠️ CRITICAL: Mac Parameter Order Issue
+
+**Mac Excel will crash if you change function parameter order after deployment.**
+
+Mac Excel caches custom function parameter metadata aggressively. If you change the parameter order of a function after it has been registered and used, Excel will crash on startup.
+
+**The only reliable fix:** Use `remove-office-keep-edge.sh` to completely remove Office and all caches, then reinstall.
+
+**Prevention:** Finalize parameter order before deployment. Never change it after users have started using the function.
+
+See [MAC_PARAMETER_ORDER_ISSUE.md](MAC_PARAMETER_ORDER_ISSUE.md) for complete details.
+
+---
 
 ### Right-Click Context Menu on Mac
 
@@ -189,7 +203,7 @@ The Quick Actions bar at the bottom of the taskpane provides context-aware butto
     └─────────────────┘                   ▼
                                ┌─────────────────┐
                                │  Lambda / ECS   │
-                               │  (Python Flask) │
+                               │  (.NET Core)    │
                                └────────┬────────┘
                                         │
                                         ▼
@@ -235,21 +249,28 @@ const SERVER_URL = 'https://api.xavi.cloudextend.io';
 
 ### 3. Backend Configuration
 
-The backend (`backend/server.py`) currently reads credentials from `netsuite_config.json`. For cloud deployment:
+The backend (`.NET Core`) currently reads credentials from `appsettings.Development.json`. For cloud deployment:
 
 **Option A: Environment Variables**
-```python
-ACCOUNT_ID = os.environ.get('NETSUITE_ACCOUNT_ID')
-CONSUMER_KEY = os.environ.get('NETSUITE_CONSUMER_KEY')
-# etc.
+```csharp
+// In Program.cs or appsettings.json
+var accountId = Environment.GetEnvironmentVariable("NETSUITE_ACCOUNT_ID");
+var consumerKey = Environment.GetEnvironmentVariable("NETSUITE_CONSUMER_KEY");
+// etc.
 ```
 
 **Option B: Secrets Manager (AWS) / Key Vault (Azure)**
-```python
-import boto3
-client = boto3.client('secretsmanager')
-secret = client.get_secret_value(SecretId='netsuite-credentials')
+```csharp
+// Using AWS SDK for .NET
+using Amazon.SecretsManager;
+var client = new AmazonSecretsManagerClient();
+var response = await client.GetSecretValueAsync(new GetSecretValueRequest
+{
+    SecretId = "netsuite-credentials"
+});
 ```
+
+**Note:** Legacy Python examples (`backend/server.py`) are kept for reference only.
 
 ### 4. Remove Cloudflare Dependencies
 
@@ -285,13 +306,16 @@ Each user authenticates via CEFI (Celigo's identity platform), and the backend r
    ```
 
 2. **Backend Token Validation**
-   ```python
-   @app.before_request
-   def validate_token():
-       token = request.headers.get('Authorization')
-       # Validate with CEFI
-       # Retrieve user's NetSuite credentials from secure store
-       # Set credentials for this request
+   ```csharp
+   // In Program.cs or middleware
+   app.Use(async (context, next) =>
+   {
+       var token = context.Request.Headers["Authorization"].ToString();
+       // Validate with CEFI
+       // Retrieve user's NetSuite credentials from secure store
+       // Set credentials for this request
+       await next();
+   });
    ```
 
 3. **Credential Storage**
@@ -305,7 +329,7 @@ Each user authenticates via CEFI (Celigo's identity platform), and the backend r
 
 | File | Description |
 |------|-------------|
-| `backend/server.py` | Main Flask backend - all NetSuite API calls |
+| `backend-dotnet/` | Main .NET backend - all NetSuite API calls (Python `backend/server.py` is legacy) |
 | `backend/netsuite_config.json` | Current credentials (DO NOT COMMIT to public repo) |
 | `docs/taskpane.html` | Main UI + JavaScript logic + drill-down |
 | `docs/functions.js` | Excel custom functions implementation |

@@ -36,7 +36,10 @@
 | Function | Purpose | Example |
 |----------|---------|---------|
 | `XAVI.BALANCE` | Get GL account balance | `=XAVI.BALANCE("4010", "Jan 2025", "Jan 2025")` |
-| `XAVI.BUDGET` | Get budget amount | `=XAVI.BUDGET("4010", "Jan 2025", "Dec 2025")` |
+| `XAVI.BALANCECURRENCY` | Get balance with explicit currency control | `=XAVI.BALANCECURRENCY("4010", "Jan 2025", "Jan 2025", "Subsidiary", "USD")` |
+| `XAVI.BALANCECHANGE` | Get change in Balance Sheet account | `=XAVI.BALANCECHANGE("10100", "Dec 2024", "Jan 2025")` |
+| `XAVI.BUDGET` | Get budget amount | `=XAVI.BUDGET("4010", "Jan 2025", "Dec 2025", "", "", "", "", "", "Budget Category")` |
+| `XAVI.TYPEBALANCE` | Get total for account type | `=XAVI.TYPEBALANCE("Income", "Jan 2025", "Dec 2025")` |
 | `XAVI.NAME` | Get account name | `=XAVI.NAME("4010")` → "Product Revenue" |
 | `XAVI.TYPE` | Get account type | `=XAVI.TYPE("4010")` → "Income" |
 | `XAVI.PARENT` | Get parent account | `=XAVI.PARENT("4010-1")` → "4010" |
@@ -184,8 +187,8 @@ When running consolidated reports across subsidiaries:
 
 ```
 ┌─────────────────────┐     ┌─────────────────────┐     ┌─────────────────┐
-│   Excel Add-in      │────▶│   Cloudflare        │────▶│   Flask Backend │
-│   (functions.js)    │     │   Worker + Tunnel   │     │   (server.py)   │
+│   Excel Add-in      │────▶│   Cloudflare        │────▶│   .NET Backend  │
+│   (functions.js)    │     │   Worker + Tunnel   │     │   (ASP.NET Core)│
 │                     │◀────│                     │◀────│   localhost:5002│
 │   - Custom funcs    │     │   - CORS proxy      │     │   - SuiteQL     │
 │   - Caching         │     │   - TLS termination │     │   - OAuth1      │
@@ -202,11 +205,16 @@ When running consolidated reports across subsidiaries:
 ## File Structure
 
 ```
-├── backend/
-│   ├── server.py              # Flask API server (SuiteQL queries)
-│   ├── constants.py           # Account type constants
-│   ├── requirements.txt       # Python dependencies
-│   └── netsuite_config.json   # Credentials (gitignored)
+├── backend-dotnet/           # .NET backend server (active)
+│   ├── Controllers/          # API endpoints (BalanceController, etc.)
+│   ├── Services/            # Business logic (NetSuiteService, BalanceService, etc.)
+│   ├── Models/              # Data models
+│   └── Program.cs           # Entry point
+├── backend/                 # Python Flask server (legacy, kept for reference)
+│   ├── server.py           # Flask API server (SuiteQL queries) - LEGACY
+│   ├── constants.py        # Account type constants - LEGACY
+│   ├── requirements.txt    # Python dependencies - LEGACY
+│   └── netsuite_config.json # Credentials (gitignored) - LEGACY
 ├── docs/
 │   ├── functions.js           # Custom Excel functions + caching
 │   ├── functions.json         # Function metadata for Excel
@@ -239,16 +247,16 @@ When running consolidated reports across subsidiaries:
 
 All account-related endpoints support wildcard patterns using `*`:
 
-**Implementation (`server.py`):**
-```python
-def build_account_filter(accounts, column='a.acctnumber'):
-    """
-    Build SQL filter clause for account numbers, supporting wildcards.
-    - '4*' becomes LIKE '4%' (all accounts starting with 4)
-    - '4010' (no asterisk) uses exact match with IN clause
-    
-    Returns SQL like "(a.acctnumber IN ('4010','4020') OR a.acctnumber LIKE '5%')"
-    """
+**Implementation (`.NET Backend`):**
+```csharp
+// In NetSuiteService.cs
+public static string BuildAccountFilter(string[] accounts, string column = "a.acctnumber")
+{
+    // Build SQL filter clause for account numbers, supporting wildcards.
+    // '4*' becomes LIKE '4%' (all accounts starting with 4)
+    // '4010' (no asterisk) uses exact match with IN clause
+    // Returns SQL like "(a.acctnumber IN ('4010','4020') OR a.acctnumber LIKE '5%')"
+}
 ```
 
 **Key behavior:**
@@ -577,7 +585,7 @@ Why?
 │  - TTL: 5 minutes                                       │
 │  - Shared: Between taskpane and custom functions        │
 ├─────────────────────────────────────────────────────────┤
-│  TIER 3: Backend Cache (server.py)                      │
+│  TIER 3: Backend Cache (.NET backend)                   │
 │  - Speed: Avoids NetSuite roundtrip                     │
 │  - TTL: 5 minutes                                       │
 │  - Benefit: Shared across all users                     │
@@ -770,10 +778,10 @@ else:
 
 **CRITICAL: Exact spelling required!**
 
-```python
-# CORRECT (from constants.py)
-DEFERRED_EXPENSE = 'DeferExpense'    # NOT 'DeferExpens'
-DEFERRED_REVENUE = 'DeferRevenue'    # NOT 'DeferRevenu'
+```csharp
+// CORRECT (from backend-dotnet/Models/AccountTypes.cs)
+public const string DEFERRED_EXPENSE = "DeferExpense";    // NOT "DeferExpens"
+public const string DEFERRED_REVENUE = "DeferRevenue";    // NOT "DeferRevenu"
 CRED_CARD = 'CredCard'               # NOT 'CreditCard'
 ```
 
@@ -1071,7 +1079,7 @@ All 4 functions use identical formula logic to ensure consistency.
                                                    │
                                                    ▼
                                         ┌─────────────────────┐
-                                        │ Local Flask Server  │
+                                        │ Local .NET Server   │
                                         │ localhost:5002      │
                                         │ (Developer Machine) │
                                         └─────────────────────┘
@@ -1102,18 +1110,28 @@ All 4 functions use identical formula logic to ensure consistency.
 ## Migration Steps
 
 ### Phase 1: Backend Containerization
-1. **Dockerize Flask app**
+1. **Dockerize .NET app**
    ```dockerfile
-   FROM python:3.11-slim
+   FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS base
    WORKDIR /app
-   COPY requirements.txt .
-   RUN pip install -r requirements.txt
+   EXPOSE 5002
+   FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+   WORKDIR /src
+   COPY ["backend-dotnet/XaviApi.csproj", "backend-dotnet/"]
+   RUN dotnet restore "backend-dotnet/XaviApi.csproj"
    COPY . .
-   CMD ["gunicorn", "-b", "0.0.0.0:5002", "server:app"]
+   WORKDIR "/src/backend-dotnet"
+   RUN dotnet build "XaviApi.csproj" -c Release -o /app/build
+   FROM build AS publish
+   RUN dotnet publish "XaviApi.csproj" -c Release -o /app/publish
+   FROM base AS final
+   WORKDIR /app
+   COPY --from=publish /app/publish .
+   ENTRYPOINT ["dotnet", "XaviApi.dll"]
    ```
 
 2. **Move credentials to environment variables**
-   ```python
+   ```csharp
    # Current: File-based
    config = json.load(open('netsuite_config.json'))
    
@@ -1243,23 +1261,29 @@ CEFI (CloudExtend Federated Integration) is our authentication and tenant manage
 
 ### 3. Backend Changes
 
-```python
-# Current: Static credentials
-def get_netsuite_client():
-    config = json.load(open('netsuite_config.json'))
-    return NetSuiteClient(config)
+```csharp
+// Current: Static credentials
+public NetSuiteService GetNetSuiteClient()
+{
+    var config = Configuration.GetSection("NetSuite");
+    return new NetSuiteService(config);
+}
 
-# CEFI: Tenant-specific credentials
-def get_netsuite_client(cefi_token):
-    # Validate token
-    payload = jwt.decode(cefi_token, CEFI_PUBLIC_KEY)
-    tenant_id = payload['tenant_id']
+// CEFI: Tenant-specific credentials
+public NetSuiteService GetNetSuiteClient(string cefiToken)
+{
+    // Validate token
+    var payload = JwtHelper.DecodeToken(cefiToken, CEFIPublicKey);
+    var tenantId = payload["tenant_id"];
     
-    # Fetch tenant credentials from secure store
-    credentials = secrets_manager.get_secret(f'netsuite/{tenant_id}')
+    // Fetch tenant credentials from secure store
+    var credentials = await _secretsManager.GetSecretAsync($"netsuite/{tenantId}");
     
-    return NetSuiteClient(credentials)
+    return new NetSuiteService(credentials);
+}
 ```
+
+**Note:** Legacy Python examples (`backend/server.py`) are kept for reference only.
 
 ### 4. Frontend Changes
 

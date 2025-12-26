@@ -247,6 +247,18 @@ public class BalanceService : IBalanceService
             }
         }
 
+        // Get target period ID for currency conversion
+        // CRITICAL: For Balance Sheet accounts, ALL amounts must be translated at the SAME period-end rate
+        // to ensure the balance sheet balances correctly. Using t.postingperiod would cause each transaction
+        // to use its own period's rate, leading to balance sheet imbalances.
+        // For P&L accounts, using t.postingperiod is acceptable (each transaction uses its own period's rate).
+        var targetPeriodId = toPeriodData.Id;
+        if (string.IsNullOrEmpty(targetPeriodId))
+        {
+            _logger.LogWarning("Period {Period} has no ID, falling back to postingperiod for consolidation", toPeriod);
+            targetPeriodId = "t.postingperiod"; // Fallback
+        }
+
         string query;
         int queryTimeout;
         
@@ -273,9 +285,12 @@ public class BalanceService : IBalanceService
                 : "";
             var whereSegment = needsTransactionLineJoin ? $"AND {segmentWhere}" : "";
             
-            _logger.LogDebug("BS query: needsTlJoin={NeedsTl}, toEndDate={EndDate}, sub={Sub}", 
-                needsTransactionLineJoin, toEndDate, targetSub);
+            _logger.LogDebug("BS query: needsTlJoin={NeedsTl}, toEndDate={EndDate}, sub={Sub}, periodId={PeriodId}", 
+                needsTransactionLineJoin, toEndDate, targetSub, targetPeriodId);
             
+            // CRITICAL: For Balance Sheet, use TARGET period ID (not t.postingperiod)
+            // This ensures ALL historical transactions convert at the SAME exchange rate
+            // (the target period's rate), which is required for Balance Sheet to balance correctly
             query = $@"
                 SELECT SUM(x.cons_amt) AS balance
                 FROM (
@@ -287,7 +302,7 @@ public class BalanceService : IBalanceService
                                 'DEFAULT',
                                 'DEFAULT',
                                 {targetSub},
-                                t.postingperiod,
+                                {targetPeriodId},
                                 'DEFAULT'
                             )
                         ) * {signFlip} AS cons_amt

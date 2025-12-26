@@ -196,6 +196,6 @@ Add additional origins in `appsettings.json` under `Cors.AllowedOrigins`.
 
 ---
 
-*Version: 3.0.5.233*
+*Version: 4.0.0.25*
 *Copyright (c) 2025 Celigo, Inc.*
 

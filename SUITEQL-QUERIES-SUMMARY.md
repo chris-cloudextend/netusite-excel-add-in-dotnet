@@ -29,16 +29,17 @@ This document provides a comprehensive reference of all SuiteQL queries used in 
           │                │                │
           ▼                ▼                ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│                      PYTHON BACKEND (server.py)                     │
+│                      .NET BACKEND (ASP.NET Core)                    │
 │                                                                     │
 │  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐  │
-│  │ /batch/balance   │  │ /account/name    │  │ /account/type    │  │
-│  │ /full_year_refresh│ │                  │  │                  │  │
+│  │ /balance/batch   │  │ /account/name    │  │ /account/type    │  │
+│  │ /balance/full-year│ │                  │  │                  │  │
 │  └────────┬─────────┘  └────────┬─────────┘  └────────┬─────────┘  │
 │           │                     │                     │            │
 │           ▼                     ▼                     ▼            │
 │  ┌────────────────────────────────────────────────────────────┐    │
 │  │                    SuiteQL Queries                          │    │
+│  │              (via NetSuiteService.cs)                       │    │
 │  └────────────────────────────────────────────────────────────┘    │
 └─────────────────────────────────────────────────────────────────────┘
           │
@@ -491,10 +492,11 @@ WHERE sspecacct LIKE 'Matching%'
 ### Account Type Constants
 
 **CRITICAL - Exact spelling required:**
-```python
-DEFERRED_EXPENSE = 'DeferExpense'    # NOT 'DeferExpens'
-DEFERRED_REVENUE = 'DeferRevenue'    # NOT 'DeferRevenu'
-CRED_CARD = 'CredCard'               # NOT 'CreditCard'
+```csharp
+// In backend-dotnet/Models/AccountTypes.cs
+public const string DEFERRED_EXPENSE = "DeferExpense";    // NOT "DeferExpens"
+public const string DEFERRED_REVENUE = "DeferRevenue";    // NOT "DeferRevenu"
+public const string CRED_CARD = "CredCard";               // NOT "CreditCard"
 ```
 
 ---

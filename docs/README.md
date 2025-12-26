@@ -19,6 +19,8 @@ This folder contains the Excel Add-in files hosted via GitHub Pages.
 | Function | Description |
 |----------|-------------|
 | `XAVI.BALANCE` | Get GL account balance |
+| `XAVI.BALANCECURRENCY` | Get balance with explicit currency control for consolidation |
+| `XAVI.BALANCECHANGE` | Get change in Balance Sheet account between two periods |
 | `XAVI.TYPEBALANCE` | Get total for account type (Income, Expense, etc.) |
 | `XAVI.BUDGET` | Get budget amount |
 | `XAVI.NAME` | Get account name |
@@ -58,7 +60,7 @@ The add-in uses Office's **Shared Runtime**:
 
 ## Backend Connection
 
-Functions connect to a Flask backend via Cloudflare tunnel. The backend handles:
+Functions connect to a .NET backend via Cloudflare tunnel. The backend handles:
 - NetSuite OAuth 1.0 authentication
 - SuiteQL query execution
 - Multi-currency consolidation via `BUILTIN.CONSOLIDATE`
@@ -72,4 +74,4 @@ Files are served from GitHub Pages. After pushing changes:
 
 ---
 
-*Current Version: 3.0.5.193*
+*Current Version: 4.0.0.25*

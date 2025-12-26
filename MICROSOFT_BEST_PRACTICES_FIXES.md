@@ -31,6 +31,8 @@ Fixed critical issues causing "error installing functions" in Excel by aligning 
 - `docs/functions.json` - Parameter order fixed
 - `docs/functions.js` - Function signature and JSDoc updated
 
+**⚠️ MAC-SPECIFIC WARNING:** After fixing parameter order, Mac Excel may crash on startup due to cached metadata. Use `remove-office-keep-edge.sh` to reset Office caches. See [MAC_PARAMETER_ORDER_ISSUE.md](MAC_PARAMETER_ORDER_ISSUE.md) for details.
+
 ### 3. Unsupported Metadata Fields
 **Issue:** `functions.json` contained `_copyright` and `helpUrl` fields not in Microsoft's schema.
 
