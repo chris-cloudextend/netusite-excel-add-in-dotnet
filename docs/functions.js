@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.0.22';  // BALANCECURRENCY: Aligned date parameter handling with BALANCE function - removed extractValueFromRange, matching BALANCE's approach
+const FUNCTIONS_VERSION = '4.0.0.24';  // BALANCECURRENCY: Normalize currency to uppercase for consistent cache keys and API calls
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -3868,10 +3868,19 @@ async function BALANCECURRENCY(account, fromPeriod, toPeriod, subsidiary, curren
         currency = extractValueFromRange(currency, 'currency');
         const currencyExtracted = wasCurrencyProvided && (currency !== '' || originalCurrency === '' || originalCurrency === null);
         
+        // CRITICAL: Normalize currency to uppercase for consistency
+        // NetSuite currency codes are case-sensitive, but we want consistent cache keys
+        // Normalize to uppercase to ensure "USD" and "usd" use the same cache key
+        if (currency && currency.trim() !== '') {
+            currency = String(currency).trim().toUpperCase();
+        } else {
+            currency = ''; // Ensure empty string for consistency
+        }
+        
         // Log the extraction result
         if (wasCurrencyProvided) {
             if (currency) {
-                console.log(`✅ BALANCECURRENCY: Currency extracted successfully: "${originalCurrency}" → "${currency}"`);
+                console.log(`✅ BALANCECURRENCY: Currency extracted successfully: "${originalCurrency}" → "${currency}" (normalized to uppercase)`);
             } else if (originalCurrency === '' || originalCurrency === null) {
                 console.log(`ℹ️ BALANCECURRENCY: Currency parameter is empty (explicitly omitted)`);
             } else {
@@ -3896,7 +3905,7 @@ async function BALANCECURRENCY(account, fromPeriod, toPeriod, subsidiary, curren
         
         // Log final currency value
         if (currency) {
-            console.log(`✅ BALANCECURRENCY: Final currency value: "${currency}"`);
+            console.log(`✅ BALANCECURRENCY: Final currency value: "${currency}" (normalized)`);
         } else if (wasCurrencyProvided) {
             // Currency was provided but is empty - this is OK if user explicitly passed empty string
             console.log(`ℹ️ BALANCECURRENCY: Currency parameter is empty (explicitly omitted)`);
