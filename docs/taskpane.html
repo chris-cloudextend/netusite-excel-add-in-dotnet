@@ -5437,7 +5437,7 @@ For licensing inquiries, contact: legal@celigo.com
                     <div class="onboarding-info-box action">
                         <p style="display: flex; align-items: center; gap: 8px;">
                             <span style="font-size: 16px;">✨</span>
-                            <span><strong>Action Card:</strong> Click <strong>"✨ Auto-Fill Rows"</strong> to perform an action, or <strong>"Continue →"</strong> to proceed.</span>
+                            <span><strong>Action Card:</strong> Drag the rows down to see how dynamic formulas work or click <strong>"✨ Auto-Fill Rows"</strong> and we'll do it for you.</span>
                         </p>
                     </div>
                     <div class="drag-demo-container">
@@ -5471,7 +5471,7 @@ For licensing inquiries, contact: legal@celigo.com
                     <div class="onboarding-info-box action">
                         <p style="display: flex; align-items: center; gap: 8px;">
                             <span style="font-size: 16px;">✨</span>
-                            <span><strong>Action Card:</strong> Click <strong>"✨ Auto-Fill Months"</strong> to perform an action, or <strong>"Continue →"</strong> to proceed.</span>
+                            <span><strong>Action Card:</strong> Drag the columns across all 12 months or click <strong>"✨ Auto-Fill Months"</strong> and we'll do it for you.</span>
                         </p>
                     </div>
                     <div class="drag-demo-container">
@@ -5786,7 +5786,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.0.31"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.0.34"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -7131,19 +7131,84 @@ For licensing inquiries, contact: legal@celigo.com
         }
         
         async function demoSelectForDrill() {
-            // Try to select a cell with a BALANCE formula for the user
+            // Find and select a cell with a BALANCE formula for the user
             try {
                 await Excel.run(async (context) => {
                     const sheet = context.workbook.worksheets.getActiveWorksheet();
-                    // Select C2 which should have a BALANCE formula from the tutorial
-                    const cell = sheet.getRange('C2');
-                    cell.select();
-                    await context.sync();
+                    
+                    // Search for cells with BALANCE formulas
+                    // Check common tutorial locations first, then scan the sheet
+                    const commonLocations = ['C2', 'C3', 'C4', 'C5', 'B2', 'B3', 'B4', 'B5'];
+                    let foundCell = null;
+                    
+                    // Try common locations first
+                    for (const addr of commonLocations) {
+                        try {
+                            const cell = sheet.getRange(addr);
+                            cell.load('formulas');
+                            await context.sync();
+                            
+                            const formula = cell.formulas[0][0];
+                            if (formula && typeof formula === 'string' && formula.includes('XAVI.BALANCE')) {
+                                foundCell = cell;
+                                break;
+                            }
+                        } catch (e) {
+                            // Cell might not exist, continue
+                        }
+                    }
+                    
+                    // If not found in common locations, scan the used range
+                    if (!foundCell) {
+                        const usedRange = sheet.getUsedRange();
+                        if (usedRange) {
+                            usedRange.load(['rowCount', 'columnCount', 'address']);
+                            await context.sync();
+                            
+                            // Scan up to 100 rows, 10 columns for BALANCE formulas
+                            const maxRows = Math.min(usedRange.rowCount, 100);
+                            const maxCols = Math.min(usedRange.columnCount, 10);
+                            
+                            for (let row = 1; row <= maxRows; row++) {
+                                for (let col = 1; col <= maxCols; col++) {
+                                    try {
+                                        const cell = sheet.getRangeByIndexes(row - 1, col - 1, 1, 1);
+                                        cell.load('formulas');
+                                        await context.sync();
+                                        
+                                        const formula = cell.formulas[0][0];
+                                        if (formula && typeof formula === 'string' && formula.includes('XAVI.BALANCE')) {
+                                            foundCell = cell;
+                                            break;
+                                        }
+                                    } catch (e) {
+                                        // Continue scanning
+                                    }
+                                }
+                                if (foundCell) break;
+                            }
+                        }
+                    }
+                    
+                    if (foundCell) {
+                        foundCell.select();
+                        await context.sync();
+                        const address = foundCell.address;
+                        document.getElementById('drillDemoHint').innerHTML = `✅ Selected cell ${address} with BALANCE formula! Now <strong>right-click</strong> → select <strong>CloudExtend</strong> → choose <strong>View Transactions</strong>`;
+                        document.getElementById('drillDemoHint').style.color = '#047857';
+                    } else {
+                        // Fallback to C2 if no BALANCE formula found
+                        const cell = sheet.getRange('C2');
+                        cell.select();
+                        await context.sync();
+                        document.getElementById('drillDemoHint').innerHTML = '⚠️ No BALANCE formula found. Please select a cell with a BALANCE formula manually, then use <strong>right-click</strong> → <strong>CloudExtend</strong> → <strong>View Transactions</strong>';
+                        document.getElementById('drillDemoHint').style.color = '#f59e0b';
+                    }
                 });
-                document.getElementById('drillDemoHint').innerHTML = '✅ Cell selected! Now <strong>right-click</strong> → select <strong>CloudExtend</strong> → choose <strong>Drill Down</strong>';
-                document.getElementById('drillDemoHint').style.color = '#047857';
             } catch (e) {
                 console.error('Error selecting cell:', e);
+                document.getElementById('drillDemoHint').innerHTML = '⚠️ Could not auto-select a cell. Please manually select a cell with a BALANCE formula, then use <strong>right-click</strong> → <strong>CloudExtend</strong> → <strong>View Transactions</strong>';
+                document.getElementById('drillDemoHint').style.color = '#f59e0b';
             }
         }
         
@@ -22619,13 +22684,13 @@ export default {
             // Headers row - Added Parent column after Account Number
             const headers = ['Account Type', 'Spec Acct Type', 'Account Number', 'Parent', 'Account Name'];
             
-            // Prepare data rows
-            // Order: Type, Special Account Type, Number, Parent (formula), Name
+            // Prepare data rows - Parent comes from API response (faster than formula)
+            // Order: Type, Special Account Type, Number, Parent (from API), Name
             const dataRows = accounts.map(acc => [
                 acc.accttype || '',
                 acc.sspecacct || '',  // Special Account Type (e.g., Retained Earnings)
                 acc.accountnumber || '',
-                '',  // Parent will be filled with formula below
+                acc.parent || '',  // Parent from SuiteQL query (faster than formula)
                 acc.accountname || ''
             ]);
             
@@ -22655,36 +22720,7 @@ export default {
             
             await context.sync();
             
-            // Add XAVI.PARENT formulas for each account row
-            // Parent column is at index 3 (0-based: Type=0, Spec=1, Number=2, Parent=3, Name=4)
-            const accountNumberColumnIndex = range.columnIndex + 2; // Account Number column (3rd column, 0-based + 2)
-            const parentColumnIndex = range.columnIndex + 3; // Parent column (4th column, 0-based + 3)
-            
-            // Helper function to convert column index to Excel column letter (A, B, C, ..., Z, AA, AB, etc.)
-            function getColumnLetter(colIndex) {
-                let result = '';
-                while (colIndex >= 0) {
-                    result = String.fromCharCode(65 + (colIndex % 26)) + result;
-                    colIndex = Math.floor(colIndex / 26) - 1;
-                }
-                return result;
-            }
-            
-            for (let i = 0; i < accounts.length; i++) {
-                const accountNumber = accounts[i].accountnumber;
-                if (accountNumber) {
-                    const rowIndex = range.rowIndex + 1 + i; // Skip header row (rowIndex + 1)
-                    const parentCell = sheet.getRangeByIndexes(rowIndex, parentColumnIndex, 1, 1);
-                    // Formula references the Account Number cell in the same row using absolute column reference
-                    const accountColumnLetter = getColumnLetter(accountNumberColumnIndex);
-                    const accountRowNumber = rowIndex + 1; // Excel is 1-based
-                    parentCell.formulas = [[`=XAVI.PARENT($${accountColumnLetter}$${accountRowNumber})`]];
-                }
-            }
-            
-            await context.sync();
-            
-            console.log(`Inserted ${accounts.length} accounts with headers and Parent column at cursor position`);
+            console.log(`Inserted ${accounts.length} accounts with headers and Parent column (from SuiteQL) at cursor position`);
         }
 
         // NOTE: drillDownFromContextMenu is defined at the TOP of the script
