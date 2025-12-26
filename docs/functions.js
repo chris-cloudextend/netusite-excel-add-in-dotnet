@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.0.21';  // BALANCECURRENCY: Fixed convertToMonthYear to handle string Excel date serials from extractValueFromRange
+const FUNCTIONS_VERSION = '4.0.0.22';  // BALANCECURRENCY: Aligned date parameter handling with BALANCE function - removed extractValueFromRange, matching BALANCE's approach
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -3818,26 +3818,26 @@ async function BALANCECURRENCY(account, fromPeriod, toPeriod, subsidiary, curren
             return '#MISSING_ACCT#';
         }
         
-        // CRITICAL: Extract values from Range objects BEFORE converting to period strings
-        // Excel may pass Range objects for cell references (e.g., $G$6, $H$6)
-        // extractValueFromRange returns strings, but convertToMonthYear now handles string date serials
-        const rawFromPeriod = fromPeriod;
-        const rawToPeriod = toPeriod;
-        fromPeriod = extractValueFromRange(fromPeriod, 'fromPeriod');
-        toPeriod = extractValueFromRange(toPeriod, 'toPeriod');
+        // Convert date values to "Mon YYYY" format (supports both dates and period strings)
+        // For year-only format ("2025"), expand to "Jan 2025" and "Dec 2025"
+        // NOTE: Matching BALANCE function approach - Excel typically passes date serials as numbers
+        // convertToMonthYear handles both numbers and string representations of Excel date serials
+        const rawFrom = fromPeriod;
+        const rawTo = toPeriod;
+        fromPeriod = convertToMonthYear(fromPeriod, true);   // true = isFromPeriod
+        toPeriod = convertToMonthYear(toPeriod, false);      // false = isToPeriod
         
-        // Debug log the extraction
-        if (typeof rawFromPeriod === 'object' || typeof rawToPeriod === 'object') {
-            console.log(`🔍 BALANCECURRENCY: Extracted from Range - fromPeriod: "${fromPeriod}" (was ${typeof rawFromPeriod}), toPeriod: "${toPeriod}" (was ${typeof rawToPeriod})`);
+        // Debug log the period conversion
+        console.log(`📅 BALANCECURRENCY periods: ${rawFrom} → "${fromPeriod}", ${rawTo} → "${toPeriod}"`);
+        
+        // Validate that periods were converted successfully
+        const periodPattern = /^[A-Za-z]{3}\s+\d{4}$/;
+        if (fromPeriod && !periodPattern.test(fromPeriod)) {
+            console.error(`❌ Invalid fromPeriod after conversion: "${fromPeriod}" (raw: ${rawFrom})`);
         }
-        
-        // Convert date values to "Mon YYYY" format
-        // convertToMonthYear now handles both numbers and string representations of Excel date serials
-        fromPeriod = convertToMonthYear(fromPeriod, true);
-        toPeriod = convertToMonthYear(toPeriod, false);
-        
-        // Debug log the conversion result
-        console.log(`📅 BALANCECURRENCY periods: "${fromPeriod}" → "${toPeriod}"`);
+        if (toPeriod && !periodPattern.test(toPeriod)) {
+            console.error(`❌ Invalid toPeriod after conversion: "${toPeriod}" (raw: ${rawTo})`);
+        }
         
         if (!toPeriod) {
             console.error('❌ BALANCECURRENCY: toPeriod is required');
