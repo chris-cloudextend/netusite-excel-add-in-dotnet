@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.0.9';  // BALANCECURRENCY: Added currency formatting, build mode precaching, empty cell validation
+const FUNCTIONS_VERSION = '4.0.0.10';  // BALANCECURRENCY: Fixed cache collision - skip currency-agnostic caches for BALANCECURRENCY requests
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -1909,30 +1909,49 @@ window.resolvePendingRequests = function() {
     
     for (const [cacheKey, request] of Array.from(pendingRequests.balance.entries())) {
         const { params, resolve } = request;
-        const { account, fromPeriod, toPeriod, subsidiary } = params;
+        const { account, fromPeriod, toPeriod, subsidiary, currency } = params;
         
-        // For cumulative queries (empty fromPeriod), use toPeriod for lookup
-        const lookupPeriod = (fromPeriod && fromPeriod !== '') ? fromPeriod : toPeriod;
+        // CRITICAL: Skip currency-agnostic cache lookups for BALANCECURRENCY requests
+        // localStorage and fullYearCache don't support currency, so they would return
+        // BALANCE values (in subsidiary's base currency) instead of converted amounts
+        const isBalanceCurrency = cacheKey.includes('"type":"balancecurrency"') || (currency && currency !== '');
         
-        // Try to get value from localStorage cache (skip if subsidiary filter)
-        let value = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary);
+        let value = null;
         
-        // Fallback to fullYearCache (skip if subsidiary filter)
-        if (value === null) {
-            value = checkFullYearCache(account, lookupPeriod, subsidiary);
+        if (!isBalanceCurrency) {
+            // For regular BALANCE requests, use currency-agnostic caches
+            // For cumulative queries (empty fromPeriod), use toPeriod for lookup
+            const lookupPeriod = (fromPeriod && fromPeriod !== '') ? fromPeriod : toPeriod;
+            
+            // Try to get value from localStorage cache (skip if subsidiary filter)
+            value = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary);
+            
+            // Fallback to fullYearCache (skip if subsidiary filter)
+            if (value === null) {
+                value = checkFullYearCache(account, lookupPeriod, subsidiary);
+            }
         }
+        // For BALANCECURRENCY, value remains null - will be resolved by batch processor
         
         if (value !== null) {
             resolve(value);
             cache.balance.set(cacheKey, value);
             resolved++;
         } else {
-            // No value found - resolve with 0 (account has no transactions)
-            resolve(0);
-            failed++;
+            // No value found in currency-agnostic caches
+            // For BALANCECURRENCY, this is expected - batch processor will handle it
+            // For BALANCE, resolve with 0 (account has no transactions)
+            if (!isBalanceCurrency) {
+                resolve(0);
+                failed++;
+            }
+            // For BALANCECURRENCY, leave in queue for batch processor
         }
         
-        pendingRequests.balance.delete(cacheKey);
+        // Only delete from queue if we resolved it (BALANCE with cache hit, or BALANCE with no transactions)
+        if (value !== null || !isBalanceCurrency) {
+            pendingRequests.balance.delete(cacheKey);
+        }
     }
     
     console.log(`   Resolved: ${resolved}, Not in cache (set to 0): ${failed}`);
@@ -4498,8 +4517,9 @@ async function processBatchQueue() {
             // ================================================================
             // TRY WILDCARD CACHE RESOLUTION FIRST
             // If account has *, try to sum matching accounts from cache
+            // CRITICAL: Skip for BALANCECURRENCY - wildcard cache doesn't support currency
             // ================================================================
-            if (account.includes('*')) {
+            if (account.includes('*') && !isBalanceCurrency) {
                 const wildcardResult = resolveWildcardFromCache(account, fromPeriod, toPeriod, subsidiary);
                 if (wildcardResult !== null) {
                     console.log(`   🎯 Wildcard cache hit: ${account} = ${wildcardResult.total.toLocaleString()} (${wildcardResult.matchCount} accounts)`);
