@@ -6225,7 +6225,7 @@ For licensing inquiries, contact: legal@celigo.com
                 const normalizedAddress = cellAddress.replace(/\$/g, '').toUpperCase();
                 
                 // Find all BALANCECURRENCY formulas that reference this currency cell
-                for (let row = 0; row < formulas.length; row++) {
+                outerLoop: for (let row = 0; row < formulas.length; row++) {
                     for (let col = 0; col < formulas[row].length; col++) {
                         const formula = formulas[row][col];
                         if (typeof formula !== 'string') continue;
@@ -6253,7 +6253,7 @@ For licensing inquiries, contact: legal@celigo.com
                                         if (resolvedSub) {
                                             console.log(`💱 Found subsidiary from formula: ${resolvedSub} (from cell ${subsidiaryParam})`);
                                             foundSubsidiary = resolvedSub;
-                                            return; // Exit early if found
+                                            break outerLoop; // Exit loops if found
                                         }
                                     } catch (e) {
                                         console.warn(`⚠️ Could not resolve subsidiary cell ${subsidiaryParam}:`, e.message);
@@ -6264,7 +6264,7 @@ For licensing inquiries, contact: legal@celigo.com
                                     if (cleaned) {
                                         console.log(`💱 Found subsidiary from formula: ${cleaned} (hardcoded)`);
                                         foundSubsidiary = cleaned;
-                                        return; // Exit early if found
+                                        break outerLoop; // Exit loops if found
                                     }
                                 }
                             }
