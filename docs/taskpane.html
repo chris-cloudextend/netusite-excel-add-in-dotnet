@@ -15326,7 +15326,7 @@ export default {
                         // Display: Just the currency code (USD, AUD, etc.) - user wants simple display, not "USD ($)"
                         option.textContent = currencyCode;
                         
-                        console.log(`   Currency option: value="${currencyCode}" (will be inserted), display="${displayText}", backend id=${currency.id || 'N/A'}, name="${currency.name || 'N/A'}", symbol="${currency.symbol || 'N/A'}"`);
+                        console.log(`   Currency option: value="${currencyCode}" (will be inserted), display="${currencyCode}", backend id=${currency.id || 'N/A'}, name="${currency.name || 'N/A'}", code="${currency.code || 'N/A'}", symbol="${currency.symbol || 'N/A'}"`);
                         currencySelect.appendChild(option);
                     });
                 }
