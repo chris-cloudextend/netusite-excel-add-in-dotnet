@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.0.12';  // BALANCECURRENCY: Fixed Range object handling for currency parameter from cell references
+const FUNCTIONS_VERSION = '4.0.0.14';  // BALANCECURRENCY: Fixed detection in regular batch processing - now properly detects and routes to /balancecurrency endpoint
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -312,6 +312,80 @@ const BS_ACCOUNT_TYPES = ['Bank', 'AcctRec', 'OthCurrAsset', 'FixedAsset', 'OthA
  */
 function isCumulativeRequest(fromPeriod) {
     return !fromPeriod || fromPeriod === '';
+}
+
+/**
+ * Extract actual value from Excel Range object or primitive value.
+ * Excel custom functions with @requiresAddress receive Range objects for cell references.
+ * This function handles all possible Range object formats.
+ * 
+ * @param {any} value - The value to extract (may be Range object, string, number, etc.)
+ * @param {string} paramName - Name of parameter (for logging)
+ * @returns {string} - Extracted string value, or empty string if extraction fails
+ */
+function extractValueFromRange(value, paramName = 'parameter') {
+    // If already a primitive, return as string
+    if (value === null || value === undefined) {
+        return '';
+    }
+    
+    if (typeof value !== 'object') {
+        return String(value).trim();
+    }
+    
+    // It's an object - try to extract value from Range object
+    const originalValue = value;
+    
+    // Method 1: Range.values array (most common format)
+    // Format: { values: [[cellValue]] }
+    if (value.values && Array.isArray(value.values)) {
+        if (value.values[0] && Array.isArray(value.values[0])) {
+            const cellValue = value.values[0][0];
+            if (cellValue !== undefined && cellValue !== null) {
+                const extracted = String(cellValue).trim();
+                console.log(`🔍 extractValueFromRange(${paramName}): Extracted from Range.values[0][0]: "${cellValue}" → "${extracted}"`);
+                return extracted;
+            }
+        }
+        // Try single-level array
+        if (value.values[0] !== undefined && !Array.isArray(value.values[0])) {
+            const extracted = String(value.values[0]).trim();
+            console.log(`🔍 extractValueFromRange(${paramName}): Extracted from Range.values[0]: "${value.values[0]}" → "${extracted}"`);
+            return extracted;
+        }
+    }
+    
+    // Method 2: Range.value property
+    if (value.value !== undefined) {
+        const extracted = String(value.value).trim();
+        console.log(`🔍 extractValueFromRange(${paramName}): Extracted from Range.value: "${value.value}" → "${extracted}"`);
+        return extracted;
+    }
+    
+    // Method 3: Range.text property (formatted display value)
+    if (value.text !== undefined) {
+        const extracted = String(value.text).trim();
+        console.log(`🔍 extractValueFromRange(${paramName}): Extracted from Range.text: "${value.text}" → "${extracted}"`);
+        return extracted;
+    }
+    
+    // Method 4: Direct properties (some Range objects expose values directly)
+    if (value.formattedValue !== undefined) {
+        const extracted = String(value.formattedValue).trim();
+        console.log(`🔍 extractValueFromRange(${paramName}): Extracted from Range.formattedValue: "${value.formattedValue}" → "${extracted}"`);
+        return extracted;
+    }
+    
+    // Method 5: Try to stringify (fallback)
+    const stringified = String(value);
+    if (stringified !== '[object Object]' && stringified.trim() !== '') {
+        console.log(`🔍 extractValueFromRange(${paramName}): Extracted from stringify: "${stringified}"`);
+        return stringified.trim();
+    }
+    
+    // Method 6: Log full object structure for debugging
+    console.warn(`⚠️ extractValueFromRange(${paramName}): Could not extract value from Range object. Structure:`, JSON.stringify(value, null, 2));
+    return '';
 }
 
 /**
@@ -1244,7 +1318,7 @@ async function runBuildModeBatch() {
         
         // Process each UNIQUE request once
         for (const [cacheKey, { params, items }] of uniqueRequests) {
-            const { account, fromPeriod, toPeriod, subsidiary, department, location, classId, accountingBook } = params;
+            const { account, fromPeriod, toPeriod, subsidiary, currency, department, location, classId, accountingBook } = params;
             
             // ================================================================
             // TRY WILDCARD CACHE RESOLUTION FIRST
@@ -1334,6 +1408,21 @@ async function runBuildModeBatch() {
                                 value = parseFloat(data.balance) || 0;
                             }
                             errorCode = data.error || null;
+                            
+                            // CRITICAL: For BALANCECURRENCY, if balance is null and no explicit error code,
+                            // check if currency was requested. If so, this likely means BUILTIN.CONSOLIDATE
+                            // returned NULL for all transactions (invalid currency conversion path).
+                            // Return INV_SUB_CUR instead of 0 to prevent misleading data.
+                            // Note: Check cacheKey to detect BALANCECURRENCY requests
+                            const isBalanceCurrency = cacheKey.includes('"type":"balancecurrency"');
+                            if (isBalanceCurrency && data.balance === null && !errorCode) {
+                                // Extract currency from params (params is destructured from uniqueRequests)
+                                const currency = params.currency;
+                                if (currency) {
+                                    console.warn(`   ⚠️ BALANCECURRENCY: Balance is null for currency ${currency} - likely invalid conversion path`);
+                                    errorCode = 'INV_SUB_CUR';
+                                }
+                            }
                         } catch (parseError) {
                             // JSON parsing failed - try to get raw text for debugging
                             console.error(`   ❌ JSON parse failed: ${parseError.message}`);
@@ -1343,10 +1432,12 @@ async function runBuildModeBatch() {
                         
                         if (errorCode) {
                             // Return error code to Excel cell instead of 0
+                            // CRITICAL: Do NOT cache error codes - they should be re-evaluated
                             console.log(`   ⚠️ Cumulative result: ${account} = ${errorCode}`);
                             items.forEach(item => item.resolve(errorCode));
                         } else {
                             console.log(`   ✅ Cumulative result: ${account} = ${value.toLocaleString()}`);
+                            // Only cache valid numeric values, not errors or null
                             cache.balance.set(cacheKey, value);
                             // Resolve ALL items waiting for this result
                             items.forEach(item => item.resolve(value));
@@ -3736,47 +3827,49 @@ async function BALANCECURRENCY(account, fromPeriod, toPeriod, subsidiary, curren
         
         // Extract currency value - handle Range objects from cell references
         // Excel custom functions with @requiresAddress receive Range objects
-        // We need to extract the actual value, not stringify the Range object
+        // Use the robust extraction helper to handle all possible Range formats
         const originalCurrency = currency;
-        if (currency && typeof currency === 'object' && currency !== null) {
-            // Range object - try to extract value
-            if (currency.values && Array.isArray(currency.values)) {
-                // Range object with values array (Excel Range format)
-                if (currency.values[0] && Array.isArray(currency.values[0]) && currency.values[0][0] !== undefined) {
-                    currency = String(currency.values[0][0] || '').trim();
-                    console.log(`🔍 BALANCECURRENCY: Extracted currency from Range.values[0][0]: "${originalCurrency.values[0][0]}" → "${currency}"`);
-                } else {
-                    currency = '';
-                    console.warn(`⚠️ BALANCECURRENCY: Range.values structure unexpected:`, currency.values);
-                }
-            } else if (currency.value !== undefined) {
-                // Range object with value property
-                currency = String(currency.value || '').trim();
-                console.log(`🔍 BALANCECURRENCY: Extracted currency from Range.value: "${originalCurrency.value}" → "${currency}"`);
+        const wasCurrencyProvided = currency !== undefined && currency !== null;
+        
+        // Use the helper function to extract value from Range object or primitive
+        currency = extractValueFromRange(currency, 'currency');
+        const currencyExtracted = wasCurrencyProvided && (currency !== '' || originalCurrency === '' || originalCurrency === null);
+        
+        // Log the extraction result
+        if (wasCurrencyProvided) {
+            if (currency) {
+                console.log(`✅ BALANCECURRENCY: Currency extracted successfully: "${originalCurrency}" → "${currency}"`);
+            } else if (originalCurrency === '' || originalCurrency === null) {
+                console.log(`ℹ️ BALANCECURRENCY: Currency parameter is empty (explicitly omitted)`);
             } else {
-                // Unknown object structure - try to stringify and see what we get
-                const stringified = String(currency);
-                if (stringified !== '[object Object]' && stringified.trim() !== '') {
-                    currency = stringified.trim();
-                    console.log(`🔍 BALANCECURRENCY: Extracted currency from object stringify: "${stringified}" → "${currency}"`);
-                } else {
-                    currency = '';
-                    console.warn(`⚠️ BALANCECURRENCY: Could not extract currency from object:`, currency);
-                }
+                console.warn(`⚠️ BALANCECURRENCY: Currency parameter was provided but extraction resulted in empty string. Original:`, originalCurrency);
             }
         } else {
-            // Already a string or number
-            currency = String(currency || '').trim();
-            if (currency && originalCurrency !== currency) {
-                console.log(`🔍 BALANCECURRENCY: Currency already resolved: "${originalCurrency}" → "${currency}"`);
+            console.log(`ℹ️ BALANCECURRENCY: Currency parameter not provided (optional)`);
+        }
+        
+        // CRITICAL VALIDATION: If currency parameter was provided (not omitted) but is empty after extraction,
+        // return an error to prevent cache collision and misleading data
+        // Note: We allow explicit empty currency (user passes "" or ,,) but not empty cell references
+        if (wasCurrencyProvided && !currencyExtracted && currency === '') {
+            console.error('❌ BALANCECURRENCY: Currency parameter was provided but could not be extracted from cell reference. Cell may be empty or invalid.');
+            console.error('   Original currency value:', originalCurrency);
+            console.error('   Currency type:', typeof originalCurrency);
+            if (typeof originalCurrency === 'object' && originalCurrency !== null) {
+                console.error('   Currency object structure:', JSON.stringify(originalCurrency, null, 2));
             }
+            return '#EMPTY_CURRENCY: Currency cell reference is empty or invalid. Provide a currency code (e.g., "USD", "EUR") or use "" to omit currency.';
         }
         
         // Log final currency value
         if (currency) {
             console.log(`✅ BALANCECURRENCY: Final currency value: "${currency}"`);
+        } else if (wasCurrencyProvided) {
+            // Currency was provided but is empty - this is OK if user explicitly passed empty string
+            console.log(`ℹ️ BALANCECURRENCY: Currency parameter is empty (explicitly omitted)`);
         } else {
-            console.warn(`⚠️ BALANCECURRENCY: Currency is EMPTY after extraction! Original:`, originalCurrency);
+            // Currency was not provided at all - this is OK (optional parameter)
+            console.log(`ℹ️ BALANCECURRENCY: Currency parameter not provided (optional)`);
         }
         
         department = String(department || '').trim();
@@ -3819,8 +3912,20 @@ async function BALANCECURRENCY(account, fromPeriod, toPeriod, subsidiary, curren
         }, BUILD_MODE_SETTLE_MS);
         
         // Build cache key (include currency)
-        // CRITICAL: Ensure currency is included in cache key to prevent collisions with BALANCE
-        const params = { account, fromPeriod, toPeriod, subsidiary, currency, department, location, classId, accountingBook };
+        // CRITICAL: Ensure currency is ALWAYS explicitly included in cache key (even if empty string)
+        // to prevent collisions with BALANCE. Using explicit currency: '' vs omitting it entirely
+        // ensures different cache keys.
+        const params = { 
+            account, 
+            fromPeriod, 
+            toPeriod, 
+            subsidiary, 
+            currency: currency || '', // Explicitly set to empty string if undefined/null
+            department, 
+            location, 
+            classId, 
+            accountingBook 
+        };
         const cacheKey = JSON.stringify({
             type: 'balancecurrency',
             ...params
@@ -3830,7 +3935,7 @@ async function BALANCECURRENCY(account, fromPeriod, toPeriod, subsidiary, curren
         if (currency) {
             console.log(`🔍 BALANCECURRENCY cache key includes currency: "${currency}"`);
         } else {
-            console.warn(`⚠️ BALANCECURRENCY cache key has NO currency - this may cause cache collision with BALANCE!`);
+            console.log(`ℹ️ BALANCECURRENCY cache key explicitly includes empty currency: "" (prevents collision with BALANCE)`);
         }
         
         // ================================================================
@@ -4615,8 +4720,14 @@ async function processBatchQueue() {
                 });
                 
                 // Add currency parameter for BALANCECURRENCY
-                if (isBalanceCurrency && currency) {
-                    apiParams.append('currency', currency);
+                if (isBalanceCurrency) {
+                    if (currency) {
+                        apiParams.append('currency', currency);
+                        console.log(`   💱 BALANCECURRENCY: Adding currency parameter to API: "${currency}"`);
+                    } else {
+                        console.warn(`   ⚠️ BALANCECURRENCY: Currency parameter is missing or empty! This may cause incorrect results.`);
+                        console.warn(`      Params object:`, JSON.stringify(params, null, 2));
+                    }
                 }
                 
                 // Request breakdown for wildcards so we can cache individual accounts
@@ -4676,6 +4787,15 @@ async function processBatchQueue() {
                                 value = parseFloat(data.balance) || 0;
                             }
                             errorCode = data.error || null;
+                            
+                            // CRITICAL: For BALANCECURRENCY, if balance is null and no explicit error code,
+                            // check if currency was requested. If so, this likely means BUILTIN.CONSOLIDATE
+                            // returned NULL for all transactions (invalid currency conversion path).
+                            // Return INV_SUB_CUR instead of 0 to prevent misleading data.
+                            if (isBalanceCurrency && data.balance === null && !errorCode && currency) {
+                                console.warn(`   ⚠️ BALANCECURRENCY: Balance is null for currency ${currency} - likely invalid conversion path`);
+                                errorCode = 'INV_SUB_CUR';
+                            }
                         } catch (parseError) {
                             // JSON parsing failed
                             console.error(`   ❌ JSON parse failed: ${parseError.message}`);
@@ -4692,10 +4812,12 @@ async function processBatchQueue() {
                         
                         if (errorCode) {
                             // Return error code to Excel cell instead of 0
+                            // CRITICAL: Do NOT cache error codes - they should be re-evaluated
                             console.log(`   ⚠️ Cumulative result: ${account} = ${errorCode}`);
                             requests.forEach(r => r.resolve(errorCode));
                         } else {
                             console.log(`   ✅ Cumulative result: ${account} = ${value.toLocaleString()} (${(queryTimeMs / 1000).toFixed(1)}s)`);
+                            // Only cache valid numeric values, not errors or null
                             cache.balance.set(cacheKey, value);
                             // Resolve ALL requests waiting for this result
                             requests.forEach(r => r.resolve(value));
@@ -4750,18 +4872,26 @@ async function processBatchQueue() {
     // Continue with regular batch processing for period-based requests
     console.log(`📦 Processing ${regularRequests.length} regular (period-based) requests...`);
     
-    // Group by filters ONLY (not periods) - this allows smart batching
+    // Group by filters AND currency (not periods) - this allows smart batching
+    // CRITICAL: Must group by currency for BALANCECURRENCY requests to prevent mixing currencies
     // Example: 1 account × 12 months = 1 batch (not 12 batches)
     // Example: 100 accounts × 1 month = 2 batches (chunked by accounts)
     // Example: 100 accounts × 12 months = 2 batches (all periods together)
     const groups = new Map();
     for (const [cacheKey, request] of regularRequests) {
         const {params} = request;
+        // Check if this is a BALANCECURRENCY request
+        const isBalanceCurrency = cacheKey.includes('"type":"balancecurrency"');
+        const currency = params.currency || '';
+        
         const filterKey = JSON.stringify({
             subsidiary: params.subsidiary || '',
             department: params.department || '',
             location: params.location || '',
-            class: params.classId || ''
+            class: params.classId || '',
+            // CRITICAL: Include currency in grouping key for BALANCECURRENCY requests
+            // This ensures requests with different currencies are batched separately
+            currency: isBalanceCurrency ? currency : ''
             // Note: NOT grouping by periods - this is the key optimization!
         });
         
@@ -4777,6 +4907,110 @@ async function processBatchQueue() {
     for (const [filterKey, groupRequests] of groups.entries()) {
         const filters = JSON.parse(filterKey);
         const accounts = [...new Set(groupRequests.map(r => r.request.params.account))];
+        
+        // Check if this group contains BALANCECURRENCY requests
+        // CRITICAL: BALANCECURRENCY requests cannot use /batch/balance (doesn't support currency)
+        // We need to process them individually using /balancecurrency endpoint
+        // Check cache key first (most reliable), then endpoint, then params.currency
+        const isBalanceCurrency = groupRequests.some(r => {
+            // Method 1: Check cache key (most reliable - always set for BALANCECURRENCY)
+            if (r.cacheKey && r.cacheKey.includes('"type":"balancecurrency"')) {
+                return true;
+            }
+            // Method 2: Check endpoint property
+            if (r.request && r.request.endpoint === '/balancecurrency') {
+                return true;
+            }
+            // Method 3: Check params.currency (may be empty string, so check for property existence)
+            if (r.request && r.request.params && 'currency' in r.request.params) {
+                return true;
+            }
+            return false;
+        });
+        const currency = filters.currency || '';
+        
+        // Debug logging to understand detection
+        if (groupRequests.length > 0) {
+            const firstRequest = groupRequests[0];
+            console.log(`   🔍 BALANCECURRENCY detection check:`, {
+                cacheKey: firstRequest.cacheKey ? firstRequest.cacheKey.includes('"type":"balancecurrency"') : 'N/A',
+                endpoint: firstRequest.request?.endpoint,
+                hasCurrencyParam: firstRequest.request?.params && 'currency' in firstRequest.request.params,
+                currencyValue: firstRequest.request?.params?.currency,
+                isBalanceCurrency: isBalanceCurrency
+            });
+        }
+        
+        if (isBalanceCurrency) {
+            console.log(`   💱 BALANCECURRENCY group detected with currency: "${currency || '(empty)'}"`);
+            console.log(`   ⚠️ BALANCECURRENCY requests must use individual /balancecurrency calls (batch endpoint doesn't support currency)`);
+            
+            // Process BALANCECURRENCY requests individually
+            // Group by currency to batch requests with same currency together
+            const currencyGroups = new Map();
+            for (const {cacheKey, request} of groupRequests) {
+                const reqCurrency = request.params.currency || '';
+                if (!currencyGroups.has(reqCurrency)) {
+                    currencyGroups.set(reqCurrency, []);
+                }
+                currencyGroups.get(reqCurrency).push({ cacheKey, request });
+            }
+            
+            // Process each currency group
+            for (const [reqCurrency, currencyGroupRequests] of currencyGroups.entries()) {
+                console.log(`   💱 Processing ${currencyGroupRequests.length} BALANCECURRENCY requests with currency: "${reqCurrency || '(empty)'}"`);
+                
+                // Process each request individually (can't batch with currency)
+                for (const {cacheKey, request} of currencyGroupRequests) {
+                    const { account, fromPeriod, toPeriod, subsidiary, department, location, classId, accountingBook } = request.params;
+                    const reqCurrency = request.params.currency || '';
+                    
+                    try {
+                        const apiParams = new URLSearchParams({
+                            account: account,
+                            from_period: fromPeriod || '',
+                            to_period: toPeriod,
+                            subsidiary: subsidiary || '',
+                            currency: reqCurrency,
+                            department: department || '',
+                            location: location || '',
+                            class: classId || '',
+                            book: accountingBook || ''
+                        });
+                        
+                        console.log(`   📤 BALANCECURRENCY API: ${account} for ${fromPeriod || '(cumulative)'} → ${toPeriod} (currency: ${reqCurrency || 'default'})`);
+                        
+                        const response = await fetch(`${SERVER_URL}/balancecurrency?${apiParams.toString()}`);
+                        
+                        if (response.ok) {
+                            const data = await response.json();
+                            const value = data.balance ?? 0;
+                            const errorCode = data.error;
+                            
+                            if (errorCode) {
+                                console.log(`   ⚠️ BALANCECURRENCY result: ${account} = ${errorCode}`);
+                                request.resolve(errorCode);
+                            } else {
+                                console.log(`   ✅ BALANCECURRENCY result: ${account} = ${value.toLocaleString()}`);
+                                cache.balance.set(cacheKey, value);
+                                request.resolve(value);
+                            }
+                        } else {
+                            const errorCode = response.status === 408 || response.status === 504 ? 'TIMEOUT' : 'APIERR';
+                            console.error(`   ❌ BALANCECURRENCY API error: ${response.status} → ${errorCode}`);
+                            request.resolve(errorCode);
+                        }
+                    } catch (error) {
+                        const errorCode = error.name === 'AbortError' ? 'TIMEOUT' : 'NETFAIL';
+                        console.error(`   ❌ BALANCECURRENCY fetch error: ${error.message} → ${errorCode}`);
+                        request.resolve(errorCode);
+                    }
+                }
+            }
+            
+            // Skip the regular batch processing for this group
+            continue;
+        }
         
         // Collect ALL unique periods from ALL requests in this group
         // EXPAND date ranges (e.g., "Jan 2025" to "Dec 2025" → all 12 months)
@@ -4942,15 +5176,17 @@ async function processBatchQueue() {
                     const response = await fetch(`${SERVER_URL}/batch/balance`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            accounts: accountChunk,
-                            periods: periodChunk,
-                            subsidiary: filters.subsidiary || '',
-                            department: filters.department || '',
-                            location: filters.location || '',
-                            class: filters.class || '',
-                            accountingbook: filters.accountingBook || ''  // Multi-Book Accounting support
-                        })
+                    body: JSON.stringify({
+                        accounts: accountChunk,
+                        periods: periodChunk,
+                        subsidiary: filters.subsidiary || '',
+                        department: filters.department || '',
+                        location: filters.location || '',
+                        class: filters.class || '',
+                        accountingbook: filters.accountingBook || ''  // Multi-Book Accounting support
+                        // Note: /batch/balance endpoint does NOT support currency parameter
+                        // BALANCECURRENCY requests are handled separately above
+                    })
                     });
                 
                     if (!response.ok) {
