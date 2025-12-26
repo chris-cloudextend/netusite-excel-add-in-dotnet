@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.0.10';  // BALANCECURRENCY: Fixed cache collision - skip currency-agnostic caches for BALANCECURRENCY requests
+const FUNCTIONS_VERSION = '4.0.0.11';  // BALANCECURRENCY: Fixed Range object handling for currency parameter from cell references
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -3719,8 +3719,33 @@ async function BALANCECURRENCY(account, fromPeriod, toPeriod, subsidiary, curren
         }
         
         // Other parameters as strings
+        // CRITICAL: For currency, we need to handle Range objects properly
+        // Excel may pass Range objects for cell references, which need special handling
         subsidiary = String(subsidiary || '').trim();
-        currency = String(currency || '').trim();
+        
+        // Extract currency value - handle Range objects from cell references
+        // Excel custom functions with @requiresAddress receive Range objects
+        // We need to extract the actual value, not stringify the Range object
+        if (currency && typeof currency === 'object' && currency.values && Array.isArray(currency.values)) {
+            // Range object with values array
+            if (currency.values[0] && Array.isArray(currency.values[0]) && currency.values[0][0] !== undefined) {
+                currency = String(currency.values[0][0] || '').trim();
+            } else {
+                currency = '';
+            }
+        } else if (currency && typeof currency === 'object' && currency.value !== undefined) {
+            // Range object with value property
+            currency = String(currency.value || '').trim();
+        } else {
+            // Already a string or number
+            currency = String(currency || '').trim();
+        }
+        
+        // Log currency extraction for debugging
+        if (rawCurrency !== currency && rawCurrency !== undefined) {
+            console.log(`🔍 BALANCECURRENCY: Extracted currency from Range object: "${rawCurrency}" → "${currency}"`);
+        }
+        
         department = String(department || '').trim();
         location = String(location || '').trim();
         classId = String(classId || '').trim();
@@ -3761,11 +3786,19 @@ async function BALANCECURRENCY(account, fromPeriod, toPeriod, subsidiary, curren
         }, BUILD_MODE_SETTLE_MS);
         
         // Build cache key (include currency)
+        // CRITICAL: Ensure currency is included in cache key to prevent collisions with BALANCE
         const params = { account, fromPeriod, toPeriod, subsidiary, currency, department, location, classId, accountingBook };
         const cacheKey = JSON.stringify({
             type: 'balancecurrency',
             ...params
         });
+        
+        // Debug logging for cache key construction
+        if (currency) {
+            console.log(`🔍 BALANCECURRENCY cache key includes currency: "${currency}"`);
+        } else {
+            console.warn(`⚠️ BALANCECURRENCY cache key has NO currency - this may cause cache collision with BALANCE!`);
+        }
         
         // ================================================================
         // CACHE CHECKS
