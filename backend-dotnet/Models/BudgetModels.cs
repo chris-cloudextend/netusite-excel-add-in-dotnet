@@ -91,3 +91,25 @@ public class BatchBudgetResponse
     public int QueryCount { get; set; }
 }
 
+/// <summary>Response for all budgets for a year</summary>
+public class AllBudgetsResponse
+{
+    [JsonPropertyName("year")]
+    public int Year { get; set; }
+    
+    [JsonPropertyName("category")]
+    public string Category { get; set; } = string.Empty;
+    
+    [JsonPropertyName("accounts")]
+    public Dictionary<string, Dictionary<string, decimal>> Accounts { get; set; } = new();
+    
+    [JsonPropertyName("account_names")]
+    public Dictionary<string, string> AccountNames { get; set; } = new();
+    
+    [JsonPropertyName("account_types")]
+    public Dictionary<string, string> AccountTypes { get; set; } = new();
+    
+    [JsonPropertyName("account_count")]
+    public int AccountCount { get; set; }
+}
+

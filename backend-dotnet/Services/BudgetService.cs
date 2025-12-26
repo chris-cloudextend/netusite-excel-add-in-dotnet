@@ -258,6 +258,225 @@ public class BudgetService : IBudgetService
 
         return periods;
     }
+
+    /// <summary>
+    /// Get all budget data for a given year.
+    /// Returns all accounts with budget amounts for each month.
+    /// </summary>
+    public async Task<AllBudgetsResponse> GetAllBudgetsAsync(int year, string? subsidiary = null, string? category = null)
+    {
+        var result = new AllBudgetsResponse
+        {
+            Year = year,
+            Category = category ?? "",
+            Accounts = new Dictionary<string, Dictionary<string, decimal>>(),
+            AccountNames = new Dictionary<string, string>(),
+            AccountTypes = new Dictionary<string, string>()
+        };
+
+        try
+        {
+            // Step 1: Get all periods for the year
+            var periodQuery = $@"
+                SELECT id, periodname, startdate
+                FROM AccountingPeriod
+                WHERE EXTRACT(YEAR FROM startdate) = {year}
+                  AND isquarter = 'F'
+                  AND isyear = 'F'
+                  AND isadjust = 'F'
+                ORDER BY startdate";
+
+            var periodResults = await _netSuiteService.QueryRawAsync(periodQuery);
+
+            if (!periodResults.Any())
+            {
+                _logger.LogWarning("No accounting periods found for year {Year}", year);
+                return result;
+            }
+
+            // Step 2: Build period ID to month name mapping
+            var periodMap = new Dictionary<string, string>(); // period_id -> month name (e.g., "Jan")
+            var monthNames = new[] { "Jan", "Feb", "Mar", "Apr", "May", "Jun", 
+                                     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+
+            foreach (var row in periodResults)
+            {
+                var periodId = row.TryGetProperty("id", out var idProp) ? idProp.GetString() : null;
+                var startdate = row.TryGetProperty("startdate", out var dateProp) ? dateProp.GetString() : null;
+
+                if (string.IsNullOrEmpty(periodId) || string.IsNullOrEmpty(startdate))
+                    continue;
+
+                // Parse month from startdate (format: "1/1/2011" or "2011-01-01")
+                try
+                {
+                    int monthNum = 0;
+                    if (startdate.Contains('/'))
+                    {
+                        var parts = startdate.Split('/');
+                        if (parts.Length >= 1 && int.TryParse(parts[0], out monthNum))
+                        {
+                            if (monthNum >= 1 && monthNum <= 12)
+                                periodMap[periodId] = monthNames[monthNum - 1];
+                        }
+                    }
+                    else if (startdate.Contains('-'))
+                    {
+                        var parts = startdate.Split('-');
+                        if (parts.Length >= 2 && int.TryParse(parts[1], out monthNum))
+                        {
+                            if (monthNum >= 1 && monthNum <= 12)
+                                periodMap[periodId] = monthNames[monthNum - 1];
+                        }
+                    }
+                }
+                catch
+                {
+                    // Skip invalid dates
+                }
+            }
+
+            if (!periodMap.Any())
+            {
+                _logger.LogWarning("Could not parse periods for year {Year}", year);
+                return result;
+            }
+
+            var periodIds = string.Join(",", periodMap.Keys);
+
+            // Step 3: Build WHERE clauses
+            var whereClauses = new List<string> { $"bm.period IN ({periodIds})" };
+
+            // Category filter
+            if (!string.IsNullOrEmpty(category))
+            {
+                if (int.TryParse(category, out var catId))
+                {
+                    whereClauses.Add($"b.category = {catId}");
+                }
+                else
+                {
+                    // Look up category ID by name
+                    var catQuery = $@"
+                        SELECT id FROM BudgetCategory 
+                        WHERE name = '{NetSuiteService.EscapeSql(category)}'
+                        FETCH FIRST 1 ROWS ONLY";
+                    var catResults = await _netSuiteService.QueryRawAsync(catQuery);
+                    if (catResults.Any())
+                    {
+                        var catRow = catResults.First();
+                        if (catRow.TryGetProperty("id", out var catIdProp))
+                        {
+                            var catIdStr = catIdProp.GetString();
+                            if (!string.IsNullOrEmpty(catIdStr))
+                                whereClauses.Add($"b.category = {catIdStr}");
+                        }
+                    }
+                }
+            }
+
+            // Subsidiary filter - resolve to ID if needed
+            string? subsidiaryId = null;
+            if (!string.IsNullOrEmpty(subsidiary))
+            {
+                if (int.TryParse(subsidiary, out var subId))
+                {
+                    subsidiaryId = subsidiary;
+                }
+                else
+                {
+                    // Look up subsidiary ID by name
+                    var subQuery = $@"
+                        SELECT id FROM subsidiary 
+                        WHERE name = '{NetSuiteService.EscapeSql(subsidiary)}'
+                        FETCH FIRST 1 ROWS ONLY";
+                    var subResults = await _netSuiteService.QueryRawAsync(subQuery);
+                    if (subResults.Any())
+                    {
+                        var subRow = subResults.First();
+                        if (subRow.TryGetProperty("id", out var subIdProp))
+                            subsidiaryId = subIdProp.GetString();
+                    }
+                }
+            }
+
+            // Use default subsidiary if not specified
+            var targetSub = subsidiaryId ?? "1";
+
+            if (!string.IsNullOrEmpty(subsidiaryId))
+            {
+                whereClauses.Add($"b.subsidiary = {subsidiaryId}");
+            }
+
+            var whereClause = string.Join(" AND ", whereClauses);
+
+            // Step 4: Query all budget data
+            var query = $@"
+                SELECT 
+                    a.acctnumber AS account_number,
+                    a.accountsearchdisplaynamecopy AS account_name,
+                    a.accttype AS account_type,
+                    bm.period AS period_id,
+                    SUM(
+                        TO_NUMBER(BUILTIN.CONSOLIDATE(
+                            bm.amount, 'LEDGER', 'DEFAULT', 'DEFAULT',
+                            {targetSub}, bm.period, 'DEFAULT'
+                        ))
+                    ) AS amount
+                FROM BudgetsMachine bm
+                INNER JOIN Budgets b ON bm.budget = b.id
+                INNER JOIN Account a ON b.account = a.id
+                WHERE {whereClause}
+                GROUP BY a.acctnumber, a.accountsearchdisplaynamecopy, a.accttype, bm.period
+                ORDER BY a.acctnumber, bm.period";
+
+            _logger.LogInformation("Querying all budgets for year {Year}", year);
+            var budgetResults = await _netSuiteService.QueryRawAsync(query);
+
+            // Step 5: Process results
+            foreach (var row in budgetResults)
+            {
+                var acctNum = row.TryGetProperty("account_number", out var acctNumProp) 
+                    ? acctNumProp.GetString() ?? "" : "";
+                var acctName = row.TryGetProperty("account_name", out var acctNameProp) 
+                    ? acctNameProp.GetString() ?? "" : "";
+                var acctType = row.TryGetProperty("account_type", out var acctTypeProp) 
+                    ? acctTypeProp.GetString() ?? "" : "";
+                var periodId = row.TryGetProperty("period_id", out var periodIdProp) 
+                    ? periodIdProp.GetString() ?? "" : "";
+                var amount = row.TryGetProperty("amount", out var amtProp) 
+                    ? ParseAmount(amtProp) : 0;
+
+                if (string.IsNullOrEmpty(acctNum))
+                    continue;
+
+                // Initialize account if needed
+                if (!result.Accounts.ContainsKey(acctNum))
+                {
+                    result.Accounts[acctNum] = new Dictionary<string, decimal>();
+                    result.AccountNames[acctNum] = acctName;
+                    result.AccountTypes[acctNum] = acctType;
+                }
+
+                // Map period ID to month name and add to account data
+                if (periodMap.TryGetValue(periodId, out var monthName))
+                {
+                    var key = $"{monthName} {year}";
+                    result.Accounts[acctNum][key] = amount;
+                }
+            }
+
+            result.AccountCount = result.Accounts.Count;
+            _logger.LogInformation("Retrieved {Count} accounts with budget data for year {Year}", result.AccountCount, year);
+
+            return result;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting all budgets for year {Year}", year);
+            throw;
+        }
+    }
 }
 
 /// <summary>
@@ -267,5 +486,6 @@ public interface IBudgetService
 {
     Task<BudgetResponse> GetBudgetAsync(BudgetRequest request);
     Task<BatchBudgetResponse> GetBatchBudgetAsync(BatchBudgetRequest request);
+    Task<AllBudgetsResponse> GetAllBudgetsAsync(int year, string? subsidiary = null, string? category = null);
 }
 

@@ -103,26 +103,17 @@ public class BudgetController : ControllerBase
         [FromQuery] string? subsidiary = null,
         [FromQuery] string? category = null)
     {
+        if (year <= 0)
+            return BadRequest(new { error = "year parameter is required and must be > 0" });
+
         try
         {
-            // Get all accounts with budgets for the year
-            var months = new[] { "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
-            var periods = months.Select(m => $"{m} {year}").ToList();
-
-            // This would need to query all accounts that have budgets
-            // For now, return empty structure - full implementation would need account list
-            return Ok(new
-            {
-                year,
-                subsidiary,
-                category,
-                periods,
-                message = "Use POST /batch/budget with specific accounts for budget data"
-            });
+            var result = await _budgetService.GetAllBudgetsAsync(year, subsidiary, category);
+            return Ok(result);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error getting all budgets");
+            _logger.LogError(ex, "Error getting all budgets for year {Year}", year);
             return StatusCode(500, new { error = ex.Message });
         }
     }

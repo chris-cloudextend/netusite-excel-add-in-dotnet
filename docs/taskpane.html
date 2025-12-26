@@ -22232,15 +22232,16 @@ export default {
             
             console.log(`Inserting ${accounts.length} accounts at ${range.address}`);
             
-            // Headers row
-            const headers = ['Account Type', 'Spec Acct Type', 'Account Number', 'Account Name'];
+            // Headers row - Added Parent column after Account Number
+            const headers = ['Account Type', 'Spec Acct Type', 'Account Number', 'Parent', 'Account Name'];
             
             // Prepare data rows
-            // Order: Type, Special Account Type, Number, Name
+            // Order: Type, Special Account Type, Number, Parent (formula), Name
             const dataRows = accounts.map(acc => [
                 acc.accttype || '',
                 acc.sspecacct || '',  // Special Account Type (e.g., Retained Earnings)
                 acc.accountnumber || '',
+                '',  // Parent will be filled with formula below
                 acc.accountname || ''
             ]);
             
@@ -22252,7 +22253,7 @@ export default {
                 range.rowIndex,
                 range.columnIndex,
                 allRows.length,
-                4  // 4 columns
+                5  // 5 columns (added Parent)
             );
             
             // Insert data
@@ -22263,14 +22264,43 @@ export default {
                 range.rowIndex,
                 range.columnIndex,
                 1,
-                4
+                5  // 5 columns
             );
             headerRange.format.font.bold = true;
             headerRange.format.fill.color = '#f3f4f6';
             
             await context.sync();
             
-            console.log(`Inserted ${accounts.length} accounts with headers at cursor position`);
+            // Add XAVI.PARENT formulas for each account row
+            // Parent column is at index 3 (0-based: Type=0, Spec=1, Number=2, Parent=3, Name=4)
+            const accountNumberColumnIndex = range.columnIndex + 2; // Account Number column (3rd column, 0-based + 2)
+            const parentColumnIndex = range.columnIndex + 3; // Parent column (4th column, 0-based + 3)
+            
+            // Helper function to convert column index to Excel column letter (A, B, C, ..., Z, AA, AB, etc.)
+            function getColumnLetter(colIndex) {
+                let result = '';
+                while (colIndex >= 0) {
+                    result = String.fromCharCode(65 + (colIndex % 26)) + result;
+                    colIndex = Math.floor(colIndex / 26) - 1;
+                }
+                return result;
+            }
+            
+            for (let i = 0; i < accounts.length; i++) {
+                const accountNumber = accounts[i].accountnumber;
+                if (accountNumber) {
+                    const rowIndex = range.rowIndex + 1 + i; // Skip header row (rowIndex + 1)
+                    const parentCell = sheet.getRangeByIndexes(rowIndex, parentColumnIndex, 1, 1);
+                    // Formula references the Account Number cell in the same row using absolute column reference
+                    const accountColumnLetter = getColumnLetter(accountNumberColumnIndex);
+                    const accountRowNumber = rowIndex + 1; // Excel is 1-based
+                    parentCell.formulas = [[`=XAVI.PARENT($${accountColumnLetter}$${accountRowNumber})`]];
+                }
+            }
+            
+            await context.sync();
+            
+            console.log(`Inserted ${accounts.length} accounts with headers and Parent column at cursor position`);
         }
 
         // NOTE: drillDownFromContextMenu is defined at the TOP of the script
