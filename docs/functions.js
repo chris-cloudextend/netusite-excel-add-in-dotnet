@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.0.16';  // BALANCECURRENCY: Fixed dropdown detection for formula cells, removed comments, added background color for filter cells, verified period range expansion
+const FUNCTIONS_VERSION = '4.0.0.17';  // BALANCECURRENCY: Fixed period range string comparison, currency dropdown names, removed all comments, fixed filter dropdown to show on referenced cells
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -4966,16 +4966,22 @@ async function processBatchQueue() {
                     const { account, fromPeriod, toPeriod, subsidiary, department, location, classId, accountingBook } = request.params;
                     const reqCurrency = request.params.currency || '';
                     
+                    // CRITICAL: Periods are already converted to "Mon YYYY" format in BALANCECURRENCY function
+                    // But we need to ensure they're strings for comparison (not date serial numbers)
+                    const fromPeriodStr = String(fromPeriod || '').trim();
+                    const toPeriodStr = String(toPeriod || '').trim();
+                    
                     // Check if this is a period range (fromPeriod != toPeriod and both are provided)
-                    const isPeriodRange = fromPeriod && toPeriod && fromPeriod !== toPeriod;
+                    // Both must be non-empty and different
+                    const isPeriodRange = fromPeriodStr && toPeriodStr && fromPeriodStr !== toPeriodStr;
                     
                     // Debug logging for period range detection
-                    console.log(`   🔍 BALANCECURRENCY period check: fromPeriod="${fromPeriod}", toPeriod="${toPeriod}", isPeriodRange=${isPeriodRange}`);
+                    console.log(`   🔍 BALANCECURRENCY period check: fromPeriod="${fromPeriodStr}", toPeriod="${toPeriodStr}", isPeriodRange=${isPeriodRange}`);
                     
                     if (isPeriodRange) {
-                        // Expand period range to individual months
-                        const expandedPeriods = expandPeriodRangeFromTo(fromPeriod, toPeriod);
-                        console.log(`   📅 BALANCECURRENCY period range: ${fromPeriod} to ${toPeriod} → ${expandedPeriods.length} months:`, expandedPeriods);
+                        // Expand period range to individual months (use string versions)
+                        const expandedPeriods = expandPeriodRangeFromTo(fromPeriodStr, toPeriodStr);
+                        console.log(`   📅 BALANCECURRENCY period range: ${fromPeriodStr} to ${toPeriodStr} → ${expandedPeriods.length} months:`, expandedPeriods);
                         
                         // Make individual API calls for each period and sum them
                         let totalValue = 0;

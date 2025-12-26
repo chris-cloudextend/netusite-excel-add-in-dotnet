@@ -6002,31 +6002,17 @@ For licensing inquiries, contact: legal@celigo.com
                         contextualState.selectedParamType = paramConfig.type;
                         // Show the context popup with this parameter type
                         showParamContextPopup(normalizedAddress, paramConfig, selection.values[0][0]);
-                    } else if (selectedCellHasXavi && selectedFormula) {
-                        // Check if selected cell has a formula with a subsidiary parameter
-                        // Extract subsidiary parameter from formula
-                        let subsidiaryParam = '';
-                        const upperFormula = selectedFormula.toUpperCase();
+                    } else {
+                        // Check if selected cell is a known filter cell (the cell that contains the filter value)
+                        // This is the OLD/CORRECT logic - show dropdown when clicking on the cell that CONTAINS the filter value
+                        // not the formula cell itself
+                        let filterType = null;
+                        let filterConfig = null;
                         
-                        if (upperFormula.includes('XAVI.BALANCE') && !upperFormula.includes('XAVI.TYPEBALANCE') && !upperFormula.includes('XAVI.BALANCECURRENCY') && !upperFormula.includes('XAVI.BALANCECHANGE')) {
-                            subsidiaryParam = extractFormulaParam(selectedFormula, 3);
-                        } else if (upperFormula.includes('XAVI.BALANCECURRENCY')) {
-                            subsidiaryParam = extractFormulaParam(selectedFormula, 3);
-                        } else if (upperFormula.includes('XAVI.TYPEBALANCE')) {
-                            subsidiaryParam = extractFormulaParam(selectedFormula, 3);
-                        } else if (upperFormula.includes('XAVI.NETINCOME')) {
-                            subsidiaryParam = extractFormulaParam(selectedFormula, 2);
-                        } else if (upperFormula.includes('XAVI.BUDGET')) {
-                            subsidiaryParam = extractFormulaParam(selectedFormula, 3);
-                        }
-                        
-                        // If formula has a subsidiary parameter, show subsidiary dropdown
-                        if (subsidiaryParam && 
-                            !subsidiaryParam.startsWith('"') && 
-                            !subsidiaryParam.startsWith("'") && 
-                            !/^\d+$/.test(subsidiaryParam)) {
-                            // It's a cell reference - show subsidiary dropdown
-                            const subsidiaryConfig = {
+                        // Check if this is a known filter cell (subsidiary, currency, department, location, class)
+                        if (knownSubsidiaryCells.has(normalizedAddress)) {
+                            filterType = 'subsidiary';
+                            filterConfig = {
                                 type: 'subsidiary',
                                 icon: '🏢',
                                 label: 'Subsidiary',
@@ -6034,25 +6020,61 @@ For licensing inquiries, contact: legal@celigo.com
                                 source: 'subsidiarySelect',
                                 hint: 'Add "(Consolidated)" for rollups'
                             };
-                            // Get the value from the referenced cell
-                            let currentValue = '';
-                            try {
-                                const refRange = sheet.getRange(subsidiaryParam);
-                                refRange.load('values');
-                                await context.sync();
-                                currentValue = refRange.values[0][0] || '';
-                            } catch (e) {
-                                // Couldn't read referenced cell
-                            }
-                            contextualState.selectedParamType = 'subsidiary';
-                            showParamContextPopup(normalizedAddress, subsidiaryConfig, currentValue);
+                        } else if (knownCurrencyCells.has(normalizedAddress)) {
+                            filterType = 'currency';
+                            filterConfig = {
+                                type: 'currency',
+                                icon: '💱',
+                                label: 'Currency',
+                                inputType: 'select',
+                                source: 'currencySelect',
+                                hint: 'Currency code for consolidation (e.g., USD, EUR)'
+                            };
+                        } else if (knownDepartmentCells.has(normalizedAddress)) {
+                            filterType = 'department';
+                            filterConfig = {
+                                type: 'department',
+                                icon: '🏷️',
+                                label: 'Department',
+                                inputType: 'select',
+                                source: 'departmentSelect',
+                                hint: 'Leave empty for all departments'
+                            };
+                        } else if (knownLocationCells.has(normalizedAddress)) {
+                            filterType = 'location';
+                            filterConfig = {
+                                type: 'location',
+                                icon: '📍',
+                                label: 'Location',
+                                inputType: 'select',
+                                source: 'locationSelect',
+                                hint: 'Leave empty for all locations'
+                            };
+                        } else if (knownClassCells.has(normalizedAddress)) {
+                            filterType = 'class';
+                            filterConfig = {
+                                type: 'class',
+                                icon: '📂',
+                                label: 'Class',
+                                inputType: 'select',
+                                source: 'classSelect',
+                                hint: 'Leave empty for all classes'
+                            };
+                        }
+                        
+                        if (filterConfig) {
+                            contextualState.selectedParamType = filterType;
+                            showParamContextPopup(normalizedAddress, filterConfig, selection.values[0][0]);
                         } else {
                             contextualState.selectedParamType = null;
                             hideParamContextPopup();
                         }
-                    } else {
-                        contextualState.selectedParamType = null;
-                        hideParamContextPopup();
+                    }
+                    
+                    // Ensure filter cell sets are populated (scan if needed)
+                    if (knownSubsidiaryCells.size === 0) {
+                        // Trigger a scan in the background (don't await)
+                        scanForSubsidiaryCells().catch(e => console.warn('Filter cell scan error:', e));
                     }
                     
                     // Update UI
@@ -15249,8 +15271,10 @@ export default {
                     console.log(`   Adding ${currencies.length} currencies to dropdown`);
                     currencies.forEach(currency => {
                         const option = document.createElement('option');
-                        option.value = currency.name || currency.code || '';  // Use currency code (USD, EUR, etc.)
-                        option.textContent = `${currency.name || currency.code || ''} (${currency.symbol || ''})`;
+                        // Use currency name as the value (what gets inserted into sheet)
+                        option.value = currency.name || currency.code || '';
+                        // Display: Currency Name (Symbol) - e.g., "US Dollar ($)"
+                        option.textContent = currency.name ? `${currency.name} (${currency.symbol || currency.code || ''})` : (currency.code || '');
                         currencySelect.appendChild(option);
                     });
                 }
@@ -15266,35 +15290,28 @@ export default {
             const statusEl = document.getElementById('lookupStatus');
             
             try {
-                let selectId, typeName, commentText;
+                let selectId, typeName;
                 if (type === 'subsidiary') {
                     selectId = 'subsidiarySelect';
                     typeName = 'Subsidiary';
-                    commentText = 'SUBSIDIARY FILTER: Reference this cell in your XAVI formulas to filter by subsidiary. Add "(Consolidated)" to include child subsidiaries.';
                 } else if (type === 'currency') {
                     selectId = 'currencySelect';
                     typeName = 'Currency';
-                    commentText = 'CURRENCY: Reference this cell in your XAVI.BALANCECURRENCY formulas to specify consolidation currency (e.g., USD, EUR).';
                 } else if (type === 'department') {
                     selectId = 'departmentSelect';
                     typeName = 'Department';
-                    commentText = 'DEPARTMENT FILTER: Reference this cell in your XAVI formulas to filter by department.';
                 } else if (type === 'class') {
                     selectId = 'classSelect';
                     typeName = 'Class';
-                    commentText = 'CLASS FILTER: Reference this cell in your XAVI formulas to filter by class.';
                 } else if (type === 'location') {
                     selectId = 'locationSelect';
                     typeName = 'Location';
-                    commentText = 'LOCATION FILTER: Reference this cell in your XAVI formulas to filter by location.';
                 } else if (type === 'accountingBook') {
                     selectId = 'accountingBookSelect';
                     typeName = 'Accounting Book';
-                    commentText = 'ACCOUNTING BOOK: Reference this cell in your XAVI formulas to specify which accounting book to query.';
                 } else if (type === 'budgetCategory') {
                     selectId = 'budgetCategorySelect';
                     typeName = 'Budget Category';
-                    commentText = 'BUDGET CATEGORY: Reference this cell in your XAVI.BUDGET formulas to filter by budget category.';
                 }
                 
                 const select = document.getElementById(selectId);
@@ -15607,6 +15624,10 @@ export default {
         // SUBSIDIARY CELL TRACKING - For smart currency format updates
         // ============================================
         let knownSubsidiaryCells = new Set();  // Cells that are referenced as subsidiary params
+        let knownCurrencyCells = new Set();    // Cells that are referenced as currency params (BALANCECURRENCY)
+        let knownDepartmentCells = new Set();  // Cells that are referenced as department params
+        let knownLocationCells = new Set();    // Cells that are referenced as location params
+        let knownClassCells = new Set();       // Cells that are referenced as class params
         let currencyFormatDebounceTimer = null;
         let formulaDetectionTimer = null;  // Timer for detecting new XAVI formulas
         let lastFormulaCount = 0;  // Track formula count to detect new additions
@@ -15926,8 +15947,8 @@ export default {
             }
         }
         
-        // Scan sheet to find all cells referenced as subsidiary parameters
-        // Handles BALANCE, TYPEBALANCE, NETINCOME, and BUDGET formulas
+        // Scan sheet to find all cells referenced as filter parameters
+        // Handles BALANCE, TYPEBALANCE, NETINCOME, BUDGET, and BALANCECURRENCY formulas
         async function scanForSubsidiaryCells() {
             try {
                 await Excel.run(async (context) => {
@@ -15936,7 +15957,13 @@ export default {
                     usedRange.load('formulas');
                     await context.sync();
                     
+                    // Clear all filter cell sets
                     knownSubsidiaryCells.clear();
+                    knownCurrencyCells.clear();
+                    knownDepartmentCells.clear();
+                    knownLocationCells.clear();
+                    knownClassCells.clear();
+                    
                     const formulas = usedRange.formulas;
                     let formulaCount = 0;
                     
@@ -15947,63 +15974,90 @@ export default {
                             
                             const upperFormula = formula.toUpperCase();
                             let subsidiaryParam = '';
+                            let currencyParam = '';
+                            let departmentParam = '';
+                            let locationParam = '';
+                            let classParam = '';
                             
-                            // Extract subsidiary param based on formula type
-                            // Subsidiary param positions:
-                            // - XAVI.BALANCE(acct, from, to, [sub], ...) - index 3
-                            // - XAVI.TYPEBALANCE(type, from, to, [sub], ...) - index 3
-                            // - XAVI.NETINCOME(from, [to], [sub], ...) - index 2
-                            // - XAVI.BUDGET(acct, from, to, [sub], ...) - index 3
-                            if (upperFormula.includes('XAVI.BALANCE') && !upperFormula.includes('XAVI.TYPEBALANCE')) {
+                            // Extract parameters based on formula type
+                            if (upperFormula.includes('XAVI.BALANCE') && !upperFormula.includes('XAVI.TYPEBALANCE') && !upperFormula.includes('XAVI.BALANCECURRENCY') && !upperFormula.includes('XAVI.BALANCECHANGE')) {
                                 formulaCount++;
                                 subsidiaryParam = extractFormulaParam(formula, 3);
+                                departmentParam = extractFormulaParam(formula, 4);
+                                locationParam = extractFormulaParam(formula, 5);
+                                classParam = extractFormulaParam(formula, 6);
                             } else if (upperFormula.includes('XAVI.TYPEBALANCE')) {
                                 formulaCount++;
                                 subsidiaryParam = extractFormulaParam(formula, 3);
+                                departmentParam = extractFormulaParam(formula, 4);
+                                locationParam = extractFormulaParam(formula, 5);
+                                classParam = extractFormulaParam(formula, 6);
                             } else if (upperFormula.includes('XAVI.NETINCOME')) {
                                 formulaCount++;
                                 subsidiaryParam = extractFormulaParam(formula, 2);
+                                departmentParam = extractFormulaParam(formula, 3);
+                                locationParam = extractFormulaParam(formula, 4);
+                                classParam = extractFormulaParam(formula, 5);
                             } else if (upperFormula.includes('XAVI.BUDGET')) {
                                 formulaCount++;
                                 subsidiaryParam = extractFormulaParam(formula, 3);
+                                departmentParam = extractFormulaParam(formula, 4);
+                                locationParam = extractFormulaParam(formula, 5);
+                                classParam = extractFormulaParam(formula, 6);
+                            } else if (upperFormula.includes('XAVI.BALANCECURRENCY')) {
+                                formulaCount++;
+                                // BALANCECURRENCY: (acct, from, to, [sub], [currency], [dept], [loc], [class], ...)
+                                subsidiaryParam = extractFormulaParam(formula, 3);
+                                currencyParam = extractFormulaParam(formula, 4);
+                                departmentParam = extractFormulaParam(formula, 5);
+                                locationParam = extractFormulaParam(formula, 6);
+                                classParam = extractFormulaParam(formula, 7);
                             } else if (upperFormula.includes('XAVI.NAME')) {
                                 // NAME formulas are still XAVI formulas and should count toward completion
                                 formulaCount++;
                                 subsidiaryParam = extractFormulaParam(formula, 3);
-                            } else if (upperFormula.includes('XAVI.BALANCECURRENCY')) {
-                                formulaCount++;
-                                // BALANCECURRENCY: (acct, from, to, [sub], [currency], ...) - index 3
-                                subsidiaryParam = extractFormulaParam(formula, 3);
-                                // If it's a cell reference (not a number or quoted string)
-                                if (subsidiaryParam && 
-                                    !subsidiaryParam.startsWith('"') && 
-                                    !subsidiaryParam.startsWith("'") && 
-                                    !/^\d+$/.test(subsidiaryParam)) {
-                                    // Normalize and add to known cells
-                                    const normalized = subsidiaryParam.replace(/\$/g, '').toUpperCase();
-                                    knownSubsidiaryCells.add(normalized);
-                                }
                             } else {
                                 continue;
                             }
                             
-                                // If it's a cell reference (not a number or quoted string)
-                                if (subsidiaryParam && 
-                                    !subsidiaryParam.startsWith('"') && 
-                                    !subsidiaryParam.startsWith("'") && 
-                                    !/^\d+$/.test(subsidiaryParam)) {
-                                    // Normalize and add to known cells
-                                    const normalized = subsidiaryParam.replace(/\$/g, '').toUpperCase();
-                                    knownSubsidiaryCells.add(normalized);
-                            }
+                            // Helper function to add cell reference to appropriate set
+                            const addToFilterSet = (param, filterSet, filterName) => {
+                                if (param && 
+                                    !param.startsWith('"') && 
+                                    !param.startsWith("'") && 
+                                    !/^\d+$/.test(param)) {
+                                    const normalized = param.replace(/\$/g, '').toUpperCase();
+                                    filterSet.add(normalized);
+                                }
+                            };
+                            
+                            // Add all filter parameters to their respective sets
+                            addToFilterSet(subsidiaryParam, knownSubsidiaryCells, 'subsidiary');
+                            addToFilterSet(currencyParam, knownCurrencyCells, 'currency');
+                            addToFilterSet(departmentParam, knownDepartmentCells, 'department');
+                            addToFilterSet(locationParam, knownLocationCells, 'location');
+                            addToFilterSet(classParam, knownClassCells, 'class');
                         }
                     }
                     
                     // Update formula count for change detection
                     lastFormulaCount = formulaCount;
                     
+                    // Log tracking info
                     if (knownSubsidiaryCells.size > 0) {
                         console.log(`📍 Tracking ${knownSubsidiaryCells.size} subsidiary reference cells:`, [...knownSubsidiaryCells]);
+                    }
+                    if (knownCurrencyCells.size > 0) {
+                        console.log(`💱 Tracking ${knownCurrencyCells.size} currency reference cells:`, [...knownCurrencyCells]);
+                    }
+                    if (knownDepartmentCells.size > 0) {
+                        console.log(`🏷️ Tracking ${knownDepartmentCells.size} department reference cells:`, [...knownDepartmentCells]);
+                    }
+                    if (knownLocationCells.size > 0) {
+                        console.log(`📍 Tracking ${knownLocationCells.size} location reference cells:`, [...knownLocationCells]);
+                    }
+                    if (knownClassCells.size > 0) {
+                        console.log(`📂 Tracking ${knownClassCells.size} class reference cells:`, [...knownClassCells]);
                     }
                     console.log(`📊 Initial XAVI formula count: ${formulaCount}`);
                     // Share counts for completion detector
@@ -16011,7 +16065,7 @@ export default {
                     window.lastXaviFormulaCountTimestamp = Date.now();
                 });
             } catch (e) {
-                console.warn('Could not scan for subsidiary cells:', e.message);
+                console.warn('Could not scan for filter cells:', e.message);
             }
         }
         
