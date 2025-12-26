@@ -2954,24 +2954,37 @@ For licensing inquiries, contact: legal@celigo.com
         .step-type-badge {
             display: inline-flex;
             align-items: center;
-            gap: 5px;
-            padding: 4px 10px;
-            border-radius: 12px;
+            gap: 6px;
+            padding: 6px 14px;
+            border-radius: 20px;
             font-size: 11px;
             font-weight: 600;
-            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 12px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         }
         
         .step-type-badge.action {
             background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
             color: white;
+            border: 2px solid rgba(255,255,255,0.3);
             box-shadow: 0 2px 8px rgba(245, 158, 11, 0.4);
+        }
+        .step-type-badge.action::before {
+            content: '🎯';
+            font-size: 14px;
         }
         
         .step-type-badge.tip {
-            background: linear-gradient(135deg, rgba(10, 226, 193, 0.2) 0%, rgba(6, 214, 160, 0.2) 100%);
-            color: var(--anenome);
-            border: 1px solid var(--anenome);
+            background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+            color: white;
+            border: 2px solid rgba(255,255,255,0.3);
+            box-shadow: 0 2px 8px rgba(59, 130, 246, 0.4);
+        }
+        .step-type-badge.tip::before {
+            content: '📖';
+            font-size: 14px;
         }
         
         .step-type-badge.celebrate {
@@ -3963,7 +3976,7 @@ For licensing inquiries, contact: legal@celigo.com
                     <h3>ℹ️ Version Info</h3>
                     <div style="font-size: 12px; color: #4b5563;">
                         <p>Add-in Version: <strong id="settingsVersion">loading...</strong></p>
-                        <p style="margin-top: 4px;">Manifest Version: <strong>4.0.0.29</strong></p>
+                        <p style="margin-top: 4px;">Manifest Version: <strong>4.0.0.30</strong></p>
                         <p style="margin-top: 4px;">Proxy: <code style="font-size: 10px; background: #f3f4f6; padding: 2px 6px; border-radius: 4px;">netsuite-proxy.chris-corcoran.workers.dev</code></p>
                     </div>
                 </div>
@@ -4981,7 +4994,7 @@ For licensing inquiries, contact: legal@celigo.com
                 
                 <!-- Step 2: Enter Account Number (now first step) -->
                 <div class="onboarding-step active" id="onboardingStep2">
-                    <div class="step-type-badge action">🎯 Let's Build Your First Formula</div>
+                    <div class="step-type-badge action">YOUR TURN</div>
                     <div class="onboarding-icon">🔢</div>
                     <h2>Pick an Account</h2>
                     <p class="onboarding-desc">
@@ -5007,7 +5020,7 @@ For licensing inquiries, contact: legal@celigo.com
                 
                 <!-- Step 3: See the Magic -->
                 <div class="onboarding-step" id="onboardingStep3">
-                    <div class="step-type-badge tip">💡 SEE THE RESULT</div>
+                    <div class="step-type-badge tip">LEARNING</div>
                     <div class="onboarding-icon">🎉</div>
                     <h2>Look at That!</h2>
                     <p class="onboarding-desc">
@@ -5032,12 +5045,18 @@ For licensing inquiries, contact: legal@celigo.com
 
                 <!-- Step 4: Drag & Fill Rows -->
                 <div class="onboarding-step" id="onboardingStep4">
-                    <div class="step-type-badge action">🎯 YOUR TURN (or skip)</div>
+                    <div class="step-type-badge action">YOUR TURN (or skip)</div>
                     <div class="onboarding-icon">⚡</div>
                     <h2>Fill Down for Accounts</h2>
                     <p class="onboarding-desc">
                         We added 3 more accounts. <strong>Drag the formula corner down</strong> to fill them — or we'll do it for you!
                     </p>
+                    <div style="background: linear-gradient(135deg, rgba(245, 158, 11, 0.1) 0%, rgba(217, 119, 6, 0.1) 100%); border-left: 3px solid #f59e0b; padding: 12px; margin: 12px 0; border-radius: 6px;">
+                        <p style="margin: 0; font-size: 12px; color: #92400e; display: flex; align-items: center; gap: 8px;">
+                            <span style="font-size: 16px;">✨</span>
+                            <span><strong>Action Card:</strong> Click <strong>"✨ Auto-Fill Rows"</strong> to perform an action, or <strong>"Continue →"</strong> to proceed.</span>
+                        </p>
+                    </div>
                     <div class="drag-demo-container">
                         <div class="drag-demo-visual">
                             <div class="demo-cell filled">$12,500</div>
@@ -5054,18 +5073,24 @@ For licensing inquiries, contact: legal@celigo.com
                     <div class="onboarding-nav">
                         <button class="onboarding-btn text" onclick="goToOnboardingStep(3)">← Back</button>
                         <button class="onboarding-btn secondary" onclick="autoFillFormulas()" title="Click to automatically fill formulas for the 3 rows we added">✨ Auto-Fill Rows</button>
-                        <button class="onboarding-btn primary" onclick="validateStep4AndContinue()">Next: Months →</button>
+                        <button class="onboarding-btn primary" onclick="validateStep4AndContinue()">Continue →</button>
                     </div>
                     </div>
                 
                 <!-- Step 4b: Drag & Fill Months -->
                 <div class="onboarding-step" id="onboardingStep4b">
-                    <div class="step-type-badge action">🎯 YOUR TURN (or skip)</div>
+                    <div class="step-type-badge action">YOUR TURN (or skip)</div>
                     <div class="onboarding-icon">📅</div>
                     <h2>Fill Right for Months</h2>
                     <p class="onboarding-desc">
                         Now <strong>drag right</strong> across the columns to fill all 12 months! This is the power of Excel + XAVI.
                     </p>
+                    <div style="background: linear-gradient(135deg, rgba(245, 158, 11, 0.1) 0%, rgba(217, 119, 6, 0.1) 100%); border-left: 3px solid #f59e0b; padding: 12px; margin: 12px 0; border-radius: 6px;">
+                        <p style="margin: 0; font-size: 12px; color: #92400e; display: flex; align-items: center; gap: 8px;">
+                            <span style="font-size: 16px;">✨</span>
+                            <span><strong>Action Card:</strong> Click <strong>"✨ Auto-Fill Months"</strong> to perform an action, or <strong>"Continue →"</strong> to proceed.</span>
+                        </p>
+                    </div>
                     <div class="drag-demo-container">
                         <div class="drag-demo-visual horizontal">
                             <div class="demo-cell filled">Jan</div>
@@ -5082,13 +5107,13 @@ For licensing inquiries, contact: legal@celigo.com
                     <div class="onboarding-nav">
                         <button class="onboarding-btn text" onclick="goToOnboardingStep(4)">← Back</button>
                         <button class="onboarding-btn secondary" onclick="autoFillMonths()" title="Click to automatically fill all 12 months for all accounts">✨ Auto-Fill Months</button>
-                        <button class="onboarding-btn primary" onclick="validateStep4bAndContinue()" title="Continue to learn about wildcards">Wildcards →</button>
+                        <button class="onboarding-btn primary" onclick="validateStep4bAndContinue()" title="Continue to learn about wildcards">Continue →</button>
                 </div>
             </div>
 
                 <!-- Step 5: Wildcards -->
                 <div class="onboarding-step" id="onboardingStep5">
-                    <div class="step-type-badge tip">💡 FORMULA TIP</div>
+                    <div class="step-type-badge tip">LEARNING</div>
                     <div class="onboarding-icon">⚡</div>
                     <h2>Level Up: Wildcards</h2>
                     <p class="onboarding-desc">
@@ -5106,18 +5131,24 @@ For licensing inquiries, contact: legal@celigo.com
                     <p class="onboarding-tip">💡 Great for totaling revenue (4*), expenses (6*), or any account group!</p>
                     <div class="onboarding-nav">
                         <button class="onboarding-btn text" onclick="goToOnboardingStep('4b')">← Back</button>
-                        <button class="onboarding-btn primary" onclick="goToOnboardingStep(6)">More Power →</button>
+                        <button class="onboarding-btn primary" onclick="goToOnboardingStep(6)">Continue →</button>
                 </div>
                     </div>
                 
                 <!-- Step 6: TYPEBALANCE -->
                 <div class="onboarding-step" id="onboardingStep6">
-                    <div class="step-type-badge tip">💡 FORMULA TIP</div>
+                    <div class="step-type-badge tip">LEARNING</div>
                     <div class="onboarding-icon">📊</div>
                     <h2>Level Up: Account Types</h2>
                     <p class="onboarding-desc">
                         Use <strong>TYPEBALANCE</strong> to sum all accounts of a type!
                     </p>
+                    <div style="background: linear-gradient(135deg, rgba(59, 130, 246, 0.1) 0%, rgba(37, 99, 235, 0.1) 100%); border-left: 3px solid #3b82f6; padding: 12px; margin: 12px 0; border-radius: 6px;">
+                        <p style="margin: 0; font-size: 12px; color: #1e40af; display: flex; align-items: center; gap: 8px;">
+                            <span style="font-size: 16px;">📖</span>
+                            <span><strong>Learning Card:</strong> This section teaches you about TYPEBALANCE. Click <strong>"Continue →"</strong> to proceed.</span>
+                        </p>
+                    </div>
                     <div class="onboarding-highlight-box">
                         <div class="formula-display">=XAVI.TYPEBALANCE("Income", "Jan 2025", "Jan 2025")</div>
                         <div class="result-display">→ Total of ALL Income accounts</div>
@@ -5129,18 +5160,24 @@ For licensing inquiries, contact: legal@celigo.com
                     </div>
                     <div class="onboarding-nav">
                         <button class="onboarding-btn text" onclick="goToOnboardingStep(5)">← Back</button>
-                        <button class="onboarding-btn primary" onclick="goToOnboardingStep(7)">Bulk Add →</button>
+                        <button class="onboarding-btn primary" onclick="goToOnboardingStep(7)">Continue →</button>
                 </div>
                 </div>
                 
                 <!-- Step 7: Bulk Add -->
                 <div class="onboarding-step" id="onboardingStep7">
-                    <div class="step-type-badge action">🎯 TRY IT (optional)</div>
+                    <div class="step-type-badge action">YOUR TURN (optional)</div>
                     <div class="onboarding-icon">📋</div>
                     <h2>Pro Tip: Bulk Add</h2>
                     <p class="onboarding-desc">
                         Need a list of your accounts? Use <strong>Bulk Add</strong>!
                     </p>
+                    <div style="background: linear-gradient(135deg, rgba(245, 158, 11, 0.1) 0%, rgba(217, 119, 6, 0.1) 100%); border-left: 3px solid #f59e0b; padding: 12px; margin: 12px 0; border-radius: 6px;">
+                        <p style="margin: 0; font-size: 12px; color: #92400e; display: flex; align-items: center; gap: 8px;">
+                            <span style="font-size: 16px;">✨</span>
+                            <span><strong>Action Card:</strong> Click <strong>"➕ Bulk Add Accounts Now"</strong> to perform an action, or <strong>"Continue →"</strong> to proceed.</span>
+                        </p>
+                    </div>
                     <div class="onboarding-steps-list">
                         <div class="step-item">1️⃣ Enter <code>*</code> for ALL accounts</div>
                         <div class="step-item">2️⃣ Or <code>4*</code> for just revenue</div>
@@ -5154,18 +5191,24 @@ For licensing inquiries, contact: legal@celigo.com
                     </div>
                     <div class="onboarding-nav">
                         <button class="onboarding-btn text" onclick="goToOnboardingStep(6)">← Back</button>
-                        <button class="onboarding-btn primary" onclick="goToOnboardingStep(8)">Go Dynamic →</button>
+                        <button class="onboarding-btn primary" onclick="goToOnboardingStep(8)">Continue →</button>
                 </div>
             </div>
     
                 <!-- Step 8: Dynamic Parameters -->
                 <div class="onboarding-step" id="onboardingStep8">
-                    <div class="step-type-badge tip">💡 POWER TIP</div>
+                    <div class="step-type-badge tip">LEARNING</div>
                     <div class="onboarding-icon">🎯</div>
                     <h2>Go Dynamic!</h2>
                     <p class="onboarding-desc">
                         Use <strong>cell references</strong> for dynamic reports!
                     </p>
+                    <div style="background: linear-gradient(135deg, rgba(59, 130, 246, 0.1) 0%, rgba(37, 99, 235, 0.1) 100%); border-left: 3px solid #3b82f6; padding: 12px; margin: 12px 0; border-radius: 6px;">
+                        <p style="margin: 0; font-size: 12px; color: #1e40af; display: flex; align-items: center; gap: 8px;">
+                            <span style="font-size: 16px;">📖</span>
+                            <span><strong>Learning Card:</strong> This section teaches you about dynamic parameters. Click <strong>"Continue →"</strong> to proceed.</span>
+                        </p>
+                    </div>
                     <div class="onboarding-highlight-box compact">
                         <div class="formula-display small">=XAVI.BALANCE($A2, $B$1, $B$1, $E$1)</div>
                     </div>
@@ -5177,18 +5220,24 @@ For licensing inquiries, contact: legal@celigo.com
                     <p class="onboarding-tip">💡 Change one cell → entire report updates!</p>
                     <div class="onboarding-nav">
                         <button class="onboarding-btn text" onclick="goToOnboardingStep(7)">← Back</button>
-                        <button class="onboarding-btn primary" onclick="goToOnboardingStep(9)">Drill Down →</button>
+                        <button class="onboarding-btn primary" onclick="goToOnboardingStep(9)">Continue →</button>
                     </div>
         </div>
 
                 <!-- Step 9: Drill Down -->
                 <div class="onboarding-step" id="onboardingStep9">
-                    <div class="step-type-badge action">🎯 TRY IT (optional)</div>
+                    <div class="step-type-badge action">YOUR TURN (optional)</div>
                     <div class="onboarding-icon">🔍</div>
                     <h2>Drill Into the Data</h2>
                     <p class="onboarding-desc">
                         Want to see the transactions behind any number? Use <strong>View Transactions</strong>!
                     </p>
+                    <div style="background: linear-gradient(135deg, rgba(245, 158, 11, 0.1) 0%, rgba(217, 119, 6, 0.1) 100%); border-left: 3px solid #f59e0b; padding: 12px; margin: 12px 0; border-radius: 6px;">
+                        <p style="margin: 0; font-size: 12px; color: #92400e; display: flex; align-items: center; gap: 8px;">
+                            <span style="font-size: 16px;">✨</span>
+                            <span><strong>Action Card:</strong> Click <strong>"🔍 Drill Down Now"</strong> to perform an action, or <strong>"Continue →"</strong> to proceed.</span>
+                        </p>
+                    </div>
                     <div class="onboarding-steps-list">
                         <div class="step-item">1️⃣ Click any cell with a BALANCE formula</div>
                         <div class="step-item">2️⃣ <strong>Right-click</strong> → Select <strong>"CloudExtend"</strong></div>
@@ -5206,7 +5255,7 @@ For licensing inquiries, contact: legal@celigo.com
                     <p class="onboarding-tip">💡 You can also use the <strong>Drill Down</strong> button in the Quick Actions bar at the bottom!</p>
                     <div class="onboarding-nav">
                         <button class="onboarding-btn text" onclick="goToOnboardingStep(8)">← Back</button>
-                        <button class="onboarding-btn primary" onclick="goToOnboardingStep(10)">Finish →</button>
+                        <button class="onboarding-btn primary" onclick="goToOnboardingStep(10)">Continue →</button>
                     </div>
                 </div>
                 
@@ -7045,77 +7094,17 @@ For licensing inquiries, contact: legal@celigo.com
         async function autoFillMonths(event) {
             // IMMEDIATE UI FEEDBACK: Show loading state right away
             const button = event?.target || document.querySelector('button[onclick*="autoFillMonths"]');
+            let originalText = '';
             if (button) {
-                const originalText = button.textContent;
+                originalText = button.textContent;
                 button.disabled = true;
                 button.textContent = '⏳ Filling...';
                 button.style.opacity = '0.7';
-                
-                // Restore button after completion
-                setTimeout(() => {
-                    button.disabled = false;
-                    button.textContent = originalText;
-                    button.style.opacity = '1';
-                }, 3000);
             }
             
             try {
-                // PRE-CACHE: Trigger full_year_refresh to preload all data before inserting formulas
-                // This ensures formulas resolve instantly instead of taking a long time
-                console.log('📦 Tutorial: Pre-caching data for fast formula resolution...');
-                const currentYear = new Date().getFullYear();
-                
-                try {
-                    const refreshResponse = await fetch(`${getServerUrl()}/batch/full_year_refresh`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            year: currentYear,
-                            subsidiary: '',
-                            department: '',
-                            location: '',
-                            class: ''
-                        })
-                    });
-                    
-                    if (refreshResponse.ok) {
-                        const refreshData = await refreshResponse.json();
-                        const allBalances = refreshData.balances || {};
-                        const accountTypes = refreshData.account_types || {};
-                        const accountNames = refreshData.account_names || {};
-                        
-                        // Populate caches so formulas resolve instantly
-                        try {
-                            // Save to localStorage (shared with functions.js)
-                            const STORAGE_KEY = 'netsuite_balance_cache';
-                            const STORAGE_TIMESTAMP_KEY = 'netsuite_balance_cache_timestamp';
-                            localStorage.setItem(STORAGE_KEY, JSON.stringify(allBalances));
-                            localStorage.setItem(STORAGE_TIMESTAMP_KEY, Date.now().toString());
-                            localStorage.setItem('netsuite_type_cache', JSON.stringify(accountTypes));
-                            localStorage.setItem('netsuite_name_cache', JSON.stringify(accountNames));
-                            
-                            // Populate in-memory caches via Shared Runtime
-                            if (typeof window.setFullYearCache === 'function') {
-                                window.setFullYearCache(allBalances);
-                            }
-                            if (typeof window.setAccountTypeCache === 'function') {
-                                window.setAccountTypeCache(accountTypes);
-                            }
-                            if (typeof window.setAccountNameCache === 'function') {
-                                window.setAccountNameCache(accountNames);
-                            }
-                            
-                            console.log(`✅ Tutorial: Pre-cached ${Object.keys(allBalances).length} accounts for ${currentYear}`);
-                        } catch (cacheError) {
-                            console.warn('Tutorial: Cache population warning:', cacheError.message);
-                        }
-                    } else {
-                        console.warn('Tutorial: Pre-cache failed, formulas may take longer to resolve');
-                    }
-                } catch (precacheError) {
-                    console.warn('Tutorial: Pre-cache error (continuing anyway):', precacheError);
-                }
-                
+                // STEP 1: ADD FORMULAS IMMEDIATELY (no delay!)
+                console.log('⚡ Tutorial: Adding formulas immediately...');
                 await Excel.run(async (context) => {
                     const sheet = context.workbook.worksheets.getActiveWorksheet();
                     
@@ -7148,26 +7137,81 @@ For licensing inquiries, contact: legal@celigo.com
                     const dataRange = sheet.getRange('C2:N5');
                     dataRange.numberFormat = '$#,##0.00';
                     
-                    await context.sync();
-                });
-                
-                // Wait for formulas to resolve (should be fast now with pre-cache!)
-                await new Promise(resolve => setTimeout(resolve, 2000));
-                
-                // Ensure column widths are set (autofit doesn't work reliably)
-                await Excel.run(async (context) => {
-                    const sheet = context.workbook.worksheets.getActiveWorksheet();
+                    // Ensure column widths are set
                     sheet.getRange('A:A').format.columnWidth = 75;  // Account #
                     sheet.getRange('B:B').format.columnWidth = 180; // Account Name
                     sheet.getRange('C:N').format.columnWidth = 90;  // Month columns
+                    
                     await context.sync();
                 });
+                
+                console.log('✅ Tutorial: Formulas added instantly!');
+                
+                // STEP 2: Pre-cache in background (non-blocking) to speed up formula resolution
+                const currentYear = new Date().getFullYear();
+                fetch(`${getServerUrl()}/batch/full_year_refresh`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        year: currentYear,
+                        subsidiary: '',
+                        department: '',
+                        location: '',
+                        class: ''
+                    })
+                }).then(refreshResponse => {
+                    if (refreshResponse.ok) {
+                        return refreshResponse.json();
+                    }
+                }).then(refreshData => {
+                    if (refreshData) {
+                        const allBalances = refreshData.balances || {};
+                        const accountTypes = refreshData.account_types || {};
+                        const accountNames = refreshData.account_names || {};
+                        
+                        // Populate caches in background
+                        try {
+                            localStorage.setItem('netsuite_balance_cache', JSON.stringify(allBalances));
+                            localStorage.setItem('netsuite_balance_cache_timestamp', Date.now().toString());
+                            localStorage.setItem('netsuite_type_cache', JSON.stringify(accountTypes));
+                            localStorage.setItem('netsuite_name_cache', JSON.stringify(accountNames));
+                            
+                            if (typeof window.setFullYearCache === 'function') {
+                                window.setFullYearCache(allBalances);
+                            }
+                            if (typeof window.setAccountTypeCache === 'function') {
+                                window.setAccountTypeCache(accountTypes);
+                            }
+                            if (typeof window.setAccountNameCache === 'function') {
+                                window.setAccountNameCache(accountNames);
+                            }
+                            
+                            console.log(`✅ Tutorial: Background cache populated for ${Object.keys(allBalances).length} accounts`);
+                        } catch (cacheError) {
+                            console.warn('Tutorial: Cache population warning:', cacheError.message);
+                        }
+                    }
+                }).catch(err => {
+                    console.warn('Tutorial: Background pre-cache error (non-critical):', err);
+                });
+                
+                // Restore button
+                if (button) {
+                    button.disabled = false;
+                    button.textContent = originalText;
+                    button.style.opacity = '1';
+                }
                 
                 goToOnboardingStep(5);
                 updateContextualUI();
                 
             } catch (e) {
                 console.error('Error auto-filling months:', e);
+                if (button) {
+                    button.disabled = false;
+                    button.textContent = originalText;
+                    button.style.opacity = '1';
+                }
                 goToOnboardingStep(5);
             }
         }
