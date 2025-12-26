@@ -25,7 +25,7 @@ cloudflared tunnel --url http://localhost:5002
 
 **Mac:**
 ```bash
-cp excel-addin/manifest-claude.xml ~/Library/Containers/com.microsoft.Excel/Data/Documents/wef/
+cp excel-addin/manifest.xml ~/Library/Containers/com.microsoft.Excel/Data/Documents/wef/
 ```
 
 **Windows:**

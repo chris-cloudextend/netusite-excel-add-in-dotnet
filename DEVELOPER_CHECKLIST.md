@@ -139,8 +139,8 @@ The add-in uses Office's **Shared Runtime** where all components share a single 
 ### 5. Manifest & Versioning ⚠️ CRITICAL
 | File | Location | What to Update |
 |------|----------|----------------|
-| `excel-addin/manifest-claude.xml` | `<Version>` tag | Main version (line ~32) |
-| `excel-addin/manifest-claude.xml` | ALL `?v=X.X.X.X` URLs | Cache-busting parameters |
+| `excel-addin/manifest.xml` | `<Version>` tag | Main version (line ~32) |
+| `excel-addin/manifest.xml` | ALL `?v=X.X.X.X` URLs | Cache-busting parameters |
 | `docs/taskpane.html` | Footer version | Hardcoded display (~line 3960) |
 | `docs/sharedruntime.html` | functions.js URL | Cache-busting parameter |
 | `docs/functions.js` | `FUNCTIONS_VERSION` constant | Version marker for debugging |
@@ -163,7 +163,7 @@ The add-in uses Office's **Shared Runtime** where all components share a single 
 rm -rf ~/Library/Containers/com.microsoft.Excel/Data/Documents/wef/*
 
 # Copy manifest
-cp excel-addin/manifest-claude.xml ~/Library/Containers/com.microsoft.Excel/Data/Documents/wef/
+cp excel-addin/manifest.xml ~/Library/Containers/com.microsoft.Excel/Data/Documents/wef/
 
 # If add-in behaves strangely (old App ID cached), also clear:
 rm -rf ~/Library/Containers/com.microsoft.Excel/Data/Library/Application\ Support/Microsoft/Office/16.0/Wef/CustomFunctions
