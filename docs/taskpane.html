@@ -15277,14 +15277,38 @@ export default {
                         // - name: Currency code (USD, AUD, EUR, etc.) - USE THIS as value
                         // - symbol: Currency symbol ($, A$, €, etc.) - USE THIS for display
                         // The backend filters by 'name' where currencyCodes are like 'USD', 'AUD', so 'name' IS the currency code
-                        const currencyCode = currency.name || currency.code || '';
+                        // CRITICAL FIX: The backend returns currency.name as the currency code (USD, AUD, etc.)
+                        // But if currency.name is a number (1, 2, 3), it's actually the ID, not the code
+                        // We need to validate and skip numeric IDs
+                        let currencyCode = '';
+                        
+                        // Try currency.code first (if backend provides it)
+                        if (currency.code && String(currency.code).trim() !== '' && isNaN(String(currency.code))) {
+                            currencyCode = String(currency.code).trim();
+                        }
+                        // Then try currency.name, but validate it's not a number (ID)
+                        else if (currency.name) {
+                            const nameStr = String(currency.name).trim();
+                            // If name is a number (1-3 digits), it's the ID, not the code - skip it
+                            if (!isNaN(nameStr) && nameStr.length <= 3 && /^\d+$/.test(nameStr)) {
+                                // It's a number (ID like "1", "2", "3") - log warning and skip this currency
+                                console.warn(`⚠️ Skipping currency - name "${nameStr}" is ID, not code. Full object:`, currency);
+                                return; // Skip this currency - we can't use IDs
+                            } else {
+                                // Not a number = it's a currency code (USD, AUD, EUR, etc.)
+                                currencyCode = nameStr;
+                            }
+                        }
+                        
+                        if (!currencyCode) {
+                            console.warn(`⚠️ Skipping currency - no valid code found. Currency object:`, currency);
+                            return; // Skip currencies without valid codes
+                        }
+                        
                         option.value = currencyCode; // This is what gets inserted into Excel (USD, AUD, etc.)
                         
-                        // Display: Currency Code (Symbol) - e.g., "USD ($)" or "AUD (A$)"
-                        const displayText = currencyCode && currency.symbol
-                            ? `${currencyCode} (${currency.symbol})`
-                            : currencyCode || currency.symbol || '';
-                        option.textContent = displayText;
+                        // Display: Just the currency code (USD, AUD, etc.) - user wants simple display, not "USD ($)"
+                        option.textContent = currencyCode;
                         
                         console.log(`   Currency option: value="${currencyCode}" (will be inserted), display="${displayText}", backend id=${currency.id || 'N/A'}, name="${currency.name || 'N/A'}", symbol="${currency.symbol || 'N/A'}"`);
                         currencySelect.appendChild(option);
