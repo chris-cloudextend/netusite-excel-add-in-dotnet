@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.0.11';  // BALANCECURRENCY: Fixed Range object handling for currency parameter from cell references
+const FUNCTIONS_VERSION = '4.0.0.12';  // BALANCECURRENCY: Fixed Range object handling for currency parameter from cell references
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -3649,6 +3649,17 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
  */
 async function BALANCECURRENCY(account, fromPeriod, toPeriod, subsidiary, currency, department, location, classId, accountingBook) {
     try {
+        // DEBUG: Log all raw parameters to understand what Excel is passing
+        console.log(`🔍 BALANCECURRENCY CALLED with raw params:`, {
+            account: typeof account === 'object' ? 'Range object' : account,
+            fromPeriod: typeof fromPeriod === 'object' ? 'Range object' : fromPeriod,
+            toPeriod: typeof toPeriod === 'object' ? 'Range object' : toPeriod,
+            subsidiary: typeof subsidiary === 'object' ? 'Range object' : subsidiary,
+            currency: typeof currency === 'object' ? `Range object (${JSON.stringify(currency).substring(0, 100)})` : currency,
+            currencyType: typeof currency,
+            currencyIsObject: typeof currency === 'object' && currency !== null
+        });
+        
         // ================================================================
         // VALIDATION: Check for empty cell references (CPA perspective)
         // If a cell reference is provided but points to an empty cell,
@@ -3726,24 +3737,46 @@ async function BALANCECURRENCY(account, fromPeriod, toPeriod, subsidiary, curren
         // Extract currency value - handle Range objects from cell references
         // Excel custom functions with @requiresAddress receive Range objects
         // We need to extract the actual value, not stringify the Range object
-        if (currency && typeof currency === 'object' && currency.values && Array.isArray(currency.values)) {
-            // Range object with values array
-            if (currency.values[0] && Array.isArray(currency.values[0]) && currency.values[0][0] !== undefined) {
-                currency = String(currency.values[0][0] || '').trim();
+        const originalCurrency = currency;
+        if (currency && typeof currency === 'object' && currency !== null) {
+            // Range object - try to extract value
+            if (currency.values && Array.isArray(currency.values)) {
+                // Range object with values array (Excel Range format)
+                if (currency.values[0] && Array.isArray(currency.values[0]) && currency.values[0][0] !== undefined) {
+                    currency = String(currency.values[0][0] || '').trim();
+                    console.log(`🔍 BALANCECURRENCY: Extracted currency from Range.values[0][0]: "${originalCurrency.values[0][0]}" → "${currency}"`);
+                } else {
+                    currency = '';
+                    console.warn(`⚠️ BALANCECURRENCY: Range.values structure unexpected:`, currency.values);
+                }
+            } else if (currency.value !== undefined) {
+                // Range object with value property
+                currency = String(currency.value || '').trim();
+                console.log(`🔍 BALANCECURRENCY: Extracted currency from Range.value: "${originalCurrency.value}" → "${currency}"`);
             } else {
-                currency = '';
+                // Unknown object structure - try to stringify and see what we get
+                const stringified = String(currency);
+                if (stringified !== '[object Object]' && stringified.trim() !== '') {
+                    currency = stringified.trim();
+                    console.log(`🔍 BALANCECURRENCY: Extracted currency from object stringify: "${stringified}" → "${currency}"`);
+                } else {
+                    currency = '';
+                    console.warn(`⚠️ BALANCECURRENCY: Could not extract currency from object:`, currency);
+                }
             }
-        } else if (currency && typeof currency === 'object' && currency.value !== undefined) {
-            // Range object with value property
-            currency = String(currency.value || '').trim();
         } else {
             // Already a string or number
             currency = String(currency || '').trim();
+            if (currency && originalCurrency !== currency) {
+                console.log(`🔍 BALANCECURRENCY: Currency already resolved: "${originalCurrency}" → "${currency}"`);
+            }
         }
         
-        // Log currency extraction for debugging
-        if (rawCurrency !== currency && rawCurrency !== undefined) {
-            console.log(`🔍 BALANCECURRENCY: Extracted currency from Range object: "${rawCurrency}" → "${currency}"`);
+        // Log final currency value
+        if (currency) {
+            console.log(`✅ BALANCECURRENCY: Final currency value: "${currency}"`);
+        } else {
+            console.warn(`⚠️ BALANCECURRENCY: Currency is EMPTY after extraction! Original:`, originalCurrency);
         }
         
         department = String(department || '').trim();
