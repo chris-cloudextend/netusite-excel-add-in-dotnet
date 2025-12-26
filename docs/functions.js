@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.0.14';  // BALANCECURRENCY: Fixed detection in regular batch processing - now properly detects and routes to /balancecurrency endpoint
+const FUNCTIONS_VERSION = '4.0.0.15';  // BALANCECURRENCY: Fixed period range expansion and dropdown detection - now expands periods and sums them correctly, and dropdown appears for BALANCECURRENCY formulas
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -4961,49 +4961,123 @@ async function processBatchQueue() {
                 console.log(`   💱 Processing ${currencyGroupRequests.length} BALANCECURRENCY requests with currency: "${reqCurrency || '(empty)'}"`);
                 
                 // Process each request individually (can't batch with currency)
+                // CRITICAL: For period ranges, expand periods and sum them (like regular batch processing)
                 for (const {cacheKey, request} of currencyGroupRequests) {
                     const { account, fromPeriod, toPeriod, subsidiary, department, location, classId, accountingBook } = request.params;
                     const reqCurrency = request.params.currency || '';
                     
-                    try {
-                        const apiParams = new URLSearchParams({
-                            account: account,
-                            from_period: fromPeriod || '',
-                            to_period: toPeriod,
-                            subsidiary: subsidiary || '',
-                            currency: reqCurrency,
-                            department: department || '',
-                            location: location || '',
-                            class: classId || '',
-                            book: accountingBook || ''
-                        });
+                    // Check if this is a period range (fromPeriod != toPeriod and both are provided)
+                    const isPeriodRange = fromPeriod && toPeriod && fromPeriod !== toPeriod;
+                    
+                    if (isPeriodRange) {
+                        // Expand period range to individual months
+                        const expandedPeriods = expandPeriodRangeFromTo(fromPeriod, toPeriod);
+                        console.log(`   📅 BALANCECURRENCY period range: ${fromPeriod} to ${toPeriod} → ${expandedPeriods.length} months`);
                         
-                        console.log(`   📤 BALANCECURRENCY API: ${account} for ${fromPeriod || '(cumulative)'} → ${toPeriod} (currency: ${reqCurrency || 'default'})`);
+                        // Make individual API calls for each period and sum them
+                        let totalValue = 0;
+                        let hasError = false;
+                        let errorCode = null;
                         
-                        const response = await fetch(`${SERVER_URL}/balancecurrency?${apiParams.toString()}`);
-                        
-                        if (response.ok) {
-                            const data = await response.json();
-                            const value = data.balance ?? 0;
-                            const errorCode = data.error;
-                            
-                            if (errorCode) {
-                                console.log(`   ⚠️ BALANCECURRENCY result: ${account} = ${errorCode}`);
-                                request.resolve(errorCode);
-                            } else {
-                                console.log(`   ✅ BALANCECURRENCY result: ${account} = ${value.toLocaleString()}`);
-                                cache.balance.set(cacheKey, value);
-                                request.resolve(value);
+                        for (const period of expandedPeriods) {
+                            try {
+                                const apiParams = new URLSearchParams({
+                                    account: account,
+                                    from_period: period,  // Single period - use same for from and to
+                                    to_period: period,
+                                    subsidiary: subsidiary || '',
+                                    currency: reqCurrency,
+                                    department: department || '',
+                                    location: location || '',
+                                    class: classId || '',
+                                    book: accountingBook || ''
+                                });
+                                
+                                console.log(`   📤 BALANCECURRENCY API (period ${period}): ${account} (currency: ${reqCurrency || 'default'})`);
+                                
+                                const response = await fetch(`${SERVER_URL}/balancecurrency?${apiParams.toString()}`);
+                                
+                                if (response.ok) {
+                                    const data = await response.json();
+                                    const periodValue = data.balance ?? 0;
+                                    const periodError = data.error;
+                                    
+                                    if (periodError) {
+                                        console.warn(`   ⚠️ BALANCECURRENCY period ${period} error: ${periodError}`);
+                                        hasError = true;
+                                        errorCode = periodError;
+                                        break; // Stop on first error
+                                    } else {
+                                        totalValue += periodValue;
+                                        console.log(`   ✅ BALANCECURRENCY period ${period}: ${periodValue.toLocaleString()}`);
+                                    }
+                                } else {
+                                    const periodErrorCode = response.status === 408 || response.status === 504 ? 'TIMEOUT' : 'APIERR';
+                                    console.error(`   ❌ BALANCECURRENCY period ${period} API error: ${response.status} → ${periodErrorCode}`);
+                                    hasError = true;
+                                    errorCode = periodErrorCode;
+                                    break; // Stop on first error
+                                }
+                            } catch (error) {
+                                const periodErrorCode = error.name === 'AbortError' ? 'TIMEOUT' : 'NETFAIL';
+                                console.error(`   ❌ BALANCECURRENCY period ${period} fetch error: ${error.message} → ${periodErrorCode}`);
+                                hasError = true;
+                                errorCode = periodErrorCode;
+                                break; // Stop on first error
                             }
+                        }
+                        
+                        // Resolve with total or error
+                        if (hasError) {
+                            console.log(`   ⚠️ BALANCECURRENCY range result: ${account} = ${errorCode}`);
+                            request.resolve(errorCode);
                         } else {
-                            const errorCode = response.status === 408 || response.status === 504 ? 'TIMEOUT' : 'APIERR';
-                            console.error(`   ❌ BALANCECURRENCY API error: ${response.status} → ${errorCode}`);
+                            console.log(`   ✅ BALANCECURRENCY range result: ${account} = ${totalValue.toLocaleString()} (sum of ${expandedPeriods.length} periods)`);
+                            cache.balance.set(cacheKey, totalValue);
+                            request.resolve(totalValue);
+                        }
+                    } else {
+                        // Single period or cumulative - use original logic
+                        try {
+                            const apiParams = new URLSearchParams({
+                                account: account,
+                                from_period: fromPeriod || '',
+                                to_period: toPeriod,
+                                subsidiary: subsidiary || '',
+                                currency: reqCurrency,
+                                department: department || '',
+                                location: location || '',
+                                class: classId || '',
+                                book: accountingBook || ''
+                            });
+                            
+                            console.log(`   📤 BALANCECURRENCY API: ${account} for ${fromPeriod || '(cumulative)'} → ${toPeriod} (currency: ${reqCurrency || 'default'})`);
+                            
+                            const response = await fetch(`${SERVER_URL}/balancecurrency?${apiParams.toString()}`);
+                            
+                            if (response.ok) {
+                                const data = await response.json();
+                                const value = data.balance ?? 0;
+                                const errorCode = data.error;
+                                
+                                if (errorCode) {
+                                    console.log(`   ⚠️ BALANCECURRENCY result: ${account} = ${errorCode}`);
+                                    request.resolve(errorCode);
+                                } else {
+                                    console.log(`   ✅ BALANCECURRENCY result: ${account} = ${value.toLocaleString()}`);
+                                    cache.balance.set(cacheKey, value);
+                                    request.resolve(value);
+                                }
+                            } else {
+                                const errorCode = response.status === 408 || response.status === 504 ? 'TIMEOUT' : 'APIERR';
+                                console.error(`   ❌ BALANCECURRENCY API error: ${response.status} → ${errorCode}`);
+                                request.resolve(errorCode);
+                            }
+                        } catch (error) {
+                            const errorCode = error.name === 'AbortError' ? 'TIMEOUT' : 'NETFAIL';
+                            console.error(`   ❌ BALANCECURRENCY fetch error: ${error.message} → ${errorCode}`);
                             request.resolve(errorCode);
                         }
-                    } catch (error) {
-                        const errorCode = error.name === 'AbortError' ? 'TIMEOUT' : 'NETFAIL';
-                        console.error(`   ❌ BALANCECURRENCY fetch error: ${error.message} → ${errorCode}`);
-                        request.resolve(errorCode);
                     }
                 }
             }

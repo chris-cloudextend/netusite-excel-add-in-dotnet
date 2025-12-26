@@ -15944,6 +15944,19 @@ export default {
                                 // NAME formulas are still XAVI formulas and should count toward completion
                                 formulaCount++;
                                 subsidiaryParam = extractFormulaParam(formula, 3);
+                            } else if (upperFormula.includes('XAVI.BALANCECURRENCY')) {
+                                formulaCount++;
+                                // BALANCECURRENCY: (acct, from, to, [sub], [currency], ...) - index 3
+                                subsidiaryParam = extractFormulaParam(formula, 3);
+                                // If it's a cell reference (not a number or quoted string)
+                                if (subsidiaryParam && 
+                                    !subsidiaryParam.startsWith('"') && 
+                                    !subsidiaryParam.startsWith("'") && 
+                                    !/^\d+$/.test(subsidiaryParam)) {
+                                    // Normalize and add to known cells
+                                    const normalized = subsidiaryParam.replace(/\$/g, '').toUpperCase();
+                                    knownSubsidiaryCells.add(normalized);
+                                }
                             } else {
                                 continue;
                             }
@@ -17523,7 +17536,7 @@ export default {
                         const upperFormula = formula.toUpperCase();
                         let subsidiaryParam = '';
                         
-                        if (upperFormula.includes('XAVI.BALANCE') && !upperFormula.includes('XAVI.TYPEBALANCE') && !upperFormula.includes('XAVI.BALANCECURRENCY')) {
+                        if (upperFormula.includes('XAVI.BALANCE') && !upperFormula.includes('XAVI.TYPEBALANCE') && !upperFormula.includes('XAVI.BALANCECURRENCY') && !upperFormula.includes('XAVI.BALANCECHANGE')) {
                             subsidiaryParam = extractFormulaParam(formula, 3);
                         } else if (upperFormula.includes('XAVI.BALANCECURRENCY')) {
                             // BALANCECURRENCY: currency param is at index 4, subsidiary at index 3
@@ -17797,7 +17810,7 @@ export default {
                             const upperFormula = formula.toUpperCase();
                             let subsidiaryParam = '';
                             
-                            if (upperFormula.includes('XAVI.BALANCE') && !upperFormula.includes('XAVI.TYPEBALANCE') && !upperFormula.includes('XAVI.BALANCECURRENCY')) {
+                            if (upperFormula.includes('XAVI.BALANCE') && !upperFormula.includes('XAVI.TYPEBALANCE') && !upperFormula.includes('XAVI.BALANCECURRENCY') && !upperFormula.includes('XAVI.BALANCECHANGE')) {
                                 subsidiaryParam = extractFormulaParam(formula, 3);
                             } else if (upperFormula.includes('XAVI.BALANCECURRENCY')) {
                                 // BALANCECURRENCY: currency param is at index 4, subsidiary at index 3
