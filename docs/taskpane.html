@@ -6002,6 +6002,54 @@ For licensing inquiries, contact: legal@celigo.com
                         contextualState.selectedParamType = paramConfig.type;
                         // Show the context popup with this parameter type
                         showParamContextPopup(normalizedAddress, paramConfig, selection.values[0][0]);
+                    } else if (selectedCellHasXavi && selectedFormula) {
+                        // Check if selected cell has a formula with a subsidiary parameter
+                        // Extract subsidiary parameter from formula
+                        let subsidiaryParam = '';
+                        const upperFormula = selectedFormula.toUpperCase();
+                        
+                        if (upperFormula.includes('XAVI.BALANCE') && !upperFormula.includes('XAVI.TYPEBALANCE') && !upperFormula.includes('XAVI.BALANCECURRENCY') && !upperFormula.includes('XAVI.BALANCECHANGE')) {
+                            subsidiaryParam = extractFormulaParam(selectedFormula, 3);
+                        } else if (upperFormula.includes('XAVI.BALANCECURRENCY')) {
+                            subsidiaryParam = extractFormulaParam(selectedFormula, 3);
+                        } else if (upperFormula.includes('XAVI.TYPEBALANCE')) {
+                            subsidiaryParam = extractFormulaParam(selectedFormula, 3);
+                        } else if (upperFormula.includes('XAVI.NETINCOME')) {
+                            subsidiaryParam = extractFormulaParam(selectedFormula, 2);
+                        } else if (upperFormula.includes('XAVI.BUDGET')) {
+                            subsidiaryParam = extractFormulaParam(selectedFormula, 3);
+                        }
+                        
+                        // If formula has a subsidiary parameter, show subsidiary dropdown
+                        if (subsidiaryParam && 
+                            !subsidiaryParam.startsWith('"') && 
+                            !subsidiaryParam.startsWith("'") && 
+                            !/^\d+$/.test(subsidiaryParam)) {
+                            // It's a cell reference - show subsidiary dropdown
+                            const subsidiaryConfig = {
+                                type: 'subsidiary',
+                                icon: '🏢',
+                                label: 'Subsidiary',
+                                inputType: 'select',
+                                source: 'subsidiarySelect',
+                                hint: 'Add "(Consolidated)" for rollups'
+                            };
+                            // Get the value from the referenced cell
+                            let currentValue = '';
+                            try {
+                                const refRange = sheet.getRange(subsidiaryParam);
+                                refRange.load('values');
+                                await context.sync();
+                                currentValue = refRange.values[0][0] || '';
+                            } catch (e) {
+                                // Couldn't read referenced cell
+                            }
+                            contextualState.selectedParamType = 'subsidiary';
+                            showParamContextPopup(normalizedAddress, subsidiaryConfig, currentValue);
+                        } else {
+                            contextualState.selectedParamType = null;
+                            hideParamContextPopup();
+                        }
                     } else {
                         contextualState.selectedParamType = null;
                         hideParamContextPopup();
@@ -15257,33 +15305,11 @@ export default {
                     
                     // Insert the value (NAME for most filters, ID for accounting book)
                     range.values = [[selectedValue]];
-                    await context.sync();
                     
-                    // Add a comment to explain the cell's purpose
-                    try {
-                        // Get the cell address to work with comments collection
-                        range.load('address');
-                        await context.sync();
-                        const cellAddress = range.address;
-                        
-                        // Try to delete existing comment first using the comments collection
-                        try {
-                            const comments = context.workbook.comments;
-                            const existingComment = comments.getItemByCell(cellAddress);
-                            existingComment.load('id');
-                            await context.sync();
-                            existingComment.delete();
-                            await context.sync();
-                        } catch (e) { /* No existing comment - that's fine */ }
-                        
-                        // Add new comment using the comments collection
-                        const comments = context.workbook.comments;
-                        comments.add(cellAddress, commentText);
-                        await context.sync();
-                        console.log(`✓ Added comment for ${typeName} filter at ${cellAddress}`);
-                    } catch (commentError) {
-                        console.warn('Could not add comment:', commentError.message);
-                    }
+                    // Set background color to mark as input cell
+                    range.format.fill.color = '#d3d8e6';
+                    
+                    await context.sync();
                     
                     if (selectedValue === '') {
                         statusEl.textContent = `✓ Inserted: All ${typeName}s (no filter)`;

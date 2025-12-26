@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.0.15';  // BALANCECURRENCY: Fixed period range expansion and dropdown detection - now expands periods and sums them correctly, and dropdown appears for BALANCECURRENCY formulas
+const FUNCTIONS_VERSION = '4.0.0.16';  // BALANCECURRENCY: Fixed dropdown detection for formula cells, removed comments, added background color for filter cells, verified period range expansion
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -4969,10 +4969,13 @@ async function processBatchQueue() {
                     // Check if this is a period range (fromPeriod != toPeriod and both are provided)
                     const isPeriodRange = fromPeriod && toPeriod && fromPeriod !== toPeriod;
                     
+                    // Debug logging for period range detection
+                    console.log(`   🔍 BALANCECURRENCY period check: fromPeriod="${fromPeriod}", toPeriod="${toPeriod}", isPeriodRange=${isPeriodRange}`);
+                    
                     if (isPeriodRange) {
                         // Expand period range to individual months
                         const expandedPeriods = expandPeriodRangeFromTo(fromPeriod, toPeriod);
-                        console.log(`   📅 BALANCECURRENCY period range: ${fromPeriod} to ${toPeriod} → ${expandedPeriods.length} months`);
+                        console.log(`   📅 BALANCECURRENCY period range: ${fromPeriod} to ${toPeriod} → ${expandedPeriods.length} months:`, expandedPeriods);
                         
                         // Make individual API calls for each period and sum them
                         let totalValue = 0;
