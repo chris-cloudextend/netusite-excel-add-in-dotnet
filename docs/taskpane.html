@@ -17675,6 +17675,12 @@ export default {
                             // For currency formatting, use currency param if provided, else subsidiary
                             const currencyParam = extractFormulaParam(formula, 4);
                             subsidiaryParam = extractFormulaParam(formula, 3);
+                            
+                            // CRITICAL: Add currency cell reference to resolution list if it's a cell reference
+                            if (currencyParam && !currencyParam.startsWith('"') && !currencyParam.startsWith("'") && !/^\d+$/.test(currencyParam)) {
+                                cellRefsToResolve.add(currencyParam);
+                            }
+                            
                             // If currency is provided, we'll use it for formatting instead of subsidiary
                             if (currencyParam && currencyParam !== '""' && currencyParam !== "''" && currencyParam.trim() !== '') {
                                 // Store currency param for later use in formatting
