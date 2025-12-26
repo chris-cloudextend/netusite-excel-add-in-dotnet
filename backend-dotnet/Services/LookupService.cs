@@ -583,6 +583,11 @@ public class LookupService : ILookupService
     /// - The table includes derived (multi-hop) rates that are pre-calculated
     /// - Self-referential entries exist (tosubsidiary = fromsubsidiary) for base currency scenarios
     /// - It automatically excludes invalid paths
+    /// 
+    /// Strategy:
+    /// 1. First check if filtered subsidiary itself has the requested currency (self-referential)
+    /// 2. Query ConsolidatedExchangeRate for direct paths from filtered subsidiary
+    /// 3. If not found, check parent subsidiaries in hierarchy for matching currency
     /// </summary>
     public async Task<string?> ResolveCurrencyToConsolidationRootAsync(string currencyCode, string filteredSubsidiaryId)
     {
@@ -593,8 +598,23 @@ public class LookupService : ILookupService
             resolvedFilteredId = filteredSubsidiaryId;
         }
         
-        // Query ConsolidatedExchangeRate table to find valid consolidation path
-        // This is the source of truth for what NetSuite actually supports
+        var subsidiaries = await GetSubsidiariesAsync();
+        var subMap = subsidiaries
+            .GroupBy(s => s.Id)
+            .ToDictionary(g => g.Key, g => g.First());
+        
+        // Step 1: Check if filtered subsidiary itself has the requested currency
+        if (subMap.TryGetValue(resolvedFilteredId, out var filteredSub) &&
+            !string.IsNullOrEmpty(filteredSub.Currency) &&
+            filteredSub.Currency.Equals(currencyCode, StringComparison.OrdinalIgnoreCase) &&
+            !filteredSub.IsElimination)
+        {
+            _logger.LogInformation("Resolved currency {Currency} to filtered subsidiary itself {SubId} ({SubName}) - base currency match",
+                currencyCode, filteredSub.Id, filteredSub.Name);
+            return filteredSub.Id;
+        }
+        
+        // Step 2: Query ConsolidatedExchangeRate table for direct consolidation path
         var query = $@"
             SELECT 
                 cer.tosubsidiary AS consolidationRootId,
@@ -629,7 +649,26 @@ public class LookupService : ILookupService
                 }
             }
             
-            _logger.LogWarning("No valid consolidation path found in ConsolidatedExchangeRate for currency {Currency} from subsidiary {FilteredSubId}",
+            // Step 3: If no direct path in ConsolidatedExchangeRate, check parent hierarchy
+            // This handles cases where ConsolidatedExchangeRate might not have all paths
+            var ancestors = await GetSubsidiaryAncestorsAsync(resolvedFilteredId);
+            var validRoots = subsidiaries
+                .Where(s => !string.IsNullOrEmpty(s.Currency) && 
+                           s.Currency.Equals(currencyCode, StringComparison.OrdinalIgnoreCase) &&
+                           ancestors.Contains(s.Id) &&
+                           !s.IsElimination)
+                .OrderBy(s => s.Depth) // Prefer higher-level subsidiaries (lower depth)
+                .ToList();
+            
+            if (validRoots.Any())
+            {
+                var root = validRoots.First();
+                _logger.LogInformation("Resolved currency {Currency} to ancestor {SubId} ({SubName}, depth={Depth}) for filtered subsidiary {FilteredSubId} via hierarchy (ConsolidatedExchangeRate had no direct path)",
+                    currencyCode, root.Id, root.Name, root.Depth, resolvedFilteredId);
+                return root.Id;
+            }
+            
+            _logger.LogWarning("No valid consolidation path found for currency {Currency} from subsidiary {FilteredSubId}. Checked: (1) self, (2) ConsolidatedExchangeRate, (3) ancestor hierarchy",
                 currencyCode, resolvedFilteredId);
             return null;
         }
