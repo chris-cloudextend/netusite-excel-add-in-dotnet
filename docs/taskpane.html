@@ -22,18 +22,63 @@ For licensing inquiries, contact: legal@celigo.com
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
         /* ============================================
-           BRAND COLORS
+           BRAND COLORS - APPROVED PALETTE
            Primary: Blue Light #004fb6, Deep Dive #09235c, Chrome #a8b1ce
-           Secondary: Anenome #0ae2c1, Tidal Wave #0079ff, Barnacle #d3d8e6, Bottlenose #6b7b9d
+           Secondary: Anenome #0ae2c1, Tidal Wave #0079ff, Barnacle #d3d8e6, Bottlenose #6b7b9d, Gold #f4be60
            ============================================ */
         :root {
+            /* Primary Brand Colors */
             --blue-light: #004fb6;
             --deep-dive: #09235c;
             --chrome: #a8b1ce;
+            
+            /* Secondary Brand Colors */
             --anenome: #0ae2c1;
             --tidal-wave: #0079ff;
             --barnacle: #d3d8e6;
             --bottlenose: #6b7b9d;
+            --gold: #f4be60;
+            
+            /* UI Component Colors - Branded Categories */
+            /* Primary Actions - Main brand blue */
+            --color-primary: #004fb6;
+            --color-primary-hover: #003d94;
+            
+            /* Secondary Actions - Teal accent */
+            --color-secondary: #0ae2c1;
+            --color-secondary-hover: #08c4a8;
+            
+            /* Alternative Secondary - Light blue */
+            --color-secondary-alt: #0079ff;
+            --color-secondary-alt-hover: #0066d6;
+            
+            /* Warnings - Gold (attention-grabbing, not alarming) */
+            --color-warning: #f4be60;
+            --color-warning-bg: rgba(244, 190, 96, 0.15);
+            --color-warning-border: rgba(244, 190, 96, 0.4);
+            --color-warning-text: #8b6914;
+            
+            /* Errors - Dark navy (high contrast, serious) */
+            --color-error: #09235c;
+            --color-error-bg: rgba(9, 35, 92, 0.1);
+            --color-error-border: rgba(9, 35, 92, 0.3);
+            --color-error-text: #09235c;
+            
+            /* Success - Teal (positive, fresh) */
+            --color-success: #0ae2c1;
+            --color-success-bg: rgba(10, 226, 193, 0.1);
+            --color-success-border: rgba(10, 226, 193, 0.3);
+            --color-success-text: #007a63;
+            
+            /* Info - Light blue (informational) */
+            --color-info: #0079ff;
+            --color-info-bg: rgba(0, 121, 255, 0.1);
+            --color-info-border: rgba(0, 121, 255, 0.3);
+            --color-info-text: #004d99;
+            
+            /* Danger Actions - Dark navy (serious, destructive) */
+            --color-danger: #09235c;
+            --color-danger-hover: #051a3a;
         }
 
         * {
@@ -1040,14 +1085,31 @@ For licensing inquiries, contact: legal@celigo.com
             line-height: 1.4;
         }
         
+        /* ============================================
+           TIP BOXES - BRANDED MESSAGE TYPES
+           ============================================ */
         .report-success-card .tip-box.warning {
-            background: rgba(255, 193, 7, 0.15);
-            border-left: 3px solid #FFC107;
+            background: var(--color-warning-bg);
+            border-left: 4px solid var(--color-warning);
+            color: var(--color-warning-text);
         }
         
         .report-success-card .tip-box.info {
-            background: rgba(10, 226, 193, 0.1);
-            border-left: 3px solid var(--anenome);
+            background: var(--color-info-bg);
+            border-left: 4px solid var(--color-info);
+            color: var(--color-info-text);
+        }
+        
+        .report-success-card .tip-box.success {
+            background: var(--color-success-bg);
+            border-left: 4px solid var(--color-success);
+            color: var(--color-success-text);
+        }
+        
+        .report-success-card .tip-box.error {
+            background: var(--color-error-bg);
+            border-left: 4px solid var(--color-error);
+            color: var(--color-error-text);
         }
         
         .report-success-card .dismiss-btn {
@@ -1184,10 +1246,61 @@ For licensing inquiries, contact: legal@celigo.com
             color: #065f46;
         }
 
+        /* ============================================
+           STATUS INDICATORS - BRANDED
+           ============================================ */
         .status-indicator.error {
-            background: #fee2e2;
-            color: #991b1b;
+            background: var(--color-error);
+            color: white;
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 600;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
         }
+        
+        .status-indicator.success {
+            background: var(--color-success);
+            color: var(--deep-dive);
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 600;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+        
+        .status-indicator.warning {
+            background: var(--color-warning);
+            color: var(--color-warning-text);
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 600;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+        
+        .status-indicator.info {
+            background: var(--color-info);
+            color: white;
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 600;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+        
+        .status-dot.error { background: var(--color-error); }
+        .status-dot.success { background: var(--color-success); }
+        .status-dot.warning { background: var(--color-warning); }
+        .status-dot.info { background: var(--color-info); }
 
         .status-dot {
             width: 8px;
@@ -1195,9 +1308,10 @@ For licensing inquiries, contact: legal@celigo.com
             border-radius: 50%;
         }
 
-        .status-dot.checking { background: #f59e0b; animation: pulse 1s infinite; }
-        .status-dot.connected { background: #10b981; }
-        .status-dot.error { background: #ef4444; }
+        .status-dot.checking { background: var(--color-warning); animation: pulse 1s infinite; }
+        .status-dot.connected { background: var(--color-success); }
+        .status-dot.error { background: var(--color-error); }
+        .status-dot.info { background: var(--color-info); }
 
         @keyframes pulse {
             0%, 100% { opacity: 1; }
@@ -1336,9 +1450,12 @@ For licensing inquiries, contact: legal@celigo.com
             20%, 40%, 60%, 80% { transform: translateX(5px); }
         }
 
-        /* Primary action button */
+        /* ============================================
+           BUTTONS - BRANDED CATEGORIES
+           ============================================ */
+        /* Primary Action Button - Main brand blue */
         .btn-primary {
-            background: linear-gradient(135deg, var(--blue-light) 0%, var(--tidal-wave) 100%);
+            background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-hover) 100%);
             color: white;
             border: none;
             padding: 12px 20px;
@@ -1353,50 +1470,83 @@ For licensing inquiries, contact: legal@celigo.com
             align-items: center;
             justify-content: center;
             gap: 8px;
+            box-shadow: 0 2px 8px rgba(0, 79, 182, 0.25);
         }
 
         .btn-primary:hover {
             transform: translateY(-2px);
-            box-shadow: 0 6px 20px rgba(0, 79, 182, 0.35);
+            box-shadow: 0 6px 20px rgba(0, 79, 182, 0.4);
+            background: linear-gradient(135deg, var(--color-primary-hover) 0%, var(--color-primary) 100%);
         }
 
         .btn-primary:active {
             transform: translateY(0);
+            box-shadow: 0 2px 8px rgba(0, 79, 182, 0.25);
         }
 
+        /* Secondary Action Button - Teal accent */
         .btn-secondary {
-            background: var(--bottlenose);
-            color: white;
+            background: var(--color-secondary);
+            color: var(--deep-dive);
             border: none;
             padding: 10px 16px;
             border-radius: 8px;
             font-size: 13px;
-            font-weight: 500;
+            font-weight: 600;
             cursor: pointer;
             transition: all 0.2s;
             width: 100%;
             margin-bottom: 8px;
+            box-shadow: 0 2px 6px rgba(10, 226, 193, 0.2);
         }
 
         .btn-secondary:hover {
-            background: var(--deep-dive);
+            background: var(--color-secondary-hover);
+            box-shadow: 0 4px 12px rgba(10, 226, 193, 0.3);
+            transform: translateY(-1px);
         }
 
-        .btn-danger {
-            background: #dc2626;
+        /* Alternative Secondary Button - Light blue */
+        .btn-secondary-alt {
+            background: var(--color-secondary-alt);
             color: white;
             border: none;
             padding: 10px 16px;
             border-radius: 8px;
             font-size: 13px;
-            font-weight: 500;
+            font-weight: 600;
             cursor: pointer;
             transition: all 0.2s;
             width: 100%;
+            margin-bottom: 8px;
+            box-shadow: 0 2px 6px rgba(0, 121, 255, 0.2);
+        }
+
+        .btn-secondary-alt:hover {
+            background: var(--color-secondary-alt-hover);
+            box-shadow: 0 4px 12px rgba(0, 121, 255, 0.3);
+            transform: translateY(-1px);
+        }
+
+        /* Danger Button - Dark navy (destructive actions) */
+        .btn-danger {
+            background: var(--color-danger);
+            color: white;
+            border: none;
+            padding: 10px 16px;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            width: 100%;
+            box-shadow: 0 2px 6px rgba(9, 35, 92, 0.25);
         }
 
         .btn-danger:hover {
-            background: #b91c1c;
+            background: var(--color-danger-hover);
+            box-shadow: 0 4px 12px rgba(9, 35, 92, 0.35);
+            transform: translateY(-1px);
         }
 
         .refresh-status {
@@ -1667,14 +1817,59 @@ For licensing inquiries, contact: legal@celigo.com
             background: linear-gradient(135deg, rgba(0, 79, 182, 0.15) 0%, rgba(0, 121, 255, 0.15) 100%);
         }
         
+        /* ============================================
+           ACTION BUTTONS - BRANDED VARIANTS
+           ============================================ */
         .action-btn.warning {
-            background: linear-gradient(135deg, rgba(217, 119, 6, 0.08) 0%, rgba(245, 158, 11, 0.08) 100%);
-            border-color: #d97706;
+            background: var(--color-warning-bg);
+            border: 2px solid var(--color-warning-border);
+            color: var(--color-warning-text);
+            font-weight: 600;
         }
         
         .action-btn.warning:hover {
-            background: linear-gradient(135deg, rgba(217, 119, 6, 0.15) 0%, rgba(245, 158, 11, 0.15) 100%);
-            border-color: #b45309;
+            background: rgba(244, 190, 96, 0.25);
+            border-color: var(--color-warning);
+            box-shadow: 0 2px 8px rgba(244, 190, 96, 0.3);
+        }
+        
+        .action-btn.error {
+            background: var(--color-error-bg);
+            border: 2px solid var(--color-error-border);
+            color: var(--color-error-text);
+            font-weight: 600;
+        }
+        
+        .action-btn.error:hover {
+            background: rgba(9, 35, 92, 0.15);
+            border-color: var(--color-error);
+            box-shadow: 0 2px 8px rgba(9, 35, 92, 0.25);
+        }
+        
+        .action-btn.success {
+            background: var(--color-success-bg);
+            border: 2px solid var(--color-success-border);
+            color: var(--color-success-text);
+            font-weight: 600;
+        }
+        
+        .action-btn.success:hover {
+            background: rgba(10, 226, 193, 0.15);
+            border-color: var(--color-success);
+            box-shadow: 0 2px 8px rgba(10, 226, 193, 0.25);
+        }
+        
+        .action-btn.info {
+            background: var(--color-info-bg);
+            border: 2px solid var(--color-info-border);
+            color: var(--color-info-text);
+            font-weight: 600;
+        }
+        
+        .action-btn.info:hover {
+            background: rgba(0, 121, 255, 0.15);
+            border-color: var(--color-info);
+            box-shadow: 0 2px 8px rgba(0, 121, 255, 0.25);
         }
         
         .action-btn.danger {
@@ -2228,14 +2423,27 @@ For licensing inquiries, contact: legal@celigo.com
             border: 1px solid rgba(59, 130, 246, 0.3);
         }
         
+        /* ============================================
+           DRILLDOWN STATUS - BRANDED
+           ============================================ */
         .drilldown-status.success {
-            background: linear-gradient(135deg, #064e3b 0%, #022c22 100%);
-            border-color: rgba(16, 185, 129, 0.4);
+            background: var(--color-success-bg);
+            border-left: 4px solid var(--color-success);
         }
         
         .drilldown-status.error {
-            background: linear-gradient(135deg, #7f1d1d 0%, #450a0a 100%);
-            border-color: rgba(239, 68, 68, 0.4);
+            background: var(--color-error-bg);
+            border-left: 4px solid var(--color-error);
+        }
+        
+        .drilldown-status.warning {
+            background: var(--color-warning-bg);
+            border-left: 4px solid var(--color-warning);
+        }
+        
+        .drilldown-status.info {
+            background: var(--color-info-bg);
+            border-left: 4px solid var(--color-info);
         }
         
         .drilldown-status-header {
@@ -2254,8 +2462,10 @@ For licensing inquiries, contact: legal@celigo.com
             flex: 1;
         }
         
-        .drilldown-status.success .drilldown-status-title { color: #6ee7b7; }
-        .drilldown-status.error .drilldown-status-title { color: #fca5a5; }
+        .drilldown-status.success .drilldown-status-title { color: var(--color-success-text); }
+        .drilldown-status.error .drilldown-status-title { color: var(--color-error-text); }
+        .drilldown-status.warning .drilldown-status-title { color: var(--color-warning-text); }
+        .drilldown-status.info .drilldown-status-title { color: var(--color-info-text); }
         
         .drilldown-status-dismiss {
             background: none;
@@ -2862,22 +3072,51 @@ For licensing inquiries, contact: legal@celigo.com
             color: rgba(255, 255, 255, 0.7);
         }
         
+        /* ============================================
+           OVERWRITE WARNING - PROMINENT BRANDED STYLE
+           ============================================ */
         .overwrite-warning {
             display: flex;
-            align-items: center;
-            gap: 8px;
-            padding: 10px 14px;
-            background: rgba(251, 191, 36, 0.15);
-            border: 1px solid rgba(251, 191, 36, 0.3);
-            border-radius: 8px;
-            margin: 12px 0;
-            font-size: 11px;
-            color: rgba(255, 255, 255, 0.85);
+            align-items: flex-start;
+            gap: 12px;
+            padding: 16px 18px;
+            background: linear-gradient(135deg, var(--color-warning-bg) 0%, rgba(244, 190, 96, 0.2) 100%);
+            border: 2px solid var(--color-warning-border);
+            border-left: 5px solid var(--color-warning);
+            border-radius: 10px;
+            margin: 16px 0 20px 0;
+            font-size: 13px;
+            line-height: 1.6;
+            color: var(--color-warning-text);
             text-align: left;
+            box-shadow: 0 4px 12px rgba(244, 190, 96, 0.2), 0 0 0 1px rgba(244, 190, 96, 0.1) inset;
+            position: relative;
+            animation: warningPulse 2s ease-in-out infinite;
+        }
+        
+        .overwrite-warning::before {
+            content: '⚠️';
+            font-size: 24px;
+            line-height: 1;
+            flex-shrink: 0;
+            filter: drop-shadow(0 2px 4px rgba(244, 190, 96, 0.3));
         }
         
         .overwrite-warning strong {
-            color: #fbbf24;
+            color: var(--color-warning-text);
+            font-weight: 700;
+            font-size: 14px;
+            display: block;
+            margin-bottom: 4px;
+        }
+        
+        @keyframes warningPulse {
+            0%, 100% {
+                box-shadow: 0 4px 12px rgba(244, 190, 96, 0.2), 0 0 0 1px rgba(244, 190, 96, 0.1) inset;
+            }
+            50% {
+                box-shadow: 0 4px 16px rgba(244, 190, 96, 0.35), 0 0 0 1px rgba(244, 190, 96, 0.15) inset;
+            }
         }
         
         .onboarding-tip {
@@ -2894,19 +3133,21 @@ For licensing inquiries, contact: legal@celigo.com
             color: var(--anenome);
         }
         
-        /* #BUSY notice for when formulas are loading */
+        /* ============================================
+           BUSY NOTICE - BRANDED INFO STYLE
+           ============================================ */
         .busy-notice {
             display: flex;
             align-items: center;
             justify-content: center;
             gap: 8px;
             padding: 10px 14px;
-            background: rgba(251, 191, 36, 0.15);
-            border: 1px solid rgba(251, 191, 36, 0.3);
+            background: var(--color-info-bg);
+            border: 1px solid var(--color-info-border);
             border-radius: 8px;
             margin: 12px 0;
             font-size: 12px;
-            color: rgba(255, 255, 255, 0.8);
+            color: var(--color-info-text);
         }
         
         .busy-notice.small {
@@ -2919,8 +3160,9 @@ For licensing inquiries, contact: legal@celigo.com
         }
         
         .busy-notice strong {
-            color: #fbbf24;
+            color: var(--color-info-text);
             font-family: 'SF Mono', Monaco, 'Courier New', monospace;
+            font-weight: 700;
         }
         
         .onboarding-step {
@@ -3666,30 +3908,76 @@ For licensing inquiries, contact: legal@celigo.com
             overflow-y: auto;
         }
 
+        /* ============================================
+           INFO BOX - BRANDED INFO STYLE (Alternative location)
+           ============================================ */
         .info-box {
-            background: linear-gradient(135deg, rgba(10, 226, 193, 0.1) 0%, rgba(0, 121, 255, 0.05) 100%);
-            border: 1px solid var(--anenome);
+            background: var(--color-info-bg);
+            border-left: 4px solid var(--color-info);
             border-radius: 8px;
             padding: 12px;
             margin: 12px 0;
         }
+        
+        .info-box.warning {
+            background: var(--color-warning-bg);
+            border-left-color: var(--color-warning);
+        }
+        
+        .info-box.success {
+            background: var(--color-success-bg);
+            border-left-color: var(--color-success);
+        }
+        
+        .info-box.error {
+            background: var(--color-error-bg);
+            border-left-color: var(--color-error);
+        }
 
         .info-box p {
             font-size: 12px;
-            color: var(--deep-dive);
+            color: var(--color-info-text);
             line-height: 1.5;
+        }
+        
+        .info-box.warning p {
+            color: var(--color-warning-text);
+        }
+        
+        .info-box.success p {
+            color: var(--color-success-text);
+        }
+        
+        .info-box.error p {
+            color: var(--color-error-text);
         }
 
         .info-box strong {
-            color: var(--blue-light);
+            color: inherit;
+            font-weight: 600;
         }
 
         .info-box code {
-            background: var(--deep-dive);
-            color: var(--anenome);
+            background: rgba(0, 121, 255, 0.15);
+            color: var(--color-info-text);
             padding: 2px 6px;
             border-radius: 4px;
             font-size: 10px;
+        }
+        
+        .info-box.warning code {
+            background: rgba(244, 190, 96, 0.2);
+            color: var(--color-warning-text);
+        }
+        
+        .info-box.success code {
+            background: rgba(10, 226, 193, 0.15);
+            color: var(--color-success-text);
+        }
+        
+        .info-box.error code {
+            background: rgba(9, 35, 92, 0.15);
+            color: var(--color-error-text);
         }
 
         /* Toast Notification System */
@@ -3718,17 +4006,32 @@ For licensing inquiries, contact: legal@celigo.com
             border-left: 4px solid var(--anenome);
         }
 
-        .toast.info { border-left-color: var(--tidal-wave); }
-        .toast.success { border-left-color: #10b981; }
-        .toast.warning { border-left-color: #f59e0b; }
-        .toast.error { border-left-color: #ef4444; }
+        /* ============================================
+           TOASTS - BRANDED MESSAGE TYPES
+           ============================================ */
+        .toast.info { 
+            border-left-color: var(--color-info);
+            background: var(--color-info-bg);
+        }
+        .toast.success { 
+            border-left-color: var(--color-success);
+            background: var(--color-success-bg);
+        }
+        .toast.warning { 
+            border-left-color: var(--color-warning);
+            background: var(--color-warning-bg);
+        }
+        .toast.error { 
+            border-left-color: var(--color-error);
+            background: var(--color-error-bg);
+        }
         .toast.error.persistent-error {
             border-left-width: 5px;
-            background: linear-gradient(135deg, #fef2f2 0%, #fee2e2 100%);
-            box-shadow: 0 4px 16px rgba(239, 68, 68, 0.25);
+            background: linear-gradient(135deg, var(--color-error-bg) 0%, rgba(9, 35, 92, 0.15) 100%);
+            box-shadow: 0 4px 16px rgba(9, 35, 92, 0.25);
         }
         .toast.error.persistent-error .toast-title {
-            color: #dc2626;
+            color: var(--color-error-text);
             font-weight: 600;
         }
         .toast.calculating { border-left-color: #8b5cf6; }
@@ -5001,8 +5304,7 @@ For licensing inquiries, contact: legal@celigo.com
                         Enter a G/L account number, or we'll show you accounts with Jan 2025 activity.
                     </p>
                     <div class="overwrite-warning">
-                        <span>⚠️</span>
-                        <span><strong>Heads up:</strong> This tutorial may write to your active sheet. Use a blank sheet if you want to preserve existing data.</span>
+                        <span><strong>⚠️ Important:</strong> This tutorial will write to your active sheet and may overwrite existing data. Use a blank sheet if you want to preserve your current work.</span>
                     </div>
                     <div class="onboarding-input-group">
                         <input type="text" id="onboardingAccountInput" placeholder="e.g., 40110, 51000, 62100" class="onboarding-input" />
@@ -5403,7 +5705,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.0.29"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.0.31"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -22095,7 +22397,8 @@ export default {
                         textToDisplay: txn.transaction_number || 'View'
                     };
                     linkCell.hyperlink = hyperlink;
-                    linkCell.format.font.color = '#0ea5e9';
+                    // Use branded info color for hyperlinks
+                    linkCell.format.font.color = '#0079ff'; // var(--color-info)
                     linkCell.format.font.underline = 'Single';
                 }
             }

@@ -4,7 +4,9 @@
  */
 
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Options;
 using System.Text.Json;
+using XaviApi.Configuration;
 using XaviApi.Services;
 
 namespace XaviApi.Controllers;
@@ -15,15 +17,18 @@ public class TransactionController : ControllerBase
     private readonly INetSuiteService _netSuiteService;
     private readonly ILookupService _lookupService;
     private readonly ILogger<TransactionController> _logger;
+    private readonly IOptions<NetSuiteConfig> _netSuiteConfig;
 
     public TransactionController(
         INetSuiteService netSuiteService,
         ILookupService lookupService,
-        ILogger<TransactionController> logger)
+        ILogger<TransactionController> logger,
+        IOptions<NetSuiteConfig> netSuiteConfig)
     {
         _netSuiteService = netSuiteService;
         _lookupService = lookupService;
         _logger = logger;
+        _netSuiteConfig = netSuiteConfig;
     }
 
     /// <summary>
@@ -173,28 +178,41 @@ public class TransactionController : ControllerBase
                 }
             }
 
-            var transactions = results.Select(r => new
+            var accountId = _netSuiteConfig.Value.AccountId;
+            
+            var transactions = results.Select(r => 
             {
-                transaction_id = r.TryGetProperty("transaction_id", out var tid) ? tid.ToString() : "",
-                transaction_number = r.TryGetProperty("transaction_number", out var tnum) 
-                    ? tnum.GetString() ?? "" : "",
-                trandate = r.TryGetProperty("trandate", out var td) ? td.GetString() : "",
-                transaction_type = r.TryGetProperty("transaction_type", out var tt) 
-                    ? tt.GetString() ?? "" : "",
-                type_display = r.TryGetProperty("type_display", out var ttd) 
-                    ? ttd.GetString() ?? "" : "",
-                memo = r.TryGetProperty("memo", out var m) && m.ValueKind != JsonValueKind.Null 
-                    ? m.GetString() : "",
-                entity_name = r.TryGetProperty("entity_name", out var en) && en.ValueKind != JsonValueKind.Null 
-                    ? en.GetString() : "",
-                debit = r.TryGetProperty("debit", out var db) && db.ValueKind != JsonValueKind.Null 
-                    ? ParseDecimal(db) : 0m,
-                credit = r.TryGetProperty("credit", out var cr) && cr.ValueKind != JsonValueKind.Null 
-                    ? ParseDecimal(cr) : 0m,
-                net_amount = r.TryGetProperty("net_amount", out var na) && na.ValueKind != JsonValueKind.Null 
-                    ? ParseDecimal(na) : 0m,
-                line_memo = r.TryGetProperty("line_memo", out var lm) && lm.ValueKind != JsonValueKind.Null 
-                    ? lm.GetString() : ""
+                var transactionId = r.TryGetProperty("transaction_id", out var tid) ? tid.ToString() : "";
+                var recordType = r.TryGetProperty("record_type", out var rt) && rt.ValueKind != JsonValueKind.Null
+                    ? rt.GetString()?.ToLower() ?? "" : "";
+                
+                // Generate NetSuite URL
+                var netsuiteUrl = GenerateNetSuiteUrl(accountId, transactionId, recordType);
+                
+                return new
+                {
+                    transaction_id = transactionId,
+                    transaction_number = r.TryGetProperty("transaction_number", out var tnum) 
+                        ? tnum.GetString() ?? "" : "",
+                    trandate = r.TryGetProperty("trandate", out var td) ? td.GetString() : "",
+                    transaction_type = r.TryGetProperty("transaction_type", out var tt) 
+                        ? tt.GetString() ?? "" : "",
+                    type_display = r.TryGetProperty("type_display", out var ttd) 
+                        ? ttd.GetString() ?? "" : "",
+                    memo = r.TryGetProperty("memo", out var m) && m.ValueKind != JsonValueKind.Null 
+                        ? m.GetString() : "",
+                    entity_name = r.TryGetProperty("entity_name", out var en) && en.ValueKind != JsonValueKind.Null 
+                        ? en.GetString() : "",
+                    debit = r.TryGetProperty("debit", out var db) && db.ValueKind != JsonValueKind.Null 
+                        ? ParseDecimal(db) : 0m,
+                    credit = r.TryGetProperty("credit", out var cr) && cr.ValueKind != JsonValueKind.Null 
+                        ? ParseDecimal(cr) : 0m,
+                    net_amount = r.TryGetProperty("net_amount", out var na) && na.ValueKind != JsonValueKind.Null 
+                        ? ParseDecimal(na) : 0m,
+                    line_memo = r.TryGetProperty("line_memo", out var lm) && lm.ValueKind != JsonValueKind.Null 
+                        ? lm.GetString() : "",
+                    netsuite_url = netsuiteUrl
+                };
             }).ToList();
 
             _logger.LogInformation("GetTransactions: Found {Count} transactions", transactions.Count);
@@ -216,6 +234,40 @@ public class TransactionController : ControllerBase
             return dt.ToString("yyyy-MM-dd");
         }
         return date;
+    }
+
+    /// <summary>
+    /// Generate NetSuite URL for a transaction based on record type.
+    /// Maps record types to NetSuite URL paths (matches Python implementation).
+    /// </summary>
+    private static string GenerateNetSuiteUrl(string accountId, string transactionId, string recordType)
+    {
+        if (string.IsNullOrEmpty(accountId) || string.IsNullOrEmpty(transactionId))
+            return "";
+
+        // Map record types to NetSuite URL paths (matches Python backend)
+        var typeMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            { "invoice", "custinvc" },
+            { "bill", "vendorbill" },
+            { "journalentry", "journal" },
+            { "journal", "journal" },
+            { "payment", "custpymt" },
+            { "vendorpayment", "vendpymt" },
+            { "creditmemo", "custcred" },
+            { "vendorcredit", "vendcred" },
+            { "check", "check" },
+            { "deposit", "deposit" },
+            { "cashsale", "cashsale" },
+            { "cashrefund", "cashrfnd" },
+            { "expensereport", "exprept" }
+        };
+
+        var urlType = typeMap.TryGetValue(recordType, out var mappedType) 
+            ? mappedType 
+            : recordType;
+
+        return $"https://{accountId}.app.netsuite.com/app/accounting/transactions/{urlType}.nl?id={transactionId}";
     }
 
     private static decimal ParseDecimal(JsonElement element)

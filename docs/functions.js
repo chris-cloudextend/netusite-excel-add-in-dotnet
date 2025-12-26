@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.0.25';  // BALANCECURRENCY: Fix BUILD MODE to process currency requests individually instead of batch endpoint
+const FUNCTIONS_VERSION = '4.0.0.31';  // Restore NetSuite record hyperlinks in drill-down transactions
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
