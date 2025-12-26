@@ -3820,13 +3820,24 @@ async function BALANCECURRENCY(account, fromPeriod, toPeriod, subsidiary, curren
         
         // CRITICAL: Extract values from Range objects BEFORE converting to period strings
         // Excel may pass Range objects for cell references (e.g., $G$6, $H$6)
-        // This must be done before convertToMonthYear, which doesn't handle Range objects
+        // extractValueFromRange returns strings, but convertToMonthYear now handles string date serials
+        const rawFromPeriod = fromPeriod;
+        const rawToPeriod = toPeriod;
         fromPeriod = extractValueFromRange(fromPeriod, 'fromPeriod');
         toPeriod = extractValueFromRange(toPeriod, 'toPeriod');
         
+        // Debug log the extraction
+        if (typeof rawFromPeriod === 'object' || typeof rawToPeriod === 'object') {
+            console.log(`🔍 BALANCECURRENCY: Extracted from Range - fromPeriod: "${fromPeriod}" (was ${typeof rawFromPeriod}), toPeriod: "${toPeriod}" (was ${typeof rawToPeriod})`);
+        }
+        
         // Convert date values to "Mon YYYY" format
+        // convertToMonthYear now handles both numbers and string representations of Excel date serials
         fromPeriod = convertToMonthYear(fromPeriod, true);
         toPeriod = convertToMonthYear(toPeriod, false);
+        
+        // Debug log the conversion result
+        console.log(`📅 BALANCECURRENCY periods: "${fromPeriod}" → "${toPeriod}"`);
         
         if (!toPeriod) {
             console.error('❌ BALANCECURRENCY: toPeriod is required');
