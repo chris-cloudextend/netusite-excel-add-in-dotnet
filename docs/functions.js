@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.0.19';  // BALANCECURRENCY: Fixed period range to use single API call instead of summing individual periods - backend handles ranges correctly
+const FUNCTIONS_VERSION = '4.0.0.20';  // BALANCECURRENCY: Fixed Range object extraction for fromPeriod/toPeriod - extract values before convertToMonthYear
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -3801,6 +3801,12 @@ async function BALANCECURRENCY(account, fromPeriod, toPeriod, subsidiary, curren
             console.error('❌ BALANCECURRENCY: account parameter is required');
             return '#MISSING_ACCT#';
         }
+        
+        // CRITICAL: Extract values from Range objects BEFORE converting to period strings
+        // Excel may pass Range objects for cell references (e.g., $G$6, $H$6)
+        // This must be done before convertToMonthYear, which doesn't handle Range objects
+        fromPeriod = extractValueFromRange(fromPeriod, 'fromPeriod');
+        toPeriod = extractValueFromRange(toPeriod, 'toPeriod');
         
         // Convert date values to "Mon YYYY" format
         fromPeriod = convertToMonthYear(fromPeriod, true);
