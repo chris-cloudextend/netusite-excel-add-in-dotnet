@@ -15221,8 +15221,24 @@ export default {
             
             try {
                 // Get subsidiary value if select exists, otherwise use empty string
-                const selectedSubsidiary = subsidiarySelect ? subsidiarySelect.value : '';
+                let selectedSubsidiary = subsidiarySelect ? subsidiarySelect.value : '';
                 const serverUrl = getServerUrl();
+                
+                // If no subsidiary selected, use first available subsidiary from dropdown
+                // This ensures we get the array format (with currency codes) instead of legacy format
+                if (!selectedSubsidiary && subsidiarySelect && subsidiarySelect.options.length > 1) {
+                    // Skip first option (usually "-- All (No Filter) --") and use first actual subsidiary
+                    for (let i = 1; i < subsidiarySelect.options.length; i++) {
+                        const option = subsidiarySelect.options[i];
+                        if (option.value && option.value.trim() !== '') {
+                            selectedSubsidiary = option.value;
+                            console.log(`   No subsidiary selected - using first available: ${selectedSubsidiary}`);
+                            break;
+                        }
+                    }
+                }
+                
+                // Build URL - always use subsidiary parameter to get array format
                 const url = selectedSubsidiary 
                     ? `${serverUrl}/lookups/currencies?subsidiary=${encodeURIComponent(selectedSubsidiary)}`
                     : `${serverUrl}/lookups/currencies`;
