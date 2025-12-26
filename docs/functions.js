@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.0.20';  // BALANCECURRENCY: Fixed Range object extraction for fromPeriod/toPeriod - extract values before convertToMonthYear
+const FUNCTIONS_VERSION = '4.0.0.21';  // BALANCECURRENCY: Fixed convertToMonthYear to handle string Excel date serials from extractValueFromRange
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -2631,6 +2631,22 @@ function convertToMonthYear(value, isFromPeriod = true) {
                 // For fromPeriod, use Jan; for toPeriod, use Dec
                 console.log(`   📅 Year-only string "${value}" → ${isFromPeriod ? 'Jan' : 'Dec'} ${year}`);
                 return isFromPeriod ? `Jan ${year}` : `Dec ${year}`;
+            }
+        }
+        
+        // CRITICAL: Handle string representations of Excel date serials
+        // When extractValueFromRange extracts a date serial from a Range object,
+        // it returns a string like "45658" (not a number)
+        // Excel date serials are typically 5+ digits and > 40000 (dates after ~2009)
+        // We need to detect these and convert them to numbers before processing
+        if (/^\d+$/.test(trimmed)) {
+            const numValue = parseFloat(trimmed);
+            // Excel date serials are typically 5+ digits (dates after ~2009)
+            // Year 2000 = 36526, Year 2025 = ~45658
+            if (numValue >= 1 && numValue <= 1000000 && Number.isFinite(numValue)) {
+                // This looks like an Excel date serial - convert to number and process below
+                console.log(`   📅 Detected Excel date serial string "${trimmed}" → converting to number ${numValue}`);
+                value = numValue;
             }
         }
     }
