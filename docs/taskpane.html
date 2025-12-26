@@ -15271,10 +15271,22 @@ export default {
                     console.log(`   Adding ${currencies.length} currencies to dropdown`);
                     currencies.forEach(currency => {
                         const option = document.createElement('option');
-                        // Use currency name as the value (what gets inserted into sheet)
-                        option.value = currency.name || currency.code || '';
-                        // Display: Currency Name (Symbol) - e.g., "US Dollar ($)"
-                        option.textContent = currency.name ? `${currency.name} (${currency.symbol || currency.code || ''})` : (currency.code || '');
+                        // CRITICAL: NetSuite currency table structure (from backend query):
+                        // Backend query: SELECT id, name, symbol FROM currency WHERE name IN ({currencyCodes})
+                        // - id: NetSuite internal ID (1, 2, 3, etc.) - DO NOT USE
+                        // - name: Currency code (USD, AUD, EUR, etc.) - USE THIS as value
+                        // - symbol: Currency symbol ($, A$, €, etc.) - USE THIS for display
+                        // The backend filters by 'name' where currencyCodes are like 'USD', 'AUD', so 'name' IS the currency code
+                        const currencyCode = currency.name || currency.code || '';
+                        option.value = currencyCode; // This is what gets inserted into Excel (USD, AUD, etc.)
+                        
+                        // Display: Currency Code (Symbol) - e.g., "USD ($)" or "AUD (A$)"
+                        const displayText = currencyCode && currency.symbol
+                            ? `${currencyCode} (${currency.symbol})`
+                            : currencyCode || currency.symbol || '';
+                        option.textContent = displayText;
+                        
+                        console.log(`   Currency option: value="${currencyCode}" (will be inserted), display="${displayText}", backend id=${currency.id || 'N/A'}, name="${currency.name || 'N/A'}", symbol="${currency.symbol || 'N/A'}"`);
                         currencySelect.appendChild(option);
                     });
                 }

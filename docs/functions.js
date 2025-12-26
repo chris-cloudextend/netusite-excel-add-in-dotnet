@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.0.17';  // BALANCECURRENCY: Fixed period range string comparison, currency dropdown names, removed all comments, fixed filter dropdown to show on referenced cells
+const FUNCTIONS_VERSION = '4.0.0.18';  // BALANCECURRENCY: Fixed currency dropdown to use currency code (symbol) instead of ID or name - now inserts USD/AUD instead of 1/3
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
