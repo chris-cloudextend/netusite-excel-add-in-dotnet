@@ -3080,16 +3080,18 @@ For licensing inquiries, contact: legal@celigo.com
             align-items: flex-start;
             gap: 12px;
             padding: 16px 18px;
-            background: linear-gradient(135deg, var(--color-warning-bg) 0%, rgba(244, 190, 96, 0.2) 100%);
-            border: 2px solid var(--color-warning-border);
-            border-left: 5px solid var(--color-warning);
+            /* High contrast for color blind accessibility - light yellow background with dark text */
+            background: #fef3c7;
+            border: 2px solid #f59e0b;
+            border-left: 5px solid #f59e0b;
             border-radius: 10px;
             margin: 16px 0 20px 0;
             font-size: 13px;
             line-height: 1.6;
-            color: var(--color-warning-text);
+            /* Dark brown text for high contrast - readable for color blind users */
+            color: #78350f;
             text-align: left;
-            box-shadow: 0 4px 12px rgba(244, 190, 96, 0.2), 0 0 0 1px rgba(244, 190, 96, 0.1) inset;
+            box-shadow: 0 4px 12px rgba(245, 158, 11, 0.2), 0 0 0 1px rgba(245, 158, 11, 0.1) inset;
             position: relative;
             animation: warningPulse 2s ease-in-out infinite;
         }
@@ -3099,11 +3101,11 @@ For licensing inquiries, contact: legal@celigo.com
             font-size: 24px;
             line-height: 1;
             flex-shrink: 0;
-            filter: drop-shadow(0 2px 4px rgba(244, 190, 96, 0.3));
+            filter: drop-shadow(0 2px 4px rgba(245, 158, 11, 0.3));
         }
         
         .overwrite-warning strong {
-            color: var(--color-warning-text);
+            color: #78350f;
             font-weight: 700;
             font-size: 14px;
             display: block;
@@ -3142,12 +3144,14 @@ For licensing inquiries, contact: legal@celigo.com
             justify-content: center;
             gap: 8px;
             padding: 10px 14px;
-            background: var(--color-info-bg);
-            border: 1px solid var(--color-info-border);
+            /* High contrast - light yellow background with dark text (matches wildcards style) */
+            background: #fef3c7;
+            border: 1px solid #f59e0b;
+            border-left: 3px solid #f59e0b;
             border-radius: 8px;
             margin: 12px 0;
             font-size: 12px;
-            color: var(--color-info-text);
+            color: #92400e;
         }
         
         .busy-notice.small {
@@ -3160,7 +3164,7 @@ For licensing inquiries, contact: legal@celigo.com
         }
         
         .busy-notice strong {
-            color: var(--color-info-text);
+            color: #92400e;
             font-family: 'SF Mono', Monaco, 'Courier New', monospace;
             font-weight: 700;
         }
@@ -5304,7 +5308,14 @@ For licensing inquiries, contact: legal@celigo.com
                         Enter a G/L account number, or we'll show you accounts with Jan 2025 activity.
                     </p>
                     <div class="overwrite-warning">
-                        <span><strong>⚠️ Important:</strong> This tutorial will write to your active sheet and may overwrite existing data. Use a blank sheet if you want to preserve your current work.</span>
+                        <span><strong>Important:</strong> This tutorial will write to your active sheet and may overwrite existing data. Use a blank sheet if you want to preserve your current work.</span>
+                    </div>
+                    <div class="onboarding-multi-step-guide" style="background: linear-gradient(135deg, rgba(59, 130, 246, 0.1) 0%, rgba(37, 99, 235, 0.1) 100%); border-left: 3px solid #3b82f6; padding: 12px; margin: 12px 0; border-radius: 6px;">
+                        <p style="margin: 0; font-size: 12px; color: #1e40af; font-weight: 600; margin-bottom: 8px;">📋 Two-Step Process:</p>
+                        <ol style="margin: 0; padding-left: 20px; font-size: 12px; color: #1e40af; line-height: 1.8;">
+                            <li>Click <strong>"🔍 Find Accounts With Activity"</strong> to see available accounts</li>
+                            <li>Then <strong>select an account</strong> from the list that appears</li>
+                        </ol>
                     </div>
                     <div class="onboarding-input-group">
                         <input type="text" id="onboardingAccountInput" placeholder="e.g., 40110, 51000, 62100" class="onboarding-input" />
