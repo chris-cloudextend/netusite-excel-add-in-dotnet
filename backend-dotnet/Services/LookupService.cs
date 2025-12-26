@@ -576,34 +576,69 @@ public class LookupService : ILookupService
     }
 
     /// <summary>
-    /// Resolve currency code to a valid consolidation root subsidiary.
-    /// Consolidation root must: match currency, be ancestor of filtered subsidiary, not be elimination.
+    /// Resolve currency code to a valid consolidation root subsidiary using ConsolidatedExchangeRate table.
+    /// The ConsolidatedExchangeRate table is the source of truth for what consolidation paths NetSuite actually supports.
+    /// This is more reliable than walking parent chains because:
+    /// - Rates only exist for subsidiary pairs NetSuite has calculated
+    /// - The table includes derived (multi-hop) rates that are pre-calculated
+    /// - Self-referential entries exist (tosubsidiary = fromsubsidiary) for base currency scenarios
+    /// - It automatically excludes invalid paths
     /// </summary>
     public async Task<string?> ResolveCurrencyToConsolidationRootAsync(string currencyCode, string filteredSubsidiaryId)
     {
-        var subsidiaries = await GetSubsidiariesAsync();
-        var ancestors = await GetSubsidiaryAncestorsAsync(filteredSubsidiaryId);
-        
-        // Find subsidiaries with matching currency that are ancestors
-        var validRoots = subsidiaries
-            .Where(s => !string.IsNullOrEmpty(s.Currency) && 
-                       s.Currency.Equals(currencyCode, StringComparison.OrdinalIgnoreCase) &&
-                       ancestors.Contains(s.Id) &&
-                       !s.IsElimination)
-            .OrderBy(s => s.Depth) // Prefer closer ancestors (lower depth = higher in hierarchy)
-            .ToList();
-        
-        if (validRoots.Any())
+        // Resolve filtered subsidiary ID if it's a name
+        var resolvedFilteredId = await ResolveSubsidiaryIdAsync(filteredSubsidiaryId);
+        if (string.IsNullOrEmpty(resolvedFilteredId))
         {
-            var root = validRoots.First();
-            _logger.LogInformation("Resolved currency {Currency} to consolidation root {SubId} ({SubName}) for filtered subsidiary {FilteredSubId}",
-                currencyCode, root.Id, root.Name, filteredSubsidiaryId);
-            return root.Id;
+            resolvedFilteredId = filteredSubsidiaryId;
         }
         
-        _logger.LogWarning("Could not resolve currency {Currency} to valid consolidation root for subsidiary {SubId}",
-            currencyCode, filteredSubsidiaryId);
-        return null;
+        // Query ConsolidatedExchangeRate table to find valid consolidation path
+        // This is the source of truth for what NetSuite actually supports
+        var query = $@"
+            SELECT 
+                cer.tosubsidiary AS consolidationRootId,
+                s.name AS consolidationRootName,
+                c.symbol AS currency,
+                c.id AS currencyId
+            FROM ConsolidatedExchangeRate cer
+            JOIN Subsidiary s ON s.id = cer.tosubsidiary
+            JOIN Currency c ON c.id = s.currency
+            WHERE cer.fromsubsidiary = {NetSuiteService.EscapeSql(resolvedFilteredId)}
+              AND UPPER(c.symbol) = UPPER('{NetSuiteService.EscapeSql(currencyCode)}')
+              AND s.iselimination = 'F'
+            FETCH FIRST 1 ROWS ONLY";
+        
+        try
+        {
+            var result = await _netSuiteService.QueryRawAsync(query);
+            
+            if (result.Any())
+            {
+                var row = result.First();
+                var consolidationRootId = row.TryGetProperty("consolidationRootId", out var rootIdProp) 
+                    ? rootIdProp.GetString() ?? "" : "";
+                var consolidationRootName = row.TryGetProperty("consolidationRootName", out var rootNameProp) 
+                    ? rootNameProp.GetString() ?? "" : "";
+                
+                if (!string.IsNullOrEmpty(consolidationRootId))
+                {
+                    _logger.LogInformation("Resolved currency {Currency} to consolidation root {SubId} ({SubName}) for filtered subsidiary {FilteredSubId} via ConsolidatedExchangeRate",
+                        currencyCode, consolidationRootId, consolidationRootName, resolvedFilteredId);
+                    return consolidationRootId;
+                }
+            }
+            
+            _logger.LogWarning("No valid consolidation path found in ConsolidatedExchangeRate for currency {Currency} from subsidiary {FilteredSubId}",
+                currencyCode, resolvedFilteredId);
+            return null;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error querying ConsolidatedExchangeRate for currency {Currency} and subsidiary {FilteredSubId}",
+                currencyCode, resolvedFilteredId);
+            return null;
+        }
     }
 
     /// <summary>

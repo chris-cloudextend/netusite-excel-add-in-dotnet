@@ -484,10 +484,12 @@ public class BalanceService : IBalanceService
         string consolidationRootId;
         if (!string.IsNullOrEmpty(request.Currency))
         {
+            _logger.LogInformation("BALANCECURRENCY: Resolving currency {Currency} for subsidiary {SubId} (filtered: {FilteredSubId})",
+                request.Currency, request.Subsidiary, filteredSubId);
             var resolvedRoot = await _lookupService.ResolveCurrencyToConsolidationRootAsync(request.Currency, filteredSubId);
             if (resolvedRoot == null)
             {
-                _logger.LogWarning("Could not resolve currency {Currency} to consolidation root for subsidiary {SubId}",
+                _logger.LogWarning("Could not resolve currency {Currency} to consolidation root for subsidiary {SubId}. No valid consolidation path exists in ConsolidatedExchangeRate.",
                     request.Currency, filteredSubId);
                 return new BalanceBetaResponse
                 {
@@ -495,11 +497,14 @@ public class BalanceService : IBalanceService
                     FromPeriod = request.FromPeriod,
                     ToPeriod = toPeriod,
                     Balance = 0,
-                    Error = "INVALIDCURRENCY",
-                    Currency = request.Currency
+                    Error = "INV_SUB_CUR",
+                    Currency = request.Currency,
+                    ConsolidationRoot = null
                 };
             }
             consolidationRootId = resolvedRoot;
+            _logger.LogInformation("BALANCECURRENCY: Using consolidation root {ConsolidationRootId} for currency {Currency} (filtered subsidiary: {FilteredSubId})",
+                consolidationRootId, request.Currency, filteredSubId);
         }
         else
         {
@@ -514,8 +519,19 @@ public class BalanceService : IBalanceService
 
         var accountingBook = request.Book ?? DefaultAccountingBook;
 
-        // Build segment filters - always need TransactionLine join for exact subsidiary match
-        var segmentFilters = new List<string> { $"tl.subsidiary = {filteredSubId}" }; // Exact match, not hierarchy
+        // Build segment filters for subsidiary filtering
+        // CRITICAL: When using BUILTIN.CONSOLIDATE with a currency consolidation root,
+        // we need to filter to the filtered subsidiary's hierarchy (not just exact match)
+        // so that BUILTIN.CONSOLIDATE can properly convert the amounts.
+        // However, we still filter to ensure we only get transactions from the requested subsidiary.
+        var segmentFilters = new List<string>();
+        
+        // For subsidiary filtering: use hierarchy to include child subsidiaries
+        // This ensures BUILTIN.CONSOLIDATE can properly convert amounts
+        var hierarchySubs = await _lookupService.GetSubsidiaryHierarchyAsync(filteredSubId);
+        var subFilter = string.Join(", ", hierarchySubs);
+        segmentFilters.Add($"tl.subsidiary IN ({subFilter})");
+        
         if (!string.IsNullOrEmpty(departmentId))
             segmentFilters.Add($"tl.department = {departmentId}");
         if (!string.IsNullOrEmpty(classId))
@@ -523,6 +539,16 @@ public class BalanceService : IBalanceService
         if (!string.IsNullOrEmpty(locationId))
             segmentFilters.Add($"tl.location = {locationId}");
         var segmentWhere = string.Join(" AND ", segmentFilters);
+
+        // Get target period ID for currency conversion
+        // For Balance Sheet: use target period ID to ensure all amounts convert at same exchange rate
+        // For P&L: can use t.postingperiod (each transaction uses its own period's rate)
+        var targetPeriodId = toPeriodData.Id;
+        if (string.IsNullOrEmpty(targetPeriodId))
+        {
+            _logger.LogWarning("Period {Period} has no ID, falling back to postingperiod for consolidation", toPeriod);
+            targetPeriodId = "t.postingperiod"; // Fallback
+        }
 
         string query;
         int queryTimeout;
@@ -532,6 +558,12 @@ public class BalanceService : IBalanceService
             var signFlip = $"CASE WHEN a.accttype IN ({AccountType.SignFlipTypesSql}) THEN -1 ELSE 1 END";
             queryTimeout = 180;
             
+            // CRITICAL: For Balance Sheet, use TARGET period ID (not t.postingperiod)
+            // This ensures ALL historical transactions convert at the SAME exchange rate
+            // (the target period's rate), which is required for Balance Sheet to balance correctly
+            // 
+            // IMPORTANT: BUILTIN.CONSOLIDATE returns NULL for transactions that cannot be consolidated
+            // to the target subsidiary. We filter out NULLs to only include successfully converted amounts.
             query = $@"
                 SELECT SUM(x.cons_amt) AS balance
                 FROM (
@@ -543,7 +575,7 @@ public class BalanceService : IBalanceService
                                 'DEFAULT',
                                 'DEFAULT',
                                 {consolidationRootId},
-                                t.postingperiod,
+                                {targetPeriodId},
                                 'DEFAULT'
                             )
                         ) * {signFlip} AS cons_amt
@@ -557,6 +589,15 @@ public class BalanceService : IBalanceService
                       AND t.trandate <= TO_DATE('{toEndDate}', 'YYYY-MM-DD')
                       AND tal.accountingbook = {accountingBook}
                       AND {segmentWhere}
+                      AND BUILTIN.CONSOLIDATE(
+                          tal.amount,
+                          'LEDGER',
+                          'DEFAULT',
+                          'DEFAULT',
+                          {consolidationRootId},
+                          {targetPeriodId},
+                          'DEFAULT'
+                      ) IS NOT NULL
                 ) x";
         }
         else
@@ -569,6 +610,11 @@ public class BalanceService : IBalanceService
                 fromStartDate = ConvertToYYYYMMDD(toPeriodData.StartDate ?? toPeriodData.EndDate!);
             }
 
+            // For P&L accounts, using t.postingperiod is acceptable (each period uses its own rate)
+            // But for consistency and to match NetSuite GL reports, we can also use target period
+            // 
+            // IMPORTANT: BUILTIN.CONSOLIDATE returns NULL for transactions that cannot be consolidated
+            // to the target subsidiary. We filter out NULLs to only include successfully converted amounts.
             query = $@"
                 SELECT SUM(x.cons_amt) AS balance
                 FROM (
@@ -580,7 +626,7 @@ public class BalanceService : IBalanceService
                                 'DEFAULT',
                                 'DEFAULT',
                                 {consolidationRootId},
-                                t.postingperiod,
+                                {targetPeriodId},
                                 'DEFAULT'
                             )
                         ) * {signFlip} AS cons_amt
@@ -596,6 +642,15 @@ public class BalanceService : IBalanceService
                       AND ap.enddate <= TO_DATE('{toEndDate}', 'YYYY-MM-DD')
                       AND tal.accountingbook = {accountingBook}
                       AND {segmentWhere}
+                      AND BUILTIN.CONSOLIDATE(
+                          tal.amount,
+                          'LEDGER',
+                          'DEFAULT',
+                          'DEFAULT',
+                          {consolidationRootId},
+                          {targetPeriodId},
+                          'DEFAULT'
+                      ) IS NOT NULL
                 ) x";
         }
 
@@ -616,13 +671,49 @@ public class BalanceService : IBalanceService
         }
 
         decimal balance = 0;
+        bool hasResults = false;
         if (queryResult.Items.Any())
         {
             var row = queryResult.Items.First();
             if (row.TryGetProperty("balance", out var balProp))
             {
+                // Check if balance is null (which means BUILTIN.CONSOLIDATE returned NULL for all rows)
+                if (balProp.ValueKind == System.Text.Json.JsonValueKind.Null)
+                {
+                    _logger.LogWarning("BUILTIN.CONSOLIDATE returned NULL for all transactions. Currency {Currency} cannot be converted from subsidiary {FilteredSubId} to consolidation root {ConsolidationRootId}",
+                        request.Currency, filteredSubId, consolidationRootId);
+                    return new BalanceBetaResponse
+                    {
+                        Account = request.Account,
+                        FromPeriod = request.FromPeriod,
+                        ToPeriod = toPeriod,
+                        Balance = 0,
+                        Error = "INV_SUB_CUR",
+                        Currency = request.Currency,
+                        ConsolidationRoot = consolidationRootId
+                    };
+                }
                 balance = ParseBalance(balProp);
+                hasResults = true;
             }
+        }
+        
+        // If no results and we have a consolidation root, it means BUILTIN.CONSOLIDATE filtered out all transactions
+        // This indicates the currency conversion path is invalid
+        if (!hasResults && !string.IsNullOrEmpty(request.Currency) && !string.IsNullOrEmpty(consolidationRootId))
+        {
+            _logger.LogWarning("No results returned from query with currency {Currency} and consolidation root {ConsolidationRootId}. All transactions were filtered out by BUILTIN.CONSOLIDATE (invalid conversion path).",
+                request.Currency, consolidationRootId);
+            return new BalanceBetaResponse
+            {
+                Account = request.Account,
+                FromPeriod = request.FromPeriod,
+                ToPeriod = toPeriod,
+                Balance = 0,
+                Error = "INV_SUB_CUR",
+                Currency = request.Currency,
+                ConsolidationRoot = consolidationRootId
+            };
         }
 
         var accountName = await _lookupService.GetAccountNameAsync(request.Account);
