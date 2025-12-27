@@ -4346,6 +4346,12 @@ For licensing inquiries, contact: legal@celigo.com
                         <p>LocalStorage: <span id="localStorageStatus">Checking...</span></p>
                         <p style="margin-top: 4px;">Cached accounts: <span id="cachedAccountsCount">-</span></p>
                     </div>
+                    <button class="settings-btn-action" onclick="clearPreloadCache()" style="width: 100%; margin-top: 12px; background: #ef4444; color: white;">
+                        🗑️ Clear All Precached Data
+                    </button>
+                    <p style="font-size: 11px; color: #6b7280; margin-top: 8px; line-height: 1.4;">
+                        Clears all preloaded Balance Sheet data. Formulas will need to reload from NetSuite.
+                    </p>
                 </div>
 
                 <!-- Version Info -->
@@ -5786,7 +5792,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.0.42"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.0.46"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -18348,6 +18354,74 @@ export default {
             }
         }
 
+        // Clear all precached Balance Sheet data
+        async function clearPreloadCache() {
+            try {
+                if (!confirm('Clear all precached Balance Sheet data? This will force all formulas to reload from NetSuite.')) {
+                    return;
+                }
+                
+                console.log('🗑️ Clearing all precached data...');
+                
+                // Clear the preload cache (xavi_balance_cache)
+                try {
+                    localStorage.removeItem('xavi_balance_cache');
+                    console.log('✅ Cleared xavi_balance_cache');
+                } catch (e) {
+                    console.warn('⚠️ Failed to clear xavi_balance_cache:', e);
+                }
+                
+                // Also clear the legacy cache
+                try {
+                    localStorage.removeItem('netsuite_balance_cache');
+                    localStorage.removeItem('netsuite_balance_cache_timestamp');
+                    console.log('✅ Cleared netsuite_balance_cache');
+                } catch (e) {
+                    console.warn('⚠️ Failed to clear netsuite_balance_cache:', e);
+                }
+                
+                // Signal functions.js to clear in-memory cache
+                try {
+                    localStorage.setItem('netsuite_cache_clear_signal', JSON.stringify({
+                        timestamp: Date.now(),
+                        reason: 'user_cleared_preload_cache'
+                    }));
+                    console.log('✅ Sent cache clear signal to functions.js');
+                } catch (e) {
+                    console.warn('⚠️ Failed to send cache clear signal:', e);
+                }
+                
+                // Update cache info display (refresh the cache status section)
+                // The cache info is updated automatically when settings are opened
+                // Force a refresh by triggering the cache status update
+                try {
+                    const localStorageEl = document.getElementById('localStorageStatus');
+                    const accountsEl = document.getElementById('cachedAccountsCount');
+                    if (localStorageEl) localStorageEl.textContent = 'Cleared';
+                    if (accountsEl) accountsEl.textContent = '0';
+                } catch (e) {
+                    // Ignore if elements not found
+                }
+                
+                showToast({
+                    title: '✅ Precached Data Cleared',
+                    message: 'All precached Balance Sheet data has been cleared. Formulas will reload from NetSuite.',
+                    type: 'success',
+                    duration: 5000
+                });
+                
+                console.log('✅ All precached data cleared');
+            } catch (error) {
+                console.error('❌ Error clearing precached data:', error);
+                showToast({
+                    title: 'Error',
+                    message: 'Failed to clear precached data: ' + error.message,
+                    type: 'error',
+                    duration: 5000
+                });
+            }
+        }
+        
         async function clearCache() {
             const statusEl = document.getElementById('refreshStatus');
             const btn = event.target;
@@ -18367,6 +18441,8 @@ export default {
                     localStorage.removeItem('netsuite_preload_status');
                     localStorage.removeItem('netsuite_cache_invalidate');
                     localStorage.removeItem('netsuite_status');
+                    // Also clear preload cache
+                    localStorage.removeItem('xavi_balance_cache');
                 } catch (e) {
                     console.warn('   ⚠️ localStorage clear failed:', e.message);
                 }

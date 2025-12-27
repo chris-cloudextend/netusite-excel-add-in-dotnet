@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.0.42';  // Fix: Ensure new periods included in preload + cache zero balances
+const FUNCTIONS_VERSION = '4.0.0.46';  // Fix: Defensive period normalization + centralized normalization docs
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -396,25 +396,36 @@ let autoPreloadTriggered = false;
 let autoPreloadInProgress = false;
 
 function triggerAutoPreload(firstAccount, firstPeriod) {
-    if (autoPreloadInProgress) {
-        console.log('🔄 Auto-preload already in progress');
+    // CRITICAL: Normalize period before using it (handles Range objects)
+    // This ensures cache keys use canonical "Mon YYYY" format, not "[object Object]"
+    const normalizedPeriod = convertToMonthYear(firstPeriod, false);
+    if (!normalizedPeriod) {
+        console.warn(`⚠️ triggerAutoPreload: Could not normalize period "${firstPeriod}", skipping preload`);
         return;
     }
     
-    // Check if this period is already cached
-    const isPeriodCached = checkIfPeriodIsCached(firstPeriod);
+    // Check if this period is already cached (using normalized period)
+    const isPeriodCached = checkIfPeriodIsCached(normalizedPeriod);
     
     if (isPeriodCached) {
-        console.log(`✅ Period ${firstPeriod} already cached, skipping auto-preload`);
+        console.log(`✅ Period ${normalizedPeriod} already cached, skipping auto-preload`);
         return;
+    }
+    
+    // CRITICAL: Allow preload to trigger for NEW periods even if a previous preload is in progress
+    // This handles the case where user adds new columns (new periods) after initial preload started
+    // We'll let the taskpane handle multiple preload requests by merging periods
+    if (autoPreloadInProgress) {
+        console.log(`🔄 Auto-preload in progress, but ${normalizedPeriod} is new period - triggering additional preload`);
+        // Continue to trigger - taskpane will handle merging periods
     }
     
     // If this is the first time, mark as triggered
     if (!autoPreloadTriggered) {
         autoPreloadTriggered = true;
-        console.log(`🚀 AUTO-PRELOAD: Triggered by first BS formula (${firstAccount}, ${firstPeriod})`);
+        console.log(`🚀 AUTO-PRELOAD: Triggered by first BS formula (${firstAccount}, ${normalizedPeriod})`);
     } else {
-        console.log(`🚀 AUTO-PRELOAD: Triggered for new period (${firstAccount}, ${firstPeriod})`);
+        console.log(`🚀 AUTO-PRELOAD: Triggered for new period (${firstAccount}, ${normalizedPeriod})`);
     }
     
     autoPreloadInProgress = true;
@@ -429,13 +440,14 @@ function triggerAutoPreload(firstAccount, firstPeriod) {
     }
     
     // Send signal to taskpane to trigger auto-preload
+    // CRITICAL: Use normalized period so taskpane can match cache keys correctly
     // Taskpane will scan the sheet and preload all BS accounts
     try {
         localStorage.setItem('netsuite_auto_preload_trigger', JSON.stringify({
             firstAccount: firstAccount,
-            firstPeriod: firstPeriod,
+            firstPeriod: normalizedPeriod,  // Use normalized period, not raw input
             timestamp: Date.now(),
-            reason: autoPreloadTriggered ? `New period detected: ${firstPeriod}` : 'First Balance Sheet formula detected'
+            reason: autoPreloadTriggered ? `New period detected: ${normalizedPeriod}` : 'First Balance Sheet formula detected'
         }));
     } catch (e) {
         console.warn('Could not trigger auto-preload:', e);
@@ -444,16 +456,23 @@ function triggerAutoPreload(firstAccount, firstPeriod) {
 
 /**
  * Check if a period is already cached in the preload cache
+ * CRITICAL: Normalizes period to ensure cache key matching works correctly
  */
 function checkIfPeriodIsCached(period) {
     try {
+        // Normalize period to ensure it matches cache key format
+        // This handles Range objects and various period formats
+        const normalizedPeriod = convertToMonthYear(period, false);
+        if (!normalizedPeriod) return false;
+        
         const preloadCache = localStorage.getItem('xavi_balance_cache');
         if (!preloadCache) return false;
         
         const preloadData = JSON.parse(preloadCache);
         // Check if any account has this period cached
         // We just need to find one account with this period to know it's cached
-        const periodKey = `::${period}`;
+        // Cache keys are in format: balance:${account}::${normalizedPeriod}
+        const periodKey = `::${normalizedPeriod}`;
         for (const key in preloadData) {
             if (key.endsWith(periodKey)) {
                 return true;
@@ -560,6 +579,11 @@ function analyzePendingBSRequests(pendingMap) {
 /**
  * Suggest BS preload after detecting slow queries.
  * This uses a special localStorage key that taskpane always listens to.
+ * 
+ * NOTE: Since auto-preload is now automatic, we suppress suggestions when:
+ * - Auto-preload is in progress
+ * - Auto-preload was recently completed (within last 2 minutes)
+ * - Periods are already cached (preload already happened)
  */
 function suggestBSPreload(periods, queryTimeMs) {
     const now = Date.now();
@@ -570,10 +594,45 @@ function suggestBSPreload(periods, queryTimeMs) {
         return;
     }
     
+    // SUPPRESS if auto-preload is currently in progress
+    if (autoPreloadInProgress || isPreloadInProgress()) {
+        console.log(`🔇 BS preload suggestion suppressed (auto-preload in progress)`);
+        return;
+    }
+    
+    // SUPPRESS if periods are already cached (preload already happened)
+    let allPeriodsCached = true;
+    for (const period of periods) {
+        if (!checkIfPeriodIsCached(period)) {
+            allPeriodsCached = false;
+            break;
+        }
+    }
+    if (allPeriodsCached) {
+        console.log(`🔇 BS preload suggestion suppressed (periods already cached)`);
+        return;
+    }
+    
+    // SUPPRESS if auto-preload was recently completed (within last 2 minutes)
+    try {
+        const preloadStatus = localStorage.getItem(PRELOAD_STATUS_KEY);
+        const preloadTimestamp = localStorage.getItem(PRELOAD_TIMESTAMP_KEY);
+        if (preloadStatus === 'complete' && preloadTimestamp) {
+            const timeSincePreload = now - parseInt(preloadTimestamp);
+            if (timeSincePreload < 120000) { // 2 minutes
+                console.log(`🔇 BS preload suggestion suppressed (auto-preload completed ${(timeSincePreload / 1000).toFixed(0)}s ago)`);
+                return;
+            }
+        }
+    } catch (e) {
+        // Ignore localStorage errors
+    }
+    
     lastBsPreloadSuggestion = now;
     
     // Send suggestion to taskpane via special localStorage key
     // Taskpane will show a persistent toast with action button
+    // NOTE: This should rarely trigger now since auto-preload handles most cases
     try {
         localStorage.setItem('netsuite_bs_preload_suggestion', JSON.stringify({
             periods: periods,
@@ -2919,10 +2978,32 @@ const RETRY_DELAY = 2000;          // Wait 2s before retrying 429 errors
 
 // ============================================================================
 // UTILITY: Convert date or date serial to "Mon YYYY" format
+// 
+// CENTRALIZED PERIOD NORMALIZATION - Single source of truth for period format
+// This function handles:
+// - Range objects (Excel cell references) - extracts value first
+// - Date serials (Excel date numbers)
+// - Date objects
+// - String dates
+// - Year-only format ("2025" → "Jan 2025" or "Dec 2025")
+// - Already normalized strings ("Mon YYYY") - normalizes case
+// 
+// Output format: Always "Mon YYYY" (e.g., "Jan 2025", "Mar 2025")
+// This ensures cache keys are consistent throughout the application.
+// 
+// IMPORTANT: Use this function for ALL period normalization to avoid cache key mismatches.
 // ============================================================================
 function convertToMonthYear(value, isFromPeriod = true) {
     // If empty, return empty string
     if (!value || value === '') return '';
+    
+    // CRITICAL: Handle Range objects (Excel cell references)
+    // Extract the actual value from the Range object before processing
+    if (typeof value === 'object' && value !== null && !(value instanceof Date)) {
+        const extracted = extractValueFromRange(value, 'period');
+        if (extracted === '') return '';
+        value = extracted;
+    }
     
     // If already in "Mon YYYY" format, normalize case and return
     if (typeof value === 'string' && /^[A-Za-z]{3}\s+\d{4}$/.test(value.trim())) {
@@ -3745,6 +3826,18 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         }
         
         // ================================================================
+        // CRITICAL: Normalize periods EARLY (before any cache operations)
+        // This ensures Range objects are converted to strings before being used in cache keys
+        // ================================================================
+        // Convert date values to "Mon YYYY" format (supports both dates and period strings)
+        // For year-only format ("2025"), expand to "Jan 2025" and "Dec 2025"
+        // convertToMonthYear() now handles Range objects internally
+        const rawFrom = fromPeriod;
+        const rawTo = toPeriod;
+        fromPeriod = convertToMonthYear(fromPeriod, true);   // true = isFromPeriod
+        toPeriod = convertToMonthYear(toPeriod, false);      // false = isToPeriod
+        
+        // ================================================================
         // VALIDATION: Detect common formula syntax errors
         // ================================================================
         // Check if toPeriod looks like a subsidiary name (common mistake)
@@ -3761,13 +3854,6 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
             console.error(`   Correct: =XAVI.BALANCE("${account}", fromPeriod, toPeriod, "${rawToPeriod}")`);
             throw new Error('SYNTAX');
         }
-        
-        // Convert date values to "Mon YYYY" format (supports both dates and period strings)
-        // For year-only format ("2025"), expand to "Jan 2025" and "Dec 2025"
-        const rawFrom = fromPeriod;
-        const rawTo = toPeriod;
-        fromPeriod = convertToMonthYear(fromPeriod, true);   // true = isFromPeriod
-        toPeriod = convertToMonthYear(toPeriod, false);      // false = isToPeriod
         
         // Debug log the period conversion
         console.log(`📅 BALANCE periods: ${rawFrom} → "${fromPeriod}", ${rawTo} → "${toPeriod}"`);
@@ -3873,7 +3959,10 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         // ================================================================
         // CHECK FOR CACHE INVALIDATION SIGNAL (from Refresh Selected)
         // ================================================================
-        const lookupPeriod = fromPeriod || toPeriod;
+        // CRITICAL: Normalize lookupPeriod defensively to ensure cache keys are never built from untrusted inputs
+        // Even though fromPeriod and toPeriod are already normalized, we normalize lookupPeriod explicitly
+        // to prevent any edge cases where it might be used before normalization
+        const lookupPeriod = convertToMonthYear(fromPeriod || toPeriod, false);
         const invalidateKey = 'netsuite_cache_invalidate';
         try {
             const invalidateData = localStorage.getItem(invalidateKey);
@@ -3931,6 +4020,7 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
             
             // If this is a BS account and the period is not cached, check if preload is in progress
             // If preload is running, wait for it to complete before making API calls
+            // CRITICAL: Also trigger preload for NEW periods even if preload was already triggered before
             if (!subsidiary && lookupPeriod) {
                 const isPeriodCached = checkIfPeriodIsCached(lookupPeriod);
                 if (!isPeriodCached) {
@@ -3951,9 +4041,15 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                                 cache.balance.set(cacheKey, retryCacheValue);
                                 return retryCacheValue;
                             }
+                            
+                            // CRITICAL: If period still not cached after preload completed,
+                            // it means this is a NEW period that wasn't included in the previous preload
+                            // Trigger a new preload for this period
+                            console.log(`🔄 Period ${lookupPeriod} still not cached after preload - triggering new preload for this period`);
+                            triggerAutoPreload(account, lookupPeriod);
                         }
                     } else {
-                        // No preload in progress - trigger it
+                        // No preload in progress - trigger it (this handles both first-time and new periods)
                         console.log(`🔄 Period ${lookupPeriod} not in cache - triggering auto-preload for this period`);
                         triggerAutoPreload(account, lookupPeriod);
                     }
