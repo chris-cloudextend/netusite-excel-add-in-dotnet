@@ -5792,7 +5792,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.0.48"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.0.49"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -8579,8 +8579,15 @@ For licensing inquiries, contact: legal@celigo.com
                                 const formulas = usedRange.formulas;
                                 const values = usedRange.values;
                                 
-                                // Always include the triggering formula's period
-                                if (trigger.firstPeriod) periods.add(trigger.firstPeriod);
+                                // Always include ALL triggering periods (Issue 2A Fix)
+                                // Add all periods from queued triggers
+                                for (const triggerPeriod of allPeriods) {
+                                    periods.add(triggerPeriod);
+                                }
+                                // Also add firstTrigger period for backward compatibility
+                                if (firstTrigger && firstTrigger.firstPeriod) {
+                                    periods.add(firstTrigger.firstPeriod);
+                                }
                                 
                                 // Scan for XAVI.BALANCE formulas to extract periods
                                 // We're looking for periods, not accounts - we'll preload ALL BS accounts

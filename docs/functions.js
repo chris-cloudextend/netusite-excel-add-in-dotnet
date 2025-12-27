@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.0.48';  // Fix: Issue 1 (zero balances) + Issue 2 (subsequent months precaching)
+const FUNCTIONS_VERSION = '4.0.0.49';  // Fix: ReferenceError - trigger variable not defined in taskpane
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
