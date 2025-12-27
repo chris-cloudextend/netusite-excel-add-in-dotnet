@@ -396,14 +396,28 @@ let autoPreloadTriggered = false;
 let autoPreloadInProgress = false;
 
 function triggerAutoPreload(firstAccount, firstPeriod) {
-    if (autoPreloadTriggered || autoPreloadInProgress) {
-        console.log('🔄 Auto-preload already triggered or in progress');
+    if (autoPreloadInProgress) {
+        console.log('🔄 Auto-preload already in progress');
         return;
     }
-    autoPreloadTriggered = true;
-    autoPreloadInProgress = true;
     
-    console.log(`🚀 AUTO-PRELOAD: Triggered by first BS formula (${firstAccount}, ${firstPeriod})`);
+    // Check if this period is already cached
+    const isPeriodCached = checkIfPeriodIsCached(firstPeriod);
+    
+    if (isPeriodCached) {
+        console.log(`✅ Period ${firstPeriod} already cached, skipping auto-preload`);
+        return;
+    }
+    
+    // If this is the first time, mark as triggered
+    if (!autoPreloadTriggered) {
+        autoPreloadTriggered = true;
+        console.log(`🚀 AUTO-PRELOAD: Triggered by first BS formula (${firstAccount}, ${firstPeriod})`);
+    } else {
+        console.log(`🚀 AUTO-PRELOAD: Triggered for new period (${firstAccount}, ${firstPeriod})`);
+    }
+    
+    autoPreloadInProgress = true;
     
     // Send signal to taskpane to trigger auto-preload
     // Taskpane will scan the sheet and preload all BS accounts
@@ -412,10 +426,34 @@ function triggerAutoPreload(firstAccount, firstPeriod) {
             firstAccount: firstAccount,
             firstPeriod: firstPeriod,
             timestamp: Date.now(),
-            reason: 'First Balance Sheet formula detected'
+            reason: autoPreloadTriggered ? `New period detected: ${firstPeriod}` : 'First Balance Sheet formula detected'
         }));
     } catch (e) {
         console.warn('Could not trigger auto-preload:', e);
+    }
+}
+
+/**
+ * Check if a period is already cached in the preload cache
+ */
+function checkIfPeriodIsCached(period) {
+    try {
+        const preloadCache = localStorage.getItem('xavi_balance_cache');
+        if (!preloadCache) return false;
+        
+        const preloadData = JSON.parse(preloadCache);
+        // Check if any account has this period cached
+        // We just need to find one account with this period to know it's cached
+        const periodKey = `::${period}`;
+        for (const key in preloadData) {
+            if (key.endsWith(periodKey)) {
+                return true;
+            }
+        }
+        return false;
+    } catch (e) {
+        console.warn('Error checking period cache:', e);
+        return false;
     }
 }
 
@@ -3870,6 +3908,17 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
             return localStorageValue;
         } else {
             console.log(`📭 localStorage cache miss: ${account} for ${fromPeriod || '(cumulative)'} → ${toPeriod} (checkLocalStorageCache returned null)`);
+            
+            // If this is a BS account and the period is not cached, trigger auto-preload for this period
+            // This handles cases where user adds a new period (e.g., Apr 2025) after initial preload
+            if (!subsidiary && lookupPeriod) {
+                const isPeriodCached = checkIfPeriodIsCached(lookupPeriod);
+                if (!isPeriodCached) {
+                    console.log(`🔄 Period ${lookupPeriod} not in cache - triggering auto-preload for this period`);
+                    // Trigger auto-preload for this specific period
+                    triggerAutoPreload(account, lookupPeriod);
+                }
+            }
         }
         
         // Check in-memory full year cache (backup for Shared Runtime)
