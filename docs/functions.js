@@ -3633,7 +3633,7 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         
         if (!account) {
             console.error('❌ BALANCE: account parameter is required');
-            return '#MISSING_ACCT#';
+            throw new Error('MISSING_ACCT');
         }
         
         // ================================================================
@@ -3651,7 +3651,7 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
             console.error(`   XAVI.BALANCE expects: (account, fromPeriod, toPeriod, subsidiary, ...)`);
             console.error(`   Your formula likely has subsidiary in the wrong position.`);
             console.error(`   Correct: =XAVI.BALANCE("${account}", fromPeriod, toPeriod, "${rawToPeriod}")`);
-            return "#SYNTAX!";
+            throw new Error('SYNTAX');
         }
         
         // Convert date values to "Mon YYYY" format (supports both dates and period strings)
@@ -3859,10 +3859,8 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
             // Excel will re-evaluate when the cell reference resolves
             if (!toPeriod || toPeriod === '') {
                 console.log(`⏳ BUILD MODE: Skipping ${account} - period not yet resolved`);
-                return new Promise((resolve) => {
-                    // Return a pending value that Excel will retry
-                    setTimeout(() => resolve('#BUSY'), 100);
-                });
+                // Excel will re-evaluate when period resolves - throw error to signal retry needed
+                throw new Error('BUSY');
             }
             
             console.log(`🔨 BUILD MODE: Queuing ${account}/${fromPeriod || '(cumulative)'} → ${toPeriod}`);
@@ -3882,9 +3880,8 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         // For period-range (P&L) requests: both required (toPeriod at minimum)
         if (!toPeriod || toPeriod === '') {
             console.log(`⏳ Skipping ${account} - period not yet resolved, will retry`);
-            return new Promise((resolve) => {
-                setTimeout(() => resolve('#BUSY'), 100);
-            });
+            // Excel will re-evaluate when period resolves - throw error to signal retry needed
+            throw new Error('BUSY');
         }
         
         cacheStats.misses++;
@@ -3944,7 +3941,11 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         
     } catch (error) {
         console.error('BALANCE error:', error);
-        return '#ERROR#';
+        // Re-throw if already an Error, otherwise wrap
+        if (error instanceof Error) {
+            throw error;
+        }
+        throw new Error('ERROR');
     }
 }
 
@@ -4008,7 +4009,7 @@ async function BALANCECURRENCY(account, fromPeriod, toPeriod, subsidiary, curren
             (typeof account === 'string' || typeof account === 'object') &&
             String(account).trim() === '') {
             console.error('❌ BALANCECURRENCY: Account cell reference is empty. Please provide an account number or use "" for wildcard.');
-            return '#EMPTY_CELL: Account cell is empty. Provide account number or use "" for all accounts.';
+            throw new Error('EMPTY_CELL');
         }
         
         // Check toPeriod - this is required and cannot be empty
@@ -4016,7 +4017,7 @@ async function BALANCECURRENCY(account, fromPeriod, toPeriod, subsidiary, curren
             (typeof toPeriod === 'string' || typeof toPeriod === 'object') &&
             String(toPeriod).trim() === '') {
             console.error('❌ BALANCECURRENCY: ToPeriod cell reference is empty. This parameter is required.');
-            return '#EMPTY_CELL: ToPeriod cell is empty. This parameter is required (e.g., "Jan 2025").';
+            throw new Error('EMPTY_CELL');
         }
         
         // Check currency - if provided as cell reference, it should not be empty
@@ -4024,7 +4025,7 @@ async function BALANCECURRENCY(account, fromPeriod, toPeriod, subsidiary, curren
             (typeof currency === 'string' || typeof currency === 'object') &&
             String(currency).trim() === '') {
             console.error('❌ BALANCECURRENCY: Currency cell reference is empty. Use "" to omit currency or provide a currency code.');
-            return '#EMPTY_CELL: Currency cell is empty. Use "" to omit currency, or provide a code like "USD" or "EUR".';
+            throw new Error('EMPTY_CELL');
         }
         
         // Normalize account number
@@ -4032,7 +4033,7 @@ async function BALANCECURRENCY(account, fromPeriod, toPeriod, subsidiary, curren
         
         if (!account) {
             console.error('❌ BALANCECURRENCY: account parameter is required');
-            return '#MISSING_ACCT#';
+            throw new Error('MISSING_ACCT');
         }
         
         // Convert date values to "Mon YYYY" format (supports both dates and period strings)
@@ -4058,7 +4059,7 @@ async function BALANCECURRENCY(account, fromPeriod, toPeriod, subsidiary, curren
         
         if (!toPeriod) {
             console.error('❌ BALANCECURRENCY: toPeriod is required');
-            return '#MISSING_PERIOD#';
+            throw new Error('MISSING_PERIOD');
         }
         
         // Balance Sheet detection: If fromPeriod is empty/null, treat as cumulative (BS account)
@@ -4117,7 +4118,7 @@ async function BALANCECURRENCY(account, fromPeriod, toPeriod, subsidiary, curren
             if (typeof originalCurrency === 'object' && originalCurrency !== null) {
                 console.error('   Currency object structure:', JSON.stringify(originalCurrency, null, 2));
             }
-            return '#EMPTY_CURRENCY: Currency cell reference is empty or invalid. Provide a currency code (e.g., "USD", "EUR") or use "" to omit currency.';
+            throw new Error('EMPTY_CURRENCY');
         }
         
         // Log final currency value
@@ -4214,9 +4215,7 @@ async function BALANCECURRENCY(account, fromPeriod, toPeriod, subsidiary, curren
             // Skip requests where toPeriod is empty (cell reference not resolved yet)
             if (!toPeriod || toPeriod === '') {
                 console.log(`⏳ BUILD MODE: Skipping ${account} - period not yet resolved (BALANCECURRENCY)`);
-                return new Promise((resolve) => {
-                    setTimeout(() => resolve('#BUSY'), 100);
-                });
+                throw new Error('BUSY');
             }
             
             console.log(`🔨 BUILD MODE: Queuing ${account}/${fromPeriod || '(cumulative)'} → ${toPeriod} (BALANCECURRENCY)`);
@@ -4232,9 +4231,7 @@ async function BALANCECURRENCY(account, fromPeriod, toPeriod, subsidiary, curren
         // For period-range (P&L) requests: both required (toPeriod at minimum)
         if (!toPeriod || toPeriod === '') {
             console.log(`⏳ Skipping ${account} - period not yet resolved, will retry (BALANCECURRENCY)`);
-            return new Promise((resolve) => {
-                setTimeout(() => resolve('#BUSY'), 100);
-            });
+            throw new Error('BUSY');
         }
         
         cacheStats.misses++;
@@ -4280,7 +4277,11 @@ async function BALANCECURRENCY(account, fromPeriod, toPeriod, subsidiary, curren
         
     } catch (error) {
         console.error('BALANCECURRENCY error:', error);
-        return '#ERROR#';
+        // Re-throw if already an Error, otherwise wrap
+        if (error instanceof Error) {
+            throw error;
+        }
+        throw new Error('ERROR');
     }
 }
 
@@ -4313,7 +4314,7 @@ async function BALANCECHANGE(account, fromPeriod, toPeriod, subsidiary, departme
         
         if (!account) {
             console.error('❌ BALANCECHANGE: account parameter is required');
-            return '#MISSING_ACCT#';
+            throw new Error('MISSING_ACCT');
         }
         
         // Convert date values to "Mon YYYY" format
@@ -4322,7 +4323,7 @@ async function BALANCECHANGE(account, fromPeriod, toPeriod, subsidiary, departme
         
         if (!fromPeriod || !toPeriod) {
             console.error('❌ BALANCECHANGE: both fromPeriod and toPeriod are required');
-            return '#MISSING_PERIOD#';
+            throw new Error('MISSING_PERIOD');
         }
         
         console.log(`📊 BALANCECHANGE: ${account} from ${fromPeriod} to ${toPeriod}`);
@@ -4373,7 +4374,7 @@ async function BALANCECHANGE(account, fromPeriod, toPeriod, subsidiary, departme
                              response.status >= 500 ? 'SERVERR' :
                              'APIERR';
             console.error(`❌ BALANCECHANGE API error: ${response.status} → ${errorCode}`);
-            return errorCode;
+            throw new Error(errorCode);
         }
         
         const data = await response.json();
@@ -4381,9 +4382,7 @@ async function BALANCECHANGE(account, fromPeriod, toPeriod, subsidiary, departme
         // Check for error in response
         if (data.error) {
             console.log(`⚠️ BALANCECHANGE: ${account} = ${data.error}`);
-            // Cache the error too (for consistency)
-            cache.balance.set(cacheKey, data.error);
-            return data.error;
+            throw new Error(data.error);
         }
         
         // Get the change value
@@ -4398,7 +4397,11 @@ async function BALANCECHANGE(account, fromPeriod, toPeriod, subsidiary, departme
         
     } catch (error) {
         console.error('BALANCECHANGE error:', error);
-        return 'NETFAIL';
+        // Re-throw if already an Error, otherwise wrap
+        if (error instanceof Error) {
+            throw error;
+        }
+        throw new Error('NETFAIL');
     }
 }
 
@@ -4426,7 +4429,7 @@ async function BUDGET(account, fromPeriod, toPeriod, subsidiary, department, loc
         
         if (!account) {
             console.error('❌ BUDGET: account parameter is required');
-            return '#MISSING_ACCT#';
+            throw new Error('MISSING_ACCT');
         }
         
         // Convert date values to "Mon YYYY" format (supports both dates and period strings)
@@ -4493,9 +4496,9 @@ async function BUDGET(account, fromPeriod, toPeriod, subsidiary, department, loc
                 const errorText = await response.text();
                 console.error(`Budget API error: ${response.status}`, errorText);
                 if (response.status === 524 || response.status === 522 || response.status === 504) {
-                    return '#TIMEOUT#';
+                    throw new Error('TIMEOUT');
                 }
-                return '#API_ERR#';
+                throw new Error('API_ERR');
             }
             
             const text = await response.text();
@@ -4510,14 +4513,22 @@ async function BUDGET(account, fromPeriod, toPeriod, subsidiary, department, loc
         } catch (error) {
             console.error('Budget fetch error:', error);
             if (error.name === 'TypeError' && error.message.includes('fetch')) {
-                return '#OFFLINE#';
+                throw new Error('OFFLINE');
             }
-            return '#ERROR#';
+            // Re-throw if already an Error, otherwise wrap
+            if (error instanceof Error) {
+                throw error;
+            }
+            throw new Error('ERROR');
         }
         
     } catch (error) {
         console.error('BUDGET error:', error);
-        return '#ERROR#';
+        // Re-throw if already an Error, otherwise wrap
+        if (error instanceof Error) {
+            throw error;
+        }
+        throw new Error('ERROR');
     }
 }
 
@@ -5793,7 +5804,7 @@ async function RETAINEDEARNINGS(period, subsidiary, accountingBook, classId, dep
         
         if (!period) {
             console.error('❌ RETAINEDEARNINGS: period is required');
-            return '#MISSING_PERIOD#';
+            throw new Error('MISSING_PERIOD');
         }
         
         console.log(`📊 RETAINEDEARNINGS: Calculating as of ${period}`);
@@ -5834,7 +5845,7 @@ async function RETAINEDEARNINGS(period, subsidiary, accountingBook, classId, dep
         } catch (lockError) {
             if (lockError.message === 'QUEUE_CLEARED') {
                 console.log(`🚫 RETAINEDEARNINGS ${period}: Queue cleared, formula will re-evaluate`);
-                return '#BUSY!';
+                throw new Error('BUSY');
             }
             throw lockError;
         }
@@ -5879,11 +5890,11 @@ async function RETAINEDEARNINGS(period, subsidiary, accountingBook, classId, dep
                         updateBroadcastToast(toastId, 'Retained Earnings Failed', `Error: ${response.status}`, 'error');
                         setTimeout(() => removeBroadcastToast(toastId), 5000);
                     }
-                    // Return #ERROR# for non-timeout errors, #TIMEOUT# for timeouts
+                    // Throw errors for non-timeout errors, #TIMEOUT# for timeouts
                     if (response.status === 524 || response.status === 522 || response.status === 504) {
-                        return '#TIMEOUT#';
+                        throw new Error('TIMEOUT');
                     }
-                    return '#ERROR#';
+                    throw new Error('ERROR');
                 }
                 
                 const data = await response.json();
@@ -5896,7 +5907,7 @@ async function RETAINEDEARNINGS(period, subsidiary, accountingBook, classId, dep
                         updateBroadcastToast(toastId, 'Retained Earnings Error', 'API returned empty value', 'error');
                         setTimeout(() => removeBroadcastToast(toastId), 5000);
                     }
-                    return '#NODATA#';
+                    throw new Error('NODATA');
                 }
                 
                 const value = parseFloat(data.value);
@@ -5906,7 +5917,7 @@ async function RETAINEDEARNINGS(period, subsidiary, accountingBook, classId, dep
                         updateBroadcastToast(toastId, 'Retained Earnings Error', `Invalid value: ${data.value}`, 'error');
                         setTimeout(() => removeBroadcastToast(toastId), 5000);
                     }
-                    return '#ERROR#';
+                    throw new Error('ERROR');
                 }
                 
                 // Cache the result (only valid numbers)
@@ -5933,9 +5944,13 @@ async function RETAINEDEARNINGS(period, subsidiary, accountingBook, classId, dep
                 // Distinguish between network errors and server errors
                 if (error.name === 'TypeError' && error.message.includes('fetch')) {
                     console.error('❌ SERVER OFFLINE - Cannot connect to backend');
-                    return '#OFFLINE#';
+                    throw new Error('OFFLINE');
                 }
-                return '#ERROR#';
+                // Re-throw if already an Error, otherwise wrap
+                if (error instanceof Error) {
+                    throw error;
+                }
+                throw new Error('ERROR');
             } finally {
                 // Remove from in-flight after completion
                 inFlightRequests.delete(cacheKey);
@@ -5951,7 +5966,11 @@ async function RETAINEDEARNINGS(period, subsidiary, accountingBook, classId, dep
         
     } catch (error) {
         console.error('RETAINEDEARNINGS error:', error);
-        return '#ERROR#';
+        // Re-throw if already an Error, otherwise wrap
+        if (error instanceof Error) {
+            throw error;
+        }
+        throw new Error('ERROR');
     }
 }
 
@@ -5994,7 +6013,7 @@ async function NETINCOME(fromPeriod, toPeriod, subsidiary, accountingBook, class
         // Validate fromPeriod is provided
         if (fromPeriod === undefined || fromPeriod === null || fromPeriod === '') {
             console.error('❌ NETINCOME: fromPeriod is required');
-            return '#MISSING_PERIOD#';
+            throw new Error('MISSING_PERIOD');
         }
         
         // Convert fromPeriod - for year-only, use Jan (start of year)
@@ -6021,12 +6040,12 @@ async function NETINCOME(fromPeriod, toPeriod, subsidiary, accountingBook, class
         
         if (!convertedFromPeriod) {
             console.error('❌ NETINCOME: Could not parse fromPeriod:', rawFromPeriod);
-            return '#INVALID_PERIOD#';
+            throw new Error('INVALID_PERIOD');
         }
         
         if (!convertedToPeriod) {
             console.error('❌ NETINCOME: Could not parse toPeriod:', rawToPeriod);
-            return '#INVALID_PERIOD#';
+            throw new Error('INVALID_PERIOD');
         }
         
         // Normalize optional parameters - NO guessing, just clean strings
@@ -6069,7 +6088,7 @@ async function NETINCOME(fromPeriod, toPeriod, subsidiary, accountingBook, class
         } catch (lockError) {
             if (lockError.message === 'QUEUE_CLEARED') {
                 console.log(`🚫 NETINCOME ${rangeDesc}: Queue cleared, formula will re-evaluate`);
-                return '#BUSY!';
+                throw new Error('BUSY');
             }
             throw lockError;
         }
@@ -6112,11 +6131,11 @@ async function NETINCOME(fromPeriod, toPeriod, subsidiary, accountingBook, class
                         updateBroadcastToast(toastId, 'Net Income Failed', `Error: ${response.status}`, 'error');
                         setTimeout(() => removeBroadcastToast(toastId), 5000);
                     }
-                    // Return #ERROR# for non-timeout errors, #TIMEOUT# for timeouts
+                    // Throw errors for non-timeout errors, #TIMEOUT# for timeouts
                     if (response.status === 524 || response.status === 522 || response.status === 504) {
-                        return '#TIMEOUT#';
+                        throw new Error('TIMEOUT');
                     }
-                    return '#ERROR#';
+                    throw new Error('ERROR');
                 }
                 
                 const data = await response.json();
@@ -6129,7 +6148,7 @@ async function NETINCOME(fromPeriod, toPeriod, subsidiary, accountingBook, class
                         updateBroadcastToast(toastId, 'Net Income Error', 'API returned empty value', 'error');
                         setTimeout(() => removeBroadcastToast(toastId), 5000);
                     }
-                    return '#NODATA#';
+                    throw new Error('NODATA');
                 }
                 
                 const value = parseFloat(data.value);
@@ -6139,7 +6158,7 @@ async function NETINCOME(fromPeriod, toPeriod, subsidiary, accountingBook, class
                         updateBroadcastToast(toastId, 'Net Income Error', `Invalid value: ${data.value}`, 'error');
                         setTimeout(() => removeBroadcastToast(toastId), 5000);
                     }
-                    return '#ERROR#';
+                    throw new Error('ERROR');
                 }
                 
                 // Cache the result (only valid numbers)
@@ -6166,9 +6185,13 @@ async function NETINCOME(fromPeriod, toPeriod, subsidiary, accountingBook, class
                 // Distinguish between network errors and server errors
                 if (error.name === 'TypeError' && error.message.includes('fetch')) {
                     console.error('❌ SERVER OFFLINE - Cannot connect to backend');
-                    return '#OFFLINE#';
+                    throw new Error('OFFLINE');
                 }
-                return '#ERROR#';
+                // Re-throw if already an Error, otherwise wrap
+                if (error instanceof Error) {
+                    throw error;
+                }
+                throw new Error('ERROR');
             } finally {
                 inFlightRequests.delete(cacheKey);
                 // CRITICAL: Release the semaphore lock to allow next formula to run
@@ -6181,7 +6204,11 @@ async function NETINCOME(fromPeriod, toPeriod, subsidiary, accountingBook, class
         
     } catch (error) {
         console.error('NETINCOME error:', error);
-        return '#ERROR#';
+        // Re-throw if already an Error, otherwise wrap
+        if (error instanceof Error) {
+            throw error;
+        }
+        throw new Error('ERROR');
     }
 }
 
@@ -6264,7 +6291,7 @@ async function TYPEBALANCE(accountType, fromPeriod, toPeriod, subsidiary, depart
         const normalizedType = String(accountType || '').trim();
         if (!normalizedType) {
             console.error('❌ TYPEBALANCE: accountType is required');
-            return '#MISSING_TYPE#';
+            throw new Error('MISSING_TYPE');
         }
         
         // Check if using special account type (sspecacct) - parameter is 1 or "1" or true
@@ -6302,7 +6329,7 @@ async function TYPEBALANCE(accountType, fromPeriod, toPeriod, subsidiary, depart
             // Using regular account type - strict validation
             if (!ALL_TYPES.includes(normalizedType)) {
                 console.error(`❌ TYPEBALANCE: Invalid account type "${normalizedType}". Valid types: ${ALL_TYPES.join(', ')}`);
-                return '#INVALID_TYPE#';
+                throw new Error('INVALID_TYPE');
             }
         }
         
@@ -6315,7 +6342,7 @@ async function TYPEBALANCE(accountType, fromPeriod, toPeriod, subsidiary, depart
         let convertedToPeriod = convertToMonthYear(toPeriod, false); // false = use Dec for year-only
         if (!convertedToPeriod) {
             console.error('❌ TYPEBALANCE: toPeriod is required');
-            return '#MISSING_PERIOD#';
+            throw new Error('MISSING_PERIOD');
         }
         
         let convertedFromPeriod = '';
@@ -6328,7 +6355,7 @@ async function TYPEBALANCE(accountType, fromPeriod, toPeriod, subsidiary, depart
             convertedFromPeriod = convertToMonthYear(fromPeriod, true); // true = use Jan for year-only
             if (!convertedFromPeriod) {
                 console.error('❌ TYPEBALANCE: fromPeriod is required for P&L account types');
-                return '#MISSING_PERIOD#';
+                throw new Error('MISSING_PERIOD');
             }
             const modeLabel = useSpecial ? 'special account' : 'account';
             console.log(`📊 TYPEBALANCE: P&L ${modeLabel} type "${normalizedType}" - range ${convertedFromPeriod} → ${convertedToPeriod}`);
@@ -6421,9 +6448,9 @@ async function TYPEBALANCE(accountType, fromPeriod, toPeriod, subsidiary, depart
                     releaseSpecialFormulaLock(cacheKey);
                     inFlightRequests.delete(cacheKey);  // MUST delete or future calls hang forever
                     if (response.status === 524 || response.status === 522 || response.status === 504) {
-                        return '#TIMEOUT#';
+                        throw new Error('TIMEOUT');
                     }
-                    return '#API_ERR#';
+                    throw new Error('API_ERR');
                 }
                 
                 const data = await response.json();
@@ -6447,9 +6474,13 @@ async function TYPEBALANCE(accountType, fromPeriod, toPeriod, subsidiary, depart
                 releaseSpecialFormulaLock(cacheKey);
                 inFlightRequests.delete(cacheKey);
                 if (error.name === 'TypeError' && error.message.includes('fetch')) {
-                    return '#OFFLINE#';
+                    throw new Error('OFFLINE');
                 }
-                return '#ERROR#';
+                // Re-throw if already an Error, otherwise wrap
+                if (error instanceof Error) {
+                    throw error;
+                }
+                throw new Error('ERROR');
             }
         })();
         
@@ -6458,7 +6489,11 @@ async function TYPEBALANCE(accountType, fromPeriod, toPeriod, subsidiary, depart
         
     } catch (error) {
         console.error('TYPEBALANCE error:', error);
-        return '#ERROR#';
+        // Re-throw if already an Error, otherwise wrap
+        if (error instanceof Error) {
+            throw error;
+        }
+        throw new Error('ERROR');
     }
 }
 
@@ -6485,7 +6520,7 @@ async function CTA(period, subsidiary, accountingBook) {
         
         if (!period) {
             console.error('❌ CTA: period is required');
-            return '#MISSING_PERIOD#';
+            throw new Error('MISSING_PERIOD');
         }
         
         console.log(`📊 CTA: Calculating as of ${period}`);
@@ -6522,7 +6557,7 @@ async function CTA(period, subsidiary, accountingBook) {
         } catch (lockError) {
             if (lockError.message === 'QUEUE_CLEARED') {
                 console.log(`🚫 CTA ${period}: Queue cleared, formula will re-evaluate`);
-                return '#BUSY!';
+                throw new Error('BUSY');
             }
             throw lockError;
         }
@@ -6579,13 +6614,13 @@ async function CTA(period, subsidiary, accountingBook) {
                         console.warn(`CTA timeout (${response.status}), attempt ${attempt}/${maxRetries}`);
                         lastError = `Timeout (${response.status})`;
                         if (attempt < maxRetries) continue; // Retry
-                        // All retries exhausted - return #TIMEOUT#
+                        // All retries exhausted - throw TIMEOUT error
                         if (toastId) {
                             updateBroadcastToast(toastId, 'CTA Timed Out', 
                                 `Tunnel timeout after ${maxRetries} attempts. Cell shows #TIMEOUT#. Refresh single cell to retry, or delete formula for SUM to work.`, 'error');
                             setTimeout(() => removeBroadcastToast(toastId), 8000);
                         }
-                        return '#TIMEOUT#';
+                        throw new Error('TIMEOUT');
                     }
                     
                     if (!response.ok) {
@@ -6595,7 +6630,7 @@ async function CTA(period, subsidiary, accountingBook) {
                             updateBroadcastToast(toastId, 'CTA Failed', `Error: ${response.status}`, 'error');
                             setTimeout(() => removeBroadcastToast(toastId), 5000);
                         }
-                        return '#ERROR#';
+                        throw new Error('ERROR');
                     }
                     
                     const data = await response.json();
@@ -6608,7 +6643,7 @@ async function CTA(period, subsidiary, accountingBook) {
                             updateBroadcastToast(toastId, 'CTA Error', 'API returned empty value', 'error');
                             setTimeout(() => removeBroadcastToast(toastId), 5000);
                         }
-                        return '#NODATA#';
+                        throw new Error('NODATA');
                     }
                     
                     const value = parseFloat(data.value);
@@ -6618,7 +6653,7 @@ async function CTA(period, subsidiary, accountingBook) {
                             updateBroadcastToast(toastId, 'CTA Error', `Invalid value: ${data.value}`, 'error');
                             setTimeout(() => removeBroadcastToast(toastId), 5000);
                         }
-                        return '#ERROR#';
+                        throw new Error('ERROR');
                     }
                     
                     // Log component breakdown for debugging
@@ -6660,7 +6695,7 @@ async function CTA(period, subsidiary, accountingBook) {
                                 'Cannot connect to NetSuite backend. Please try again later.', 'error');
                             setTimeout(() => removeBroadcastToast(toastId), 5000);
                         }
-                        return '#OFFLINE#';
+                        throw new Error('OFFLINE');
                     }
                     
                     if (attempt >= maxRetries) {
@@ -6669,7 +6704,7 @@ async function CTA(period, subsidiary, accountingBook) {
                                 `Failed after ${maxRetries} attempts. Cell shows #TIMEOUT#.`, 'error');
                             setTimeout(() => removeBroadcastToast(toastId), 5000);
                         }
-                        return '#TIMEOUT#';
+                        throw new Error('TIMEOUT');
                     }
                     // Continue to next retry
                 }
@@ -6682,7 +6717,7 @@ async function CTA(period, subsidiary, accountingBook) {
                     `Timeout after ${maxRetries} attempts. Cell shows #TIMEOUT#.`, 'error');
                 setTimeout(() => removeBroadcastToast(toastId), 5000);
             }
-            return '#TIMEOUT#';
+            throw new Error('TIMEOUT');
         })().finally(() => {
             inFlightRequests.delete(cacheKey);
             // CRITICAL: Release the semaphore lock to allow next formula to run
@@ -6694,7 +6729,11 @@ async function CTA(period, subsidiary, accountingBook) {
         
     } catch (error) {
         console.error('CTA error:', error);
-        return '#ERROR#';
+        // Re-throw if already an Error, otherwise wrap
+        if (error instanceof Error) {
+            throw error;
+        }
+        throw new Error('ERROR');
     }
 }
 
