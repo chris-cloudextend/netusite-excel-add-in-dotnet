@@ -1,0 +1,14 @@
+{
+  "type": "https://tools.ietf.org/html/rfc9110#section-15.5.1",
+  "title": "One or more validation errors occurred.",
+  "status": 400,
+  "errors": {
+    "request": [
+      "The request field is required."
+    ],
+    "$.q": [
+      "'0x0A' is invalid within a JSON string. The string should be correctly escaped. Path: $.q | LineNumber: 0 | BytePositionInLine: 14."
+    ]
+  },
+  "traceId": "00-04872e011a64a1371b2a9dc5ea620cec-f33284c7854e5d41-00"
+}
