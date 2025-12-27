@@ -2543,9 +2543,20 @@ function checkLocalStorageCache(account, period, toPeriod = null, subsidiary = '
                 if (preloadData[preloadKey] && preloadData[preloadKey].value !== undefined) {
                     console.log(`✅ Preload cache hit (xavi_balance_cache): ${account} for ${lookupPeriod}`);
                     return preloadData[preloadKey].value;
+                } else {
+                    // Debug: Log what keys are available (first 5) to help diagnose mismatches
+                    const availableKeys = Object.keys(preloadData).filter(k => k.startsWith(`balance:${account}::`));
+                    if (availableKeys.length > 0) {
+                        console.log(`🔍 Preload cache: Found ${availableKeys.length} keys for account ${account}, but not for period "${lookupPeriod}". Available periods: ${availableKeys.slice(0, 3).map(k => k.split('::')[1]).join(', ')}`);
+                    } else {
+                        console.log(`🔍 Preload cache: No keys found for account ${account} (looking for: ${preloadKey})`);
+                    }
                 }
+            } else {
+                console.log(`🔍 Preload cache: xavi_balance_cache not found in localStorage`);
             }
         } catch (preloadErr) {
+            console.warn(`⚠️ Preload cache lookup error:`, preloadErr);
             // Ignore preload cache errors, fall through to legacy cache
         }
         
@@ -3848,10 +3859,13 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         // So we skip it when subsidiary is specified to avoid returning wrong values
         const localStorageValue = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary);
         if (localStorageValue !== null) {
+            console.log(`✅ localStorage cache hit: ${account} for ${fromPeriod || '(cumulative)'} → ${toPeriod}`);
             cacheStats.hits++;
             // Also save to in-memory cache for next time
             cache.balance.set(cacheKey, localStorageValue);
             return localStorageValue;
+        } else {
+            console.log(`📭 localStorage cache miss: ${account} for ${fromPeriod || '(cumulative)'} → ${toPeriod} (checkLocalStorageCache returned null)`);
         }
         
         // Check in-memory full year cache (backup for Shared Runtime)
