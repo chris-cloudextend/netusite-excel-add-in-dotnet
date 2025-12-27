@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.0.51';  // Add: Enhanced logging for zero balance accounts and preload verification
+const FUNCTIONS_VERSION = '4.0.0.52';  // Fix: Loading screen timeout handling and improved UI text
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================

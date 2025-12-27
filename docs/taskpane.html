@@ -5792,7 +5792,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.0.51"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.0.52"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -8709,27 +8709,49 @@ For licensing inquiries, contact: legal@celigo.com
                             
                             console.log(`📋 Final periods to preload: ${formulaData.periods.join(', ')}`);
                             
+                            // Format periods for display
+                            const periodsText = formulaData.periods.length === 1 
+                                ? formulaData.periods[0] 
+                                : formulaData.periods.join(', ');
+                            
                             updateLoading(
-                                `⚡ Preloading ALL Balance Sheet Accounts`,
+                                `⚡ Getting balances since the beginning of time for ${periodsText}`,
                                 40,
-                                `Loading all BS accounts for ${formulaData.periods.length} period(s). This makes all formulas instant!`
+                                `This can take some time for each period but future formulas for the same period will be instant.`
                             );
                             
                             // Preload ALL BS accounts for the identified periods
                             // Using /batch/bs_preload (not targeted) - it loads ALL BS accounts, not just specific ones
                             // This is just as fast as loading one account, and caches everything for instant subsequent lookups
-                            const preloadResponse = await fetch(`${getServerUrl()}/batch/bs_preload`, {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({
-                                    periods: formulaData.periods,
-                                    subsidiary: '',  // Will use default/current subsidiary
-                                    department: '',
-                                    location: '',
-                                    class: '',
-                                    accountingBook: ''
-                                })
-                            });
+                            // CRITICAL: Add timeout to prevent loading screen from persisting on Cloudflare 524 errors
+                            // Set timeout to 120 seconds (2 minutes) - longer than typical query but prevents infinite wait
+                            const controller = new AbortController();
+                            const timeoutId = setTimeout(() => controller.abort(), 120000); // 120 seconds
+                            
+                            let preloadResponse;
+                            try {
+                                preloadResponse = await fetch(`${getServerUrl()}/batch/bs_preload`, {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({
+                                        periods: formulaData.periods,
+                                        subsidiary: '',  // Will use default/current subsidiary
+                                        department: '',
+                                        location: '',
+                                        class: '',
+                                        accountingBook: ''
+                                    }),
+                                    signal: controller.signal
+                                });
+                            } catch (fetchError) {
+                                clearTimeout(timeoutId);
+                                if (fetchError.name === 'AbortError') {
+                                    console.warn('⚠️ Preload request timed out after 120 seconds');
+                                    throw new Error('Preload request timed out. Formulas may still work from cache or individual API calls.');
+                                }
+                                throw fetchError;
+                            }
+                            clearTimeout(timeoutId);
                             
                             if (preloadResponse.ok) {
                                 const result = await preloadResponse.json();
@@ -8803,17 +8825,38 @@ For licensing inquiries, contact: legal@celigo.com
                                 console.log(`✅ AUTO-PRELOAD COMPLETE: ${accountCount} BS accounts × ${formulaData.periods.length} period(s) in ${result.elapsed_seconds?.toFixed(1)}s`);
                             } else {
                                 const errorText = await preloadResponse.text();
-                                throw new Error(`Preload failed: ${preloadResponse.status} - ${errorText}`);
+                                // Handle Cloudflare 524 timeout errors gracefully
+                                if (preloadResponse.status === 524) {
+                                    console.warn('⚠️ Preload request timed out (524). Formulas may still work from cache.');
+                                    // Don't throw - just log and continue. Formulas can still work from cache or individual calls.
+                                    hideLoading();
+                                    showToast({
+                                        title: 'Preload Timeout',
+                                        message: 'Preload timed out, but your formulas may still work. They will load individually if needed.',
+                                        type: 'warning',
+                                        duration: 5000
+                                    });
+                                    // Mark preload as complete so formulas don't wait forever
+                                    if (window.markAutoPreloadComplete) window.markAutoPreloadComplete();
+                                    return; // Exit early - don't throw error
+                                }
+                                throw new Error(`Preload failed: ${preloadResponse.status} - ${errorText.substring(0, 200)}`);
                             }
                             
                         } catch (error) {
                             console.error('❌ Auto-preload error:', error);
                             hideLoading();
+                            
+                            // Check if it's a timeout error
+                            const isTimeout = error.message.includes('timeout') || error.message.includes('524') || error.name === 'AbortError';
+                            
                             showToast({
-                                title: 'Auto-Preload Issue',
-                                message: 'Could not auto-preload. Use Smart Preload manually for faster results.',
+                                title: isTimeout ? 'Preload Timeout' : 'Auto-Preload Issue',
+                                message: isTimeout 
+                                    ? 'Preload timed out, but your formulas may still work. They will load individually if needed.'
+                                    : 'Could not auto-preload. Use Smart Preload manually for faster results.',
                                 type: 'warning',
-                                duration: 8000
+                                duration: isTimeout ? 5000 : 8000
                             });
                             // CRITICAL: Mark preload as complete even on error to prevent formulas from waiting forever
                             if (window.markAutoPreloadComplete) window.markAutoPreloadComplete();
