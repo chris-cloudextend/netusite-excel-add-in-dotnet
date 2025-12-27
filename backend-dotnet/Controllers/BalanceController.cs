@@ -819,27 +819,35 @@ public class BalanceController : ControllerBase
                 // - COALESCE returns 0 for accounts with no transactions (not NULL)
                 // - Filter inactive accounts
                 // - Accounting book filter handles NULL (accounts with no transactions)
+                // Issue 1 Fix: Make SUM conditional on segment match and move accounting book filter to JOIN
+                // This ensures:
+                // 1. Segment filters are properly applied (only sum when tl.id IS NOT NULL)
+                // 2. Zero balance accounts are returned (accounts with no matching transactions)
+                // 3. Accounting book filter doesn't collapse LEFT JOIN unexpectedly
                 var query = $@"
                     SELECT 
                         a.acctnumber,
                         a.accountsearchdisplaynamecopy AS account_name,
                         a.accttype,
                         COALESCE(SUM(
-                            TO_NUMBER(
-                                BUILTIN.CONSOLIDATE(
-                                    tal.amount,
-                                    'LEDGER',
-                                    'DEFAULT',
-                                    'DEFAULT',
-                                    {targetSub},
-                                    {periodId},
-                                    'DEFAULT'
-                                )
-                            ) * CASE WHEN a.accttype IN ({signFlipSql}) THEN -1 ELSE 1 END
+                            CASE WHEN tl.id IS NOT NULL THEN
+                                TO_NUMBER(
+                                    BUILTIN.CONSOLIDATE(
+                                        tal.amount,
+                                        'LEDGER',
+                                        'DEFAULT',
+                                        'DEFAULT',
+                                        {targetSub},
+                                        {periodId},
+                                        'DEFAULT'
+                                    )
+                                ) * CASE WHEN a.accttype IN ({signFlipSql}) THEN -1 ELSE 1 END
+                            ELSE 0 END
                         ), 0) AS balance
                     FROM account a
                     LEFT JOIN transactionaccountingline tal ON tal.account = a.id
                         AND tal.posting = 'T'
+                        AND (tal.accountingbook = {accountingBook} OR tal.accountingbook IS NULL)
                     LEFT JOIN transaction t ON t.id = tal.transaction
                         AND t.posting = 'T'
                         AND t.trandate <= TO_DATE('{endDate}', 'YYYY-MM-DD')
@@ -848,7 +856,6 @@ public class BalanceController : ControllerBase
                         AND ({segmentWhere})
                     WHERE a.accttype IN ({bsTypesSql})
                       AND a.isinactive = 'F'
-                      AND (tal.accountingbook = {accountingBook} OR tal.accountingbook IS NULL)
                     GROUP BY a.acctnumber, a.accountsearchdisplaynamecopy, a.accttype
                     ORDER BY a.acctnumber";
             

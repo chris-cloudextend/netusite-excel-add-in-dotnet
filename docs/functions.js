@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.0.47';  // Fix: Replace window.confirm with Office-compatible confirmation dialog
+const FUNCTIONS_VERSION = '4.0.0.48';  // Fix: Issue 1 (zero balances) + Issue 2 (subsequent months precaching)
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -440,15 +440,18 @@ function triggerAutoPreload(firstAccount, firstPeriod) {
     }
     
     // Send signal to taskpane to trigger auto-preload
-    // CRITICAL: Use normalized period so taskpane can match cache keys correctly
-    // Taskpane will scan the sheet and preload all BS accounts
+    // CRITICAL: Use queue pattern with unique keys to prevent overwrites (Issue 2A Fix)
+    // Multiple triggers (e.g., dragging across Mar and Apr) will all be processed
+    // Format: netsuite_auto_preload_trigger_<timestamp>_<random>
     try {
-        localStorage.setItem('netsuite_auto_preload_trigger', JSON.stringify({
+        const triggerId = `netsuite_auto_preload_trigger_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        localStorage.setItem(triggerId, JSON.stringify({
             firstAccount: firstAccount,
             firstPeriod: normalizedPeriod,  // Use normalized period, not raw input
             timestamp: Date.now(),
             reason: autoPreloadTriggered ? `New period detected: ${normalizedPeriod}` : 'First Balance Sheet formula detected'
         }));
+        console.log(`📤 Auto-preload trigger queued: ${triggerId} (period: ${normalizedPeriod})`);
     } catch (e) {
         console.warn('Could not trigger auto-preload:', e);
     }
@@ -2642,8 +2645,14 @@ function checkLocalStorageCache(account, period, toPeriod = null, subsidiary = '
         // Skip localStorage when subsidiary filter is specified (not subsidiary-aware)
         if (subsidiary && subsidiary !== '') return null;
         
-        const lookupPeriod = (period && period !== '') ? period : toPeriod;
+        // CRITICAL: Normalize lookupPeriod to ensure cache key matching works (Issue 2C Fix)
+        // This ensures periods are in consistent "Mon YYYY" format before building cache keys
+        let lookupPeriod = (period && period !== '') ? period : toPeriod;
         if (!lookupPeriod) return null;
+        
+        // Normalize period to ensure cache keys match (handles Range objects, date serials, etc.)
+        lookupPeriod = convertToMonthYear(lookupPeriod, false);
+        if (!lookupPeriod) return null; // If normalization fails, can't look up cache
         
         // ================================================================
         // CHECK PRELOAD CACHE FIRST (xavi_balance_cache)
@@ -5194,7 +5203,24 @@ async function processBatchQueue() {
             const isBalanceCurrency = endpoint === '/balancecurrency';
             
             // ================================================================
-            // TRY WILDCARD CACHE RESOLUTION FIRST
+            // CHECK LOCALSTORAGE PRELOAD CACHE FIRST (Issue 2B Fix)
+            // CRITICAL: Check preload cache before making API calls
+            // This ensures batch mode uses preloaded data instead of making redundant API calls
+            // ================================================================
+            if (!subsidiary) {  // Skip for subsidiary-filtered queries (localStorage not subsidiary-aware)
+                const localStorageValue = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary);
+                if (localStorageValue !== null) {
+                    console.log(`   ✅ Preload cache hit (batch mode): ${account} for ${fromPeriod || '(cumulative)'} → ${toPeriod} = ${localStorageValue}`);
+                    cache.balance.set(cacheKey, localStorageValue);
+                    // Resolve ALL requests waiting for this result
+                    requests.forEach(r => r.resolve(localStorageValue));
+                    cacheHits++;
+                    continue; // Skip API call
+                }
+            }
+            
+            // ================================================================
+            // TRY WILDCARD CACHE RESOLUTION
             // If account has *, try to sum matching accounts from cache
             // CRITICAL: Skip for BALANCECURRENCY - wildcard cache doesn't support currency
             // ================================================================
@@ -5370,15 +5396,46 @@ async function processBatchQueue() {
         }
     }
     
-    // If no regular requests, we're done
-    if (regularRequests.length === 0) {
-        const elapsed = ((Date.now() - batchStartTime) / 1000).toFixed(2);
-        console.log(`\n✅ BATCH COMPLETE in ${elapsed}s (${cumulativeRequests.length} cumulative only)`);
-        return;
+    // Continue with regular batch processing for period-based requests
+    console.log(`📦 Processing ${regularRequestsToProcess.length} regular (period-based) requests...`);
+    
+    // ================================================================
+    // CHECK LOCALSTORAGE PRELOAD CACHE FOR EACH REQUEST (Issue 2B Fix)
+    // CRITICAL: Check preload cache before batching - filter out cache hits
+    // This ensures batch mode uses preloaded data instead of making redundant API calls
+    // ================================================================
+    const regularRequestsToProcess = [];
+    let regularCacheHits = 0;
+    
+    for (const [cacheKey, request] of regularRequests) {
+        const { account, fromPeriod, toPeriod, subsidiary } = request.params;
+        
+        // Check localStorage preload cache (skip for subsidiary-filtered queries)
+        if (!subsidiary) {
+            const localStorageValue = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary);
+            if (localStorageValue !== null) {
+                console.log(`   ✅ Preload cache hit (regular batch): ${account} for ${fromPeriod || '(cumulative)'} → ${toPeriod} = ${localStorageValue}`);
+                cache.balance.set(cacheKey, localStorageValue);
+                request.resolve(localStorageValue);
+                regularCacheHits++;
+                continue; // Skip this request - already resolved from cache
+            }
+        }
+        
+        // Cache miss - add to batch processing
+        regularRequestsToProcess.push([cacheKey, request]);
     }
     
-    // Continue with regular batch processing for period-based requests
-    console.log(`📦 Processing ${regularRequests.length} regular (period-based) requests...`);
+    if (regularCacheHits > 0) {
+        console.log(`   📊 Regular requests: ${regularCacheHits} cache hits, ${regularRequestsToProcess.length} need API calls`);
+    }
+    
+    // If all requests were cache hits, we're done
+    if (regularRequestsToProcess.length === 0) {
+        const elapsed = ((Date.now() - batchStartTime) / 1000).toFixed(2);
+        console.log(`\n✅ BATCH COMPLETE in ${elapsed}s (all requests resolved from cache)`);
+        return;
+    }
     
     // Group by filters AND currency (not periods) - this allows smart batching
     // CRITICAL: Must group by currency for BALANCECURRENCY requests to prevent mixing currencies
@@ -5386,7 +5443,7 @@ async function processBatchQueue() {
     // Example: 100 accounts × 1 month = 2 batches (chunked by accounts)
     // Example: 100 accounts × 12 months = 2 batches (all periods together)
     const groups = new Map();
-    for (const [cacheKey, request] of regularRequests) {
+    for (const [cacheKey, request] of regularRequestsToProcess) {
         const {params} = request;
         // Check if this is a BALANCECURRENCY request
         const isBalanceCurrency = cacheKey.includes('"type":"balancecurrency"');
@@ -5473,6 +5530,22 @@ async function processBatchQueue() {
                 for (const {cacheKey, request} of currencyGroupRequests) {
                     const { account, fromPeriod, toPeriod, subsidiary, department, location, classId, accountingBook } = request.params;
                     const reqCurrency = request.params.currency || '';
+                    
+                    // ================================================================
+                    // CHECK LOCALSTORAGE PRELOAD CACHE FIRST (Issue 2B Fix)
+                    // CRITICAL: Check preload cache before making API calls
+                    // Note: BALANCECURRENCY uses currency, so preload cache may not apply
+                    // But still check for non-currency requests
+                    // ================================================================
+                    if (!subsidiary && !reqCurrency) {  // Skip for subsidiary/currency-filtered queries
+                        const localStorageValue = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary);
+                        if (localStorageValue !== null) {
+                            console.log(`   ✅ Preload cache hit (BALANCECURRENCY batch): ${account} for ${fromPeriod || '(cumulative)'} → ${toPeriod} = ${localStorageValue}`);
+                            cache.balance.set(cacheKey, localStorageValue);
+                            request.resolve(localStorageValue);
+                            continue; // Skip API call
+                        }
+                    }
                     
                     // CRITICAL: Periods are already converted to "Mon YYYY" format in BALANCECURRENCY function
                     // But we need to ensure they're strings for comparison (not date serial numbers)
