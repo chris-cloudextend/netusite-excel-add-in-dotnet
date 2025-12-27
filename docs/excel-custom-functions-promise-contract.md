@@ -186,6 +186,86 @@ Before committing changes to custom functions:
 - **Shared Runtime** mode (used in this codebase) makes the issue more severe
 - **IntelliSense inspection** is the primary trigger, not formula calculation
 
+## Enforced Contract Rules (Non-Negotiable)
+
+### Critical Checklist for Future Contributors
+
+Before modifying any custom function, verify:
+
+- [ ] **Function return type matches JSDoc:** If `@returns {Promise<number>}`, function MUST only resolve numbers
+- [ ] **No string resolves in numeric functions:** Search for `resolve('#` or `resolve(errorCode)` patterns
+- [ ] **Batch processors reject errors:** Batch layers must use `reject(new Error('CODE'))`, not `resolve('CODE')`
+- [ ] **All error paths throw:** Every error condition must `throw new Error('CODE')`, never return strings
+- [ ] **Promise resolvers are type-safe:** Check that `item.resolve()` and `request.resolve()` only receive numbers
+
+### DO / DO NOT Examples
+
+**✅ DO: Reject in Batch Processors**
+```javascript
+// Batch processor handling Promise<number> requests
+if (errorCode) {
+    items.forEach(item => item.reject(new Error(errorCode)));  // ✅ Correct
+}
+```
+
+**❌ DO NOT: Resolve Error Strings in Batch Processors**
+```javascript
+// Batch processor handling Promise<number> requests
+if (errorCode) {
+    items.forEach(item => item.resolve(errorCode));  // ❌ CRASHES Excel Mac!
+}
+```
+
+**✅ DO: Throw Errors in Custom Functions**
+```javascript
+async function BALANCE(account) {
+    if (!account) {
+        throw new Error('MISSING_ACCT');  // ✅ Correct
+    }
+    return await fetchBalance(account);  // ✅ Returns number
+}
+```
+
+**❌ DO NOT: Return Error Strings**
+```javascript
+async function BALANCE(account) {
+    if (!account) {
+        return '#MISSING_ACCT#';  // ❌ CRASHES Excel Mac!
+    }
+}
+```
+
+### Why Batch Resolvers Must Not Resolve Strings
+
+Batch processors (like `runBuildModeBatch()`, `processBatchQueue()`) handle multiple Promise<number> requests simultaneously. When these processors call `resolve(errorCode)` with a string:
+
+1. **Excel caches the violation:** The Promise contract is broken at the resolver level
+2. **Metadata corruption persists:** Excel's function metadata cache becomes inconsistent
+3. **Crashes persist across restarts:** The corrupted cache survives Excel restarts
+4. **IntelliSense triggers crashes:** Any function inspection can crash Excel
+
+**The fix:** Batch processors must use `reject(new Error('CODE'))` instead of `resolve('CODE')`. This ensures:
+- The Promise contract remains intact (rejection is not a resolution)
+- Excel's error handling safely displays `#ERROR!` in cells
+- No metadata corruption occurs
+- Excel can safely re-evaluate when conditions change
+
+### Warning: Violations Cause Persistent Crashes
+
+**⚠️ CRITICAL:** Violating Promise contracts can cause Excel for Mac crashes that:
+- **Persist across Excel restarts** (cached metadata survives)
+- **Require Excel reinstallation** to fully clear (nuclear option)
+- **Trigger during IntelliSense** (typing function names)
+- **Affect all users** on the same machine (shared cache)
+
+**Prevention is the only reliable solution.** Once metadata is corrupted, clearing it requires:
+1. Quitting Excel completely
+2. Clearing Excel's cache directories
+3. Restarting Excel
+4. Or reinstalling Excel (most reliable)
+
+This is why strict enforcement at the code level is critical - we must prevent violations from ever reaching Excel's metadata cache.
+
 ## References
 
 - [Microsoft: Custom Functions Best Practices](https://learn.microsoft.com/en-us/office/dev/add-ins/excel/custom-functions-best-practices)

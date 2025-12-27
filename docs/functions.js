@@ -1344,7 +1344,7 @@ async function runBuildModeBatch() {
                         
                         if (errorCode) {
                             console.log(`   ⚠️ BALANCECURRENCY range result: ${account} = ${errorCode}`);
-                            item.resolve(errorCode);
+                            item.reject(new Error(errorCode));
                         } else {
                             console.log(`   ✅ BALANCECURRENCY range result: ${account} = ${value.toLocaleString()} (period range ${fromPeriodStr} to ${toPeriodStr})`);
                             cache.balance.set(cacheKey, value);
@@ -1353,7 +1353,7 @@ async function runBuildModeBatch() {
                     } else {
                         const errorCode = response.status === 408 || response.status === 504 ? 'TIMEOUT' : 'APIERR';
                         console.error(`   ❌ BALANCECURRENCY range API error: ${response.status} → ${errorCode}`);
-                        item.resolve(errorCode);
+                        item.reject(new Error(errorCode));
                     }
                 } else {
                     // Single period or cumulative
@@ -1380,7 +1380,7 @@ async function runBuildModeBatch() {
                         
                         if (errorCode) {
                             console.log(`   ⚠️ BALANCECURRENCY result: ${account} = ${errorCode}`);
-                            item.resolve(errorCode);
+                            item.reject(new Error(errorCode));
                         } else {
                             console.log(`   ✅ BALANCECURRENCY result: ${account} = ${value.toLocaleString()}`);
                             cache.balance.set(cacheKey, value);
@@ -1389,13 +1389,13 @@ async function runBuildModeBatch() {
                     } else {
                         const errorCode = response.status === 408 || response.status === 504 ? 'TIMEOUT' : 'APIERR';
                         console.error(`   ❌ BALANCECURRENCY API error: ${response.status} → ${errorCode}`);
-                        item.resolve(errorCode);
+                        item.reject(new Error(errorCode));
                     }
                 }
             } catch (error) {
                 const errorCode = error.name === 'AbortError' ? 'TIMEOUT' : 'NETFAIL';
                 console.error(`   ❌ BALANCECURRENCY fetch error: ${error.message} → ${errorCode}`);
-                item.resolve(errorCode);
+                item.reject(new Error(errorCode));
             }
         }
     }
@@ -1547,10 +1547,10 @@ async function runBuildModeBatch() {
                         }
                         
                         if (errorCode) {
-                            // Return error code to Excel cell instead of 0
+                            // Reject with error code - Excel will display #ERROR!
                             // CRITICAL: Do NOT cache error codes - they should be re-evaluated
                             console.log(`   ⚠️ Cumulative result: ${account} = ${errorCode}`);
-                            items.forEach(item => item.resolve(errorCode));
+                            items.forEach(item => item.reject(new Error(errorCode)));
                         } else {
                             console.log(`   ✅ Cumulative result: ${account} = ${value.toLocaleString()}`);
                             // Only cache valid numeric values, not errors or null
@@ -1560,7 +1560,7 @@ async function runBuildModeBatch() {
                         }
                     }
                 } else {
-                    // HTTP error - return informative error code
+                    // HTTP error - reject with informative error code
                     // 522/523/524 are Cloudflare timeout errors
                     const errorCode = [408, 504, 522, 523, 524].includes(response.status) ? 'TIMEOUT' :
                                      response.status === 429 ? 'RATELIMIT' :
@@ -1568,13 +1568,13 @@ async function runBuildModeBatch() {
                                      response.status >= 500 ? 'SERVERR' :
                                      'APIERR';
                     console.error(`   ❌ Cumulative API error: ${response.status} → ${errorCode}`);
-                    items.forEach(item => item.resolve(errorCode));
+                    items.forEach(item => item.reject(new Error(errorCode)));
                 }
             } catch (error) {
-                // Network error - return informative error code
+                // Network error - reject with informative error code
                 const errorCode = error.name === 'AbortError' ? 'TIMEOUT' : 'NETFAIL';
                 console.error(`   ❌ Cumulative fetch error: ${error.message} → ${errorCode}`);
-                items.forEach(item => item.resolve(errorCode));
+                items.forEach(item => item.reject(new Error(errorCode)));
             }
         }
         
@@ -1687,7 +1687,7 @@ async function runBuildModeBatch() {
                         
                         if (errorCode) {
                             console.log(`   ⚠️ BALANCECURRENCY result: ${account} = ${errorCode}`);
-                            item.resolve(errorCode);
+                            item.reject(new Error(errorCode));
                         } else {
                             console.log(`   ✅ BALANCECURRENCY result: ${account} = ${value.toLocaleString()}`);
                             cache.balance.set(cacheKey, value);
@@ -1696,12 +1696,12 @@ async function runBuildModeBatch() {
                     } else {
                         const errorCode = response.status === 408 || response.status === 504 ? 'TIMEOUT' : 'APIERR';
                         console.error(`   ❌ BALANCECURRENCY API error: ${response.status} → ${errorCode}`);
-                        item.resolve(errorCode);
+                        item.reject(new Error(errorCode));
                     }
                 } catch (error) {
                     const errorCode = error.name === 'AbortError' ? 'TIMEOUT' : 'NETFAIL';
                     console.error(`   ❌ BALANCECURRENCY fetch error: ${error.message} → ${errorCode}`);
-                    item.resolve(errorCode);
+                    item.reject(new Error(errorCode));
                 }
             }
         }
@@ -3969,7 +3969,7 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
  * @param {any} location Location filter (use "" for all)
  * @param {any} classId Class filter (use "" for all)
  * @param {any} accountingBook Accounting Book ID (use "" for Primary Book)
- * @returns {Promise<number|string>} The account balance, or error code
+ * @returns {Promise<number>} The account balance (throws Error on failure)
  * @requiresAddress
  */
 async function BALANCECURRENCY(account, fromPeriod, toPeriod, subsidiary, currency, department, location, classId, accountingBook) {
@@ -4304,7 +4304,7 @@ async function BALANCECURRENCY(account, fromPeriod, toPeriod, subsidiary, curren
  * @param {any} location Location filter (use "" for all)
  * @param {any} classId Class filter (use "" for all)
  * @param {any} accountingBook Accounting Book ID (use "" for Primary Book)
- * @returns {Promise<number|string>} The change in balance, or error code
+ * @returns {Promise<number>} The change in balance (throws Error on failure)
  * @requiresAddress
  */
 async function BALANCECHANGE(account, fromPeriod, toPeriod, subsidiary, department, location, classId, accountingBook) {
@@ -5081,10 +5081,10 @@ async function processBatchQueue() {
                         }
                         
                         if (errorCode) {
-                            // Return error code to Excel cell instead of 0
+                            // Reject with error code - Excel will display #ERROR!
                             // CRITICAL: Do NOT cache error codes - they should be re-evaluated
                             console.log(`   ⚠️ Cumulative result: ${account} = ${errorCode}`);
-                            requests.forEach(r => r.resolve(errorCode));
+                            requests.forEach(r => r.reject(new Error(errorCode)));
                         } else {
                             console.log(`   ✅ Cumulative result: ${account} = ${value.toLocaleString()} (${(queryTimeMs / 1000).toFixed(1)}s)`);
                             // Only cache valid numeric values, not errors or null
@@ -5094,7 +5094,7 @@ async function processBatchQueue() {
                         }
                     }
                 } else {
-                    // HTTP error - return informative error code
+                    // HTTP error - reject with informative error code
                     // 522/523/524 are Cloudflare timeout errors
                     const errorCode = [408, 504, 522, 523, 524].includes(response.status) ? 'TIMEOUT' :
                                      response.status === 429 ? 'RATELIMIT' :
@@ -5102,13 +5102,13 @@ async function processBatchQueue() {
                                      response.status >= 500 ? 'SERVERR' :
                                      'APIERR';
                     console.error(`   ❌ Cumulative API error: ${response.status} → ${errorCode}`);
-                    requests.forEach(r => r.resolve(errorCode));
+                    requests.forEach(r => r.reject(new Error(errorCode)));
                 }
             } catch (error) {
-                // Network error - return informative error code
+                // Network error - reject with informative error code
                 const errorCode = error.name === 'AbortError' ? 'TIMEOUT' : 'NETFAIL';
                 console.error(`   ❌ Cumulative fetch error: ${error.message} → ${errorCode}`);
-                requests.forEach(r => r.resolve(errorCode));
+                requests.forEach(r => r.reject(new Error(errorCode)));
             }
         }
         
@@ -5278,7 +5278,7 @@ async function processBatchQueue() {
                                 
                                 if (errorCode) {
                                     console.log(`   ⚠️ BALANCECURRENCY range result: ${account} = ${errorCode}`);
-                                    request.resolve(errorCode);
+                                    request.reject(new Error(errorCode));
                                 } else {
                                     console.log(`   ✅ BALANCECURRENCY range result: ${account} = ${value.toLocaleString()} (period range ${fromPeriodStr} to ${toPeriodStr})`);
                                     cache.balance.set(cacheKey, value);
@@ -5287,12 +5287,12 @@ async function processBatchQueue() {
                             } else {
                                 const errorCode = response.status === 408 || response.status === 504 ? 'TIMEOUT' : 'APIERR';
                                 console.error(`   ❌ BALANCECURRENCY range API error: ${response.status} → ${errorCode}`);
-                                request.resolve(errorCode);
+                                request.reject(new Error(errorCode));
                             }
                         } catch (error) {
                             const errorCode = error.name === 'AbortError' ? 'TIMEOUT' : 'NETFAIL';
                             console.error(`   ❌ BALANCECURRENCY range fetch error: ${error.message} → ${errorCode}`);
-                            request.resolve(errorCode);
+                            request.reject(new Error(errorCode));
                         }
                     } else {
                         // Single period or cumulative - use original logic
@@ -5320,7 +5320,7 @@ async function processBatchQueue() {
                                 
                                 if (errorCode) {
                                     console.log(`   ⚠️ BALANCECURRENCY result: ${account} = ${errorCode}`);
-                                    request.resolve(errorCode);
+                                    request.reject(new Error(errorCode));
                                 } else {
                                     console.log(`   ✅ BALANCECURRENCY result: ${account} = ${value.toLocaleString()}`);
                                     cache.balance.set(cacheKey, value);
@@ -5329,12 +5329,12 @@ async function processBatchQueue() {
                             } else {
                                 const errorCode = response.status === 408 || response.status === 504 ? 'TIMEOUT' : 'APIERR';
                                 console.error(`   ❌ BALANCECURRENCY API error: ${response.status} → ${errorCode}`);
-                                request.resolve(errorCode);
+                                request.reject(new Error(errorCode));
                             }
                         } catch (error) {
                             const errorCode = error.name === 'AbortError' ? 'TIMEOUT' : 'NETFAIL';
                             console.error(`   ❌ BALANCECURRENCY fetch error: ${error.message} → ${errorCode}`);
-                            request.resolve(errorCode);
+                            request.reject(new Error(errorCode));
                         }
                     }
                 }
