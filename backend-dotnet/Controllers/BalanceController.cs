@@ -809,12 +809,22 @@ public class BalanceController : ControllerBase
                 // need to flip to positive for display (same as NetSuite reports)
                 var signFlipSql = Models.AccountType.SignFlipTypesSql;
             
+                // OPTIMIZATION: Start from account table with LEFT JOIN to include ALL BS accounts
+                // (including those with zero transactions). This ensures complete cache coverage
+                // and eliminates slow individual API calls for accounts like 10206.
+                // 
+                // Key changes:
+                // - Start from account table (not transactionaccountingline)
+                // - Use LEFT JOIN to include accounts with no transactions
+                // - COALESCE returns 0 for accounts with no transactions (not NULL)
+                // - Filter inactive accounts
+                // - Accounting book filter handles NULL (accounts with no transactions)
                 var query = $@"
                     SELECT 
                         a.acctnumber,
                         a.accountsearchdisplaynamecopy AS account_name,
                         a.accttype,
-                        SUM(
+                        COALESCE(SUM(
                             TO_NUMBER(
                                 BUILTIN.CONSOLIDATE(
                                     tal.amount,
@@ -826,17 +836,19 @@ public class BalanceController : ControllerBase
                                     'DEFAULT'
                                 )
                             ) * CASE WHEN a.accttype IN ({signFlipSql}) THEN -1 ELSE 1 END
-                        ) AS balance
-                    FROM transactionaccountingline tal
-                    JOIN transaction t ON t.id = tal.transaction
-                    JOIN account a ON a.id = tal.account
-                    JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id
-                    WHERE t.posting = 'T'
-                      AND tal.posting = 'T'
-                      AND a.accttype IN ({bsTypesSql})
-                      AND t.trandate <= TO_DATE('{endDate}', 'YYYY-MM-DD')
-                      AND tal.accountingbook = {accountingBook}
-                      AND {segmentWhere}
+                        ), 0) AS balance
+                    FROM account a
+                    LEFT JOIN transactionaccountingline tal ON tal.account = a.id
+                        AND tal.posting = 'T'
+                    LEFT JOIN transaction t ON t.id = tal.transaction
+                        AND t.posting = 'T'
+                        AND t.trandate <= TO_DATE('{endDate}', 'YYYY-MM-DD')
+                    LEFT JOIN TransactionLine tl ON t.id = tl.transaction 
+                        AND tal.transactionline = tl.id
+                        AND ({segmentWhere})
+                    WHERE a.accttype IN ({bsTypesSql})
+                      AND a.isinactive = 'F'
+                      AND (tal.accountingbook = {accountingBook} OR tal.accountingbook IS NULL)
                     GROUP BY a.acctnumber, a.accountsearchdisplaynamecopy, a.accttype
                     ORDER BY a.acctnumber";
             
