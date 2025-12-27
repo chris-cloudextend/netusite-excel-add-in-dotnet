@@ -2541,8 +2541,9 @@ function checkLocalStorageCache(account, period, toPeriod = null, subsidiary = '
                 // Preload format: { "balance:10010::Jan 2025": { value: 2064705.84, timestamp: ... }, ... }
                 const preloadKey = `balance:${account}::${lookupPeriod}`;
                 if (preloadData[preloadKey] && preloadData[preloadKey].value !== undefined) {
-                    console.log(`✅ Preload cache hit (xavi_balance_cache): ${account} for ${lookupPeriod}`);
-                    return preloadData[preloadKey].value;
+                    const cachedValue = preloadData[preloadKey].value;
+                    console.log(`✅ Preload cache hit (xavi_balance_cache): ${account} for ${lookupPeriod} = ${cachedValue} (${cachedValue === 0 ? 'zero balance' : 'non-zero'})`);
+                    return cachedValue;
                 } else {
                     // Debug: Log what keys are available (first 5) to help diagnose mismatches
                     const availableKeys = Object.keys(preloadData).filter(k => k.startsWith(`balance:${account}::`));
