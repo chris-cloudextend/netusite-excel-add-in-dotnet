@@ -871,9 +871,13 @@ public class BalanceController : ControllerBase
                 }
             
                 var periodElapsed = (DateTime.UtcNow - periodStartTime).TotalSeconds;
-                _logger.LogDebug("BS Preload [{Period}] query time: {Elapsed:F2}s, {Count} accounts", 
+                _logger.LogInformation("BS Preload [{Period}] query time: {Elapsed:F2}s, {Count} accounts", 
                     periodName, periodElapsed, queryResult.Items.Count);
-            
+                
+                // CRITICAL LOGGING: Track zero balance accounts to verify query fix is working
+                var zeroBalanceAccounts = new List<string>();
+                var nonZeroBalanceAccounts = new List<string>();
+                
                 // Process and cache results for this period
                 foreach (var row in queryResult.Items)
                 {
@@ -888,6 +892,16 @@ public class BalanceController : ControllerBase
                     if (row.TryGetProperty("balance", out var balProp) && balProp.ValueKind != JsonValueKind.Null)
                     {
                         balance = ParseBalance(balProp);
+                    }
+                
+                    // Track zero vs non-zero for logging
+                    if (balance == 0)
+                    {
+                        zeroBalanceAccounts.Add(accountNumber);
+                    }
+                    else
+                    {
+                        nonZeroBalanceAccounts.Add(accountNumber);
                     }
                 
                     // Store account info (same across periods)
@@ -905,8 +919,36 @@ public class BalanceController : ControllerBase
                     totalCachedCount++;
                 }
                 
-                _logger.LogInformation("✅ BS PRELOAD [{Period}]: {Count} accounts in {Elapsed:F1}s", 
-                    periodName, queryResult.Items.Count, periodElapsed);
+                _logger.LogInformation("✅ BS PRELOAD [{Period}]: {Count} accounts in {Elapsed:F1}s ({ZeroCount} with zero balance, {NonZeroCount} with non-zero balance)", 
+                    periodName, queryResult.Items.Count, periodElapsed, zeroBalanceAccounts.Count, nonZeroBalanceAccounts.Count);
+                
+                // CRITICAL: Log specific zero balance accounts to verify they're being returned
+                if (zeroBalanceAccounts.Count > 0)
+                {
+                    _logger.LogInformation("   Zero balance accounts (first 10): {Accounts}", 
+                        string.Join(", ", zeroBalanceAccounts.Take(10)));
+                }
+                
+                // Check if the problematic accounts (10413, 10206, 10411) are in results
+                var problematicAccounts = new[] { "10413", "10206", "10411" };
+                var foundProblematic = queryResult.Items
+                    .Where(r => problematicAccounts.Contains(r.TryGetProperty("acctnumber", out var num) ? num.GetString() : ""))
+                    .Select(r => {
+                        var acct = r.TryGetProperty("acctnumber", out var num) ? num.GetString() ?? "" : "";
+                        var bal = r.TryGetProperty("balance", out var balProp) ? ParseBalance(balProp) : 0;
+                        return $"{acct}={bal}";
+                    })
+                    .ToList();
+                
+                if (foundProblematic.Any())
+                {
+                    _logger.LogInformation("   ✅ Problematic accounts found in query results: {Accounts}", 
+                        string.Join(", ", foundProblematic));
+                }
+                else
+                {
+                    _logger.LogWarning("   ⚠️ Problematic accounts (10413, 10206, 10411) NOT found in query results!");
+                }
             }
             
             var totalElapsed = (DateTime.UtcNow - startTime).TotalSeconds;
