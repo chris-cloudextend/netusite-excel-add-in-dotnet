@@ -419,6 +419,15 @@ function triggerAutoPreload(firstAccount, firstPeriod) {
     
     autoPreloadInProgress = true;
     
+    // Set localStorage flag so waitForPreload() can detect it
+    // This allows formulas to wait for auto-preload to complete
+    try {
+        localStorage.setItem(PRELOAD_STATUS_KEY, 'running');
+        localStorage.setItem(PRELOAD_TIMESTAMP_KEY, Date.now().toString());
+    } catch (e) {
+        console.warn('Could not set preload status:', e);
+    }
+    
     // Send signal to taskpane to trigger auto-preload
     // Taskpane will scan the sheet and preload all BS accounts
     try {
@@ -462,6 +471,15 @@ function checkIfPeriodIsCached(period) {
  */
 function markAutoPreloadComplete() {
     autoPreloadInProgress = false;
+    
+    // Clear localStorage flag so waitForPreload() knows it's done
+    try {
+        localStorage.setItem(PRELOAD_STATUS_KEY, 'complete');
+        localStorage.setItem(PRELOAD_TIMESTAMP_KEY, Date.now().toString());
+    } catch (e) {
+        console.warn('Could not update preload status:', e);
+    }
+    
     console.log('✅ AUTO-PRELOAD: Complete');
 }
 
@@ -3909,14 +3927,34 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         } else {
             console.log(`📭 localStorage cache miss: ${account} for ${fromPeriod || '(cumulative)'} → ${toPeriod} (checkLocalStorageCache returned null)`);
             
-            // If this is a BS account and the period is not cached, trigger auto-preload for this period
-            // This handles cases where user adds a new period (e.g., Apr 2025) after initial preload
+            // If this is a BS account and the period is not cached, check if preload is in progress
+            // If preload is running, wait for it to complete before making API calls
             if (!subsidiary && lookupPeriod) {
                 const isPeriodCached = checkIfPeriodIsCached(lookupPeriod);
                 if (!isPeriodCached) {
-                    console.log(`🔄 Period ${lookupPeriod} not in cache - triggering auto-preload for this period`);
-                    // Trigger auto-preload for this specific period
-                    triggerAutoPreload(account, lookupPeriod);
+                    // Check if auto-preload is in progress (either via flag or localStorage)
+                    const preloadRunning = autoPreloadInProgress || isPreloadInProgress();
+                    
+                    if (preloadRunning) {
+                        console.log(`⏳ Period ${lookupPeriod} not cached, but preload in progress - waiting for completion...`);
+                        const preloadCompleted = await waitForPreload(90000); // Wait up to 90s
+                        
+                        if (preloadCompleted) {
+                            // Preload completed - re-check cache
+                            console.log(`✅ Preload completed - re-checking cache for ${account}/${lookupPeriod}`);
+                            const retryCacheValue = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary);
+                            if (retryCacheValue !== null) {
+                                console.log(`✅ Post-preload cache hit: ${account} for ${lookupPeriod} = ${retryCacheValue}`);
+                                cacheStats.hits++;
+                                cache.balance.set(cacheKey, retryCacheValue);
+                                return retryCacheValue;
+                            }
+                        }
+                    } else {
+                        // No preload in progress - trigger it
+                        console.log(`🔄 Period ${lookupPeriod} not in cache - triggering auto-preload for this period`);
+                        triggerAutoPreload(account, lookupPeriod);
+                    }
                 }
             }
         }
