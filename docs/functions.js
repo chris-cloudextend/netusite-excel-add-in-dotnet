@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.0.41';  // Auto-preload waits for completion before API calls
+const FUNCTIONS_VERSION = '4.0.0.42';  // Fix: Ensure new periods included in preload + cache zero balances
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -2598,6 +2598,8 @@ function checkLocalStorageCache(account, period, toPeriod = null, subsidiary = '
                 const preloadKey = `balance:${account}::${lookupPeriod}`;
                 if (preloadData[preloadKey] && preloadData[preloadKey].value !== undefined) {
                     const cachedValue = preloadData[preloadKey].value;
+                    // CRITICAL: Zero balances (0) are valid cached values and must be returned
+                    // This prevents redundant API calls for accounts with no transactions
                     console.log(`✅ Preload cache hit (xavi_balance_cache): ${account} for ${lookupPeriod} = ${cachedValue} (${cachedValue === 0 ? 'zero balance' : 'non-zero'})`);
                     return cachedValue;
                 } else {

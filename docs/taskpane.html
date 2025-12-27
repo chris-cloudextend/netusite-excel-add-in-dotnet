@@ -5786,7 +5786,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.0.41"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.0.42"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -8591,17 +8591,34 @@ For licensing inquiries, contact: legal@celigo.com
                             
                             console.log(`📊 Auto-scan found ${formulaData.periods.length} period(s) in formulas`);
                             
-                            if (formulaData.periods.length === 0) {
-                                // Fallback to triggering formula's period
-                                if (trigger.firstPeriod) {
-                                    formulaData.periods = [trigger.firstPeriod];
-                                } else {
-                                    hideLoading();
-                                    console.warn('No periods found for BS preload');
-                                    if (window.markAutoPreloadComplete) window.markAutoPreloadComplete();
-                                    return;
+                            // CRITICAL: Always ensure trigger.firstPeriod is included (normalized)
+                            // This handles cases where user adds a NEW period that isn't in existing formulas
+                            if (trigger.firstPeriod) {
+                                // Normalize the period to ensure it matches cache key format
+                                let normalizedPeriod = trigger.firstPeriod.trim();
+                                const parts = normalizedPeriod.split(/\s+/);
+                                if (parts.length === 2) {
+                                    const month = parts[0];
+                                    const year = parts[1];
+                                    const normalizedMonth = month.charAt(0).toUpperCase() + month.slice(1).toLowerCase();
+                                    normalizedPeriod = `${normalizedMonth} ${year}`;
+                                }
+                                
+                                // Add to periods set if not already present
+                                if (!formulaData.periods.includes(normalizedPeriod)) {
+                                    formulaData.periods.push(normalizedPeriod);
+                                    console.log(`➕ Added trigger period to preload: ${normalizedPeriod}`);
                                 }
                             }
+                            
+                            if (formulaData.periods.length === 0) {
+                                hideLoading();
+                                console.warn('No periods found for BS preload');
+                                if (window.markAutoPreloadComplete) window.markAutoPreloadComplete();
+                                return;
+                            }
+                            
+                            console.log(`📋 Final periods to preload: ${formulaData.periods.join(', ')}`);
                             
                             updateLoading(
                                 `⚡ Preloading ALL Balance Sheet Accounts`,
@@ -8629,14 +8646,25 @@ For licensing inquiries, contact: legal@celigo.com
                                 const result = await preloadResponse.json();
                                 
                                 // Cache results - this caches ALL BS accounts for the period(s)
+                                // CRITICAL: Cache ALL balances, including zero balances (0)
+                                // Zero balances are valid and must be cached to avoid redundant API calls
                                 if (result.balances) {
                                     const cacheEntries = {};
                                     let accountCount = 0;
+                                    let zeroBalanceCount = 0;
                                     for (const [account, periodBalances] of Object.entries(result.balances)) {
                                         accountCount++;
                                         if (typeof periodBalances === 'object') {
                                             for (const [pName, balance] of Object.entries(periodBalances)) {
-                                                cacheEntries[`balance:${account}::${pName}`] = { value: balance, timestamp: Date.now() };
+                                                // Cache ALL balances, including zero (0 is a valid balance)
+                                                // This ensures accounts with no transactions are cached and don't trigger individual API calls
+                                                const cacheKey = `balance:${account}::${pName}`;
+                                                cacheEntries[cacheKey] = { value: balance, timestamp: Date.now() };
+                                                
+                                                // Track zero balances for logging
+                                                if (balance === 0 || balance === '0' || parseFloat(balance) === 0) {
+                                                    zeroBalanceCount++;
+                                                }
                                             }
                                         }
                                     }
@@ -8644,7 +8672,7 @@ For licensing inquiries, contact: legal@celigo.com
                                         const existing = JSON.parse(localStorage.getItem('xavi_balance_cache') || '{}');
                                         const merged = { ...existing, ...cacheEntries };
                                         localStorage.setItem('xavi_balance_cache', JSON.stringify(merged));
-                                        console.log(`✅ Cached ${accountCount} BS accounts for ${formulaData.periods.length} period(s)`);
+                                        console.log(`✅ Cached ${accountCount} BS accounts for ${formulaData.periods.length} period(s) (${zeroBalanceCount} with zero balances)`);
                                     } catch (e) {
                                         console.warn('Cache save error:', e);
                                     }
