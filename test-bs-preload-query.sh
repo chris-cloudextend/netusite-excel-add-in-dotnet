@@ -3,7 +3,7 @@
 # This script tests both the current and proposed LEFT JOIN queries
 
 # Configuration
-BASE_URL="${BASE_URL:-http://localhost:5000}"
+BASE_URL="${BASE_URL:-http://localhost:5002}"
 TEST_PERIOD="${TEST_PERIOD:-Feb 2025}"
 TEST_SUBSIDIARY="${TEST_SUBSIDIARY:-Celigo Inc. (Consolidated)}"
 
@@ -24,7 +24,13 @@ PERIOD_RESPONSE=$(curl -s -X POST "$BASE_URL/test/query" \
   -d "{\"q\": \"$PERIOD_QUERY\", \"timeout\": 30}")
 
 PERIOD_ID=$(echo "$PERIOD_RESPONSE" | jq -r '.results[0].id // empty')
-END_DATE=$(echo "$PERIOD_RESPONSE" | jq -r '.results[0].enddate // empty' | cut -d'T' -f1)
+END_DATE_RAW=$(echo "$PERIOD_RESPONSE" | jq -r '.results[0].enddate // empty' | cut -d'T' -f1)
+# Convert date format from MM/DD/YYYY to YYYY-MM-DD if needed
+if [[ "$END_DATE_RAW" =~ ^[0-9]{1,2}/[0-9]{1,2}/[0-9]{4}$ ]]; then
+  END_DATE=$(date -j -f "%m/%d/%Y" "$END_DATE_RAW" "+%Y-%m-%d" 2>/dev/null || echo "$END_DATE_RAW")
+else
+  END_DATE="$END_DATE_RAW"
+fi
 
 if [ -z "$PERIOD_ID" ] || [ "$PERIOD_ID" = "null" ]; then
   echo "ERROR: Could not find period '$TEST_PERIOD'"

@@ -20,11 +20,11 @@
 // 4. Replace ALL code with this file
 // 5. Click: Save and Deploy
 //
-// CURRENT TUNNEL URL: https://puzzle-adjust-notre-dogs.trycloudflare.com
+// CURRENT TUNNEL URL: https://lip-truly-kentucky-con.trycloudflare.com
 // CURRENT ACCOUNT: 589861 (Production)
 // BACKEND: .NET Core (backend-dotnet/) - PRIMARY/TARGET
 // NOTE: Python backend (backend/server.py) is legacy and being replaced
-// Last Updated: Dec 25, 2025 (Tunnel: puzzle-adjust-notre-dogs)
+// Last Updated: Dec 27, 2025 (Tunnel: lip-truly-kentucky-con))))
 // ════════════════════════════════════════════════════════════════════
 
 export default {
@@ -33,7 +33,7 @@ export default {
     // ⚠️ UPDATE THIS when .NET backend tunnel URL changes
     // To get the URL, run: cloudflared tunnel --url http://localhost:5002
     // Copy the https://xxxxx.trycloudflare.com URL and paste it here
-    const TUNNEL_URL = 'https://puzzle-adjust-notre-dogs.trycloudflare.com';
+    const TUNNEL_URL = 'https://lip-truly-kentucky-con.trycloudflare.com';
 
     // Handle CORS preflight requests
     if (request.method === 'OPTIONS') {
