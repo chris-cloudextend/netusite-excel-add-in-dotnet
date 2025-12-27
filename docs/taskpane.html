@@ -5792,7 +5792,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.0.52"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.0.53"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -8707,12 +8707,77 @@ For licensing inquiries, contact: legal@celigo.com
                                 return;
                             }
                             
-                            console.log(`📋 Final periods to preload: ${formulaData.periods.join(', ')}`);
+                            // CRITICAL: Filter out periods that are already cached
+                            // Only preload periods that are NOT already in cache
+                            // This prevents redundant preloads and shows accurate UI text
+                            const uncachedPeriods = [];
+                            const cachedPeriods = [];
                             
-                            // Format periods for display
-                            const periodsText = formulaData.periods.length === 1 
-                                ? formulaData.periods[0] 
-                                : formulaData.periods.join(', ');
+                            // Helper function to check if period is cached (matches functions.js logic)
+                            function isPeriodCached(period) {
+                                try {
+                                    // Normalize period
+                                    let normalizedPeriod = period.trim();
+                                    const parts = normalizedPeriod.split(/\s+/);
+                                    if (parts.length === 2) {
+                                        const month = parts[0];
+                                        const year = parts[1];
+                                        const normalizedMonth = month.charAt(0).toUpperCase() + month.slice(1).toLowerCase();
+                                        normalizedPeriod = `${normalizedMonth} ${year}`;
+                                    }
+                                    
+                                    const preloadCache = localStorage.getItem('xavi_balance_cache');
+                                    if (!preloadCache) return false;
+                                    
+                                    const preloadData = JSON.parse(preloadCache);
+                                    // Check if any account has this period cached
+                                    const periodKey = `::${normalizedPeriod}`;
+                                    for (const key in preloadData) {
+                                        if (key.endsWith(periodKey)) {
+                                            return true;
+                                        }
+                                    }
+                                    return false;
+                                } catch (e) {
+                                    return false;
+                                }
+                            }
+                            
+                            // Separate cached vs uncached periods
+                            for (const period of formulaData.periods) {
+                                // Normalize period for comparison
+                                let normalizedPeriod = period.trim();
+                                const parts = normalizedPeriod.split(/\s+/);
+                                if (parts.length === 2) {
+                                    const month = parts[0];
+                                    const year = parts[1];
+                                    const normalizedMonth = month.charAt(0).toUpperCase() + month.slice(1).toLowerCase();
+                                    normalizedPeriod = `${normalizedMonth} ${year}`;
+                                }
+                                
+                                if (isPeriodCached(normalizedPeriod)) {
+                                    cachedPeriods.push(normalizedPeriod);
+                                    console.log(`✅ Period ${normalizedPeriod} already cached, skipping preload`);
+                                } else {
+                                    uncachedPeriods.push(normalizedPeriod);
+                                    console.log(`🔄 Period ${normalizedPeriod} not cached, will preload`);
+                                }
+                            }
+                            
+                            // If all periods are already cached, skip preload
+                            if (uncachedPeriods.length === 0) {
+                                hideLoading();
+                                console.log(`✅ All periods already cached: ${cachedPeriods.join(', ')}`);
+                                if (window.markAutoPreloadComplete) window.markAutoPreloadComplete();
+                                return;
+                            }
+                            
+                            console.log(`📋 Periods to preload: ${uncachedPeriods.join(', ')} (${cachedPeriods.length > 0 ? `skipping already cached: ${cachedPeriods.join(', ')}` : 'all new'})`);
+                            
+                            // Format periods for display - ONLY show uncached periods
+                            const periodsText = uncachedPeriods.length === 1 
+                                ? uncachedPeriods[0] 
+                                : uncachedPeriods.join(', ');
                             
                             updateLoading(
                                 `⚡ Getting balances since the beginning of time for ${periodsText}`,
@@ -8734,7 +8799,7 @@ For licensing inquiries, contact: legal@celigo.com
                                     method: 'POST',
                                     headers: { 'Content-Type': 'application/json' },
                                     body: JSON.stringify({
-                                        periods: formulaData.periods,
+                                        periods: uncachedPeriods,  // Only preload uncached periods
                                         subsidiary: '',  // Will use default/current subsidiary
                                         department: '',
                                         location: '',
