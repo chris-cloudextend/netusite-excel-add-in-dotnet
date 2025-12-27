@@ -2550,7 +2550,10 @@ function checkLocalStorageCache(account, period, toPeriod = null, subsidiary = '
                     if (availableKeys.length > 0) {
                         console.log(`🔍 Preload cache: Found ${availableKeys.length} keys for account ${account}, but not for period "${lookupPeriod}". Available periods: ${availableKeys.slice(0, 3).map(k => k.split('::')[1]).join(', ')}`);
                     } else {
+                        // Account not in preload cache - likely has no transactions for this period
+                        // The preload query only returns accounts with transactions, so accounts with zero transactions won't be cached
                         console.log(`🔍 Preload cache: No keys found for account ${account} (looking for: ${preloadKey})`);
+                        console.log(`   💡 This likely means account ${account} has no transactions for ${lookupPeriod}, so it wasn't returned by the preload query. Will need to query backend.`);
                     }
                 }
             } else {
