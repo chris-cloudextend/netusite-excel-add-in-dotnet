@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.0.53';  // Fix: Filter out cached periods from preload and UI text
+const FUNCTIONS_VERSION = '4.0.0.54';  // Fix: Add localStorage cache check for cumulative items in build mode
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -1565,6 +1565,23 @@ async function runBuildModeBatch() {
                     cache.balance.set(cacheKey, wildcardResult.total);
                     // Resolve ALL items waiting for this result
                     items.forEach(item => item.resolve(wildcardResult.total));
+                    cacheHits++;
+                    continue; // Skip API call
+                }
+            }
+            
+            // ================================================================
+            // CHECK LOCALSTORAGE PRELOAD CACHE (Issue 2B Fix - Build Mode)
+            // CRITICAL: Check preload cache before making API calls
+            // This ensures build mode uses preloaded data instead of making redundant API calls
+            // ================================================================
+            if (!subsidiary) {  // Skip for subsidiary-filtered queries (localStorage not subsidiary-aware)
+                const localStorageValue = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary);
+                if (localStorageValue !== null) {
+                    console.log(`   ✅ Preload cache hit (build mode - cumulative): ${account} for ${fromPeriod || '(cumulative)'} → ${toPeriod} = ${localStorageValue}`);
+                    cache.balance.set(cacheKey, localStorageValue);
+                    // Resolve ALL items waiting for this result
+                    items.forEach(item => item.resolve(localStorageValue));
                     cacheHits++;
                     continue; // Skip API call
                 }
