@@ -2527,6 +2527,32 @@ function checkLocalStorageCache(account, period, toPeriod = null, subsidiary = '
         // Skip localStorage when subsidiary filter is specified (not subsidiary-aware)
         if (subsidiary && subsidiary !== '') return null;
         
+        const lookupPeriod = (period && period !== '') ? period : toPeriod;
+        if (!lookupPeriod) return null;
+        
+        // ================================================================
+        // CHECK PRELOAD CACHE FIRST (xavi_balance_cache)
+        // Preload stores data with keys like: balance:${account}::${period}
+        // ================================================================
+        try {
+            const preloadCache = localStorage.getItem('xavi_balance_cache');
+            if (preloadCache) {
+                const preloadData = JSON.parse(preloadCache);
+                // Preload format: { "balance:10010::Jan 2025": { value: 2064705.84, timestamp: ... }, ... }
+                const preloadKey = `balance:${account}::${lookupPeriod}`;
+                if (preloadData[preloadKey] && preloadData[preloadKey].value !== undefined) {
+                    console.log(`✅ Preload cache hit (xavi_balance_cache): ${account} for ${lookupPeriod}`);
+                    return preloadData[preloadKey].value;
+                }
+            }
+        } catch (preloadErr) {
+            // Ignore preload cache errors, fall through to legacy cache
+        }
+        
+        // ================================================================
+        // CHECK LEGACY CACHE (netsuite_balance_cache)
+        // Legacy format: { "10010": { "Jan 2025": 2064705.84, ... }, ... }
+        // ================================================================
         const timestamp = localStorage.getItem(STORAGE_TIMESTAMP_KEY);
         if (!timestamp) return null;
         
@@ -2537,7 +2563,6 @@ function checkLocalStorageCache(account, period, toPeriod = null, subsidiary = '
         if (!cached) return null;
         
         const balances = JSON.parse(cached);
-        const lookupPeriod = (period && period !== '') ? period : toPeriod;
         
         if (lookupPeriod && balances[account] && balances[account][lookupPeriod] !== undefined) {
             return balances[account][lookupPeriod];
@@ -2826,9 +2851,19 @@ function convertToMonthYear(value, isFromPeriod = true) {
     // If empty, return empty string
     if (!value || value === '') return '';
     
-    // If already in "Mon YYYY" format, return as-is
+    // If already in "Mon YYYY" format, normalize case and return
     if (typeof value === 'string' && /^[A-Za-z]{3}\s+\d{4}$/.test(value.trim())) {
-        return value.trim();
+        const trimmed = value.trim();
+        // Normalize month to title case (e.g., "JAN 2025" → "Jan 2025")
+        const parts = trimmed.split(/\s+/);
+        if (parts.length === 2) {
+            const month = parts[0];
+            const year = parts[1];
+            // Convert month to title case: first letter uppercase, rest lowercase
+            const normalizedMonth = month.charAt(0).toUpperCase() + month.slice(1).toLowerCase();
+            return `${normalizedMonth} ${year}`;
+        }
+        return trimmed;
     }
     
     // YEAR-ONLY FORMAT: "2025" or 2025 -> expand to "Jan 2025" or "Dec 2025"

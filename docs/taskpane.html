@@ -8508,11 +8508,12 @@ For licensing inquiries, contact: legal@celigo.com
                             const formulaData = await Excel.run(async (context) => {
                                 const sheet = context.workbook.worksheets.getActiveWorksheet();
                                 const usedRange = sheet.getUsedRange();
-                                usedRange.load('formulas');
+                                usedRange.load(['formulas', 'values']);
                                 await context.sync();
                                 
                                 const periods = new Set();
                                 const formulas = usedRange.formulas;
+                                const values = usedRange.values;
                                 
                                 // Always include the triggering formula's period
                                 if (trigger.firstPeriod) periods.add(trigger.firstPeriod);
@@ -8528,10 +8529,55 @@ For licensing inquiries, contact: legal@celigo.com
                                             let match;
                                             balanceRegex.lastIndex = 0;
                                             while ((match = balanceRegex.exec(cell)) !== null) {
-                                                const toPeriod = match[3].replace(/"/g, '').trim();
-                                                // Only add periods that are literal values (not cell references)
-                                                if (toPeriod && !toPeriod.includes('$') && !toPeriod.match(/^[A-Z]+\d+$/)) {
-                                                    periods.add(toPeriod);
+                                                const toPeriodParam = match[3].replace(/"/g, '').trim();
+                                                
+                                                // Check if it's a literal period value
+                                                if (toPeriodParam && !toPeriodParam.includes('$') && !toPeriodParam.match(/^[A-Z]+\d+$/)) {
+                                                    periods.add(toPeriodParam);
+                                                } else if (toPeriodParam && (toPeriodParam.includes('$') || toPeriodParam.match(/^[A-Z]+\d+$/))) {
+                                                    // It's a cell reference - try to resolve it
+                                                    try {
+                                                        const cellRef = toPeriodParam;
+                                                        const refRange = sheet.getRange(cellRef);
+                                                        refRange.load(['values', 'formulas']);
+                                                        await context.sync();
+                                                        
+                                                        // Get the actual value from the referenced cell
+                                                        const cellValue = refRange.values[0][0];
+                                                        if (cellValue) {
+                                                            // Convert Excel date to period format if needed
+                                                            // If it's a date serial number, convert it
+                                                            let periodValue = cellValue;
+                                                            if (typeof cellValue === 'number' && cellValue > 1 && cellValue < 1000000) {
+                                                                // Looks like an Excel date serial - convert to Date
+                                                                const excelEpoch = new Date(1899, 11, 30);
+                                                                const date = new Date(excelEpoch.getTime() + cellValue * 24 * 60 * 60 * 1000);
+                                                                const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+                                                                periodValue = `${monthNames[date.getMonth()]} ${date.getFullYear()}`;
+                                                            } else if (cellValue instanceof Date) {
+                                                                const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+                                                                periodValue = `${monthNames[cellValue.getMonth()]} ${cellValue.getFullYear()}`;
+                                                            } else if (typeof cellValue === 'string') {
+                                                                // Already a string - might be in "Mon YYYY" format
+                                                                periodValue = cellValue.trim();
+                                                            }
+                                                            
+                                                            // Normalize to title case (e.g., "JAN 2025" → "Jan 2025")
+                                                            const parts = String(periodValue).split(/\s+/);
+                                                            if (parts.length === 2) {
+                                                                const month = parts[0];
+                                                                const year = parts[1];
+                                                                const normalizedMonth = month.charAt(0).toUpperCase() + month.slice(1).toLowerCase();
+                                                                periodValue = `${normalizedMonth} ${year}`;
+                                                            }
+                                                            
+                                                            if (periodValue && /^[A-Za-z]{3}\s+\d{4}$/.test(periodValue)) {
+                                                                periods.add(periodValue);
+                                                            }
+                                                        }
+                                                    } catch (resolveErr) {
+                                                        console.warn(`Could not resolve cell reference ${toPeriodParam}:`, resolveErr);
+                                                    }
                                                 }
                                             }
                                         }
