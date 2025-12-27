@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.0.49';  // Fix: ReferenceError - trigger variable not defined in taskpane
+const FUNCTIONS_VERSION = '4.0.0.50';  // Fix: ReferenceError - regularRequestsToProcess before initialization
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -5396,11 +5396,8 @@ async function processBatchQueue() {
         }
     }
     
-    // Continue with regular batch processing for period-based requests
-    console.log(`📦 Processing ${regularRequestsToProcess.length} regular (period-based) requests...`);
-    
     // ================================================================
-    // CHECK LOCALSTORAGE PRELOAD CACHE FOR EACH REQUEST (Issue 2B Fix)
+    // CHECK LOCALSTORAGE PRELOAD CACHE FOR EACH REGULAR REQUEST (Issue 2B Fix)
     // CRITICAL: Check preload cache before batching - filter out cache hits
     // This ensures batch mode uses preloaded data instead of making redundant API calls
     // ================================================================
@@ -5430,12 +5427,14 @@ async function processBatchQueue() {
         console.log(`   📊 Regular requests: ${regularCacheHits} cache hits, ${regularRequestsToProcess.length} need API calls`);
     }
     
-    // If all requests were cache hits, we're done
+    // Continue with regular batch processing for period-based requests
     if (regularRequestsToProcess.length === 0) {
         const elapsed = ((Date.now() - batchStartTime) / 1000).toFixed(2);
         console.log(`\n✅ BATCH COMPLETE in ${elapsed}s (all requests resolved from cache)`);
         return;
     }
+    
+    console.log(`📦 Processing ${regularRequestsToProcess.length} regular (period-based) requests...`);
     
     // Group by filters AND currency (not periods) - this allows smart batching
     // CRITICAL: Must group by currency for BALANCECURRENCY requests to prevent mixing currencies
