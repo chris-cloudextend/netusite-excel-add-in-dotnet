@@ -3013,7 +3013,10 @@ function checkLocalStorageCache(account, period, toPeriod = null, subsidiary = '
                     const cachedValue = preloadData[preloadKey].value;
                     // CRITICAL: Zero balances (0) are valid cached values and must be returned
                     // This prevents redundant API calls for accounts with no transactions
-                    console.log(`✅ Preload cache hit (xavi_balance_cache): ${account} for ${lookupPeriod} = ${cachedValue} (${cachedValue === 0 ? 'zero balance' : 'non-zero'})`);
+                    // Reduced logging - only log first few hits to reduce noise
+                    if (cacheStats.hits < 3) {
+                        console.log(`✅ Preload cache hit: ${account}/${lookupPeriod} = ${cachedValue}`);
+                    }
                     return cachedValue;
                 }
                 // Reduced logging - only log if debugging is needed
@@ -4381,7 +4384,7 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         }
         
         // Debug log the period conversion
-        console.log(`📅 BALANCE periods: ${rawFrom} → "${fromPeriod}", ${rawTo} → "${toPeriod}"`);
+        // Removed excessive logging - this fired on every formula evaluation
         
         // Validate that periods were converted successfully
         const periodPattern = /^[A-Za-z]{3}\s+\d{4}$/;
@@ -5091,16 +5094,7 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
  */
 async function BALANCECURRENCY(account, fromPeriod, toPeriod, subsidiary, currency, department, location, classId, accountingBook) {
     try {
-        // DEBUG: Log all raw parameters to understand what Excel is passing
-        console.log(`🔍 BALANCECURRENCY CALLED with raw params:`, {
-            account: typeof account === 'object' ? 'Range object' : account,
-            fromPeriod: typeof fromPeriod === 'object' ? 'Range object' : fromPeriod,
-            toPeriod: typeof toPeriod === 'object' ? 'Range object' : toPeriod,
-            subsidiary: typeof subsidiary === 'object' ? 'Range object' : subsidiary,
-            currency: typeof currency === 'object' ? `Range object (${JSON.stringify(currency).substring(0, 100)})` : currency,
-            currencyType: typeof currency,
-            currencyIsObject: typeof currency === 'object' && currency !== null
-        });
+        // Removed excessive debug logging - only log on actual errors
         
         // ================================================================
         // VALIDATION: Check for empty cell references (CPA perspective)
