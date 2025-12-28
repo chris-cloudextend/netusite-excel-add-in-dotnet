@@ -7370,42 +7370,7 @@ async function TYPEBALANCE(accountType, fromPeriod, toPeriod, subsidiary, depart
     } catch (e) { /* ignore */ }
     
     try {
-        // ================================================================
-        // PRELOAD COORDINATION: If taskpane is pre-fetching, wait for it
-        // This prevents formulas from running before cache is populated
-        // Uses localStorage for cross-context communication
-        // ================================================================
-        let preloadWaited = false;
-        
-        // Log current preload status for debugging
-        const preloadStatus = localStorage.getItem(PRELOAD_STATUS_KEY) || 'not_set';
-        const cacheHasData = hasLocalStorageCache();
-        console.log(`🔍 TYPEBALANCE: preload_status="${preloadStatus}", cache_has_data=${cacheHasData}`);
-        
-        if (isPreloadInProgress()) {
-            // Preload is explicitly running - wait for it
-            console.log(`⏳ TYPEBALANCE: Preload in progress - waiting for cache...`);
-            await waitForPreload();
-            preloadWaited = true;
-            console.log(`✅ TYPEBALANCE: Preload complete - will check cache`);
-        } else if (!cacheHasData && preloadStatus !== 'complete') {
-            // No preload running AND cache is empty AND preload hasn't completed
-            // This might mean taskpane hasn't started yet - wait briefly
-            console.log(`⏳ TYPEBALANCE: No cache yet - waiting briefly for taskpane to populate...`);
-            const waitResult = await waitForCachePopulation(8000);
-            if (waitResult === 'preload_started') {
-                // Preload was detected during wait - now wait for it to complete
-                console.log(`⏳ TYPEBALANCE: Preload started - waiting for completion...`);
-                await waitForPreload();
-                preloadWaited = true;
-                console.log(`✅ TYPEBALANCE: Preload complete - will check cache`);
-            } else if (waitResult === 'cache_ready') {
-                preloadWaited = true;
-                console.log(`✅ TYPEBALANCE: Cache is ready - will use it`);
-            }
-        }
-        
-        // Normalize account type
+        // Normalize account type FIRST (needed to build cache key for early check)
         const normalizedType = String(accountType || '').trim();
         if (!normalizedType) {
             console.error('❌ TYPEBALANCE: accountType is required');
@@ -7488,6 +7453,10 @@ async function TYPEBALANCE(accountType, fromPeriod, toPeriod, subsidiary, depart
         const specialFlag = useSpecial ? '1' : '0';
         const cacheKey = `typebalance:${normalizedType}:${convertedFromPeriod}:${convertedToPeriod}:${subsidiaryStr}:${departmentStr}:${locationStr}:${classStr}:${bookStr}:${specialFlag}`;
         
+        // CRITICAL: Check cache FIRST before waiting for preload
+        // CFO Flash and other reports save cache before setting status to 'complete'
+        // So if cache exists, use it immediately instead of waiting
+        
         // Check in-memory cache first
         if (cache.typebalance && cache.typebalance[cacheKey] !== undefined) {
             console.log(`📋 TYPEBALANCE cache hit (memory): ${cacheKey} = ${cache.typebalance[cacheKey]}`);
@@ -7496,6 +7465,7 @@ async function TYPEBALANCE(accountType, fromPeriod, toPeriod, subsidiary, depart
         
         // Check localStorage if in-memory cache misses
         // This is CRITICAL when functions.html loads AFTER taskpane has pre-fetched data
+        let cacheKeyFound = false;
         let localStorageStatus = 'not checked';
         let localStorageKeyCount = 0;
         try {
@@ -7516,6 +7486,7 @@ async function TYPEBALANCE(accountType, fromPeriod, toPeriod, subsidiary, depart
                     
                     return storedBalances[cacheKey];
                 }
+                cacheKeyFound = false;
                 localStorageStatus = `has ${localStorageKeyCount} keys but NOT our key`;
             } else {
                 localStorageStatus = 'EMPTY (no data from taskpane)';
@@ -7523,6 +7494,99 @@ async function TYPEBALANCE(accountType, fromPeriod, toPeriod, subsidiary, depart
         } catch (e) {
             localStorageStatus = `ERROR: ${e.message}`;
             console.warn('⚠️ localStorage read failed:', e.message);
+        }
+        
+        // ================================================================
+        // PRELOAD COORDINATION: Only wait if cache key not found
+        // If cache exists but our key is missing, proceed to API call
+        // This prevents unnecessary waiting when CFO Flash has already saved cache
+        // ================================================================
+        let preloadWaited = false;
+        
+        // Log current preload status for debugging
+        const preloadStatus = localStorage.getItem(PRELOAD_STATUS_KEY) || 'not_set';
+        const cacheHasData = hasLocalStorageCache();
+        console.log(`🔍 TYPEBALANCE: preload_status="${preloadStatus}", cache_has_data=${cacheHasData}, cache_key_found=${cacheKeyFound}`);
+        
+        // Only wait if preload is running AND cache doesn't have our key
+        // If cache exists but key is missing, it means this specific combination wasn't cached
+        // So proceed to API call instead of waiting
+        if (isPreloadInProgress() && !cacheKeyFound) {
+            // Preload is explicitly running and cache doesn't have our key - wait for it
+            console.log(`⏳ TYPEBALANCE: Preload in progress and cache key not found - waiting for cache...`);
+            await waitForPreload();
+            preloadWaited = true;
+            console.log(`✅ TYPEBALANCE: Preload complete - will re-check cache`);
+            
+            // Re-check cache after preload completes
+            try {
+                const stored = localStorage.getItem(TYPEBALANCE_STORAGE_KEY);
+                if (stored) {
+                    const storageData = JSON.parse(stored);
+                    const storedBalances = storageData.balances || {};
+                    if (storedBalances[cacheKey] !== undefined) {
+                        console.log(`📋 TYPEBALANCE cache hit (after preload wait): ${cacheKey} = ${storedBalances[cacheKey]}`);
+                        if (!cache.typebalance) cache.typebalance = {};
+                        cache.typebalance = { ...cache.typebalance, ...storedBalances };
+                        return storedBalances[cacheKey];
+                    }
+                }
+            } catch (e) {
+                console.warn('⚠️ localStorage re-check failed:', e.message);
+            }
+        } else if (!cacheHasData && preloadStatus !== 'complete' && !cacheKeyFound) {
+            // No preload running AND cache is empty AND preload hasn't completed AND key not found
+            // This might mean taskpane hasn't started yet - wait briefly
+            console.log(`⏳ TYPEBALANCE: No cache yet - waiting briefly for taskpane to populate...`);
+            const waitResult = await waitForCachePopulation(8000);
+            if (waitResult === 'preload_started') {
+                // Preload was detected during wait - now wait for it to complete
+                console.log(`⏳ TYPEBALANCE: Preload started - waiting for completion...`);
+                await waitForPreload();
+                preloadWaited = true;
+                console.log(`✅ TYPEBALANCE: Preload complete - will re-check cache`);
+                
+                // Re-check cache after preload completes
+                try {
+                    const stored = localStorage.getItem(TYPEBALANCE_STORAGE_KEY);
+                    if (stored) {
+                        const storageData = JSON.parse(stored);
+                        const storedBalances = storageData.balances || {};
+                        if (storedBalances[cacheKey] !== undefined) {
+                            console.log(`📋 TYPEBALANCE cache hit (after wait): ${cacheKey} = ${storedBalances[cacheKey]}`);
+                            if (!cache.typebalance) cache.typebalance = {};
+                            cache.typebalance = { ...cache.typebalance, ...storedBalances };
+                            return storedBalances[cacheKey];
+                        }
+                    }
+                } catch (e) {
+                    console.warn('⚠️ localStorage re-check failed:', e.message);
+                }
+            } else if (waitResult === 'cache_ready') {
+                preloadWaited = true;
+                console.log(`✅ TYPEBALANCE: Cache is ready - will re-check`);
+                
+                // Re-check cache
+                try {
+                    const stored = localStorage.getItem(TYPEBALANCE_STORAGE_KEY);
+                    if (stored) {
+                        const storageData = JSON.parse(stored);
+                        const storedBalances = storageData.balances || {};
+                        if (storedBalances[cacheKey] !== undefined) {
+                            console.log(`📋 TYPEBALANCE cache hit (after cache ready): ${cacheKey} = ${storedBalances[cacheKey]}`);
+                            if (!cache.typebalance) cache.typebalance = {};
+                            cache.typebalance = { ...cache.typebalance, ...storedBalances };
+                            return storedBalances[cacheKey];
+                        }
+                    }
+                } catch (e) {
+                    console.warn('⚠️ localStorage re-check failed:', e.message);
+                }
+            }
+        } else if (cacheKeyFound) {
+            // Cache exists but key not found - this is expected for some combinations
+            // Proceed to API call without waiting
+            console.log(`ℹ️ TYPEBALANCE: Cache exists but key "${cacheKey}" not found - will use API`);
         }
         
         // Log cache miss with details for debugging
