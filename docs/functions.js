@@ -4393,51 +4393,101 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         const cacheKey = getCacheKey('balance', params);
         
         // ================================================================
-        // PRELOAD COORDINATION: If Prep Data is running, wait for it
-        // Uses localStorage for cross-context communication
+        // PRELOAD COORDINATION: If Prep Data is running, wait for SPECIFIC PERIOD
+        // FIX: Use period-specific waiting instead of global preload status
+        // This allows formulas to resolve as soon as their period completes,
+        // rather than waiting for ALL periods to complete
         // ================================================================
-        if (isPreloadInProgress()) {
-            console.log(`⏳ Preload in progress - waiting for cache (${account}/${fromPeriod || toPeriod})`);
-            await waitForPreload();
-            console.log(`✅ Preload complete - checking cache`);
-            
-            // After preload completes, check caches - should be populated now!
-            // Check in-memory cache
-            if (cache.balance.has(cacheKey)) {
-                console.log(`✅ Post-preload cache hit (memory): ${account}`);
-                cacheStats.hits++;
-                return cache.balance.get(cacheKey);
+        // Normalize lookupPeriod early for period-specific checks
+        const lookupPeriod = normalizePeriodKey(fromPeriod || toPeriod, false);
+        
+        if (isPreloadInProgress() && lookupPeriod) {
+            const periodKey = normalizePeriodKey(lookupPeriod);
+            if (periodKey) {
+                const filtersHash = getFilterKey({ subsidiary, department, location, classId, accountingBook });
+                const status = getPeriodStatus(filtersHash, periodKey);
+                const manifest = getManifest(filtersHash);
+                const period = manifest.periods[periodKey];
+                
+                // If this specific period is being preloaded, wait for it (not global preload)
+                if (status === "running" || status === "requested") {
+                    console.log(`⏳ Period ${periodKey} is ${status} - waiting for this specific period (${account}/${periodKey})`);
+                    const maxWait = 120000; // 120s max wait for this period
+                    const waited = await waitForPeriodCompletion(filtersHash, periodKey, maxWait);
+                    
+                    if (waited) {
+                        // Period completed - check cache immediately
+                        const localStorageValue = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
+                        if (localStorageValue !== null) {
+                            console.log(`✅ Post-preload cache hit (localStorage): ${account} for ${periodKey} = ${localStorageValue}`);
+                            cacheStats.hits++;
+                            cache.balance.set(cacheKey, localStorageValue);
+                            return localStorageValue;
+                        }
+                        
+                        // Also check in-memory cache
+                        if (cache.balance.has(cacheKey)) {
+                            console.log(`✅ Post-preload cache hit (memory): ${account} for ${periodKey}`);
+                            cacheStats.hits++;
+                            return cache.balance.get(cacheKey);
+                        }
+                    }
+                    
+                    // Check final status - if still running, return BUSY
+                    const finalStatus = getPeriodStatus(filtersHash, periodKey);
+                    if (finalStatus === "running" || finalStatus === "requested") {
+                        console.log(`⏳ Period ${periodKey} still ${finalStatus} - returning BUSY`);
+                        throw new Error('BUSY');
+                    }
+                } else if (status === "completed") {
+                    // Period already completed - check cache immediately (no wait needed)
+                    const localStorageValue = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
+                    if (localStorageValue !== null) {
+                        console.log(`✅ Period ${periodKey} already completed - cache hit: ${account} = ${localStorageValue}`);
+                        cacheStats.hits++;
+                        cache.balance.set(cacheKey, localStorageValue);
+                        return localStorageValue;
+                    }
+                }
+                // If status is "not_found" or "failed", continue to manifest check below
+            } else {
+                // Cannot normalize period - fall back to global preload wait (legacy behavior)
+                console.log(`⏳ Preload in progress - waiting for cache (${account}/${fromPeriod || toPeriod}) - period not normalized, using global wait`);
+                await waitForPreload();
+                console.log(`✅ Preload complete - checking cache`);
+                
+                // After preload completes, check caches
+                if (cache.balance.has(cacheKey)) {
+                    console.log(`✅ Post-preload cache hit (memory): ${account}`);
+                    cacheStats.hits++;
+                    return cache.balance.get(cacheKey);
+                }
+                
+                const localStorageValue = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary);
+                if (localStorageValue !== null) {
+                    console.log(`✅ Post-preload cache hit (localStorage): ${account}`);
+                    cacheStats.hits++;
+                    cache.balance.set(cacheKey, localStorageValue);
+                    return localStorageValue;
+                }
+                
+                const fyValue = checkFullYearCache(account, fromPeriod || toPeriod, subsidiary);
+                if (fyValue !== null) {
+                    console.log(`✅ Post-preload cache hit (fullYearCache): ${account}`);
+                    cacheStats.hits++;
+                    cache.balance.set(cacheKey, fyValue);
+                    return fyValue;
+                }
+                
+                console.log(`⚠️ Post-preload cache miss - will query NetSuite: ${account}`);
             }
-            
-            // Check localStorage cache (skip if subsidiary filter - localStorage not subsidiary-aware)
-            const localStorageValue = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary);
-            if (localStorageValue !== null) {
-                console.log(`✅ Post-preload cache hit (localStorage): ${account}`);
-                cacheStats.hits++;
-                cache.balance.set(cacheKey, localStorageValue);
-                return localStorageValue;
-            }
-            
-            // Check fullYearCache (skip if subsidiary filter - fullYearCache not subsidiary-aware)
-            const fyValue = checkFullYearCache(account, fromPeriod || toPeriod, subsidiary);
-            if (fyValue !== null) {
-                console.log(`✅ Post-preload cache hit (fullYearCache): ${account}`);
-                cacheStats.hits++;
-                cache.balance.set(cacheKey, fyValue);
-                return fyValue;
-            }
-            
-            console.log(`⚠️ Post-preload cache miss - will query NetSuite: ${account}`);
         }
         
         // ================================================================
         // CHECK FOR CACHE INVALIDATION SIGNAL (from Refresh Selected)
         // ================================================================
-        // CRITICAL: Normalize lookupPeriod defensively to ensure cache keys are never built from untrusted inputs
-        // Even though fromPeriod and toPeriod are already normalized, we normalize lookupPeriod explicitly
-        // to prevent any edge cases where it might be used before normalization
-        // ✅ Use normalizePeriodKey (synchronous, no await needed)
-        const lookupPeriod = normalizePeriodKey(fromPeriod || toPeriod, false);
+        // CRITICAL: lookupPeriod already normalized above (line ~4396)
+        // Re-use the same variable to avoid duplicate declaration
         const invalidateKey = 'netsuite_cache_invalidate';
         try {
             const invalidateData = localStorage.getItem(invalidateKey);
