@@ -3015,20 +3015,8 @@ function checkLocalStorageCache(account, period, toPeriod = null, subsidiary = '
                     // This prevents redundant API calls for accounts with no transactions
                     console.log(`✅ Preload cache hit (xavi_balance_cache): ${account} for ${lookupPeriod} = ${cachedValue} (${cachedValue === 0 ? 'zero balance' : 'non-zero'})`);
                     return cachedValue;
-                } else {
-                    // Debug: Log what keys are available (first 5) to help diagnose mismatches
-                    const availableKeys = Object.keys(preloadData).filter(k => k.startsWith(`balance:${account}::`));
-                    if (availableKeys.length > 0) {
-                        console.log(`🔍 Preload cache: Found ${availableKeys.length} keys for account ${account}, but not for period "${lookupPeriod}". Available periods: ${availableKeys.slice(0, 3).map(k => k.split('::')[1]).join(', ')}`);
-                    } else {
-                        // Account not in preload cache - likely has no transactions for this period
-                        // The preload query only returns accounts with transactions, so accounts with zero transactions won't be cached
-                        console.log(`🔍 Preload cache: No keys found for account ${account} (looking for: ${preloadKey})`);
-                        console.log(`   💡 This likely means account ${account} has no transactions for ${lookupPeriod}, so it wasn't returned by the preload query. Will need to query backend.`);
-                    }
                 }
-            } else {
-                console.log(`🔍 Preload cache: xavi_balance_cache not found in localStorage`);
+                // Reduced logging - only log if debugging is needed
             }
         } catch (preloadErr) {
             console.warn(`⚠️ Preload cache lookup error:`, preloadErr);
@@ -3040,19 +3028,48 @@ function checkLocalStorageCache(account, period, toPeriod = null, subsidiary = '
         // Legacy format: { "10010": { "Jan 2025": 2064705.84, ... }, ... }
         // ================================================================
         const timestamp = localStorage.getItem(STORAGE_TIMESTAMP_KEY);
-        if (!timestamp) return null;
+        if (!timestamp) {
+            // Only log if this is likely an Income Statement lookup (P&L account)
+            return null;
+        }
         
         const cacheAge = Date.now() - parseInt(timestamp);
-        if (cacheAge > STORAGE_TTL) return null;
+        if (cacheAge > STORAGE_TTL) {
+            return null;
+        }
         
         const cached = localStorage.getItem(STORAGE_KEY);
-        if (!cached) return null;
+        if (!cached) {
+            return null;
+        }
         
         const balances = JSON.parse(cached);
         
-        if (lookupPeriod && balances[account] && balances[account][lookupPeriod] !== undefined) {
-            return balances[account][lookupPeriod];
+        // CRITICAL: Account might be string or number - try both formats
+        const accountStr = String(account);
+        const accountKey = balances[accountStr] !== undefined ? accountStr : 
+                          (balances[account] !== undefined ? account : null);
+        
+        if (lookupPeriod && accountKey && balances[accountKey]) {
+            const accountData = balances[accountKey];
+            if (accountData[lookupPeriod] !== undefined) {
+                const value = accountData[lookupPeriod];
+                return value;
+            } else {
+                // Period not found - log available periods for first few misses (debugging)
+                const availablePeriods = Object.keys(accountData).slice(0, 3);
+                if (cacheStats.misses < 5) {
+                    console.log(`⚠️ Cache: Account ${account} found, but period "${lookupPeriod}" not found. Available: ${availablePeriods.join(', ')}`);
+                }
+            }
+        } else {
+            // Account not found - log for first few misses (debugging)
+            if (cacheStats.misses < 5) {
+                const sampleAccounts = Object.keys(balances).slice(0, 3);
+                console.log(`⚠️ Cache: Account ${account} not found. Sample accounts: ${sampleAccounts.join(', ')}`);
+            }
         }
+        
         return null;
     } catch (e) {
         return null;
@@ -4412,13 +4429,19 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
             const filtersHash = getFilterKey({ subsidiary, department, location, classId, accountingBook });
             const localStorageValue = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
             if (localStorageValue !== null) {
-                console.log(`✅ P&L account cache hit (skipping manifest check): ${account} for ${fromPeriod || '(cumulative)'} → ${toPeriod} = ${localStorageValue}`);
+                // Reduced logging - only log first few cache hits to reduce noise
+                if (cacheStats.hits < 5) {
+                    console.log(`✅ P&L cache hit: ${account}/${lookupPeriod} = ${localStorageValue}`);
+                }
                 cacheStats.hits++;
                 cache.balance.set(cacheKey, localStorageValue);
                 return localStorageValue;
             }
-            // Cache miss for P&L - continue to normal API path (don't wait for BS preload)
-            console.log(`📭 P&L account cache miss: ${account} for ${fromPeriod || '(cumulative)'} → ${toPeriod} - will use API (not waiting for BS preload)`);
+            // Cache miss for P&L - log first few misses for debugging, then reduce noise
+            if (cacheStats.misses < 10) {
+                console.log(`📭 P&L cache miss: ${account}/${lookupPeriod} - using API`);
+            }
+            cacheStats.misses++;
         }
         
         // Manifest/preload logic ONLY for Balance Sheet accounts
@@ -4627,13 +4650,20 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         const filtersHash = getFilterKey({ subsidiary, department, location, classId, accountingBook });
         const localStorageValue = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
         if (localStorageValue !== null) {
-            console.log(`✅ localStorage cache hit: ${account} for ${fromPeriod || '(cumulative)'} → ${toPeriod}`);
+            // Reduced logging - only log first few hits
+            if (cacheStats.hits < 5) {
+                console.log(`✅ Cache hit: ${account}/${lookupPeriod || toPeriod}`);
+            }
             cacheStats.hits++;
             // Also save to in-memory cache for next time
             cache.balance.set(cacheKey, localStorageValue);
             return localStorageValue;
         } else {
-            console.log(`📭 localStorage cache miss: ${account} for ${fromPeriod || '(cumulative)'} → ${toPeriod} (checkLocalStorageCache returned null)`);
+            // Reduced logging - only log first few misses
+            if (cacheStats.misses < 10) {
+                console.log(`📭 Cache miss: ${account}/${lookupPeriod || toPeriod}`);
+            }
+            cacheStats.misses++;
             
             // ================================================================
             // FIX #2 & #4: Check manifest and trigger preload BEFORE queuing API calls
