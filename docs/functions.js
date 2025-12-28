@@ -4668,6 +4668,17 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                                     throw new Error('BUSY');
                                 }
                             } else if (status === "not_found") {
+                                // CRITICAL: Before triggering preload, double-check legacy cache
+                                // Income statement and other reports save to netsuite_balance_cache but don't update manifest
+                                // So if cache exists, use it instead of triggering preload
+                                const legacyCacheCheck = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
+                                if (legacyCacheCheck !== null) {
+                                    console.log(`✅ Legacy cache found (manifest not_found but cache exists): ${account} for ${resolved} = ${legacyCacheCheck}`);
+                                    cacheStats.hits++;
+                                    cache.balance.set(cacheKey, legacyCacheCheck);
+                                    return legacyCacheCheck;
+                                }
+                                
                                 // FIX #2: Period not requested - trigger preload EARLY (before queuing)
                                 console.log(`🔄 Period ${resolved} not in manifest - triggering preload before queuing API calls`);
                                 addPeriodToRequestQueue(resolved, { subsidiary, department, location, classId, accountingBook });
@@ -4792,6 +4803,17 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                             throw new Error('BUSY');
                         }
                     } else if (status === "not_found") {
+                        // CRITICAL: Before triggering preload, double-check legacy cache
+                        // Income statement and other reports save to netsuite_balance_cache but don't update manifest
+                        // So if cache exists, use it instead of triggering preload
+                        const legacyCacheCheck = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
+                        if (legacyCacheCheck !== null) {
+                            console.log(`✅ Legacy cache found (manifest not_found but cache exists): ${account} for ${periodKey} = ${legacyCacheCheck}`);
+                            cacheStats.hits++;
+                            cache.balance.set(cacheKey, legacyCacheCheck);
+                            return legacyCacheCheck;
+                        }
+                        
                         // FIX #2: Period not requested - trigger preload EARLY (before queuing)
                         console.log(`🔄 Period ${periodKey} not in manifest - triggering preload before queuing API calls`);
                         addPeriodToRequestQueue(periodKey, { subsidiary, department, location, classId, accountingBook });

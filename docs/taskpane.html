@@ -11312,6 +11312,50 @@ For licensing inquiries, contact: legal@celigo.com
                     localStorage.setItem('netsuite_balance_cache_timestamp', Date.now().toString());
                     console.log(`✅ Income Statement: Saved ${Object.keys(cacheData).length} accounts to localStorage`);
                     
+                    // CRITICAL: Update manifest to mark all periods as "completed"
+                    // This prevents formulas from triggering preload when cache already exists
+                    try {
+                        const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+                        const filtersHash = ''; // Income statement uses no filters (empty subsidiary, department, etc.)
+                        
+                        // Mark all 12 months as completed in manifest
+                        for (let i = 0; i < 12; i++) {
+                            const periodKey = `${monthNames[i]} ${currentYear}`;
+                            if (typeof window.updatePeriodStatus === 'function') {
+                                window.updatePeriodStatus(filtersHash, periodKey, { status: 'completed' });
+                            } else {
+                                // Fallback: Update manifest directly if function not available
+                                const stored = localStorage.getItem('netsuite_precache_manifest');
+                                const all = stored ? JSON.parse(stored) : {};
+                                if (!all[filtersHash]) {
+                                    all[filtersHash] = { periods: {}, lastUpdated: Date.now() };
+                                }
+                                const manifest = all[filtersHash];
+                                if (!manifest.periods[periodKey]) {
+                                    manifest.periods[periodKey] = {
+                                        requestedAt: Date.now(),
+                                        completedAt: Date.now(),
+                                        failedAt: null,
+                                        attemptCount: 0,
+                                        lastError: null,
+                                        batchId: null,
+                                        status: "completed"
+                                    };
+                                } else {
+                                    manifest.periods[periodKey].status = "completed";
+                                    manifest.periods[periodKey].completedAt = Date.now();
+                                    manifest.periods[periodKey].lastError = null;
+                                }
+                                manifest.lastUpdated = Date.now();
+                                all[filtersHash] = manifest;
+                                localStorage.setItem('netsuite_precache_manifest', JSON.stringify(all));
+                            }
+                        }
+                        console.log(`✅ Income Statement: Marked all 12 months as completed in manifest`);
+                    } catch (e) {
+                        console.warn('⚠️ Income Statement: Failed to update manifest:', e.message);
+                    }
+                    
                     // DON'T signal complete yet - wait until AFTER formulas are written
                     // This ensures formulas wait for cache on first evaluation
                     console.log('💾 Income Statement: Cache saved - formulas will be written next');
