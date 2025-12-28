@@ -4671,9 +4671,11 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
             // ================================================================
             // FIX #2 & #4: Check manifest and trigger preload BEFORE queuing API calls
             // This ensures preload is triggered early and formulas wait if preload is in progress
+            // CRITICAL: Manifest/preload logic ONLY for Balance Sheet accounts
+            // P&L accounts should skip this entirely and proceed directly to API call
             // ================================================================
-            // ✅ Check manifest (removed subsidiary gate - manifest works for all filters)
-            if (lookupPeriod) {
+            // ✅ Check manifest ONLY for BS accounts (P&L accounts skip this)
+            if (isBSAccount && lookupPeriod) {
                 const periodKey = normalizePeriodKey(lookupPeriod);
                 if (!periodKey) {
                     // If numeric ID, try to resolve it
@@ -4747,50 +4749,52 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                                 
                         // FIX #4: Wait for preload with bounded timeout (120s max - increased from 90s)
                         // BS preload can take 60-90s, so 120s gives buffer for network delays
-                        const maxWait = 120000; // 120 seconds - bounded wait (increased from 90s)
-                        console.log(`⏳ Waiting for preload to start/complete (max ${maxWait/1000}s)...`);
-                        const waited = await waitForPeriodCompletion(filtersHash, resolved, maxWait);
-                                
-                                if (waited) {
-                                    // Preload completed - re-check cache
-                                    let retryCache = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
-                                    if (retryCache !== null) {
-                                        console.log(`✅ Post-preload cache hit: ${account} for ${resolved} = ${retryCache}`);
-                                        cacheStats.hits++;
-                                        cache.balance.set(cacheKey, retryCache);
-                                        return retryCache;
-                                    }
+                                    const maxWait = 120000; // 120 seconds - bounded wait (increased from 90s)
+                                    console.log(`⏳ Waiting for preload to start/complete (max ${maxWait/1000}s)...`);
+                                    const waited = await waitForPeriodCompletion(filtersHash, resolved, maxWait);
                                     
-                                    // FIX: Cache might not be written yet (race condition)
-                                    // Wait up to 3 seconds for cache to be written, checking every 500ms
-                                    console.log(`⏳ Period ${resolved} marked completed but cache not found - waiting for cache write...`);
-                                    const cacheWaitStart = Date.now();
-                                    const cacheWaitMax = 3000; // 3 seconds max
-                                    while (Date.now() - cacheWaitStart < cacheWaitMax) {
-                                        await new Promise(r => setTimeout(r, 500)); // Check every 500ms
-                                        
-                                        retryCache = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
+                                    if (waited) {
+                                        // Preload completed - re-check cache
+                                        let retryCache = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
                                         if (retryCache !== null) {
-                                            console.log(`✅ Post-preload cache hit (after wait): ${account} for ${resolved} = ${retryCache}`);
+                                            console.log(`✅ Post-preload cache hit: ${account} for ${resolved} = ${retryCache}`);
                                             cacheStats.hits++;
                                             cache.balance.set(cacheKey, retryCache);
                                             return retryCache;
                                         }
+                                        
+                                        // FIX: Cache might not be written yet (race condition)
+                                        // Wait up to 3 seconds for cache to be written, checking every 500ms
+                                        console.log(`⏳ Period ${resolved} marked completed but cache not found - waiting for cache write...`);
+                                        const cacheWaitStart = Date.now();
+                                        const cacheWaitMax = 3000; // 3 seconds max
+                                        while (Date.now() - cacheWaitStart < cacheWaitMax) {
+                                            await new Promise(r => setTimeout(r, 500)); // Check every 500ms
+                                            
+                                            retryCache = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
+                                            if (retryCache !== null) {
+                                                console.log(`✅ Post-preload cache hit (after wait): ${account} for ${resolved} = ${retryCache}`);
+                                                cacheStats.hits++;
+                                                cache.balance.set(cacheKey, retryCache);
+                                                return retryCache;
+                                            }
+                                        }
+                                        
+                                        // Cache still not found - throw BUSY to force re-evaluation
+                                        console.log(`⏳ Period ${resolved} completed but cache not found after ${cacheWaitMax}ms - returning BUSY`);
+                                        throw new Error('BUSY');
                                     }
                                     
-                                    // Cache still not found - throw BUSY to force re-evaluation
-                                    console.log(`⏳ Period ${resolved} completed but cache not found after ${cacheWaitMax}ms - returning BUSY`);
-                                    throw new Error('BUSY');
+                                    // Still miss after wait - check if now running/retrying
+                                    const finalStatus = getPeriodStatus(filtersHash, resolved);
+                                    if (finalStatus === "running" || finalStatus === "requested") {
+                                        // ✅ Still running - return BUSY (don't queue API call yet)
+                                        console.log(`⏳ Period ${resolved} still ${finalStatus} - returning BUSY (will retry when preload completes)`);
+                                        throw new Error('BUSY');
+                                    }
+                                    // If preload failed or timed out, continue to API call below
                                 }
-                                
-                                // Still miss after wait - check if now running/retrying
-                                const finalStatus = getPeriodStatus(filtersHash, resolved);
-                                if (finalStatus === "running" || finalStatus === "requested") {
-                                    // ✅ Still running - return BUSY (don't queue API call yet)
-                                    console.log(`⏳ Period ${resolved} still ${finalStatus} - returning BUSY (will retry when preload completes)`);
-                                    throw new Error('BUSY');
-                                }
-                                // If preload failed or timed out, continue to API call below
+                                // P&L accounts skip preload wait - proceed directly to API call
                             }
                         } else {
                             // Cannot resolve - proceed with API call
@@ -4885,56 +4889,67 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                             }
                         } else {
                             // P&L account - don't trigger BS preload, proceed to API call
-                            console.log(`ℹ️ P&L account: Period ${periodKey} not in manifest - skipping BS preload, will use API`);
+                            // CRITICAL: P&L accounts should NEVER wait for BS preload
+                            // Remove excessive logging - only log first few misses
+                            if (cacheStats.misses < 3) {
+                                console.log(`ℹ️ P&L: Period ${periodKey} not in manifest - skipping BS preload, using API`);
+                            }
+                            cacheStats.misses++;
+                            // Skip the wait entirely for P&L accounts - proceed directly to API call
+                            // (The code continues below to make the API call)
                         }
                         
-                        // FIX #4: Wait for preload with bounded timeout (120s max - increased from 90s)
-                        // BS preload can take 60-90s, so 120s gives buffer for network delays
-                        const maxWait = 120000; // 120 seconds - bounded wait (increased from 90s)
-                        console.log(`⏳ Waiting for preload to start/complete (max ${maxWait/1000}s)...`);
-                        const waited = await waitForPeriodCompletion(filtersHash, periodKey, maxWait);
-                        
-                        if (waited) {
-                            // Preload completed - re-check cache
-                            let retryCache = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
-                            if (retryCache !== null) {
-                                console.log(`✅ Post-preload cache hit: ${account} for ${periodKey} = ${retryCache}`);
-                                cacheStats.hits++;
-                                cache.balance.set(cacheKey, retryCache);
-                                return retryCache;
-                            }
+                        // CRITICAL FIX: Only wait for preload if this is a BS account
+                        // P&L accounts should NEVER wait for BS preload (they use different cache)
+                        if (isBSAccount) {
+                            // FIX #4: Wait for preload with bounded timeout (120s max - increased from 90s)
+                            // BS preload can take 60-90s, so 120s gives buffer for network delays
+                            const maxWait = 120000; // 120 seconds - bounded wait (increased from 90s)
+                            console.log(`⏳ Waiting for preload to start/complete (max ${maxWait/1000}s)...`);
+                            const waited = await waitForPeriodCompletion(filtersHash, periodKey, maxWait);
                             
-                            // FIX: Cache might not be written yet (race condition)
-                            // Wait up to 3 seconds for cache to be written, checking every 500ms
-                            console.log(`⏳ Period ${periodKey} marked completed but cache not found - waiting for cache write...`);
-                            const cacheWaitStart = Date.now();
-                            const cacheWaitMax = 3000; // 3 seconds max
-                            while (Date.now() - cacheWaitStart < cacheWaitMax) {
-                                await new Promise(r => setTimeout(r, 500)); // Check every 500ms
-                                
-                                retryCache = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
+                            if (waited) {
+                                // Preload completed - re-check cache
+                                let retryCache = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
                                 if (retryCache !== null) {
-                                    console.log(`✅ Post-preload cache hit (after wait): ${account} for ${periodKey} = ${retryCache}`);
+                                    console.log(`✅ Post-preload cache hit: ${account} for ${periodKey} = ${retryCache}`);
                                     cacheStats.hits++;
                                     cache.balance.set(cacheKey, retryCache);
                                     return retryCache;
                                 }
+                                
+                                // FIX: Cache might not be written yet (race condition)
+                                // Wait up to 3 seconds for cache to be written, checking every 500ms
+                                console.log(`⏳ Period ${periodKey} marked completed but cache not found - waiting for cache write...`);
+                                const cacheWaitStart = Date.now();
+                                const cacheWaitMax = 3000; // 3 seconds max
+                                while (Date.now() - cacheWaitStart < cacheWaitMax) {
+                                    await new Promise(r => setTimeout(r, 500)); // Check every 500ms
+                                    
+                                    retryCache = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
+                                    if (retryCache !== null) {
+                                        console.log(`✅ Post-preload cache hit (after wait): ${account} for ${periodKey} = ${retryCache}`);
+                                        cacheStats.hits++;
+                                        cache.balance.set(cacheKey, retryCache);
+                                        return retryCache;
+                                    }
+                                }
+                                
+                                // Cache still not found - throw BUSY to force re-evaluation
+                                console.log(`⏳ Period ${periodKey} completed but cache not found after ${cacheWaitMax}ms - returning BUSY`);
+                                throw new Error('BUSY');
                             }
                             
-                            // Cache still not found - throw BUSY to force re-evaluation
-                            console.log(`⏳ Period ${periodKey} completed but cache not found after ${cacheWaitMax}ms - returning BUSY`);
-                            throw new Error('BUSY');
+                            // Still miss after wait - check if now running/retrying
+                            const finalStatus = getPeriodStatus(filtersHash, periodKey);
+                            if (finalStatus === "running" || finalStatus === "requested") {
+                                // ✅ Still running - return BUSY (don't queue API call yet)
+                                console.log(`⏳ Period ${periodKey} still ${finalStatus} - returning BUSY (will retry when preload completes)`);
+                                throw new Error('BUSY');
+                            }
+                            // If preload failed or timed out, continue to API call below
                         }
-                        
-                        // Still miss after wait - check if now running/retrying
-                        const finalStatus = getPeriodStatus(filtersHash, periodKey);
-                        if (finalStatus === "running" || finalStatus === "requested") {
-                            // ✅ Still running - return BUSY (don't queue API call yet)
-                            console.log(`⏳ Period ${periodKey} still ${finalStatus} - returning BUSY (will retry when preload completes)`);
-                            throw new Error('BUSY');
-                        }
-                        // If preload failed or timed out, continue to API call below
-                    }
+                        // P&L accounts skip the wait entirely - proceed directly to API call
                 }
             }
         }
