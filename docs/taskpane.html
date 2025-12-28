@@ -8884,8 +8884,26 @@ For licensing inquiries, contact: legal@celigo.com
                                                 });
                                             }
                                         }
-                                    } else {
-                                        // Fallback: assume all requested periods completed if no period_results
+                                    }
+                                    
+                                    // FIX: If we have balances cached but no period_results marked as completed,
+                                    // check if the period is actually cached in localStorage
+                                    // This handles cases where backend succeeded but period_results parsing failed
+                                    if (completedPeriods.length === 0 && result.balances && Object.keys(result.balances).length > 0) {
+                                        console.log(`⚠️ No completed periods in period_results, but ${Object.keys(result.balances).length} accounts cached. Checking localStorage...`);
+                                        for (const period of periodChunk) {
+                                            // Check if this period has any cached balances
+                                            const hasCachedData = isPeriodCachedInLocalStorage(period);
+                                            if (hasCachedData) {
+                                                console.log(`✅ Period ${period} is cached in localStorage - marking as completed`);
+                                                completedPeriods.push(period);
+                                            }
+                                        }
+                                    }
+                                    
+                                    // Final fallback: if still no completed periods but we have balances, assume all completed
+                                    if (completedPeriods.length === 0 && result.balances && Object.keys(result.balances).length > 0) {
+                                        console.log(`⚠️ Fallback: Assuming all ${periodChunk.length} period(s) completed (${Object.keys(result.balances).length} accounts cached)`);
                                         completedPeriods.push(...periodChunk);
                                     }
                                     

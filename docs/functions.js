@@ -4559,10 +4559,11 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                                     triggerAutoPreload(account, resolved);
                                 }
                                 
-                                // FIX #4: Wait for preload with bounded timeout (90s max)
-                                const maxWait = 90000; // 90 seconds - bounded wait
-                                console.log(`⏳ Waiting for preload to start/complete (max ${maxWait/1000}s)...`);
-                                const waited = await waitForPeriodCompletion(filtersHash, resolved, maxWait);
+                        // FIX #4: Wait for preload with bounded timeout (120s max - increased from 90s)
+                        // BS preload can take 60-90s, so 120s gives buffer for network delays
+                        const maxWait = 120000; // 120 seconds - bounded wait (increased from 90s)
+                        console.log(`⏳ Waiting for preload to start/complete (max ${maxWait/1000}s)...`);
+                        const waited = await waitForPeriodCompletion(filtersHash, resolved, maxWait);
                                 
                                 if (waited) {
                                     // Preload completed - re-check cache
@@ -4599,8 +4600,9 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                     const period = manifest.periods[periodKey];
                     
                     if (status === "running" || status === "requested") {
-                        // Period is being preloaded - wait longer
-                        const maxWait = 180000;  // 180s
+                        // Period is being preloaded - wait longer (120s max, increased from 90s)
+                        // BS preload can take 60-90s, so 120s gives buffer for network delays
+                        const maxWait = 120000;  // 120s (reduced from 180s but increased from original 90s)
                         console.log(`⏳ Period ${periodKey} is ${status} - waiting up to ${maxWait/1000}s...`);
                         const waited = await waitForPeriodCompletion(filtersHash, periodKey, maxWait);
                         
@@ -4641,8 +4643,9 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                             triggerAutoPreload(account, periodKey);
                         }
                         
-                        // FIX #4: Wait for preload with bounded timeout (90s max)
-                        const maxWait = 90000; // 90 seconds - bounded wait
+                        // FIX #4: Wait for preload with bounded timeout (120s max - increased from 90s)
+                        // BS preload can take 60-90s, so 120s gives buffer for network delays
+                        const maxWait = 120000; // 120 seconds - bounded wait (increased from 90s)
                         console.log(`⏳ Waiting for preload to start/complete (max ${maxWait/1000}s)...`);
                         const waited = await waitForPeriodCompletion(filtersHash, periodKey, maxWait);
                         
