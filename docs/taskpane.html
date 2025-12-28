@@ -8490,11 +8490,15 @@ For licensing inquiries, contact: legal@celigo.com
                 // AUTO-PRELOAD TRIGGER - Automatically preload when first BS formula detected
                 // No user interaction needed - we scan and preload automatically!
                 // Issue 2A Fix: Process all queued triggers (not just the last one)
+                // FIX #3: Process triggers on page load AND poll for new triggers
                 // ================================================================
-                // Scan all trigger keys with prefix netsuite_auto_preload_trigger_
-                const triggerKeys = [];
-                const allPeriods = new Set();
-                let firstTrigger = null;
+                
+                // Function to process auto-preload triggers
+                function processAutoPreloadTriggers() {
+                    // Scan all trigger keys with prefix netsuite_auto_preload_trigger_
+                    const triggerKeys = [];
+                    const allPeriods = new Set();
+                    let firstTrigger = null;
                 
                 try {
                     // Scan localStorage for all trigger keys
@@ -9072,7 +9076,32 @@ For licensing inquiries, contact: legal@celigo.com
                             }
                         }
                     }, 500); // Small delay to let formulas settle
+                    
+                    // Return true to indicate trigger was processed
+                    return true;
                 }
+                
+                // Return false if no triggers found
+                return false;
+                }
+                
+                // FIX #3: Process triggers on page load
+                const triggerProcessed = processAutoPreloadTriggers();
+                
+                // FIX #3: Set up polling to check for new triggers every 2 seconds
+                // This ensures triggers are processed even if taskpane wasn't open when they were created
+                let triggerPollInterval = setInterval(() => {
+                    const hasNewTrigger = processAutoPreloadTriggers();
+                    if (hasNewTrigger) {
+                        console.log('✅ Processed new auto-preload trigger via polling');
+                    }
+                }, 2000); // Check every 2 seconds
+                
+                // Stop polling after 5 minutes (triggers should be processed quickly)
+                setTimeout(() => {
+                    clearInterval(triggerPollInterval);
+                    console.log('⏹️ Stopped auto-preload trigger polling (5 minute timeout)');
+                }, 300000); // 5 minutes
                 
                 // ================================================================
                 // BS PRELOAD SUGGESTION - Auto-suggest when BS queries are slow
@@ -18741,13 +18770,31 @@ export default {
                             console.warn('⚠️ Failed to clear netsuite_balance_cache:', e);
                         }
                         
-                        // Signal functions.js to clear in-memory cache
+                        // FIX #1 & #5: Signal functions.js to clear in-memory cache
+                        // Use immediate timestamp and extended window (30s) for better synchronization
                         try {
                             localStorage.setItem('netsuite_cache_clear_signal', JSON.stringify({
                                 timestamp: Date.now(),
                                 reason: 'user_cleared_preload_cache'
                             }));
-                            console.log('✅ Sent cache clear signal to functions.js');
+                            console.log('✅ Sent cache clear signal to functions.js (30s window)');
+                            
+                            // FIX #5: Also clear in-memory cache directly via Excel.evaluate if possible
+                            // This ensures cache is cleared synchronously, not async
+                            try {
+                                await Excel.run(async (context) => {
+                                    const tempRange = context.workbook.worksheets.getActiveWorksheet().getRange('ZZ9999');
+                                    tempRange.formulas = [[`=XAVI.BALANCE("__CLEARCACHE__","ALL","")`]];
+                                    await context.sync();
+                                    // Clear the temp cell
+                                    tempRange.clear();
+                                    await context.sync();
+                                });
+                                console.log('✅ Cleared in-memory cache directly via Excel.evaluate');
+                            } catch (evalError) {
+                                console.warn('⚠️ Could not clear cache via Excel.evaluate (may not be available):', evalError);
+                                // Fallback to signal only
+                            }
                         } catch (e) {
                             console.warn('⚠️ Failed to send cache clear signal:', e);
                         }

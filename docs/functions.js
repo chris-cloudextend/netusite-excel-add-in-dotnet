@@ -4070,24 +4070,47 @@ async function PARENT(accountNumber, invocation) {
 async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, location, classId, accountingBook) {
     
     // Cross-context cache invalidation - taskpane signals via localStorage
+    // FIX #1 & #5: Synchronize cache clear - clear in-memory cache FIRST, then check signal
+    // This ensures cache is cleared before formulas evaluate
     try {
+        // CRITICAL: Clear in-memory cache FIRST (before checking signal)
+        // This ensures cache is cleared synchronously, not async
         const clearSignal = localStorage.getItem('netsuite_cache_clear_signal');
         if (clearSignal) {
             const { timestamp, reason } = JSON.parse(clearSignal);
-            if (Date.now() - timestamp < 10000) {
-                console.log(`🔄 Cache cleared (${reason})`);
+            // Extended window to 30 seconds (was 10) to handle timing issues
+            if (Date.now() - timestamp < 30000) {
+                console.log(`🔄 Cache cleared (${reason}) - clearing in-memory cache synchronously`);
+                // Clear in-memory cache FIRST
                 cache.balance.clear();
                 cache.budget.clear();
+                cache.title.clear();
+                cache.type.clear();
+                cache.parent.clear();
                 if (typeof fullYearCache === 'object' && fullYearCache) {
                     Object.keys(fullYearCache).forEach(k => delete fullYearCache[k]);
                 }
                 fullYearCacheTimestamp = null;
+                // Also clear localStorage caches to ensure complete clear
+                try {
+                    localStorage.removeItem('xavi_balance_cache');
+                    localStorage.removeItem('netsuite_balance_cache');
+                    localStorage.removeItem('netsuite_balance_cache_timestamp');
+                    console.log(`   ✅ Cleared localStorage caches from functions.js context`);
+                } catch (e) {
+                    console.warn('   ⚠️ Failed to clear localStorage from functions.js:', e);
+                }
+                // Remove signal after processing
                 localStorage.removeItem('netsuite_cache_clear_signal');
+                console.log(`✅ Cache clear complete - all caches cleared synchronously`);
             } else {
+                // Stale signal - remove it
                 localStorage.removeItem('netsuite_cache_clear_signal');
             }
         }
-    } catch (e) { /* ignore */ }
+    } catch (e) { 
+        console.warn('⚠️ Cache clear signal processing error:', e);
+    }
     
     try {
         // ================================================================
@@ -4408,40 +4431,6 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         }
         
         // ================================================================
-        // BUILD MODE DETECTION: Detect rapid formula creation (drag/paste)
-        // More aggressive detection - lower threshold, wider time window
-        // ================================================================
-        const now = Date.now();
-        buildModeLastEvent = now;
-        
-        // Count formulas created in the current window
-        formulaCreationCount++;
-        
-        // Reset counter after inactivity
-        if (formulaCountResetTimer) clearTimeout(formulaCountResetTimer);
-        formulaCountResetTimer = setTimeout(() => {
-            formulaCreationCount = 0;
-        }, BUILD_MODE_WINDOW_MS);
-        
-        // Enter build mode if we see rapid formula creation
-        if (!buildMode && formulaCreationCount >= BUILD_MODE_THRESHOLD) {
-            console.log(`🔨 BUILD MODE: Detected ${formulaCreationCount} formulas in ${BUILD_MODE_WINDOW_MS}ms`);
-            enterBuildMode();
-        }
-        
-        // Reset the settle timer on every formula (we'll process after user stops)
-        if (buildModeTimer) {
-            clearTimeout(buildModeTimer);
-        }
-        buildModeTimer = setTimeout(() => {
-            buildModeTimer = null;
-            formulaCreationCount = 0;
-            if (buildMode) {
-                exitBuildModeAndProcess();
-            }
-        }, BUILD_MODE_SETTLE_MS);
-        
-        // ================================================================
         // CHECK FOR CACHE INVALIDATION SIGNAL (from Refresh Selected)
         // ================================================================
         // CRITICAL: Normalize lookupPeriod defensively to ensure cache keys are never built from untrusted inputs
@@ -4505,6 +4494,10 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         } else {
             console.log(`📭 localStorage cache miss: ${account} for ${fromPeriod || '(cumulative)'} → ${toPeriod} (checkLocalStorageCache returned null)`);
             
+            // ================================================================
+            // FIX #2 & #4: Check manifest and trigger preload BEFORE queuing API calls
+            // This ensures preload is triggered early and formulas wait if preload is in progress
+            // ================================================================
             // ✅ Check manifest (removed subsidiary gate - manifest works for all filters)
             if (lookupPeriod) {
                 const periodKey = normalizePeriodKey(lookupPeriod);
@@ -4557,25 +4550,39 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                                     throw new Error('BUSY');
                                 }
                             } else if (status === "not_found") {
-                                // Period not requested - trigger preload
+                                // FIX #2: Period not requested - trigger preload EARLY (before queuing)
+                                console.log(`🔄 Period ${resolved} not in manifest - triggering preload before queuing API calls`);
                                 addPeriodToRequestQueue(resolved, { subsidiary, department, location, classId, accountingBook });
-                                // Process queue will be called by taskpane
                                 
-                                // Wait for preload
-                                const waited = await waitForPeriodCompletion(filtersHash, resolved, 180000);
+                                // FIX #4: Also trigger auto-preload for BS accounts (if not subsidiary-filtered)
+                                if (!subsidiary && isCumulativeRequest(fromPeriod)) {
+                                    triggerAutoPreload(account, resolved);
+                                }
+                                
+                                // FIX #4: Wait for preload with bounded timeout (90s max)
+                                const maxWait = 90000; // 90 seconds - bounded wait
+                                console.log(`⏳ Waiting for preload to start/complete (max ${maxWait/1000}s)...`);
+                                const waited = await waitForPeriodCompletion(filtersHash, resolved, maxWait);
+                                
                                 if (waited) {
+                                    // Preload completed - re-check cache
                                     const retryCache = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
                                     if (retryCache !== null) {
+                                        console.log(`✅ Post-preload cache hit: ${account} for ${resolved} = ${retryCache}`);
+                                        cacheStats.hits++;
+                                        cache.balance.set(cacheKey, retryCache);
                                         return retryCache;
                                     }
                                 }
                                 
-                                // Still miss - check if now running/retrying
+                                // Still miss after wait - check if now running/retrying
                                 const finalStatus = getPeriodStatus(filtersHash, resolved);
                                 if (finalStatus === "running" || finalStatus === "requested") {
-                                    // ✅ Now running - return BUSY
+                                    // ✅ Still running - return BUSY (don't queue API call yet)
+                                    console.log(`⏳ Period ${resolved} still ${finalStatus} - returning BUSY (will retry when preload completes)`);
                                     throw new Error('BUSY');
                                 }
+                                // If preload failed or timed out, continue to API call below
                             }
                         } else {
                             // Cannot resolve - proceed with API call
@@ -4625,25 +4632,39 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                             throw new Error('BUSY');
                         }
                     } else if (status === "not_found") {
-                        // Period not requested - trigger preload
+                        // FIX #2: Period not requested - trigger preload EARLY (before queuing)
+                        console.log(`🔄 Period ${periodKey} not in manifest - triggering preload before queuing API calls`);
                         addPeriodToRequestQueue(periodKey, { subsidiary, department, location, classId, accountingBook });
-                        // Process queue will be called by taskpane
                         
-                        // Wait for preload
-                        const waited = await waitForPeriodCompletion(filtersHash, periodKey, 180000);
+                        // FIX #4: Also trigger auto-preload for BS accounts (if not subsidiary-filtered)
+                        if (!subsidiary && isCumulativeRequest(fromPeriod)) {
+                            triggerAutoPreload(account, periodKey);
+                        }
+                        
+                        // FIX #4: Wait for preload with bounded timeout (90s max)
+                        const maxWait = 90000; // 90 seconds - bounded wait
+                        console.log(`⏳ Waiting for preload to start/complete (max ${maxWait/1000}s)...`);
+                        const waited = await waitForPeriodCompletion(filtersHash, periodKey, maxWait);
+                        
                         if (waited) {
+                            // Preload completed - re-check cache
                             const retryCache = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
                             if (retryCache !== null) {
+                                console.log(`✅ Post-preload cache hit: ${account} for ${periodKey} = ${retryCache}`);
+                                cacheStats.hits++;
+                                cache.balance.set(cacheKey, retryCache);
                                 return retryCache;
                             }
                         }
                         
-                        // Still miss - check if now running/retrying
+                        // Still miss after wait - check if now running/retrying
                         const finalStatus = getPeriodStatus(filtersHash, periodKey);
                         if (finalStatus === "running" || finalStatus === "requested") {
-                            // ✅ Now running - return BUSY
+                            // ✅ Still running - return BUSY (don't queue API call yet)
+                            console.log(`⏳ Period ${periodKey} still ${finalStatus} - returning BUSY (will retry when preload completes)`);
                             throw new Error('BUSY');
                         }
+                        // If preload failed or timed out, continue to API call below
                     }
                 }
             }
