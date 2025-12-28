@@ -8493,6 +8493,80 @@ For licensing inquiries, contact: legal@celigo.com
                 // FIX #3: Process triggers on page load AND poll for new triggers
                 // ================================================================
                 
+                // ================================================================
+                // PRELOAD LOCK & QUEUE MANAGEMENT
+                // Prevents thundering herd when dragging many columns/rows
+                // ================================================================
+                const PRELOAD_LOCK_KEY = 'netsuite_preload_lock';
+                const PRELOAD_QUEUE_KEY = 'netsuite_preload_queue';
+                let triggerDebounceTimer = null;
+                const TRIGGER_DEBOUNCE_MS = 5000; // Wait 5s after last trigger before processing
+                
+                // Check if preload is currently running
+                function isPreloadRunning() {
+                    try {
+                        const lock = localStorage.getItem(PRELOAD_LOCK_KEY);
+                        if (lock) {
+                            const { timestamp, periods } = JSON.parse(lock);
+                            // Lock expires after 10 minutes (safety net)
+                            if (Date.now() - timestamp < 600000) {
+                                return true;
+                            } else {
+                                // Stale lock - clear it
+                                localStorage.removeItem(PRELOAD_LOCK_KEY);
+                            }
+                        }
+                        return false;
+                    } catch (e) {
+                        return false;
+                    }
+                }
+                
+                // Set preload lock
+                function setPreloadLock(periods) {
+                    try {
+                        localStorage.setItem(PRELOAD_LOCK_KEY, JSON.stringify({
+                            timestamp: Date.now(),
+                            periods: periods
+                        }));
+                    } catch (e) {
+                        console.warn('Failed to set preload lock:', e);
+                    }
+                }
+                
+                // Clear preload lock
+                function clearPreloadLock() {
+                    try {
+                        localStorage.removeItem(PRELOAD_LOCK_KEY);
+                    } catch (e) {
+                        console.warn('Failed to clear preload lock:', e);
+                    }
+                }
+                
+                // Add periods to preload queue
+                function addToPreloadQueue(periods) {
+                    try {
+                        const existing = JSON.parse(localStorage.getItem(PRELOAD_QUEUE_KEY) || '[]');
+                        const combined = [...new Set([...existing, ...periods])]; // Deduplicate
+                        localStorage.setItem(PRELOAD_QUEUE_KEY, JSON.stringify(combined));
+                        console.log(`📥 Added ${periods.length} period(s) to preload queue (total queued: ${combined.length})`);
+                    } catch (e) {
+                        console.warn('Failed to add to preload queue:', e);
+                    }
+                }
+                
+                // Get and clear preload queue
+                function getAndClearPreloadQueue() {
+                    try {
+                        const queue = JSON.parse(localStorage.getItem(PRELOAD_QUEUE_KEY) || '[]');
+                        localStorage.removeItem(PRELOAD_QUEUE_KEY);
+                        return queue;
+                    } catch (e) {
+                        console.warn('Failed to get preload queue:', e);
+                        return [];
+                    }
+                }
+                
                 // Function to process auto-preload triggers
                 function processAutoPreloadTriggers() {
                     // Scan all trigger keys with prefix netsuite_auto_preload_trigger_
@@ -8555,8 +8629,20 @@ For licensing inquiries, contact: legal@celigo.com
                 }
                 
                 if (firstTrigger && allPeriods.size > 0) {
-                    console.log(`🚀 AUTO-PRELOAD TRIGGERED: ${allPeriods.size} period(s) - ${Array.from(allPeriods).join(', ')}`);
+                    const periodsArray = Array.from(allPeriods);
+                    console.log(`🚀 AUTO-PRELOAD TRIGGERED: ${allPeriods.size} period(s) - ${periodsArray.join(', ')}`);
                     console.log(`   First trigger:`, firstTrigger);
+                    
+                    // FIX #1: Check if preload is already running
+                    if (isPreloadRunning()) {
+                        console.log(`⏸️ Preload already in progress - adding ${periodsArray.length} period(s) to queue`);
+                        addToPreloadQueue(periodsArray);
+                        return true; // Triggers processed, but queued instead of starting new preload
+                    }
+                    
+                    // FIX #1: Set preload lock to prevent concurrent preloads
+                    setPreloadLock(periodsArray);
+                    console.log(`🔒 Preload lock acquired for ${periodsArray.length} period(s)`);
                     
                     // Show loading overlay immediately
                     showLoading(
@@ -8573,11 +8659,20 @@ For licensing inquiries, contact: legal@celigo.com
                             // Scan the sheet for periods used in BS formulas
                             // We'll preload ALL BS accounts for these periods (not just specific accounts)
                             // This is just as fast as loading one account, and makes all subsequent formulas instant
-                            const formulaData = await Excel.run(async (context) => {
-                                const sheet = context.workbook.worksheets.getActiveWorksheet();
-                                const usedRange = sheet.getUsedRange();
-                                usedRange.load(['formulas', 'values']);
-                                await context.sync();
+                            
+                            // FIX #5: Excel API rate limiting with retry logic
+                            const formulaData = await (async function() {
+                                let attempts = 0;
+                                const maxAttempts = 5;
+                                const baseDelay = 100; // Start with 100ms delay
+                                
+                                while (attempts < maxAttempts) {
+                                    try {
+                                        return await Excel.run(async (context) => {
+                                            const sheet = context.workbook.worksheets.getActiveWorksheet();
+                                            const usedRange = sheet.getUsedRange();
+                                            usedRange.load(['formulas', 'values']);
+                                            await context.sync();
                                 
                                 const periods = new Set();
                                 const formulas = usedRange.formulas;
@@ -8651,7 +8746,14 @@ For licensing inquiries, contact: legal@celigo.com
                                                             }
                                                         }
                                                     } catch (resolveErr) {
-                                                        console.warn(`Could not resolve cell reference ${toPeriodParam}:`, resolveErr);
+                                                        // FIX #5: Handle Excel API contention gracefully
+                                                        const errMsg = resolveErr.message || String(resolveErr);
+                                                        if (errMsg.includes('Wait until the previous call completes')) {
+                                                            // This is expected when Excel is busy - skip this cell reference
+                                                            console.warn(`⚠️ Excel busy, skipping cell reference ${toPeriodParam}`);
+                                                        } else {
+                                                            console.warn(`Could not resolve cell reference ${toPeriodParam}:`, resolveErr);
+                                                        }
                                                     }
                                                 }
                                             }
@@ -8663,6 +8765,26 @@ For licensing inquiries, contact: legal@celigo.com
                                     periods: Array.from(periods)
                                 };
                             });
+                                    } catch (error) {
+                                        attempts++;
+                                        const errorMessage = error.message || String(error);
+                                        
+                                        // Check if it's the "Wait until previous call completes" error
+                                        if (errorMessage.includes('Wait until the previous call completes') || 
+                                            errorMessage.includes('GeneralException')) {
+                                            if (attempts < maxAttempts) {
+                                                const delay = baseDelay * Math.pow(2, attempts - 1); // Exponential backoff
+                                                console.warn(`⚠️ Excel API busy (attempt ${attempts}/${maxAttempts}), retrying in ${delay}ms...`);
+                                                await new Promise(resolve => setTimeout(resolve, delay));
+                                                continue; // Retry
+                                            }
+                                        }
+                                        // For other errors or max attempts reached, throw
+                                        throw error;
+                                    }
+                                }
+                                throw new Error('Failed to scan formulas after maximum retries');
+                            })();
                             
                             console.log(`📊 Auto-scan found ${formulaData.periods.length} period(s) in formulas`);
                             
@@ -8973,7 +9095,12 @@ For licensing inquiries, contact: legal@celigo.com
                             
                             // Main chunked processing loop
                             let remainingPeriods = [...uncachedPeriods];
-                            let chunkSize = 2; // Start with 2 periods per chunk
+                            // FIX #4: Reduce chunk size for large period sets to avoid timeouts
+                            // For 8+ periods, use chunk size 1 (sequential processing)
+                            // For 4-7 periods, use chunk size 1 (safer)
+                            // For 1-3 periods, use chunk size 2 (faster)
+                            let chunkSize = uncachedPeriods.length >= 4 ? 1 : 2;
+                            console.log(`📊 Using chunk size ${chunkSize} for ${uncachedPeriods.length} period(s)`);
                             let allCompleted = [];
                             let allFailed = [];
                             let totalAccountCount = 0;
@@ -9092,6 +9219,34 @@ For licensing inquiries, contact: legal@celigo.com
                             } else {
                                 console.warn('⚠️ markAutoPreloadComplete function not available');
                             }
+                            
+                            // FIX #1: Clear preload lock
+                            clearPreloadLock();
+                            
+                            // FIX #3: Check queue for additional periods
+                            const queuedPeriods = getAndClearPreloadQueue();
+                            if (queuedPeriods.length > 0) {
+                                console.log(`📋 Found ${queuedPeriods.length} period(s) in queue - starting next preload batch`);
+                                // Recursively process queue (but don't set lock again - will be set in processAutoPreloadTriggers)
+                                setTimeout(() => {
+                                    // Add queued periods as triggers and process
+                                    for (const period of queuedPeriods) {
+                                        try {
+                                            const triggerId = `netsuite_auto_preload_trigger_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+                                            localStorage.setItem(triggerId, JSON.stringify({
+                                                firstAccount: 'queued',
+                                                firstPeriod: period,
+                                                timestamp: Date.now(),
+                                                reason: 'Queued from previous preload'
+                                            }));
+                                        } catch (e) {
+                                            console.warn('Failed to create queued trigger:', e);
+                                        }
+                                    }
+                                    // Process triggers immediately (no debounce for queue)
+                                    processAutoPreloadTriggers();
+                                }, 1000);
+                            }
                         }
                     }, 500); // Small delay to let formulas settle
                     
@@ -9106,18 +9261,56 @@ For licensing inquiries, contact: legal@celigo.com
                 // FIX #3: Process triggers on page load
                 const triggerProcessed = processAutoPreloadTriggers();
                 
+                // FIX #2: Debounced trigger processing function
+                function debouncedProcessTriggers() {
+                    // Clear existing debounce timer
+                    if (triggerDebounceTimer) {
+                        clearTimeout(triggerDebounceTimer);
+                    }
+                    
+                    // Set new debounce timer
+                    triggerDebounceTimer = setTimeout(() => {
+                        const hasNewTrigger = processAutoPreloadTriggers();
+                        if (hasNewTrigger) {
+                            console.log('✅ Processed auto-preload triggers (debounced)');
+                        }
+                        triggerDebounceTimer = null;
+                    }, TRIGGER_DEBOUNCE_MS);
+                }
+                
                 // FIX #3: Set up polling to check for new triggers every 2 seconds
+                // FIX #2: Use debounced processing instead of immediate processing
                 // This ensures triggers are processed even if taskpane wasn't open when they were created
                 let triggerPollInterval = setInterval(() => {
-                    const hasNewTrigger = processAutoPreloadTriggers();
-                    if (hasNewTrigger) {
-                        console.log('✅ Processed new auto-preload trigger via polling');
+                    // Check if there are any triggers
+                    let hasTriggers = false;
+                    try {
+                        for (let i = 0; i < localStorage.length; i++) {
+                            const key = localStorage.key(i);
+                            if (key && key.startsWith('netsuite_auto_preload_trigger_')) {
+                                hasTriggers = true;
+                                break;
+                            }
+                        }
+                        if (!hasTriggers) {
+                            const legacyTrigger = localStorage.getItem('netsuite_auto_preload_trigger');
+                            if (legacyTrigger) hasTriggers = true;
+                        }
+                    } catch (e) {
+                        // Ignore
+                    }
+                    
+                    if (hasTriggers) {
+                        debouncedProcessTriggers();
                     }
                 }, 2000); // Check every 2 seconds
                 
                 // Stop polling after 5 minutes (triggers should be processed quickly)
                 setTimeout(() => {
                     clearInterval(triggerPollInterval);
+                    if (triggerDebounceTimer) {
+                        clearTimeout(triggerDebounceTimer);
+                    }
                     console.log('⏹️ Stopped auto-preload trigger polling (5 minute timeout)');
                 }, 300000); // 5 minutes
                 
