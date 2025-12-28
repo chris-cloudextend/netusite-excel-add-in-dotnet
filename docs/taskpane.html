@@ -4359,7 +4359,7 @@ For licensing inquiries, contact: legal@celigo.com
                     <h3>ℹ️ Version Info</h3>
                     <div style="font-size: 12px; color: #4b5563;">
                         <p>Add-in Version: <strong id="settingsVersion">loading...</strong></p>
-                        <p style="margin-top: 4px;">Manifest Version: <strong>4.0.0.74</strong></p>
+                        <p style="margin-top: 4px;">Manifest Version: <strong id="manifestVersion">loading...</strong></p>
                         <p style="margin-top: 4px;">Proxy: <code style="font-size: 10px; background: #f3f4f6; padding: 2px 6px; border-radius: 4px;">netsuite-proxy.chris-corcoran.workers.dev</code></p>
                     </div>
                 </div>
@@ -8081,9 +8081,11 @@ For licensing inquiries, contact: legal@celigo.com
         function initializeVersion() {
             const versionBadge = document.getElementById('versionBadge');
             const settingsVersion = document.getElementById('settingsVersion');
+            const manifestVersion = document.getElementById('manifestVersion');
             const footerVersion = document.getElementById('footerVersion');
             if (versionBadge) versionBadge.textContent = 'v' + ADDIN_VERSION;
             if (settingsVersion) settingsVersion.textContent = ADDIN_VERSION;
+            if (manifestVersion) manifestVersion.textContent = ADDIN_VERSION; // Manifest version matches add-in version from URL
             if (footerVersion) footerVersion.textContent = ADDIN_VERSION;
         }
 
