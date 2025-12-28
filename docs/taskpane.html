@@ -11356,8 +11356,11 @@ For licensing inquiries, contact: legal@celigo.com
                         console.warn('⚠️ Income Statement: Failed to update manifest:', e.message);
                     }
                     
-                    // DON'T signal complete yet - wait until AFTER formulas are written
-                    // This ensures formulas wait for cache on first evaluation
+                    // CRITICAL FIX: Signal preload complete IMMEDIATELY after saving cache
+                    // This allows formulas to use cache immediately when written, instead of waiting unnecessarily
+                    // Formulas are written next, and they will check preload_status - if it's 'complete', they use cache right away
+                    localStorage.setItem('netsuite_preload_status', 'complete');
+                    console.log('✅ Income Statement: Preload status set to complete - formulas will use cache immediately');
                     console.log('💾 Income Statement: Cache saved - formulas will be written next');
                 } catch (e) {
                     console.warn('⚠️ Income Statement: localStorage save failed:', e.message);
@@ -11920,10 +11923,8 @@ For licensing inquiries, contact: legal@celigo.com
                     netIncomeRow = currentRow;
                     await createNamedRange('_Net_Income', currentRow);
                     
-                    // NOW signal preload complete - formulas can read from cache
-                    // This happens AFTER formulas are written so they wait on first eval
-                    localStorage.setItem('netsuite_preload_status', 'complete');
-                    console.log('✅ Income Statement: Formulas written, preload status set to complete');
+                    // Note: Preload status was already set to 'complete' immediately after saving cache
+                    // (see line 11361) so formulas can use cache immediately when written
                     
                     updateProgress(95, '🎨 Step 5 of 6: Formatting', 'Applying currency formats...');
                     
