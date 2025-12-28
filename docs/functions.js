@@ -4396,13 +4396,35 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         // PRELOAD COORDINATION: Check manifest for period status FIRST
         // FIX: Check manifest even when global preload is not in progress
         // This allows formulas to detect when precache completed and use cache immediately
+        // 
+        // CRITICAL: Manifest/preload logic ONLY applies to Balance Sheet accounts
+        // P&L accounts (Income, Expense, COGS) should use cache directly without waiting
+        // BS accounts have no fromPeriod (cumulative), P&L accounts have fromPeriod
         // ================================================================
         // Normalize lookupPeriod early for period-specific checks
         const lookupPeriod = normalizePeriodKey(fromPeriod || toPeriod, false);
+        const isBSAccount = isCumulativeRequest(fromPeriod); // BS accounts have no fromPeriod
         
+        // CRITICAL: For P&L accounts, skip manifest/preload logic and check cache directly
+        // Income statement accounts are P&L and should not wait for BS preload
+        if (!isBSAccount && lookupPeriod) {
+            // P&L account - check cache first, skip manifest/preload logic
+            const filtersHash = getFilterKey({ subsidiary, department, location, classId, accountingBook });
+            const localStorageValue = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
+            if (localStorageValue !== null) {
+                console.log(`✅ P&L account cache hit (skipping manifest check): ${account} for ${fromPeriod || '(cumulative)'} → ${toPeriod} = ${localStorageValue}`);
+                cacheStats.hits++;
+                cache.balance.set(cacheKey, localStorageValue);
+                return localStorageValue;
+            }
+            // Cache miss for P&L - continue to normal API path (don't wait for BS preload)
+            console.log(`📭 P&L account cache miss: ${account} for ${fromPeriod || '(cumulative)'} → ${toPeriod} - will use API (not waiting for BS preload)`);
+        }
+        
+        // Manifest/preload logic ONLY for Balance Sheet accounts
         // CRITICAL FIX: Check manifest for period status REGARDLESS of global preload status
         // This ensures formulas can detect "completed" status even after global preload finishes
-        if (lookupPeriod) {
+        if (isBSAccount && lookupPeriod) {
             const periodKey = normalizePeriodKey(lookupPeriod);
             if (periodKey) {
                 const filtersHash = getFilterKey({ subsidiary, department, location, classId, accountingBook });
@@ -4814,13 +4836,21 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                             return legacyCacheCheck;
                         }
                         
-                        // FIX #2: Period not requested - trigger preload EARLY (before queuing)
-                        console.log(`🔄 Period ${periodKey} not in manifest - triggering preload before queuing API calls`);
-                        addPeriodToRequestQueue(periodKey, { subsidiary, department, location, classId, accountingBook });
-                        
-                        // FIX #4: Also trigger auto-preload for BS accounts (if not subsidiary-filtered)
-                        if (!subsidiary && isCumulativeRequest(fromPeriod)) {
-                            triggerAutoPreload(account, periodKey);
+                        // CRITICAL: Only trigger preload for Balance Sheet accounts
+                        // P&L accounts should not trigger BS preload
+                        const isBSAccount = isCumulativeRequest(fromPeriod);
+                        if (isBSAccount) {
+                            // FIX #2: Period not requested - trigger preload EARLY (before queuing)
+                            console.log(`🔄 BS account: Period ${periodKey} not in manifest - triggering preload before queuing API calls`);
+                            addPeriodToRequestQueue(periodKey, { subsidiary, department, location, classId, accountingBook });
+                            
+                            // FIX #4: Also trigger auto-preload for BS accounts (if not subsidiary-filtered)
+                            if (!subsidiary) {
+                                triggerAutoPreload(account, periodKey);
+                            }
+                        } else {
+                            // P&L account - don't trigger BS preload, proceed to API call
+                            console.log(`ℹ️ P&L account: Period ${periodKey} not in manifest - skipping BS preload, will use API`);
                         }
                         
                         // FIX #4: Wait for preload with bounded timeout (120s max - increased from 90s)
