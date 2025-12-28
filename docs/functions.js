@@ -4536,11 +4536,13 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         
         // ================================================================
         // GLOBAL PRELOAD WAIT (legacy behavior for non-normalized periods)
+        // CRITICAL: Skip this wait for P&L accounts - they should never wait for BS preload
         // ================================================================
-        if (isPreloadInProgress() && lookupPeriod) {
+        if (isPreloadInProgress() && lookupPeriod && isBSAccount) {
             const periodKey = normalizePeriodKey(lookupPeriod);
             if (!periodKey) {
                 // Cannot normalize period - fall back to global preload wait (legacy behavior)
+                // BUT: Only for BS accounts - P&L accounts should never wait here
                 console.log(`⏳ Preload in progress - waiting for cache (${account}/${fromPeriod || toPeriod}) - period not normalized, using global wait`);
                 await waitForPreload();
                 console.log(`✅ Preload complete - checking cache`);
