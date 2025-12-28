@@ -4738,17 +4738,21 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                                     return legacyCacheCheck;
                                 }
                                 
-                                // FIX #2: Period not requested - trigger preload EARLY (before queuing)
-                                console.log(`🔄 Period ${resolved} not in manifest - triggering preload before queuing API calls`);
-                                addPeriodToRequestQueue(resolved, { subsidiary, department, location, classId, accountingBook });
-                                
-                                // FIX #4: Also trigger auto-preload for BS accounts (if not subsidiary-filtered)
-                                if (!subsidiary && isCumulativeRequest(fromPeriod)) {
-                                    triggerAutoPreload(account, resolved);
-                                }
-                                
-                        // FIX #4: Wait for preload with bounded timeout (120s max - increased from 90s)
-                        // BS preload can take 60-90s, so 120s gives buffer for network delays
+                                // CRITICAL: Only trigger preload for BS accounts
+                                // P&L accounts should not trigger BS preload
+                                const isBSAccountResolved = isCumulativeRequest(fromPeriod);
+                                if (isBSAccountResolved) {
+                                    // FIX #2: Period not requested - trigger preload EARLY (before queuing)
+                                    console.log(`🔄 Period ${resolved} not in manifest - triggering preload before queuing API calls`);
+                                    addPeriodToRequestQueue(resolved, { subsidiary, department, location, classId, accountingBook });
+                                    
+                                    // FIX #4: Also trigger auto-preload for BS accounts (if not subsidiary-filtered)
+                                    if (!subsidiary) {
+                                        triggerAutoPreload(account, resolved);
+                                    }
+                                    
+                                    // FIX #4: Wait for preload with bounded timeout (120s max - increased from 90s)
+                                    // BS preload can take 60-90s, so 120s gives buffer for network delays
                                     const maxWait = 120000; // 120 seconds - bounded wait (increased from 90s)
                                     console.log(`⏳ Waiting for preload to start/complete (max ${maxWait/1000}s)...`);
                                     const waited = await waitForPeriodCompletion(filtersHash, resolved, maxWait);
