@@ -20,11 +20,11 @@
 // 4. Replace ALL code with this file
 // 5. Click: Save and Deploy
 //
-// CURRENT TUNNEL URL: https://lip-truly-kentucky-con.trycloudflare.com
+// CURRENT TUNNEL URL: https://compatible-hourly-dennis-wednesday.trycloudflare.com
 // CURRENT ACCOUNT: 589861 (Production)
 // BACKEND: .NET Core (backend-dotnet/) - PRIMARY/TARGET
 // NOTE: Python backend (backend/server.py) is legacy and being replaced
-// Last Updated: Dec 27, 2025 (Tunnel: lip-truly-kentucky-con))))
+// Last Updated: Dec 28, 2025 (Tunnel: compatible-hourly-dennis-wednesday)))))
 // ════════════════════════════════════════════════════════════════════
 
 export default {
@@ -33,7 +33,7 @@ export default {
     // ⚠️ UPDATE THIS when .NET backend tunnel URL changes
     // To get the URL, run: cloudflared tunnel --url http://localhost:5002
     // Copy the https://xxxxx.trycloudflare.com URL and paste it here
-    const TUNNEL_URL = 'https://lip-truly-kentucky-con.trycloudflare.com';
+    const TUNNEL_URL = 'https://compatible-hourly-dennis-wednesday.trycloudflare.com';
 
     // Handle CORS preflight requests
     if (request.method === 'OPTIONS') {

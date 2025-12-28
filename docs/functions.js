@@ -628,85 +628,203 @@ async function waitForPeriodCompletion(filtersHash, periodKey, maxWaitMs) {
 }
 
 /**
- * Add period to request queue (versioned CAS pattern)
+ * Add period to request queue (async coalesced write pattern)
+ * 
+ * BEST PRACTICE FOR EXCEL ADD-INS:
+ * - Avoid synchronous localStorage in hot paths for custom functions
+ * - Prefer batching and debouncing writes
+ * - Never busy-wait in Office JS
+ * - Coalesce writes so 160 calls turn into 1 write
  */
 const PRECACHE_REQUEST_QUEUE_KEY = 'netsuite_precache_request_queue';
 const QUEUE_VERSION_KEY = 'netsuite_precache_request_queue_version';
 
+// In-memory queue for coalescing writes (Set for deduplication)
+const pendingQueueItems = new Map(); // key: "periodKey|filtersHash", value: {periodKey, filtersHash, filters, timestamp}
+let flushScheduled = false;
+let flushInProgress = false;
+
+// Instrumentation
+const queueStats = {
+    flushCount: 0,
+    maxQueueSize: 0,
+    writeFailures: 0,
+    lastFlushTime: 0
+};
+
+// Kill-switch threshold: if queue grows past this, stop writing and log error
+const MAX_QUEUE_SIZE = 1000;
+
+/**
+ * Schedule async flush to localStorage (coalesces multiple writes into one)
+ */
+function scheduleFlush() {
+    if (flushScheduled || flushInProgress) {
+        return; // Already scheduled or in progress
+    }
+    
+    flushScheduled = true;
+    
+    // Use setTimeout(..., 0) to yield to event loop (Excel best practice)
+    setTimeout(() => {
+        flushQueueToStorage();
+    }, 0);
+}
+
+/**
+ * Flush pending queue items to localStorage (single read + single write)
+ */
+function flushQueueToStorage() {
+    if (flushInProgress) {
+        // Another flush already in progress - reschedule
+        flushScheduled = false;
+        scheduleFlush();
+        return;
+    }
+    
+    flushScheduled = false;
+    flushInProgress = true;
+    
+    try {
+        // Check kill-switch
+        if (pendingQueueItems.size > MAX_QUEUE_SIZE) {
+            console.error(`❌ Queue size (${pendingQueueItems.size}) exceeds MAX_QUEUE_SIZE (${MAX_QUEUE_SIZE}). Stopping writes to prevent Excel crash.`);
+            queueStats.writeFailures++;
+            pendingQueueItems.clear(); // Clear queue to prevent further growth
+            flushInProgress = false;
+            return;
+        }
+        
+        // Update max queue size stat
+        queueStats.maxQueueSize = Math.max(queueStats.maxQueueSize, pendingQueueItems.size);
+        
+        // If no items to flush, exit early
+        if (pendingQueueItems.size === 0) {
+            flushInProgress = false;
+            return;
+        }
+        
+        // ✅ SINGLE READ: Read current state from localStorage
+        let currentQueue = [];
+        let currentVersion = 0;
+        try {
+            const queueJson = localStorage.getItem(PRECACHE_REQUEST_QUEUE_KEY);
+            if (queueJson) {
+                currentQueue = JSON.parse(queueJson);
+            }
+            const versionStr = localStorage.getItem(QUEUE_VERSION_KEY);
+            if (versionStr) {
+                currentVersion = parseInt(versionStr, 10) || 0;
+            }
+        } catch (e) {
+            console.warn('Failed to read queue from localStorage:', e);
+            queueStats.writeFailures++;
+            flushInProgress = false;
+            return;
+        }
+        
+        // Convert pending items to array and dedupe against existing queue
+        const itemsToAdd = Array.from(pendingQueueItems.values());
+        const existingKeys = new Set(
+            currentQueue.map(item => 
+                `${normalizePeriodKey(item.periodKey)}|${item.filtersHash}`
+            )
+        );
+        
+        // Add only new items (dedupe)
+        const newItems = itemsToAdd.filter(item => {
+            const key = `${normalizePeriodKey(item.periodKey)}|${item.filtersHash}`;
+            return !existingKeys.has(key);
+        });
+        
+        if (newItems.length === 0) {
+            // All items already in queue - just clear pending
+            pendingQueueItems.clear();
+            flushInProgress = false;
+            return;
+        }
+        
+        // ✅ SINGLE WRITE: Merge and write to localStorage
+        const updatedQueue = [...currentQueue, ...newItems];
+        const newVersion = currentVersion + 1;
+        
+        try {
+            localStorage.setItem(PRECACHE_REQUEST_QUEUE_KEY, JSON.stringify(updatedQueue));
+            localStorage.setItem(QUEUE_VERSION_KEY, String(newVersion));
+            
+            // Update stats
+            queueStats.flushCount++;
+            queueStats.lastFlushTime = Date.now();
+            
+            // Clear pending items
+            pendingQueueItems.clear();
+            
+            if (newItems.length > 0) {
+                console.log(`✅ Flushed ${newItems.length} period(s) to queue (total in queue: ${updatedQueue.length}, flushes: ${queueStats.flushCount})`);
+            }
+        } catch (e) {
+            console.error('Failed to write queue to localStorage:', e);
+            queueStats.writeFailures++;
+            // Don't clear pending items on write failure - they'll be retried on next flush
+        }
+        
+    } catch (e) {
+        console.error('Error in flushQueueToStorage:', e);
+        queueStats.writeFailures++;
+    } finally {
+        flushInProgress = false;
+    }
+}
+
+/**
+ * Add period to request queue (non-blocking, coalesced writes)
+ * 
+ * This function is called from BALANCE() during formula evaluation.
+ * It must NOT block Excel's JavaScript thread.
+ */
 function addPeriodToRequestQueue(periodKey, filters) {
     const normalizedKey = normalizePeriodKey(periodKey);
     if (!normalizedKey) return;
     
     const filtersHash = getFilterKey(filters);
-    const newItem = {
+    const queueKey = `${normalizedKey}|${filtersHash}`;
+    
+    // Check kill-switch before adding
+    if (pendingQueueItems.size >= MAX_QUEUE_SIZE) {
+        console.error(`❌ Cannot add period ${normalizedKey} - queue size (${pendingQueueItems.size}) at limit (${MAX_QUEUE_SIZE})`);
+        queueStats.writeFailures++;
+        return;
+    }
+    
+    // Add to in-memory queue (deduplication via Map key)
+    pendingQueueItems.set(queueKey, {
         periodKey: normalizedKey,
         filtersHash: filtersHash,
         filters: filters,
         timestamp: Date.now()
+    });
+    
+    // Schedule async flush (coalesces multiple calls into one write)
+    scheduleFlush();
+}
+
+/**
+ * Get queue statistics for monitoring/debugging
+ */
+function getQueueStats() {
+    return {
+        ...queueStats,
+        currentQueueSize: pendingQueueItems.size,
+        flushScheduled: flushScheduled,
+        flushInProgress: flushInProgress
     };
-    
-    // ✅ Versioned CAS pattern
-    let success = false;
-    let attempts = 0;
-    const maxAttempts = 10;
-    
-    const tryAdd = () => {
-        while (!success && attempts < maxAttempts) {
-            try {
-                // Read current state
-                const currentQueue = JSON.parse(localStorage.getItem(PRECACHE_REQUEST_QUEUE_KEY) || '[]');
-                const currentVersion = parseInt(localStorage.getItem(QUEUE_VERSION_KEY) || '0', 10);
-                
-                // Check if already exists (dedupe)
-                const exists = currentQueue.some(item => 
-                    normalizePeriodKey(item.periodKey) === normalizedKey &&
-                    item.filtersHash === filtersHash
-                );
-                
-                if (exists) {
-                    success = true;
-                    return;  // Already in queue
-                }
-                
-                // ✅ Map-union: Merge new item into existing queue
-                const updatedQueue = [...currentQueue, newItem];
-                const newVersion = currentVersion + 1;
-                
-                // ✅ CAS: Write only if version matches
-                const verifyVersion = parseInt(localStorage.getItem(QUEUE_VERSION_KEY) || '0', 10);
-                if (verifyVersion === currentVersion) {
-                    localStorage.setItem(PRECACHE_REQUEST_QUEUE_KEY, JSON.stringify(updatedQueue));
-                    localStorage.setItem(QUEUE_VERSION_KEY, String(newVersion));
-                    success = true;
-                } else {
-                    // Version changed - retry
-                    attempts++;
-                    // Brief delay before retry (synchronous, no await)
-                    const start = Date.now();
-                    while (Date.now() - start < 10) {}  // 10ms delay
-                }
-            } catch (e) {
-                console.warn(`Queue write attempt ${attempts + 1} failed:`, e);
-                attempts++;
-                if (attempts < maxAttempts) {
-                    const start = Date.now();
-                    while (Date.now() - start < 10) {}  // 10ms delay
-                }
-            }
-        }
-        
-        if (!success) {
-            console.error(`Failed to add period ${normalizedKey} to queue after ${maxAttempts} attempts`);
-        }
-    };
-    
-    tryAdd();
 }
 
 // Expose for taskpane
 window.addPeriodToRequestQueue = addPeriodToRequestQueue;
 window.getManifest = getManifest;
 window.updatePeriodStatus = updatePeriodStatus;
+window.getQueueStats = getQueueStats;
 window.getPeriodStatus = getPeriodStatus;
 
 /**

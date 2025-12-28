@@ -875,11 +875,11 @@ public class BalanceController : ControllerBase
                     periodName, query[..Math.Min(500, query.Length)]);
             
                 var queryResult = await _netSuiteService.QueryRawWithErrorAsync(query, 180);
+                var periodElapsed = (DateTime.UtcNow - periodStartTime).TotalSeconds;
             
                 if (!queryResult.Success)
                 {
                     _logger.LogWarning("BS Preload query failed for {Period}: {Error}", periodName, queryResult.ErrorDetails);
-                    var periodElapsed = (DateTime.UtcNow - periodStartTime).TotalSeconds;
                     periodResults.Add(new PeriodResult
                     {
                         Period = periodName,
@@ -890,8 +890,6 @@ public class BalanceController : ControllerBase
                     });
                     continue; // Skip this period but continue with others
                 }
-            
-                var periodElapsed = (DateTime.UtcNow - periodStartTime).TotalSeconds;
                 _logger.LogInformation("BS Preload [{Period}] query time: {Elapsed:F2}s, {Count} accounts", 
                     periodName, periodElapsed, queryResult.Items.Count);
                 
