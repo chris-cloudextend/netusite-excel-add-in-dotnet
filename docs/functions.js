@@ -4470,6 +4470,33 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                         return localStorageValue;
                     }
                     
+                    // OPTION 4: Status change detection - check if this is first time seeing "completed"
+                    // Track previous status to detect transition from "running"/"requested" to "completed"
+                    const statusChangeKey = `precache_status_${filtersHash}_${periodKey}`;
+                    const previousStatus = localStorage.getItem(statusChangeKey);
+                    const justCompleted = previousStatus && (previousStatus === "running" || previousStatus === "requested");
+                    
+                    // If status just changed to "completed", return changing value to force Excel recalculation
+                    if (justCompleted) {
+                        console.log(`🔄 Period ${periodKey} status changed to "completed" - forcing Excel recalculation`);
+                        // Store current status for next evaluation
+                        try {
+                            localStorage.setItem(statusChangeKey, "completed");
+                        } catch (e) {
+                            // Ignore localStorage errors
+                        }
+                        // Return changing value to force Excel to recalculate immediately
+                        // Excel sees value changed → triggers recalculation → next eval returns cached value
+                        return Date.now();
+                    }
+                    
+                    // Update status tracking
+                    try {
+                        localStorage.setItem(statusChangeKey, "completed");
+                    } catch (e) {
+                        // Ignore localStorage errors
+                    }
+                    
                     // Cache might not be written yet (race condition) - wait briefly
                     console.log(`⏳ Period ${periodKey} marked completed but cache not found - waiting for cache write...`);
                     const cacheWaitStart = Date.now();
@@ -4492,21 +4519,47 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                         }
                     }
                     
-                    // Cache still not found after wait - throw BUSY to force re-evaluation
-                    console.log(`⏳ Period ${periodKey} completed but cache not found after ${cacheWaitMax}ms - returning BUSY`);
-                    throw new Error('BUSY');
+                    // Cache still not found after wait - return changing value to force recalculation
+                    // This is better than BUSY because Excel will retry immediately when value changes
+                    console.log(`⏳ Period ${periodKey} completed but cache not found after ${cacheWaitMax}ms - forcing recalculation`);
+                    return Date.now();
                 }
                 
                 // If period is being preloaded, wait for it (not global preload)
                 if (status === "running" || status === "requested") {
+                    // Track status for change detection
+                    const statusChangeKey = `precache_status_${filtersHash}_${periodKey}`;
+                    try {
+                        localStorage.setItem(statusChangeKey, status);
+                    } catch (e) {
+                        // Ignore localStorage errors
+                    }
+                    
                     console.log(`⏳ Period ${periodKey} is ${status} - waiting for this specific period (${account}/${periodKey})`);
                     const maxWait = 120000; // 120s max wait for this period
                     const waited = await waitForPeriodCompletion(filtersHash, periodKey, maxWait);
                     
                     if (waited) {
+                        // Period completed - detect status change and force recalculation if needed
+                        const statusChangeKey = `precache_status_${filtersHash}_${periodKey}`;
+                        const previousStatus = localStorage.getItem(statusChangeKey);
+                        const justCompleted = previousStatus && (previousStatus === "running" || previousStatus === "requested");
+                        
+                        // Update status tracking
+                        try {
+                            localStorage.setItem(statusChangeKey, "completed");
+                        } catch (e) {
+                            // Ignore localStorage errors
+                        }
+                        
                         // Period completed - check cache immediately
                         let localStorageValue = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
                         if (localStorageValue !== null) {
+                            // If status just changed, return changing value to force recalculation
+                            if (justCompleted) {
+                                console.log(`🔄 Period ${periodKey} just completed - forcing Excel recalculation`);
+                                return Date.now();
+                            }
                             console.log(`✅ Post-preload cache hit (localStorage): ${account} for ${periodKey} = ${localStorageValue}`);
                             cacheStats.hits++;
                             cache.balance.set(cacheKey, localStorageValue);
@@ -4515,9 +4568,20 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                         
                         // Also check in-memory cache
                         if (cache.balance.has(cacheKey)) {
+                            // If status just changed, return changing value to force recalculation
+                            if (justCompleted) {
+                                console.log(`🔄 Period ${periodKey} just completed - forcing Excel recalculation`);
+                                return Date.now();
+                            }
                             console.log(`✅ Post-preload cache hit (memory): ${account} for ${periodKey}`);
                             cacheStats.hits++;
                             return cache.balance.get(cacheKey);
+                        }
+                        
+                        // If status just changed to completed, return changing value to force recalculation
+                        if (justCompleted) {
+                            console.log(`🔄 Period ${periodKey} just completed (cache not ready yet) - forcing Excel recalculation`);
+                            return Date.now();
                         }
                         
                         // FIX: Cache might not be written yet (race condition)
@@ -4543,10 +4607,10 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                             }
                         }
                         
-                        // Cache still not found after wait - throw BUSY to force re-evaluation
-                        // On next evaluation, cache should be available
-                        console.log(`⏳ Period ${periodKey} completed but cache not found after ${cacheWaitMax}ms - returning BUSY to force re-evaluation`);
-                        throw new Error('BUSY');
+                        // Cache still not found after wait - return changing value to force recalculation
+                        // This is better than BUSY because Excel will retry immediately when value changes
+                        console.log(`⏳ Period ${periodKey} completed but cache not found after ${cacheWaitMax}ms - forcing recalculation`);
+                        return Date.now();
                     }
                     
                     // Check final status - if still running, return BUSY

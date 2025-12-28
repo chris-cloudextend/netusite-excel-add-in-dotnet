@@ -9200,6 +9200,23 @@ For licensing inquiries, contact: legal@celigo.com
                             
                             // Mark preload as complete so formulas don't wait forever
                             if (window.markAutoPreloadComplete) window.markAutoPreloadComplete();
+                            
+                            // OPTION 1: Trigger Excel recalculation via Office.js settings
+                            // This helps Excel know when to retry BUSY formulas
+                            try {
+                                if (typeof Office !== 'undefined' && Office.context && Office.context.document && Office.context.document.settings) {
+                                    const completionKey = `precache_complete_${Date.now()}`;
+                                    Office.context.document.settings.set(completionKey, Date.now().toString());
+                                    Office.context.document.settings.saveAsync(function(result) {
+                                        if (result.status === Office.AsyncResultStatus.Succeeded) {
+                                            console.log('✅ Office.js: Recalculation trigger set for precache completion');
+                                        }
+                                    });
+                                }
+                            } catch (e) {
+                                // Ignore Office.js errors - Option 4 will still work
+                                console.warn('⚠️ Could not set Office.js recalculation trigger:', e.message);
+                            }
                         } catch (error) {
                             console.error('❌ Auto-preload error:', error);
                             hideLoading();
@@ -10713,6 +10730,21 @@ For licensing inquiries, contact: legal@celigo.com
                         localStorage.setItem('netsuite_preload_status', 'complete');
                         console.log('✅ CFO Flash: Preload status set to complete - formulas will use cache immediately');
                         console.log('💾 CFO Flash: Cache saved - formulas will be written next');
+                        
+                        // OPTION 1: Trigger Excel recalculation via Office.js settings
+                        try {
+                            if (typeof Office !== 'undefined' && Office.context && Office.context.document && Office.context.document.settings) {
+                                const completionKey = `precache_complete_${Date.now()}`;
+                                Office.context.document.settings.set(completionKey, Date.now().toString());
+                                Office.context.document.settings.saveAsync(function(result) {
+                                    if (result.status === Office.AsyncResultStatus.Succeeded) {
+                                        console.log('✅ Office.js: Recalculation trigger set for CFO Flash completion');
+                                    }
+                                });
+                            }
+                        } catch (e) {
+                            console.warn('⚠️ Could not set Office.js recalculation trigger:', e.message);
+                        }
                     } else {
                         console.warn('⚠️ CFO Flash: TypeBalance pre-fetch failed, formulas will load individually');
                         // Signal complete so formulas don't wait forever
@@ -11370,6 +11402,21 @@ For licensing inquiries, contact: legal@celigo.com
                     localStorage.setItem('netsuite_preload_status', 'complete');
                     console.log('✅ Income Statement: Preload status set to complete - formulas will use cache immediately');
                     console.log('💾 Income Statement: Cache saved - formulas will be written next');
+                    
+                    // OPTION 1: Trigger Excel recalculation via Office.js settings
+                    try {
+                        if (typeof Office !== 'undefined' && Office.context && Office.context.document && Office.context.document.settings) {
+                            const completionKey = `precache_complete_${Date.now()}`;
+                            Office.context.document.settings.set(completionKey, Date.now().toString());
+                            Office.context.document.settings.saveAsync(function(result) {
+                                if (result.status === Office.AsyncResultStatus.Succeeded) {
+                                    console.log('✅ Office.js: Recalculation trigger set for Income Statement completion');
+                                }
+                            });
+                        }
+                    } catch (e) {
+                        console.warn('⚠️ Could not set Office.js recalculation trigger:', e.message);
+                    }
                 } catch (e) {
                     console.warn('⚠️ Income Statement: localStorage save failed:', e.message);
                     // Signal complete on error so formulas don't wait forever
@@ -15171,6 +15218,21 @@ For licensing inquiries, contact: legal@celigo.com
                     
                     // CRITICAL: Signal formulas that preload is complete via localStorage
                     localStorage.setItem('netsuite_preload_status', 'complete');
+                    
+                    // OPTION 1: Trigger Excel recalculation via Office.js settings
+                    try {
+                        if (typeof Office !== 'undefined' && Office.context && Office.context.document && Office.context.document.settings) {
+                            const completionKey = `precache_complete_${Date.now()}`;
+                            Office.context.document.settings.set(completionKey, Date.now().toString());
+                            Office.context.document.settings.saveAsync(function(result) {
+                                if (result.status === Office.AsyncResultStatus.Succeeded) {
+                                    console.log('✅ Office.js: Recalculation trigger set for BS preload completion');
+                                }
+                            });
+                        }
+                    } catch (e) {
+                        console.warn('⚠️ Could not set Office.js recalculation trigger:', e.message);
+                    }
                 } catch (cacheError) {
                     console.warn('Pre-load: Cache save warning:', cacheError);
                     // Still finish preload even if cache save fails
@@ -18572,6 +18634,21 @@ export default {
                     // This allows formulas to use cache immediately when written
                     localStorage.setItem('netsuite_preload_status', 'complete');
                     console.log('✅ Structure Sync: Preload status set to complete - formulas will use cache immediately');
+                    
+                    // OPTION 1: Trigger Excel recalculation via Office.js settings
+                    try {
+                        if (typeof Office !== 'undefined' && Office.context && Office.context.document && Office.context.document.settings) {
+                            const completionKey = `precache_complete_${Date.now()}`;
+                            Office.context.document.settings.set(completionKey, Date.now().toString());
+                            Office.context.document.settings.saveAsync(function(result) {
+                                if (result.status === Office.AsyncResultStatus.Succeeded) {
+                                    console.log('✅ Office.js: Recalculation trigger set for Structure Sync completion');
+                                }
+                            });
+                        }
+                    } catch (e) {
+                        console.warn('⚠️ Could not set Office.js recalculation trigger:', e.message);
+                    }
                 } catch (e) {
                     console.error('❌ Structure Sync: CRITICAL - Cache save failed:', e.message);
                     // Still signal complete so formulas don't wait forever

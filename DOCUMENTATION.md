@@ -1397,6 +1397,11 @@ Backend prints detailed query information:
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 4.0.0.76 | Dec 2025 | **Precache BUSY delay fix** - Fixed 60+ second delay after precache completion. Formulas now resolve within 1-2 seconds using status change detection and Office.js recalculation triggers. See `PRECACHE_BUSY_DELAY_FIX_IMPLEMENTED.md` for details. |
+| 4.0.0.75 | Dec 2025 | **Financial integrity fix** - Fixed Income Statement showing incorrect revenue when class filter applied. Cache now cleared and saved with correct filters. Reduced excessive logging. |
+| 4.0.0.74 | Dec 2025 | **Syntax fix** - Fixed missing closing brace in BALANCE function causing CFO Flash report #VALUE errors. |
+| 4.0.0.73 | Dec 2025 | **CFO Flash fix** - Fixed preload_status timing to prevent unnecessary waits. |
+| 4.0.0.72 | Dec 2025 | **Income Statement performance** - Fixed 150+ second delay by setting preload_status immediately after cache save. |
 | 3.0.5.49 | Dec 2025 | **Wildcard documentation** - Added comprehensive CPA guide for executive reporting with wildcards, in-app examples, and performance optimization details. |
 | 3.0.5.48 | Dec 2025 | **Wildcard account support** - Use `"4*"` to sum all revenue accounts, `"6*"` for expenses, etc. Works in XAVI.BALANCE and XAVI.BUDGET. Fully batched for performance. |
 | 3.0.5.44 | Dec 2025 | **Simplified Net Income formula** - `Operating Income + Other Income - Other Expense`. Removed complex sign-aware logic; raw GL data handles signs correctly. |
@@ -1417,5 +1422,5 @@ Backend prints detailed query information:
 
 ---
 
-*Document Version: 2.6*
-*Last Updated: December 17, 2025*
+*Document Version: 2.7*
+*Last Updated: December 28, 2025*
