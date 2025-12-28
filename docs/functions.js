@@ -5077,7 +5077,6 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                 console.log('   Full refresh mode - NOT starting timer');
             }
         });
-        
     } catch (error) {
         console.error('BALANCE error:', error);
         // Re-throw if already an Error, otherwise wrap
