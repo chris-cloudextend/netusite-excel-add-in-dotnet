@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.0.74';  // Fix: Syntax error - missing closing brace for try block in BALANCE function
+const FUNCTIONS_VERSION = '4.0.0.75';  // CRITICAL FIX: Structure sync now saves filtered data to cache - prevents wrong revenue values
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -5038,13 +5038,17 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         }
         
         // In full refresh mode, queue silently (task pane will trigger processFullRefresh)
-        if (!isFullRefreshMode) {
+        // REDUCED LOGGING: Only log first few cache misses to prevent console flooding
+        if (!isFullRefreshMode && cacheStats.misses < 10) {
             console.log(`📥 CACHE MISS [balance]: ${account} (${fromPeriod || '(cumulative)'} to ${toPeriod}) → queuing${isBSRequest ? ' [BS]' : ''}`);
         }
         
         // Return a Promise that will be resolved by the batch processor
         return new Promise((resolve, reject) => {
-            console.log(`📥 QUEUED: ${account} for ${fromPeriod || '(cumulative)'} → ${toPeriod}`);
+            // REDUCED LOGGING: Only log first few queue operations to prevent console flooding
+            if (cacheStats.misses < 10) {
+                console.log(`📥 QUEUED: ${account} for ${fromPeriod || '(cumulative)'} → ${toPeriod}`);
+            }
             
             pendingRequests.balance.set(cacheKey, {
                 params,
@@ -5053,9 +5057,12 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                 timestamp: Date.now()
             });
             
-            console.log(`   Queue size now: ${pendingRequests.balance.size}`);
-            console.log(`   isFullRefreshMode: ${isFullRefreshMode}`);
-            console.log(`   batchTimer exists: ${!!batchTimer}`);
+            // REDUCED LOGGING: Only log queue details for first few items
+            if (cacheStats.misses < 10) {
+                console.log(`   Queue size now: ${pendingRequests.balance.size}`);
+                console.log(`   isFullRefreshMode: ${isFullRefreshMode}`);
+                console.log(`   batchTimer exists: ${!!batchTimer}`);
+            }
             
             // In full refresh mode, DON'T start the batch timer
             // The task pane will explicitly call processFullRefresh() when ready
@@ -5071,7 +5078,10 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                         });
                     }, BATCH_DELAY);
                 } else {
-                    console.log('   Timer already running, request will be batched');
+                    // REDUCED LOGGING: Only log timer status for first few items
+                    if (cacheStats.misses < 10) {
+                        console.log('   Timer already running, request will be batched');
+                    }
                 }
             } else {
                 console.log('   Full refresh mode - NOT starting timer');

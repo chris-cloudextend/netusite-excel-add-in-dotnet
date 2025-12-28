@@ -5792,7 +5792,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.0.74"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.0.75"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -17168,9 +17168,10 @@ export default {
             eventAddr = eventAddr.replace(/\$/g, '').toUpperCase();
             
             // Debug: Log all cell changes to parameter row
-            if (eventAddr.endsWith('3')) {
-                console.log(`📝 Cell changed: raw="${rawAddr}" → normalized="${eventAddr}"`);
-            }
+            // REMOVED: Excessive logging (30,000+ messages) - can be re-enabled for debugging if needed
+            // if (eventAddr.endsWith('3')) {
+            //     console.log(`📝 Cell changed: raw="${rawAddr}" → normalized="${eventAddr}"`);
+            // }
             
             // Check if the changed cell is P3 (YEAR parameter for auto-sync)
             if (eventAddr === 'P3') {
@@ -18499,6 +18500,22 @@ export default {
                 const syncStep = document.querySelector('#structureSyncOverlay .loading-step');
                 if (syncStep) syncStep.textContent = '📥 Fetching account data from NetSuite...';
                 
+                // CRITICAL FINANCIAL INTEGRITY: Clear cache BEFORE fetching new data
+                // This prevents formulas from using stale cache with wrong filter settings
+                // Cache must match the filters being used, or formulas return incorrect values
+                console.log('🗑️ Structure Sync: Clearing cache to prevent filter mismatch...');
+                try {
+                    localStorage.removeItem('netsuite_balance_cache');
+                    localStorage.removeItem('netsuite_balance_cache_timestamp');
+                    // Also clear in-memory cache via window function if available
+                    if (typeof window.clearAllCaches === 'function') {
+                        window.clearAllCaches();
+                    }
+                    console.log('✅ Structure Sync: Cache cleared - will fetch fresh data with current filters');
+                } catch (e) {
+                    console.warn('⚠️ Structure Sync: Cache clear warning:', e.message);
+                }
+                
                 // Fetch accounts for the target year AND selected subsidiary
                 console.log(`performStructureSync: year=${targetYear}, subsidiary="${currentSubsidiary}", dept="${department}", loc="${location}", class="${classId}", book="${accountingBook}"`);
                 const refreshResponse = await fetch(`${getServerUrl()}/batch/full_year_refresh`, {
@@ -18522,6 +18539,30 @@ export default {
                 const allBalances = refreshData.balances || {};
                 const accountTypes = refreshData.account_types || {};
                 const accountNames = refreshData.account_names || {};
+                
+                // CRITICAL FINANCIAL INTEGRITY FIX: Save fetched data to cache IMMEDIATELY
+                // This ensures formulas use the CORRECT filtered data, not stale unfiltered cache
+                // Without this, formulas check cache and find old data from previous filter settings
+                console.log('💾 Structure Sync: Saving BALANCE cache to localStorage with current filters...');
+                try {
+                    const cacheData = {};
+                    for (const acctNum in allBalances) {
+                        cacheData[acctNum] = allBalances[acctNum];
+                    }
+                    localStorage.setItem('netsuite_balance_cache', JSON.stringify(cacheData));
+                    localStorage.setItem('netsuite_balance_cache_timestamp', Date.now().toString());
+                    console.log(`✅ Structure Sync: Saved ${Object.keys(cacheData).length} accounts to localStorage`);
+                    console.log(`   Filters: sub="${currentSubsidiary}", dept="${department}", loc="${location}", class="${classId}", book="${accountingBook}"`);
+                    
+                    // CRITICAL: Signal preload complete IMMEDIATELY after saving cache
+                    // This allows formulas to use cache immediately when written
+                    localStorage.setItem('netsuite_preload_status', 'complete');
+                    console.log('✅ Structure Sync: Preload status set to complete - formulas will use cache immediately');
+                } catch (e) {
+                    console.error('❌ Structure Sync: CRITICAL - Cache save failed:', e.message);
+                    // Still signal complete so formulas don't wait forever
+                    localStorage.setItem('netsuite_preload_status', 'complete');
+                }
                 
                 // Categorize accounts
                 const categories = {
