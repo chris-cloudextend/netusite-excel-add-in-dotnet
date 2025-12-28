@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.0.54';  // Fix: Add localStorage cache check for cumulative items in build mode
+const FUNCTIONS_VERSION = '4.0.0.55';  // Fix: Synchronous normalizePeriodKey, manifest-based precache tracking, BUSY on running periods
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -398,7 +398,7 @@ let autoPreloadInProgress = false;
 function triggerAutoPreload(firstAccount, firstPeriod) {
     // CRITICAL: Normalize period before using it (handles Range objects)
     // This ensures cache keys use canonical "Mon YYYY" format, not "[object Object]"
-    const normalizedPeriod = convertToMonthYear(firstPeriod, false);
+    const normalizedPeriod = normalizePeriodKey(firstPeriod, false);
     if (!normalizedPeriod) {
         console.warn(`⚠️ triggerAutoPreload: Could not normalize period "${firstPeriod}", skipping preload`);
         return;
@@ -465,7 +465,8 @@ function checkIfPeriodIsCached(period) {
     try {
         // Normalize period to ensure it matches cache key format
         // This handles Range objects and various period formats
-        const normalizedPeriod = convertToMonthYear(period, false);
+        // ✅ Use normalizePeriodKey (synchronous, no await needed)
+        const normalizedPeriod = normalizePeriodKey(period, false);
         if (!normalizedPeriod) return false;
         
         const preloadCache = localStorage.getItem('xavi_balance_cache');
@@ -507,6 +508,206 @@ function markAutoPreloadComplete() {
 
 // Expose for taskpane
 window.markAutoPreloadComplete = markAutoPreloadComplete;
+
+// ============================================================================
+// PRECACHE MANIFEST - Per-period tracking scoped by filtersHash
+// ============================================================================
+
+/**
+ * Get manifest for a specific filtersHash
+ */
+function getManifest(filtersHash) {
+    try {
+        const stored = localStorage.getItem('netsuite_precache_manifest');
+        if (!stored) {
+            return { periods: {}, lastUpdated: Date.now() };
+        }
+        const all = JSON.parse(stored);
+        return all[filtersHash] || { periods: {}, lastUpdated: Date.now() };
+    } catch (e) {
+        console.warn('Error reading manifest:', e);
+        return { periods: {}, lastUpdated: Date.now() };
+    }
+}
+
+/**
+ * Update period status in manifest (scoped by filtersHash)
+ */
+function updatePeriodStatus(filtersHash, periodKey, updates) {
+    const normalizedKey = normalizePeriodKey(periodKey);
+    if (!normalizedKey) return;
+    
+    try {
+        const stored = localStorage.getItem('netsuite_precache_manifest');
+        const all = stored ? JSON.parse(stored) : {};
+        
+        if (!all[filtersHash]) {
+            all[filtersHash] = { periods: {}, lastUpdated: Date.now() };
+        }
+        
+        const manifest = all[filtersHash];
+        
+        if (!manifest.periods[normalizedKey]) {
+            manifest.periods[normalizedKey] = {
+                requestedAt: Date.now(),
+                completedAt: null,
+                failedAt: null,
+                attemptCount: 0,
+                lastError: null,
+                batchId: null,
+                status: "requested"
+            };
+        }
+        
+        const period = manifest.periods[normalizedKey];
+        
+        if (updates.status === "running") {
+            period.status = "running";
+            period.batchId = updates.batchId || period.batchId;
+        } else if (updates.status === "completed") {
+            period.status = "completed";
+            period.completedAt = Date.now();
+            period.lastError = null;
+        } else if (updates.status === "failed") {
+            period.status = "failed";
+            period.failedAt = Date.now();
+            period.lastError = updates.error || "UNKNOWN_ERROR";
+            period.attemptCount = (period.attemptCount || 0) + 1;
+        }
+        
+        manifest.lastUpdated = Date.now();
+        all[filtersHash] = manifest;
+        
+        // ✅ Atomic write of entire manifest structure
+        localStorage.setItem('netsuite_precache_manifest', JSON.stringify(all));
+    } catch (e) {
+        console.warn('Error updating manifest:', e);
+    }
+}
+
+/**
+ * Get period status from manifest (scoped by filtersHash)
+ */
+function getPeriodStatus(filtersHash, periodKey) {
+    const normalizedKey = normalizePeriodKey(periodKey);
+    if (!normalizedKey) return "not_found";
+    
+    const manifest = getManifest(filtersHash);
+    const period = manifest.periods[normalizedKey];
+    if (!period) return "not_found";
+    
+    return period.status;
+}
+
+/**
+ * Wait for period completion (bounded wait)
+ */
+async function waitForPeriodCompletion(filtersHash, periodKey, maxWaitMs) {
+    const startTime = Date.now();
+    const pollInterval = 1000;  // Check every 1s
+    
+    while (Date.now() - startTime < maxWaitMs) {
+        const status = getPeriodStatus(filtersHash, periodKey);
+        const manifest = getManifest(filtersHash);
+        const period = manifest.periods[normalizePeriodKey(periodKey)];
+        
+        if (status === "completed") {
+            return true;  // Period is now cached
+        } else if (status === "failed") {
+            // Check if retries exhausted
+            if (period && period.attemptCount >= 3) {
+                return false;  // Retries exhausted, proceed with API
+            }
+            // Retries remaining - continue waiting
+        }
+        
+        await new Promise(r => setTimeout(r, pollInterval));
+    }
+    
+    return false;  // Timeout
+}
+
+/**
+ * Add period to request queue (versioned CAS pattern)
+ */
+const PRECACHE_REQUEST_QUEUE_KEY = 'netsuite_precache_request_queue';
+const QUEUE_VERSION_KEY = 'netsuite_precache_request_queue_version';
+
+function addPeriodToRequestQueue(periodKey, filters) {
+    const normalizedKey = normalizePeriodKey(periodKey);
+    if (!normalizedKey) return;
+    
+    const filtersHash = getFilterKey(filters);
+    const newItem = {
+        periodKey: normalizedKey,
+        filtersHash: filtersHash,
+        filters: filters,
+        timestamp: Date.now()
+    };
+    
+    // ✅ Versioned CAS pattern
+    let success = false;
+    let attempts = 0;
+    const maxAttempts = 10;
+    
+    const tryAdd = () => {
+        while (!success && attempts < maxAttempts) {
+            try {
+                // Read current state
+                const currentQueue = JSON.parse(localStorage.getItem(PRECACHE_REQUEST_QUEUE_KEY) || '[]');
+                const currentVersion = parseInt(localStorage.getItem(QUEUE_VERSION_KEY) || '0', 10);
+                
+                // Check if already exists (dedupe)
+                const exists = currentQueue.some(item => 
+                    normalizePeriodKey(item.periodKey) === normalizedKey &&
+                    item.filtersHash === filtersHash
+                );
+                
+                if (exists) {
+                    success = true;
+                    return;  // Already in queue
+                }
+                
+                // ✅ Map-union: Merge new item into existing queue
+                const updatedQueue = [...currentQueue, newItem];
+                const newVersion = currentVersion + 1;
+                
+                // ✅ CAS: Write only if version matches
+                const verifyVersion = parseInt(localStorage.getItem(QUEUE_VERSION_KEY) || '0', 10);
+                if (verifyVersion === currentVersion) {
+                    localStorage.setItem(PRECACHE_REQUEST_QUEUE_KEY, JSON.stringify(updatedQueue));
+                    localStorage.setItem(QUEUE_VERSION_KEY, String(newVersion));
+                    success = true;
+                } else {
+                    // Version changed - retry
+                    attempts++;
+                    // Brief delay before retry (synchronous, no await)
+                    const start = Date.now();
+                    while (Date.now() - start < 10) {}  // 10ms delay
+                }
+            } catch (e) {
+                console.warn(`Queue write attempt ${attempts + 1} failed:`, e);
+                attempts++;
+                if (attempts < maxAttempts) {
+                    const start = Date.now();
+                    while (Date.now() - start < 10) {}  // 10ms delay
+                }
+            }
+        }
+        
+        if (!success) {
+            console.error(`Failed to add period ${normalizedKey} to queue after ${maxAttempts} attempts`);
+        }
+    };
+    
+    tryAdd();
+}
+
+// Expose for taskpane
+window.addPeriodToRequestQueue = addPeriodToRequestQueue;
+window.getManifest = getManifest;
+window.updatePeriodStatus = updatePeriodStatus;
+window.getPeriodStatus = getPeriodStatus;
 
 /**
  * Show first-time BS education toast.
@@ -1357,22 +1558,27 @@ async function batchGetAccountTypes(accounts) {
 }
 
 // Helper function to create a filter key for grouping
+// Helper function to create a filter key for grouping
+// ✅ Includes accounting book for manifest scoping
 function getFilterKey(params) {
     const sub = String(params.subsidiary || '').trim();
     const dept = String(params.department || '').trim();
     const loc = String(params.location || '').trim();
     const cls = String(params.classId || '').trim();
-    return `${sub}|${dept}|${loc}|${cls}`;
+    const book = String(params.accountingBook || '').trim();
+    return `${sub}|${dept}|${loc}|${cls}|${book}`;
 }
 
 // Helper function to parse filter key back to filter object
+// ✅ Updated to include accounting book
 function parseFilterKey(filterKey) {
     const parts = filterKey.split('|');
     return {
         subsidiary: parts[0] || '',
         department: parts[1] || '',
         location: parts[2] || '',
-        classId: parts[3] || ''
+        classId: parts[3] || '',
+        accountingBook: parts[4] || ''
     };
 }
 
@@ -2377,9 +2583,11 @@ window.resolvePendingRequests = function() {
         } else {
             // No value found in currency-agnostic caches
             // For BALANCECURRENCY, this is expected - batch processor will handle it
-            // For BALANCE, resolve with 0 (account has no transactions)
+            // For BALANCE, DO NOT resolve with 0 - leave in queue for normal API batch path
+            // ✅ CORRECTNESS: Never return 0 unless explicitly cached from NetSuite
             if (!isBalanceCurrency) {
-                resolve(0);
+                // Leave in pendingRequests - normal batch path will handle it
+                // This ensures we never return phantom zeros
                 failed++;
             }
             // For BALANCECURRENCY, leave in queue for batch processor
@@ -2391,7 +2599,7 @@ window.resolvePendingRequests = function() {
         }
     }
     
-    console.log(`   Resolved: ${resolved}, Not in cache (set to 0): ${failed}`);
+    console.log(`   Resolved: ${resolved}, Not in cache (left in queue for API): ${failed}`);
     console.log(`   Remaining pending: ${pendingRequests.balance.size}`);
     return { resolved, failed };
 };
@@ -2657,18 +2865,20 @@ window.setTypeBalanceCache = function(balances, year, subsidiary = '', departmen
 
 // Check localStorage for cached data
 // Structure: { "4220": { "Apr 2024": 123.45, ... }, ... }
-function checkLocalStorageCache(account, period, toPeriod = null, subsidiary = '') {
+// ✅ Updated to accept filtersHash parameter for manifest-aware caching
+function checkLocalStorageCache(account, period, toPeriod = null, subsidiary = '', filtersHash = null) {
     try {
         // Skip localStorage when subsidiary filter is specified (not subsidiary-aware)
         if (subsidiary && subsidiary !== '') return null;
         
-        // CRITICAL: Normalize lookupPeriod to ensure cache key matching works (Issue 2C Fix)
+        // CRITICAL: Normalize lookupPeriod to ensure cache key matching works
         // This ensures periods are in consistent "Mon YYYY" format before building cache keys
         let lookupPeriod = (period && period !== '') ? period : toPeriod;
         if (!lookupPeriod) return null;
         
         // Normalize period to ensure cache keys match (handles Range objects, date serials, etc.)
-        lookupPeriod = convertToMonthYear(lookupPeriod, false);
+        // ✅ Use normalizePeriodKey (synchronous, no await needed)
+        lookupPeriod = normalizePeriodKey(lookupPeriod, false);
         if (!lookupPeriod) return null; // If normalization fails, can't look up cache
         
         // ================================================================
@@ -3003,7 +3213,34 @@ const MAX_RETRIES = 2;             // Retry 429 errors up to 2 times
 const RETRY_DELAY = 2000;          // Wait 2s before retrying 429 errors
 
 // ============================================================================
-// UTILITY: Convert date or date serial to "Mon YYYY" format
+// PERIOD MAP CACHE - Cached mapping of periodId -> "Mon YYYY" and "Mon YYYY" -> "Mon YYYY"
+// ============================================================================
+let periodMapCache = null;
+
+function getPeriodMapCache() {
+    if (periodMapCache === null) {
+        try {
+            const stored = localStorage.getItem('netsuite_period_map_cache');
+            periodMapCache = stored ? JSON.parse(stored) : { byId: {}, byName: {} };
+        } catch (e) {
+            periodMapCache = { byId: {}, byName: {} };
+        }
+    }
+    return periodMapCache;
+}
+
+function savePeriodMapCache() {
+    if (periodMapCache) {
+        try {
+            localStorage.setItem('netsuite_period_map_cache', JSON.stringify(periodMapCache));
+        } catch (e) {
+            console.warn('Failed to save period map cache:', e);
+        }
+    }
+}
+
+// ============================================================================
+// UTILITY: Normalize period to canonical "Mon YYYY" format (SYNCHRONOUS)
 // 
 // CENTRALIZED PERIOD NORMALIZATION - Single source of truth for period format
 // This function handles:
@@ -3013,22 +3250,37 @@ const RETRY_DELAY = 2000;          // Wait 2s before retrying 429 errors
 // - String dates
 // - Year-only format ("2025" → "Jan 2025" or "Dec 2025")
 // - Already normalized strings ("Mon YYYY") - normalizes case
+// - Numeric period IDs - checks cache, returns null if not cached (use resolvePeriodIdToName)
 // 
 // Output format: Always "Mon YYYY" (e.g., "Jan 2025", "Mar 2025")
 // This ensures cache keys are consistent throughout the application.
 // 
 // IMPORTANT: Use this function for ALL period normalization to avoid cache key mismatches.
+// This function is SYNCHRONOUS - no await needed.
+// For numeric period IDs not in cache, use resolvePeriodIdToName() separately.
 // ============================================================================
-function convertToMonthYear(value, isFromPeriod = true) {
-    // If empty, return empty string
-    if (!value || value === '') return '';
+function normalizePeriodKey(value, isFromPeriod = true) {
+    // If empty, return null
+    if (!value || value === '') return null;
+    
+    const cache = getPeriodMapCache();
     
     // CRITICAL: Handle Range objects (Excel cell references)
     // Extract the actual value from the Range object before processing
     if (typeof value === 'object' && value !== null && !(value instanceof Date)) {
         const extracted = extractValueFromRange(value, 'period');
-        if (extracted === '') return '';
+        if (extracted === '') return null;
         value = extracted;
+    }
+    
+    // If numeric string (periodId/internalId), lookup in cache
+    if (typeof value === 'string' && /^\d+$/.test(value.trim())) {
+        const periodId = value.trim();
+        if (cache.byId[periodId]) {
+            return cache.byId[periodId];  // Return cached "Mon YYYY"
+        }
+        // Not in cache - return null (will need to be resolved via resolvePeriodIdToName)
+        return null;
     }
     
     // If already in "Mon YYYY" format, normalize case and return
@@ -3041,7 +3293,13 @@ function convertToMonthYear(value, isFromPeriod = true) {
             const year = parts[1];
             // Convert month to title case: first letter uppercase, rest lowercase
             const normalizedMonth = month.charAt(0).toUpperCase() + month.slice(1).toLowerCase();
-            return `${normalizedMonth} ${year}`;
+            const normalized = `${normalizedMonth} ${year}`;
+            // Cache it
+            if (!cache.byName[normalized]) {
+                cache.byName[normalized] = normalized;
+                savePeriodMapCache();
+            }
+            return normalized;
         }
         return trimmed;
     }
@@ -3055,8 +3313,13 @@ function convertToMonthYear(value, isFromPeriod = true) {
             const year = parseInt(trimmed, 10);
             if (year >= 1900 && year <= 2100) {
                 // For fromPeriod, use Jan; for toPeriod, use Dec
-                console.log(`   📅 Year-only string "${value}" → ${isFromPeriod ? 'Jan' : 'Dec'} ${year}`);
-                return isFromPeriod ? `Jan ${year}` : `Dec ${year}`;
+                const normalized = isFromPeriod ? `Jan ${year}` : `Dec ${year}`;
+                // Cache it
+                if (!cache.byName[normalized]) {
+                    cache.byName[normalized] = normalized;
+                    savePeriodMapCache();
+                }
+                return normalized;
             }
         }
         
@@ -3071,7 +3334,6 @@ function convertToMonthYear(value, isFromPeriod = true) {
             // Year 2000 = 36526, Year 2025 = ~45658
             if (numValue >= 1 && numValue <= 1000000 && Number.isFinite(numValue)) {
                 // This looks like an Excel date serial - convert to number and process below
-                console.log(`   📅 Detected Excel date serial string "${trimmed}" → converting to number ${numValue}`);
                 value = numValue;
             }
         }
@@ -3081,8 +3343,13 @@ function convertToMonthYear(value, isFromPeriod = true) {
     // Check if the number looks like a year (1900-2100) rather than an Excel date serial
     // Excel date serial for year 2024 would be around 45,000+
     if (typeof value === 'number' && value >= 1900 && value <= 2100 && Number.isInteger(value)) {
-        console.log(`   📅 Year-only number ${value} → ${isFromPeriod ? 'Jan' : 'Dec'} ${value}`);
-        return isFromPeriod ? `Jan ${value}` : `Dec ${value}`;
+        const normalized = isFromPeriod ? `Jan ${value}` : `Dec ${value}`;
+        // Cache it
+        if (!cache.byName[normalized]) {
+            cache.byName[normalized] = normalized;
+            savePeriodMapCache();
+        }
+        return normalized;
     }
     
     let date;
@@ -3097,15 +3364,38 @@ function convertToMonthYear(value, isFromPeriod = true) {
         // Already a Date object
         date = value;
     } else if (typeof value === 'string') {
+        // Handle full month names
+        const monthMap = {
+            'January': 'Jan', 'February': 'Feb', 'March': 'Mar', 'April': 'Apr',
+            'May': 'May', 'June': 'Jun', 'July': 'Jul', 'August': 'Aug',
+            'September': 'Sep', 'October': 'Oct', 'November': 'Nov', 'December': 'Dec'
+        };
+        const parts = value.trim().split(/\s+/);
+        if (parts.length === 2) {
+            const month = parts[0];
+            const year = parts[1];
+            const normalizedMonth = month.charAt(0).toUpperCase() + month.slice(1).toLowerCase();
+            const shortMonth = monthMap[normalizedMonth] || normalizedMonth;
+            if (shortMonth.length === 3 && /^\d{4}$/.test(year)) {
+                const normalized = `${shortMonth} ${year}`;
+                // Cache it
+                if (!cache.byName[normalized]) {
+                    cache.byName[normalized] = normalized;
+                    savePeriodMapCache();
+                }
+                return normalized;
+            }
+        }
+        
         // Try to parse as date string
         date = new Date(value);
         if (isNaN(date.getTime())) {
-            // Not a valid date, return original
-            return String(value);
+            // Not a valid date, return null
+            return null;
         }
     } else {
-        // Unknown type, return original
-        return String(value);
+        // Unknown type, return null
+        return null;
     }
     
     // Convert Date to "Mon YYYY" format
@@ -3113,8 +3403,59 @@ function convertToMonthYear(value, isFromPeriod = true) {
                        'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
     const month = monthNames[date.getMonth()];
     const year = date.getFullYear();
+    const normalized = `${month} ${year}`;
     
-    return `${month} ${year}`;
+    // Cache it
+    if (!cache.byName[normalized]) {
+        cache.byName[normalized] = normalized;
+        savePeriodMapCache();
+    }
+    
+    return normalized;
+}
+
+// ============================================================================
+// UTILITY: Resolve numeric period ID to "Mon YYYY" format (ASYNC)
+// Called separately when normalizePeriodKey returns null for numeric IDs
+// ============================================================================
+async function resolvePeriodIdToName(periodId) {
+    if (!periodId || !/^\d+$/.test(String(periodId).trim())) return null;
+    
+    const periodIdStr = String(periodId).trim();
+    const cache = getPeriodMapCache();
+    
+    // Check cache first
+    if (cache.byId[periodIdStr]) {
+        return cache.byId[periodIdStr];
+    }
+    
+    try {
+        const response = await fetch(`${SERVER_URL}/period/lookup?id=${encodeURIComponent(periodIdStr)}`);
+        if (response.ok) {
+            const data = await response.json();
+            const displayName = data.displayName;  // "Jan 2025"
+            
+            // Cache it
+            cache.byId[periodIdStr] = displayName;
+            if (!cache.byName[displayName]) {
+                cache.byName[displayName] = displayName;
+            }
+            savePeriodMapCache();
+            
+            return displayName;
+        }
+    } catch (e) {
+        console.warn(`Failed to resolve periodId ${periodIdStr}:`, e);
+    }
+    
+    return null;
+}
+
+// ============================================================================
+// BACKWARD COMPATIBILITY: convertToMonthYear (deprecated, use normalizePeriodKey)
+// ============================================================================
+function convertToMonthYear(value, isFromPeriod = true) {
+    return normalizePeriodKey(value, isFromPeriod) || '';
 }
 
 // ============================================================================
@@ -3860,8 +4201,8 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         // convertToMonthYear() now handles Range objects internally
         const rawFrom = fromPeriod;
         const rawTo = toPeriod;
-        fromPeriod = convertToMonthYear(fromPeriod, true);   // true = isFromPeriod
-        toPeriod = convertToMonthYear(toPeriod, false);      // false = isToPeriod
+        fromPeriod = normalizePeriodKey(fromPeriod, true) || fromPeriod;   // true = isFromPeriod
+        toPeriod = normalizePeriodKey(toPeriod, false) || toPeriod;      // false = isToPeriod
         
         // ================================================================
         // VALIDATION: Detect common formula syntax errors
@@ -3988,7 +4329,8 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         // CRITICAL: Normalize lookupPeriod defensively to ensure cache keys are never built from untrusted inputs
         // Even though fromPeriod and toPeriod are already normalized, we normalize lookupPeriod explicitly
         // to prevent any edge cases where it might be used before normalization
-        const lookupPeriod = convertToMonthYear(fromPeriod || toPeriod, false);
+        // ✅ Use normalizePeriodKey (synchronous, no await needed)
+        const lookupPeriod = normalizePeriodKey(fromPeriod || toPeriod, false);
         const invalidateKey = 'netsuite_cache_invalidate';
         try {
             const invalidateData = localStorage.getItem(invalidateKey);
@@ -4034,7 +4376,8 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         // Check localStorage cache (BUT NOT for subsidiary-filtered queries!)
         // localStorage is keyed by account+period only, not subsidiary
         // So we skip it when subsidiary is specified to avoid returning wrong values
-        const localStorageValue = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary);
+        const filtersHash = getFilterKey({ subsidiary, department, location, classId, accountingBook });
+        const localStorageValue = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
         if (localStorageValue !== null) {
             console.log(`✅ localStorage cache hit: ${account} for ${fromPeriod || '(cumulative)'} → ${toPeriod}`);
             cacheStats.hits++;
@@ -4044,40 +4387,145 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         } else {
             console.log(`📭 localStorage cache miss: ${account} for ${fromPeriod || '(cumulative)'} → ${toPeriod} (checkLocalStorageCache returned null)`);
             
-            // If this is a BS account and the period is not cached, check if preload is in progress
-            // If preload is running, wait for it to complete before making API calls
-            // CRITICAL: Also trigger preload for NEW periods even if preload was already triggered before
-            if (!subsidiary && lookupPeriod) {
-                const isPeriodCached = checkIfPeriodIsCached(lookupPeriod);
-                if (!isPeriodCached) {
-                    // Check if auto-preload is in progress (either via flag or localStorage)
-                    const preloadRunning = autoPreloadInProgress || isPreloadInProgress();
-                    
-                    if (preloadRunning) {
-                        console.log(`⏳ Period ${lookupPeriod} not cached, but preload in progress - waiting for completion...`);
-                        const preloadCompleted = await waitForPreload(90000); // Wait up to 90s
-                        
-                        if (preloadCompleted) {
-                            // Preload completed - re-check cache
-                            console.log(`✅ Preload completed - re-checking cache for ${account}/${lookupPeriod}`);
-                            const retryCacheValue = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary);
-                            if (retryCacheValue !== null) {
-                                console.log(`✅ Post-preload cache hit: ${account} for ${lookupPeriod} = ${retryCacheValue}`);
-                                cacheStats.hits++;
-                                cache.balance.set(cacheKey, retryCacheValue);
-                                return retryCacheValue;
+            // ✅ Check manifest (removed subsidiary gate - manifest works for all filters)
+            if (lookupPeriod) {
+                const periodKey = normalizePeriodKey(lookupPeriod);
+                if (!periodKey) {
+                    // If numeric ID, try to resolve it
+                    if (/^\d+$/.test(String(lookupPeriod).trim())) {
+                        const resolved = await resolvePeriodIdToName(lookupPeriod);
+                        if (resolved) {
+                            // Use resolved period key
+                            const resolvedCache = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
+                            if (resolvedCache !== null) {
+                                return resolvedCache;
                             }
+                            // Continue with manifest check using resolved key
+                            const status = getPeriodStatus(filtersHash, resolved);
+                            const manifest = getManifest(filtersHash);
+                            const period = manifest.periods[resolved];
                             
-                            // CRITICAL: If period still not cached after preload completed,
-                            // it means this is a NEW period that wasn't included in the previous preload
-                            // Trigger a new preload for this period
-                            console.log(`🔄 Period ${lookupPeriod} still not cached after preload - triggering new preload for this period`);
-                            triggerAutoPreload(account, lookupPeriod);
+                            if (status === "running" || status === "requested") {
+                                // Period is being preloaded - wait longer
+                                const maxWait = 180000;  // 180s
+                                console.log(`⏳ Period ${resolved} is ${status} - waiting up to ${maxWait/1000}s...`);
+                                const waited = await waitForPeriodCompletion(filtersHash, resolved, maxWait);
+                                
+                                if (waited) {
+                                    const retryCache = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
+                                    if (retryCache !== null) {
+                                        return retryCache;
+                                    }
+                                }
+                                
+                                // Still miss after wait - check if still running/retrying
+                                const finalStatus = getPeriodStatus(filtersHash, resolved);
+                                const finalPeriod = getManifest(filtersHash).periods[resolved];
+                                
+                                if (finalStatus === "running" || finalStatus === "requested") {
+                                    // ✅ Still running - return BUSY, don't make API call
+                                    throw new Error('BUSY');
+                                } else if (finalStatus === "failed" && finalPeriod && finalPeriod.attemptCount < 3) {
+                                    // ✅ Retries remaining - return BUSY, don't make API call
+                                    throw new Error('BUSY');
+                                }
+                            } else if (status === "failed") {
+                                // Check if retries exhausted
+                                if (period && period.attemptCount >= 3) {
+                                    // ✅ Retries exhausted - proceed with API call
+                                    console.log(`⚠️ Period ${resolved} precache failed (${period.attemptCount} attempts) - using API call`);
+                                } else {
+                                    // ✅ Retries remaining - return BUSY, don't make API call
+                                    throw new Error('BUSY');
+                                }
+                            } else if (status === "not_found") {
+                                // Period not requested - trigger preload
+                                addPeriodToRequestQueue(resolved, { subsidiary, department, location, classId, accountingBook });
+                                // Process queue will be called by taskpane
+                                
+                                // Wait for preload
+                                const waited = await waitForPeriodCompletion(filtersHash, resolved, 180000);
+                                if (waited) {
+                                    const retryCache = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
+                                    if (retryCache !== null) {
+                                        return retryCache;
+                                    }
+                                }
+                                
+                                // Still miss - check if now running/retrying
+                                const finalStatus = getPeriodStatus(filtersHash, resolved);
+                                if (finalStatus === "running" || finalStatus === "requested") {
+                                    // ✅ Now running - return BUSY
+                                    throw new Error('BUSY');
+                                }
+                            }
+                        } else {
+                            // Cannot resolve - proceed with API call
+                            console.warn(`⚠️ Cannot resolve periodId ${lookupPeriod} - using API call`);
                         }
                     } else {
-                        // No preload in progress - trigger it (this handles both first-time and new periods)
-                        console.log(`🔄 Period ${lookupPeriod} not in cache - triggering auto-preload for this period`);
-                        triggerAutoPreload(account, lookupPeriod);
+                        // Cannot normalize - proceed with API call
+                        console.warn(`⚠️ Cannot normalize period "${lookupPeriod}" - using API call`);
+                    }
+                } else {
+                    // Period key normalized successfully
+                    const status = getPeriodStatus(filtersHash, periodKey);
+                    const manifest = getManifest(filtersHash);
+                    const period = manifest.periods[periodKey];
+                    
+                    if (status === "running" || status === "requested") {
+                        // Period is being preloaded - wait longer
+                        const maxWait = 180000;  // 180s
+                        console.log(`⏳ Period ${periodKey} is ${status} - waiting up to ${maxWait/1000}s...`);
+                        const waited = await waitForPeriodCompletion(filtersHash, periodKey, maxWait);
+                        
+                        if (waited) {
+                            const retryCache = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
+                            if (retryCache !== null) {
+                                return retryCache;
+                            }
+                        }
+                        
+                        // Still miss after wait - check if still running/retrying
+                        const finalStatus = getPeriodStatus(filtersHash, periodKey);
+                        const finalPeriod = getManifest(filtersHash).periods[periodKey];
+                        
+                        if (finalStatus === "running" || finalStatus === "requested") {
+                            // ✅ Still running - return BUSY, don't make API call
+                            throw new Error('BUSY');
+                        } else if (finalStatus === "failed" && finalPeriod && finalPeriod.attemptCount < 3) {
+                            // ✅ Retries remaining - return BUSY, don't make API call
+                            throw new Error('BUSY');
+                        }
+                    } else if (status === "failed") {
+                        // Check if retries exhausted
+                        if (period && period.attemptCount >= 3) {
+                            // ✅ Retries exhausted - proceed with API call
+                            console.log(`⚠️ Period ${periodKey} precache failed (${period.attemptCount} attempts) - using API call`);
+                        } else {
+                            // ✅ Retries remaining - return BUSY, don't make API call
+                            throw new Error('BUSY');
+                        }
+                    } else if (status === "not_found") {
+                        // Period not requested - trigger preload
+                        addPeriodToRequestQueue(periodKey, { subsidiary, department, location, classId, accountingBook });
+                        // Process queue will be called by taskpane
+                        
+                        // Wait for preload
+                        const waited = await waitForPeriodCompletion(filtersHash, periodKey, 180000);
+                        if (waited) {
+                            const retryCache = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
+                            if (retryCache !== null) {
+                                return retryCache;
+                            }
+                        }
+                        
+                        // Still miss - check if now running/retrying
+                        const finalStatus = getPeriodStatus(filtersHash, periodKey);
+                        if (finalStatus === "running" || finalStatus === "requested") {
+                            // ✅ Now running - return BUSY
+                            throw new Error('BUSY');
+                        }
                     }
                 }
             }
@@ -4306,8 +4754,8 @@ async function BALANCECURRENCY(account, fromPeriod, toPeriod, subsidiary, curren
         // convertToMonthYear handles both numbers and string representations of Excel date serials
         const rawFrom = fromPeriod;
         const rawTo = toPeriod;
-        fromPeriod = convertToMonthYear(fromPeriod, true);   // true = isFromPeriod
-        toPeriod = convertToMonthYear(toPeriod, false);      // false = isToPeriod
+        fromPeriod = normalizePeriodKey(fromPeriod, true) || fromPeriod;   // true = isFromPeriod
+        toPeriod = normalizePeriodKey(toPeriod, false) || toPeriod;      // false = isToPeriod
         
         // Debug log the period conversion
         console.log(`📅 BALANCECURRENCY periods: ${rawFrom} → "${fromPeriod}", ${rawTo} → "${toPeriod}"`);
@@ -4698,8 +5146,8 @@ async function BUDGET(account, fromPeriod, toPeriod, subsidiary, department, loc
         
         // Convert date values to "Mon YYYY" format (supports both dates and period strings)
         // For year-only format ("2025"), expand to "Jan 2025" and "Dec 2025"
-        fromPeriod = convertToMonthYear(fromPeriod, true);   // true = isFromPeriod
-        toPeriod = convertToMonthYear(toPeriod, false);      // false = isToPeriod
+        fromPeriod = normalizePeriodKey(fromPeriod, true) || fromPeriod;   // true = isFromPeriod
+        toPeriod = normalizePeriodKey(toPeriod, false) || toPeriod;      // false = isToPeriod
         
         // Other parameters as strings
         subsidiary = String(subsidiary || '').trim();
@@ -6127,7 +6575,7 @@ async function RETAINEDEARNINGS(period, subsidiary, accountingBook, classId, dep
     try {
         // RETAINEDEARNINGS is a point-in-time balance - use end of year for year-only values
         // This ensures "2025" calculates RE as of Dec 31, 2025
-        period = convertToMonthYear(period, false);  // false = use Dec for year-only
+        period = normalizePeriodKey(period, false) || period;  // false = use Dec for year-only
         
         if (!period) {
             console.error('❌ RETAINEDEARNINGS: period is required');
@@ -6344,7 +6792,7 @@ async function NETINCOME(fromPeriod, toPeriod, subsidiary, accountingBook, class
         }
         
         // Convert fromPeriod - for year-only, use Jan (start of year)
-        const convertedFromPeriod = convertToMonthYear(fromPeriod, true);  // true = use Jan
+        const convertedFromPeriod = normalizePeriodKey(fromPeriod, true) || fromPeriod;  // true = use Jan
         console.log(`   📅 fromPeriod conversion: ${fromPeriod} → "${convertedFromPeriod}"`);
         
         // Convert toPeriod - if empty/skipped, default to fromPeriod; for year-only use Dec
@@ -6361,7 +6809,7 @@ async function NETINCOME(fromPeriod, toPeriod, subsidiary, accountingBook, class
             }
             console.log(`   📅 toPeriod not specified, defaulting to ${convertedToPeriod}`);
         } else {
-            convertedToPeriod = convertToMonthYear(toPeriod, false);  // false = use Dec for year-only
+            convertedToPeriod = normalizePeriodKey(toPeriod, false) || toPeriod;  // false = use Dec for year-only
             console.log(`   📅 toPeriod conversion: ${toPeriod} → "${convertedToPeriod}"`);
         }
         
@@ -6666,7 +7114,7 @@ async function TYPEBALANCE(accountType, fromPeriod, toPeriod, subsidiary, depart
             : BS_TYPES.includes(normalizedType);
         
         // Convert periods
-        let convertedToPeriod = convertToMonthYear(toPeriod, false); // false = use Dec for year-only
+        let convertedToPeriod = normalizePeriodKey(toPeriod, false) || toPeriod; // false = use Dec for year-only
         if (!convertedToPeriod) {
             console.error('❌ TYPEBALANCE: toPeriod is required');
             throw new Error('MISSING_PERIOD');
@@ -6679,7 +7127,7 @@ async function TYPEBALANCE(accountType, fromPeriod, toPeriod, subsidiary, depart
             console.log(`📊 TYPEBALANCE: BS ${modeLabel} type "${normalizedType}" - cumulative through ${convertedToPeriod}`);
         } else {
             // P&L types: need fromPeriod
-            convertedFromPeriod = convertToMonthYear(fromPeriod, true); // true = use Jan for year-only
+            convertedFromPeriod = normalizePeriodKey(fromPeriod, true) || fromPeriod; // true = use Jan for year-only
             if (!convertedFromPeriod) {
                 console.error('❌ TYPEBALANCE: fromPeriod is required for P&L account types');
                 throw new Error('MISSING_PERIOD');
@@ -6843,7 +7291,7 @@ async function CTA(period, subsidiary, accountingBook) {
     try {
         // CTA is a point-in-time balance - use end of year for year-only values
         // This ensures "2025" calculates CTA as of Dec 31, 2025
-        period = convertToMonthYear(period, false);  // false = use Dec for year-only
+        period = normalizePeriodKey(period, false) || period;  // false = use Dec for year-only
         
         if (!period) {
             console.error('❌ CTA: period is required');

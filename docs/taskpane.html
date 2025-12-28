@@ -5792,7 +5792,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.0.54"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.0.55"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -8790,6 +8790,16 @@ For licensing inquiries, contact: legal@celigo.com
                             // This is just as fast as loading one account, and caches everything for instant subsequent lookups
                             // CRITICAL: Add timeout to prevent loading screen from persisting on Cloudflare 524 errors
                             // Set timeout to 120 seconds (2 minutes) - longer than typical query but prevents infinite wait
+                            
+                            // ✅ Update manifest: Mark periods as running
+                            const filtersHash = `${''}|${''}|${''}|${''}|${''}`;  // Empty filters for default preload
+                            const batchId = `batch_${Date.now()}`;
+                            if (window.updatePeriodStatus) {
+                                for (const period of uncachedPeriods) {
+                                    window.updatePeriodStatus(filtersHash, period, { status: "running", batchId: batchId });
+                                }
+                            }
+                            
                             const controller = new AbortController();
                             const timeoutId = setTimeout(() => controller.abort(), 120000); // 120 seconds
                             
@@ -8820,6 +8830,13 @@ For licensing inquiries, contact: legal@celigo.com
                             
                             if (preloadResponse.ok) {
                                 const result = await preloadResponse.json();
+                                
+                                // ✅ Update manifest: Mark periods as completed
+                                if (window.updatePeriodStatus) {
+                                    for (const period of uncachedPeriods) {
+                                        window.updatePeriodStatus(filtersHash, period, { status: "completed" });
+                                    }
+                                }
                                 
                                 // Cache results - this caches ALL BS accounts for the period(s)
                                 // CRITICAL: Cache ALL balances, including zero balances (0)
@@ -8893,6 +8910,17 @@ For licensing inquiries, contact: legal@celigo.com
                                 // Handle Cloudflare 524 timeout errors gracefully
                                 if (preloadResponse.status === 524) {
                                     console.warn('⚠️ Preload request timed out (524). Formulas may still work from cache.');
+                                    
+                                    // ✅ Update manifest: Mark periods as failed (timeout)
+                                    if (window.updatePeriodStatus) {
+                                        for (const period of uncachedPeriods) {
+                                            window.updatePeriodStatus(filtersHash, period, { 
+                                                status: "failed", 
+                                                error: "TIMEOUT_524" 
+                                            });
+                                        }
+                                    }
+                                    
                                     // Don't throw - just log and continue. Formulas can still work from cache or individual calls.
                                     hideLoading();
                                     showToast({
@@ -8905,6 +8933,17 @@ For licensing inquiries, contact: legal@celigo.com
                                     if (window.markAutoPreloadComplete) window.markAutoPreloadComplete();
                                     return; // Exit early - don't throw error
                                 }
+                                
+                                // ✅ Update manifest: Mark periods as failed (non-timeout error)
+                                if (window.updatePeriodStatus) {
+                                    for (const period of uncachedPeriods) {
+                                        window.updatePeriodStatus(filtersHash, period, { 
+                                            status: "failed", 
+                                            error: `HTTP_${preloadResponse.status}` 
+                                        });
+                                    }
+                                }
+                                
                                 throw new Error(`Preload failed: ${preloadResponse.status} - ${errorText.substring(0, 200)}`);
                             }
                             
@@ -8914,6 +8953,16 @@ For licensing inquiries, contact: legal@celigo.com
                             
                             // Check if it's a timeout error
                             const isTimeout = error.message.includes('timeout') || error.message.includes('524') || error.name === 'AbortError';
+                            
+                            // ✅ Update manifest: Mark periods as failed (error)
+                            if (window.updatePeriodStatus) {
+                                for (const period of uncachedPeriods) {
+                                    window.updatePeriodStatus(filtersHash, period, { 
+                                        status: "failed", 
+                                        error: isTimeout ? "TIMEOUT" : error.message.substring(0, 50) 
+                                    });
+                                }
+                            }
                             
                             showToast({
                                 title: isTimeout ? 'Preload Timeout' : 'Auto-Preload Issue',
