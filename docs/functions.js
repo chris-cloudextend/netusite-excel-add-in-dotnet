@@ -4393,15 +4393,16 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         const cacheKey = getCacheKey('balance', params);
         
         // ================================================================
-        // PRELOAD COORDINATION: If Prep Data is running, wait for SPECIFIC PERIOD
-        // FIX: Use period-specific waiting instead of global preload status
-        // This allows formulas to resolve as soon as their period completes,
-        // rather than waiting for ALL periods to complete
+        // PRELOAD COORDINATION: Check manifest for period status FIRST
+        // FIX: Check manifest even when global preload is not in progress
+        // This allows formulas to detect when precache completed and use cache immediately
         // ================================================================
         // Normalize lookupPeriod early for period-specific checks
         const lookupPeriod = normalizePeriodKey(fromPeriod || toPeriod, false);
         
-        if (isPreloadInProgress() && lookupPeriod) {
+        // CRITICAL FIX: Check manifest for period status REGARDLESS of global preload status
+        // This ensures formulas can detect "completed" status even after global preload finishes
+        if (lookupPeriod) {
             const periodKey = normalizePeriodKey(lookupPeriod);
             if (periodKey) {
                 const filtersHash = getFilterKey({ subsidiary, department, location, classId, accountingBook });
@@ -4409,7 +4410,46 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                 const manifest = getManifest(filtersHash);
                 const period = manifest.periods[periodKey];
                 
-                // If this specific period is being preloaded, wait for it (not global preload)
+                // CRITICAL: Check for "completed" status FIRST (even if global preload finished)
+                // This allows formulas that were in BUSY state to resolve immediately when re-evaluated
+                if (status === "completed") {
+                    // Period already completed - check cache immediately (no wait needed)
+                    let localStorageValue = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
+                    if (localStorageValue !== null) {
+                        console.log(`✅ Period ${periodKey} already completed - cache hit: ${account} = ${localStorageValue}`);
+                        cacheStats.hits++;
+                        cache.balance.set(cacheKey, localStorageValue);
+                        return localStorageValue;
+                    }
+                    
+                    // Cache might not be written yet (race condition) - wait briefly
+                    console.log(`⏳ Period ${periodKey} marked completed but cache not found - waiting for cache write...`);
+                    const cacheWaitStart = Date.now();
+                    const cacheWaitMax = 3000; // 3 seconds max
+                    while (Date.now() - cacheWaitStart < cacheWaitMax) {
+                        await new Promise(r => setTimeout(r, 500)); // Check every 500ms
+                        
+                        localStorageValue = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
+                        if (localStorageValue !== null) {
+                            console.log(`✅ Post-preload cache hit (after wait): ${account} for ${periodKey} = ${localStorageValue}`);
+                            cacheStats.hits++;
+                            cache.balance.set(cacheKey, localStorageValue);
+                            return localStorageValue;
+                        }
+                        
+                        if (cache.balance.has(cacheKey)) {
+                            console.log(`✅ Post-preload cache hit (memory, after wait): ${account} for ${periodKey}`);
+                            cacheStats.hits++;
+                            return cache.balance.get(cacheKey);
+                        }
+                    }
+                    
+                    // Cache still not found after wait - throw BUSY to force re-evaluation
+                    console.log(`⏳ Period ${periodKey} completed but cache not found after ${cacheWaitMax}ms - returning BUSY`);
+                    throw new Error('BUSY');
+                }
+                
+                // If period is being preloaded, wait for it (not global preload)
                 if (status === "running" || status === "requested") {
                     console.log(`⏳ Period ${periodKey} is ${status} - waiting for this specific period (${account}/${periodKey})`);
                     const maxWait = 120000; // 120s max wait for this period
@@ -4467,18 +4507,17 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                         console.log(`⏳ Period ${periodKey} still ${finalStatus} - returning BUSY`);
                         throw new Error('BUSY');
                     }
-                } else if (status === "completed") {
-                    // Period already completed - check cache immediately (no wait needed)
-                    const localStorageValue = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
-                    if (localStorageValue !== null) {
-                        console.log(`✅ Period ${periodKey} already completed - cache hit: ${account} = ${localStorageValue}`);
-                        cacheStats.hits++;
-                        cache.balance.set(cacheKey, localStorageValue);
-                        return localStorageValue;
-                    }
                 }
                 // If status is "not_found" or "failed", continue to manifest check below
-            } else {
+            }
+        }
+        
+        // ================================================================
+        // GLOBAL PRELOAD WAIT (legacy behavior for non-normalized periods)
+        // ================================================================
+        if (isPreloadInProgress() && lookupPeriod) {
+            const periodKey = normalizePeriodKey(lookupPeriod);
+            if (!periodKey) {
                 // Cannot normalize period - fall back to global preload wait (legacy behavior)
                 console.log(`⏳ Preload in progress - waiting for cache (${account}/${fromPeriod || toPeriod}) - period not normalized, using global wait`);
                 await waitForPreload();
