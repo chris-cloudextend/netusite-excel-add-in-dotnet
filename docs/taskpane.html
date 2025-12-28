@@ -5792,7 +5792,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.0.75"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.0.76"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -11312,7 +11312,11 @@ For licensing inquiries, contact: legal@celigo.com
                     for (const acctNum in allBalances) {
                         cacheData[acctNum] = allBalances[acctNum];
                     }
-                    localStorage.setItem('netsuite_balance_cache', JSON.stringify(cacheData));
+                    // CRITICAL: Yield to event loop before large JSON.stringify to prevent blocking
+                    await new Promise(resolve => setTimeout(resolve, 0));
+                    const cacheJson = JSON.stringify(cacheData);
+                    await new Promise(resolve => setTimeout(resolve, 0)); // Yield again before localStorage write
+                    localStorage.setItem('netsuite_balance_cache', cacheJson);
                     localStorage.setItem('netsuite_balance_cache_timestamp', Date.now().toString());
                     console.log(`✅ Income Statement: Saved ${Object.keys(cacheData).length} accounts to localStorage`);
                     
@@ -18503,11 +18507,15 @@ export default {
                 // CRITICAL FINANCIAL INTEGRITY: Clear cache BEFORE fetching new data
                 // This prevents formulas from using stale cache with wrong filter settings
                 // Cache must match the filters being used, or formulas return incorrect values
+                // CRITICAL: Use setTimeout to yield to event loop - prevents blocking Excel thread
                 console.log('🗑️ Structure Sync: Clearing cache to prevent filter mismatch...');
+                await new Promise(resolve => setTimeout(resolve, 0)); // Yield to event loop first
                 try {
                     localStorage.removeItem('netsuite_balance_cache');
                     localStorage.removeItem('netsuite_balance_cache_timestamp');
                     // Also clear in-memory cache via window function if available
+                    // Note: window.clearAllCaches exists in shared runtime, not taskpane
+                    // This is safe to call but may not exist - check prevents errors
                     if (typeof window.clearAllCaches === 'function') {
                         window.clearAllCaches();
                     }
@@ -18543,13 +18551,19 @@ export default {
                 // CRITICAL FINANCIAL INTEGRITY FIX: Save fetched data to cache IMMEDIATELY
                 // This ensures formulas use the CORRECT filtered data, not stale unfiltered cache
                 // Without this, formulas check cache and find old data from previous filter settings
+                // CRITICAL: Use setTimeout to yield to event loop before large JSON.stringify
+                // This prevents blocking Excel's JavaScript thread during cache save
                 console.log('💾 Structure Sync: Saving BALANCE cache to localStorage with current filters...');
+                await new Promise(resolve => setTimeout(resolve, 0)); // Yield to event loop before large operation
                 try {
                     const cacheData = {};
                     for (const acctNum in allBalances) {
                         cacheData[acctNum] = allBalances[acctNum];
                     }
-                    localStorage.setItem('netsuite_balance_cache', JSON.stringify(cacheData));
+                    // CRITICAL: JSON.stringify of large objects can block - yield after stringify but before setItem
+                    const cacheJson = JSON.stringify(cacheData);
+                    await new Promise(resolve => setTimeout(resolve, 0)); // Yield again before localStorage write
+                    localStorage.setItem('netsuite_balance_cache', cacheJson);
                     localStorage.setItem('netsuite_balance_cache_timestamp', Date.now().toString());
                     console.log(`✅ Structure Sync: Saved ${Object.keys(cacheData).length} accounts to localStorage`);
                     console.log(`   Filters: sub="${currentSubsidiary}", dept="${department}", loc="${location}", class="${classId}", book="${accountingBook}"`);

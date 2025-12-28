@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.0.75';  // CRITICAL FIX: Structure sync now saves filtered data to cache - prevents wrong revenue values
+const FUNCTIONS_VERSION = '4.0.0.76';  // CRITICAL FIX: Made cache operations async to prevent Excel crashes - yields to event loop before large JSON.stringify/setItem
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
