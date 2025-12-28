@@ -4517,8 +4517,9 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                             const period = manifest.periods[resolved];
                             
                             if (status === "running" || status === "requested") {
-                                // Period is being preloaded - wait longer
-                                const maxWait = 180000;  // 180s
+                                // Period is being preloaded - wait longer (120s max, increased from 90s)
+                                // BS preload can take 60-90s, so 120s gives buffer for network delays
+                                const maxWait = 120000;  // 120s (reduced from 180s but increased from original 90s)
                                 console.log(`⏳ Period ${resolved} is ${status} - waiting up to ${maxWait/1000}s...`);
                                 const waited = await waitForPeriodCompletion(filtersHash, resolved, maxWait);
                                 
