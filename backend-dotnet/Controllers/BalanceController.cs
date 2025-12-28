@@ -788,6 +788,10 @@ public class BalanceController : ControllerBase
             var filtersHash = $"{targetSub}:{departmentId ?? ""}:{locationId ?? ""}:{classId ?? ""}";
             var cacheExpiry = TimeSpan.FromMinutes(5);
             var bsTypesSql = Models.AccountType.BsTypesSql;
+            var requestId = Guid.NewGuid().ToString("N")[..16]; // Short unique ID for tracking
+            
+            // Track per-period results (no silent continues)
+            var periodResults = new List<PeriodResult>();
             
             // Process each period
             foreach (var periodName in periodsToLoad)
@@ -798,7 +802,15 @@ public class BalanceController : ControllerBase
                 var period = await _netSuiteService.GetPeriodAsync(periodName);
                 if (period?.EndDate == null)
                 {
-                    _logger.LogWarning("Could not find period {Period}, skipping", periodName);
+                    _logger.LogWarning("Could not find period {Period}, marking as failed", periodName);
+                    periodResults.Add(new PeriodResult
+                    {
+                        Period = periodName,
+                        Status = "failed",
+                        Error = "Period not found",
+                        AccountCount = 0,
+                        ElapsedSeconds = 0
+                    });
                     continue;
                 }
                 
@@ -867,6 +879,15 @@ public class BalanceController : ControllerBase
                 if (!queryResult.Success)
                 {
                     _logger.LogWarning("BS Preload query failed for {Period}: {Error}", periodName, queryResult.ErrorDetails);
+                    var periodElapsed = (DateTime.UtcNow - periodStartTime).TotalSeconds;
+                    periodResults.Add(new PeriodResult
+                    {
+                        Period = periodName,
+                        Status = "failed",
+                        Error = queryResult.ErrorDetails ?? "Query failed",
+                        AccountCount = 0,
+                        ElapsedSeconds = periodElapsed
+                    });
                     continue; // Skip this period but continue with others
                 }
             
@@ -949,12 +970,25 @@ public class BalanceController : ControllerBase
                 {
                     _logger.LogWarning("   ⚠️ Problematic accounts (10413, 10206, 10411) NOT found in query results!");
                 }
+                
+                // Mark period as completed
+                periodResults.Add(new PeriodResult
+                {
+                    Period = periodName,
+                    Status = "completed",
+                    Error = null,
+                    AccountCount = queryResult.Items.Count,
+                    ElapsedSeconds = periodElapsed
+                });
             }
             
             var totalElapsed = (DateTime.UtcNow - startTime).TotalSeconds;
+            var completedCount = periodResults.Count(r => r.Status == "completed");
+            var failedCount = periodResults.Count(r => r.Status == "failed");
+            
             _logger.LogInformation(
-                "✅ BS PRELOAD COMPLETE: {Accounts} accounts × {Periods} periods in {Elapsed:F1}s ({Cached} cached)",
-                allBalances.Count, periodsToLoad.Count, totalElapsed, totalCachedCount);
+                "✅ BS PRELOAD COMPLETE: {Accounts} accounts × {Completed}/{Total} periods completed in {Elapsed:F1}s ({Cached} cached, {Failed} failed)",
+                allBalances.Count, completedCount, periodsToLoad.Count, totalElapsed, totalCachedCount, failedCount);
             
             return Ok(new
             {
@@ -966,7 +1000,10 @@ public class BalanceController : ControllerBase
                 account_count = allBalances.Count,
                 period_count = periodsToLoad.Count,
                 cached_count = totalCachedCount,
-                message = $"Loaded {allBalances.Count} Balance Sheet accounts × {periodsToLoad.Count} period(s) in {totalElapsed:F1}s. Individual formulas will now be instant."
+                filters_hash = filtersHash,
+                request_id = requestId,
+                period_results = periodResults,
+                message = $"Loaded {allBalances.Count} Balance Sheet accounts × {completedCount}/{periodsToLoad.Count} period(s) completed in {totalElapsed:F1}s. Individual formulas will now be instant."
             });
         }
         catch (SafetyLimitException ex)
@@ -2388,5 +2425,18 @@ public class TargetedBsPreloadRequest
     public string? Class { get; set; }
     public string? Location { get; set; }
     public int? Book { get; set; }
+}
+
+/// <summary>
+/// Per-period result status for preload operations.
+/// Tracks completion status for each period to enable partial failure detection and retry.
+/// </summary>
+public class PeriodResult
+{
+    public string Period { get; set; } = "";
+    public string Status { get; set; } = "pending"; // "completed" | "failed" | "pending"
+    public string? Error { get; set; }
+    public int AccountCount { get; set; }
+    public double ElapsedSeconds { get; set; }
 }
 

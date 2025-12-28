@@ -8774,209 +8774,296 @@ For licensing inquiries, contact: legal@celigo.com
                             
                             console.log(`📋 Periods to preload: ${uncachedPeriods.join(', ')} (${cachedPeriods.length > 0 ? `skipping already cached: ${cachedPeriods.join(', ')}` : 'all new'})`);
                             
-                            // Format periods for display - ONLY show uncached periods
-                            const periodsText = uncachedPeriods.length === 1 
-                                ? uncachedPeriods[0] 
-                                : uncachedPeriods.join(', ');
-                            
-                            updateLoading(
-                                `⚡ Getting balances since the beginning of time for ${periodsText}`,
-                                40,
-                                `This can take some time for each period but future formulas for the same period will be instant.`
-                            );
-                            
-                            // Preload ALL BS accounts for the identified periods
-                            // Using /batch/bs_preload (not targeted) - it loads ALL BS accounts, not just specific ones
-                            // This is just as fast as loading one account, and caches everything for instant subsequent lookups
-                            // CRITICAL: Add timeout to prevent loading screen from persisting on Cloudflare 524 errors
-                            // Set timeout to 120 seconds (2 minutes) - longer than typical query but prevents infinite wait
-                            
-                            // ✅ Update manifest: Mark periods as running
+                            // ✅ CHUNKED PRECACHE: Process periods in batches to avoid timeouts
+                            // Chunk size starts at 2, reduces by half on failure (min 1)
+                            // This handles drag-across scenarios where 8 periods would timeout
                             const filtersHash = `${''}|${''}|${''}|${''}|${''}`;  // Empty filters for default preload
-                            const batchId = `batch_${Date.now()}`;
-                            if (window.updatePeriodStatus) {
-                                for (const period of uncachedPeriods) {
-                                    window.updatePeriodStatus(filtersHash, period, { status: "running", batchId: batchId });
+                            
+                            // Helper function to chunk array
+                            function chunkArray(array, chunkSize) {
+                                const chunks = [];
+                                for (let i = 0; i < array.length; i += chunkSize) {
+                                    chunks.push(array.slice(i, i + chunkSize));
                                 }
+                                return chunks;
                             }
                             
-                            const controller = new AbortController();
-                            const timeoutId = setTimeout(() => controller.abort(), 120000); // 120 seconds
-                            
-                            let preloadResponse;
-                            try {
-                                preloadResponse = await fetch(`${getServerUrl()}/batch/bs_preload`, {
-                                    method: 'POST',
-                                    headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({
-                                        periods: uncachedPeriods,  // Only preload uncached periods
-                                        subsidiary: '',  // Will use default/current subsidiary
-                                        department: '',
-                                        location: '',
-                                        class: '',
-                                        accountingBook: ''
-                                    }),
-                                    signal: controller.signal
-                                });
-                            } catch (fetchError) {
-                                clearTimeout(timeoutId);
-                                if (fetchError.name === 'AbortError') {
-                                    console.warn('⚠️ Preload request timed out after 120 seconds');
-                                    throw new Error('Preload request timed out. Formulas may still work from cache or individual API calls.');
-                                }
-                                throw fetchError;
-                            }
-                            clearTimeout(timeoutId);
-                            
-                            if (preloadResponse.ok) {
-                                const result = await preloadResponse.json();
-                                
-                                // ✅ Update manifest: Mark periods as completed
-                                if (window.updatePeriodStatus) {
-                                    for (const period of uncachedPeriods) {
-                                        window.updatePeriodStatus(filtersHash, period, { status: "completed" });
+                            // Helper function to check if period is actually cached
+                            function isPeriodCachedInLocalStorage(period) {
+                                try {
+                                    let normalizedPeriod = period.trim();
+                                    const parts = normalizedPeriod.split(/\s+/);
+                                    if (parts.length === 2) {
+                                        const month = parts[0];
+                                        const year = parts[1];
+                                        const normalizedMonth = month.charAt(0).toUpperCase() + month.slice(1).toLowerCase();
+                                        normalizedPeriod = `${normalizedMonth} ${year}`;
                                     }
+                                    
+                                    const preloadCache = localStorage.getItem('xavi_balance_cache');
+                                    if (!preloadCache) return false;
+                                    
+                                    const preloadData = JSON.parse(preloadCache);
+                                    const periodKey = `::${normalizedPeriod}`;
+                                    for (const key in preloadData) {
+                                        if (key.endsWith(periodKey)) {
+                                            return true;
+                                        }
+                                    }
+                                    return false;
+                                } catch (e) {
+                                    return false;
                                 }
+                            }
+                            
+                            // Helper function to process a single chunk
+                            async function processChunk(periodChunk, chunkSize, retryCount = 0, maxRetries = 3) {
+                                const periodsText = periodChunk.length === 1 
+                                    ? periodChunk[0] 
+                                    : periodChunk.join(', ');
                                 
-                                // Cache results - this caches ALL BS accounts for the period(s)
-                                // CRITICAL: Cache ALL balances, including zero balances (0)
-                                // Zero balances are valid and must be cached to avoid redundant API calls
-                                if (result.balances) {
-                                    const cacheEntries = {};
-                                    let accountCount = 0;
-                                    let zeroBalanceCount = 0;
-                                    for (const [account, periodBalances] of Object.entries(result.balances)) {
-                                        accountCount++;
-                                        if (typeof periodBalances === 'object') {
-                                            for (const [pName, balance] of Object.entries(periodBalances)) {
-                                // Cache ALL balances, including zero (0 is a valid balance)
-                                // This ensures accounts with no transactions are cached and don't trigger individual API calls
-                                const cacheKey = `balance:${account}::${pName}`;
-                                cacheEntries[cacheKey] = { value: balance, timestamp: Date.now() };
+                                updateLoading(
+                                    `⚡ Preloading ${periodsText} (${periodChunk.length} period${periodChunk.length > 1 ? 's' : ''})`,
+                                    40,
+                                    `This can take some time but future formulas will be instant.`
+                                );
                                 
-                                // Track zero balances for logging
-                                if (balance === 0 || balance === '0' || parseFloat(balance) === 0) {
-                                    zeroBalanceCount++;
+                                const controller = new AbortController();
+                                const timeoutId = setTimeout(() => controller.abort(), 120000); // 120 seconds per chunk
+                                
+                                let preloadResponse;
+                                try {
+                                    preloadResponse = await fetch(`${getServerUrl()}/batch/bs_preload`, {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({
+                                            periods: periodChunk,
+                                            subsidiary: '',
+                                            department: '',
+                                            location: '',
+                                            class: '',
+                                            accountingBook: ''
+                                        }),
+                                        signal: controller.signal
+                                    });
+                                } catch (fetchError) {
+                                    clearTimeout(timeoutId);
+                                    if (fetchError.name === 'AbortError') {
+                                        console.warn(`⚠️ Chunk timed out after 120 seconds: ${periodsText}`);
+                                        // Mark as unknown (not failed) - backend might have completed before timeout
+                                        return { 
+                                            status: 'timeout', 
+                                            periods: periodChunk,
+                                            completed: [],
+                                            failed: []
+                                        };
+                                    }
+                                    throw fetchError;
                                 }
+                                clearTimeout(timeoutId);
                                 
-                                // CRITICAL LOGGING: Track specific problematic accounts
-                                if (['10413', '10206', '10411'].includes(account)) {
-                                    console.log(`   🔍 Problematic account ${account} cached: balance = ${balance} for ${pName}`);
-                                }
+                                if (preloadResponse.ok) {
+                                    const result = await preloadResponse.json();
+                                    
+                                    // Process period_results from backend to identify completed/failed periods
+                                    const completedPeriods = [];
+                                    const failedPeriods = [];
+                                    
+                                    if (result.period_results && Array.isArray(result.period_results)) {
+                                        for (const periodResult of result.period_results) {
+                                            if (periodResult.status === 'completed') {
+                                                completedPeriods.push(periodResult.period);
+                                            } else if (periodResult.status === 'failed') {
+                                                failedPeriods.push({
+                                                    period: periodResult.period,
+                                                    error: periodResult.error
+                                                });
                                             }
                                         }
+                                    } else {
+                                        // Fallback: assume all requested periods completed if no period_results
+                                        completedPeriods.push(...periodChunk);
                                     }
-                                    try {
-                                        const existing = JSON.parse(localStorage.getItem('xavi_balance_cache') || '{}');
-                                        const merged = { ...existing, ...cacheEntries };
-                                        localStorage.setItem('xavi_balance_cache', JSON.stringify(merged));
-                                        console.log(`✅ Cached ${accountCount} BS accounts for ${formulaData.periods.length} period(s) (${zeroBalanceCount} with zero balances)`);
-                                        
-                                        // CRITICAL LOGGING: Verify problematic accounts are in cache
-                                        const problematicAccounts = ['10413', '10206', '10411'];
-                                        const problematicInCache = problematicAccounts.filter(acct => {
-                                            return formulaData.periods.some(period => {
-                                                const key = `balance:${acct}::${period}`;
-                                                return merged[key] !== undefined;
-                                            });
-                                        });
-                                        
-                                        if (problematicInCache.length === problematicAccounts.length) {
-                                            console.log(`   ✅ All problematic accounts (10413, 10206, 10411) are in cache`);
-                                        } else {
-                                            const missing = problematicAccounts.filter(a => !problematicInCache.includes(a));
-                                            console.warn(`   ⚠️ Problematic accounts NOT in cache: ${missing.join(', ')}`);
-                                            console.warn(`   ⚠️ This suggests the backend query didn't return them or they were filtered out`);
-                                            console.warn(`   ⚠️ Backend may not be running updated code - check backend logs`);
+                                    
+                                    // Cache results
+                                    if (result.balances) {
+                                        const cacheEntries = {};
+                                        let accountCount = 0;
+                                        let zeroBalanceCount = 0;
+                                        for (const [account, periodBalances] of Object.entries(result.balances)) {
+                                            accountCount++;
+                                            if (typeof periodBalances === 'object') {
+                                                for (const [pName, balance] of Object.entries(periodBalances)) {
+                                                    const cacheKey = `balance:${account}::${pName}`;
+                                                    cacheEntries[cacheKey] = { value: balance, timestamp: Date.now() };
+                                                    
+                                                    if (balance === 0 || balance === '0' || parseFloat(balance) === 0) {
+                                                        zeroBalanceCount++;
+                                                    }
+                                                    
+                                                    if (['10413', '10206', '10411'].includes(account)) {
+                                                        console.log(`   🔍 Problematic account ${account} cached: balance = ${balance} for ${pName}`);
+                                                    }
+                                                }
+                                            }
                                         }
-                                    } catch (e) {
-                                        console.warn('Cache save error:', e);
+                                        try {
+                                            const existing = JSON.parse(localStorage.getItem('xavi_balance_cache') || '{}');
+                                            const merged = { ...existing, ...cacheEntries };
+                                            localStorage.setItem('xavi_balance_cache', JSON.stringify(merged));
+                                            console.log(`✅ Cached ${accountCount} BS accounts for chunk (${zeroBalanceCount} with zero balances)`);
+                                        } catch (e) {
+                                            console.warn('Cache save error:', e);
+                                        }
+                                    }
+                                    
+                                    return {
+                                        status: 'success',
+                                        periods: periodChunk,
+                                        completed: completedPeriods,
+                                        failed: failedPeriods,
+                                        accountCount: result.balances ? Object.keys(result.balances).length : 0
+                                    };
+                                } else {
+                                    const errorText = await preloadResponse.text();
+                                    
+                                    // Handle Cloudflare 524 timeout
+                                    if (preloadResponse.status === 524) {
+                                        console.warn(`⚠️ Chunk timed out (524): ${periodsText}`);
+                                        return {
+                                            status: 'timeout',
+                                            periods: periodChunk,
+                                            completed: [],
+                                            failed: []
+                                        };
+                                    }
+                                    
+                                    // Non-timeout error
+                                    console.error(`❌ Chunk failed: ${preloadResponse.status} - ${errorText.substring(0, 200)}`);
+                                    return {
+                                        status: 'error',
+                                        periods: periodChunk,
+                                        completed: [],
+                                        failed: periodChunk.map(p => ({ period: p, error: `HTTP_${preloadResponse.status}` }))
+                                    };
+                                }
+                            }
+                            
+                            // Main chunked processing loop
+                            let remainingPeriods = [...uncachedPeriods];
+                            let chunkSize = 2; // Start with 2 periods per chunk
+                            let allCompleted = [];
+                            let allFailed = [];
+                            let totalAccountCount = 0;
+                            let retryCount = 0;
+                            const maxRetries = 3;
+                            
+                            while (remainingPeriods.length > 0 && retryCount < maxRetries) {
+                                // Chunk remaining periods
+                                const chunks = chunkArray(remainingPeriods, chunkSize);
+                                console.log(`📦 Processing ${chunks.length} chunk(s) of size ${chunkSize} (${remainingPeriods.length} periods remaining)`);
+                                
+                                // Process chunks sequentially
+                                for (let i = 0; i < chunks.length; i++) {
+                                    const chunk = chunks[i];
+                                    const chunkResult = await processChunk(chunk, chunkSize, retryCount, maxRetries);
+                                    
+                                    // Track completed periods
+                                    allCompleted.push(...chunkResult.completed);
+                                    
+                                    // Track failed periods
+                                    allFailed.push(...chunkResult.failed);
+                                    
+                                    if (chunkResult.accountCount) {
+                                        totalAccountCount = Math.max(totalAccountCount, chunkResult.accountCount);
+                                    }
+                                    
+                                    // Handle timeout/error - determine which periods are actually missing
+                                    if (chunkResult.status === 'timeout' || chunkResult.status === 'error') {
+                                        // Check which periods are actually cached (backend might have completed before timeout)
+                                        const missingPeriods = chunk.filter(p => !isPeriodCachedInLocalStorage(p));
+                                        
+                                        if (missingPeriods.length > 0) {
+                                            console.log(`⚠️ Chunk ${i + 1}/${chunks.length} had issues. Missing periods: ${missingPeriods.join(', ')}`);
+                                            // Will retry missing periods in next iteration with smaller chunk size
+                                        } else {
+                                            console.log(`✅ Chunk ${i + 1}/${chunks.length} - all periods cached despite timeout`);
+                                            // All periods are cached, mark as completed
+                                            allCompleted.push(...chunk);
+                                        }
                                     }
                                 }
                                 
-                                hideLoading();
+                                // Determine which periods still need processing
+                                const stillMissing = remainingPeriods.filter(p => {
+                                    const isCompleted = allCompleted.includes(p);
+                                    const isFailed = allFailed.some(f => f.period === p);
+                                    const isCached = isPeriodCachedInLocalStorage(p);
+                                    return !isCompleted && !isFailed && !isCached;
+                                });
                                 
-                                const accountCount = result.balances ? Object.keys(result.balances).length : 0;
+                                if (stillMissing.length === 0) {
+                                    // All periods processed
+                                    break;
+                                }
+                                
+                                // Retry missing periods with smaller chunk size
+                                retryCount++;
+                                chunkSize = Math.max(1, Math.floor(chunkSize / 2)); // Reduce chunk size by half
+                                remainingPeriods = stillMissing;
+                                console.log(`🔄 Retry ${retryCount}/${maxRetries}: Retrying ${stillMissing.length} periods with chunk size ${chunkSize}`);
+                            }
+                            
+                            // Final status
+                            hideLoading();
+                            
+                            const completedCount = allCompleted.length;
+                            const failedCount = allFailed.length;
+                            const totalRequested = uncachedPeriods.length;
+                            
+                            if (completedCount === totalRequested) {
                                 showToast({
                                     title: '✅ Balance Sheet Ready!',
-                                    message: `All ${accountCount} Balance Sheet accounts preloaded for ${formulaData.periods.length} period(s). Your formulas will now resolve instantly!`,
+                                    message: `All ${totalAccountCount} Balance Sheet accounts preloaded for ${completedCount} period(s). Your formulas will now resolve instantly!`,
                                     type: 'success',
                                     duration: 5000
                                 });
-                                
-                                console.log(`✅ AUTO-PRELOAD COMPLETE: ${accountCount} BS accounts × ${formulaData.periods.length} period(s) in ${result.elapsed_seconds?.toFixed(1)}s`);
+                                console.log(`✅ AUTO-PRELOAD COMPLETE: ${totalAccountCount} BS accounts × ${completedCount} period(s)`);
+                            } else if (completedCount > 0) {
+                                showToast({
+                                    title: '⚠️ Partial Preload Complete',
+                                    message: `Preloaded ${completedCount}/${totalRequested} periods. ${failedCount > 0 ? `${failedCount} failed. ` : ''}Remaining periods will load individually.`,
+                                    type: 'warning',
+                                    duration: 6000
+                                });
+                                console.warn(`⚠️ AUTO-PRELOAD PARTIAL: ${completedCount}/${totalRequested} periods completed, ${failedCount} failed`);
                             } else {
-                                const errorText = await preloadResponse.text();
-                                // Handle Cloudflare 524 timeout errors gracefully
-                                if (preloadResponse.status === 524) {
-                                    console.warn('⚠️ Preload request timed out (524). Formulas may still work from cache.');
-                                    
-                                    // ✅ Update manifest: Mark periods as failed (timeout)
-                                    if (window.updatePeriodStatus) {
-                                        for (const period of uncachedPeriods) {
-                                            window.updatePeriodStatus(filtersHash, period, { 
-                                                status: "failed", 
-                                                error: "TIMEOUT_524" 
-                                            });
-                                        }
-                                    }
-                                    
-                                    // Don't throw - just log and continue. Formulas can still work from cache or individual calls.
-                                    hideLoading();
-                                    showToast({
-                                        title: 'Preload Timeout',
-                                        message: 'Preload timed out, but your formulas may still work. They will load individually if needed.',
-                                        type: 'warning',
-                                        duration: 5000
-                                    });
-                                    // Mark preload as complete so formulas don't wait forever
-                                    if (window.markAutoPreloadComplete) window.markAutoPreloadComplete();
-                                    return; // Exit early - don't throw error
-                                }
-                                
-                                // ✅ Update manifest: Mark periods as failed (non-timeout error)
-                                if (window.updatePeriodStatus) {
-                                    for (const period of uncachedPeriods) {
-                                        window.updatePeriodStatus(filtersHash, period, { 
-                                            status: "failed", 
-                                            error: `HTTP_${preloadResponse.status}` 
-                                        });
-                                    }
-                                }
-                                
-                                throw new Error(`Preload failed: ${preloadResponse.status} - ${errorText.substring(0, 200)}`);
+                                showToast({
+                                    title: 'Preload Issue',
+                                    message: 'Could not preload periods. Formulas will load individually.',
+                                    type: 'warning',
+                                    duration: 5000
+                                });
+                                console.error(`❌ AUTO-PRELOAD FAILED: 0/${totalRequested} periods completed`);
                             }
                             
+                            // Mark preload as complete so formulas don't wait forever
+                            if (window.markAutoPreloadComplete) window.markAutoPreloadComplete();
                         } catch (error) {
                             console.error('❌ Auto-preload error:', error);
                             hideLoading();
                             
-                            // Check if it's a timeout error
-                            const isTimeout = error.message.includes('timeout') || error.message.includes('524') || error.name === 'AbortError';
-                            
-                            // ✅ Update manifest: Mark periods as failed (error)
-                            if (window.updatePeriodStatus) {
-                                for (const period of uncachedPeriods) {
-                                    window.updatePeriodStatus(filtersHash, period, { 
-                                        status: "failed", 
-                                        error: isTimeout ? "TIMEOUT" : error.message.substring(0, 50) 
-                                    });
-                                }
-                            }
-                            
                             showToast({
-                                title: isTimeout ? 'Preload Timeout' : 'Auto-Preload Issue',
-                                message: isTimeout 
-                                    ? 'Preload timed out, but your formulas may still work. They will load individually if needed.'
-                                    : 'Could not auto-preload. Use Smart Preload manually for faster results.',
+                                title: 'Auto-Preload Issue',
+                                message: 'Could not auto-preload. Use Smart Preload manually for faster results.',
                                 type: 'warning',
-                                duration: isTimeout ? 5000 : 8000
+                                duration: 8000
                             });
-                            // CRITICAL: Mark preload as complete even on error to prevent formulas from waiting forever
+                            
+                            // Mark preload as complete even on error to prevent formulas from waiting forever
                             if (window.markAutoPreloadComplete) window.markAutoPreloadComplete();
                         } finally {
                             // CRITICAL: Always mark preload complete to unblock waiting formulas
-                            // This ensures formulas don't wait forever if preload fails or completes
                             if (window.markAutoPreloadComplete) {
                                 window.markAutoPreloadComplete();
                                 console.log('✅ Auto-preload marked as complete (finally block)');
