@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.0.73';  // Fix: Income Statement & CFO Flash - set preload_status complete immediately after cache save
+const FUNCTIONS_VERSION = '4.0.0.74';  // Fix: Syntax error - missing closing brace for try block in BALANCE function
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
