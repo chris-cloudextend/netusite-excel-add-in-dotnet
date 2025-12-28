@@ -4417,7 +4417,7 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                     
                     if (waited) {
                         // Period completed - check cache immediately
-                        const localStorageValue = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
+                        let localStorageValue = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
                         if (localStorageValue !== null) {
                             console.log(`✅ Post-preload cache hit (localStorage): ${account} for ${periodKey} = ${localStorageValue}`);
                             cacheStats.hits++;
@@ -4431,6 +4431,34 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                             cacheStats.hits++;
                             return cache.balance.get(cacheKey);
                         }
+                        
+                        // FIX: Cache might not be written yet (race condition)
+                        // Wait up to 3 seconds for cache to be written, checking every 500ms
+                        console.log(`⏳ Period ${periodKey} marked completed but cache not found - waiting for cache write...`);
+                        const cacheWaitStart = Date.now();
+                        const cacheWaitMax = 3000; // 3 seconds max
+                        while (Date.now() - cacheWaitStart < cacheWaitMax) {
+                            await new Promise(r => setTimeout(r, 500)); // Check every 500ms
+                            
+                            localStorageValue = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
+                            if (localStorageValue !== null) {
+                                console.log(`✅ Post-preload cache hit (after wait): ${account} for ${periodKey} = ${localStorageValue}`);
+                                cacheStats.hits++;
+                                cache.balance.set(cacheKey, localStorageValue);
+                                return localStorageValue;
+                            }
+                            
+                            if (cache.balance.has(cacheKey)) {
+                                console.log(`✅ Post-preload cache hit (memory, after wait): ${account} for ${periodKey}`);
+                                cacheStats.hits++;
+                                return cache.balance.get(cacheKey);
+                            }
+                        }
+                        
+                        // Cache still not found after wait - throw BUSY to force re-evaluation
+                        // On next evaluation, cache should be available
+                        console.log(`⏳ Period ${periodKey} completed but cache not found after ${cacheWaitMax}ms - returning BUSY to force re-evaluation`);
+                        throw new Error('BUSY');
                     }
                     
                     // Check final status - if still running, return BUSY
@@ -4618,13 +4646,34 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                                 
                                 if (waited) {
                                     // Preload completed - re-check cache
-                                    const retryCache = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
+                                    let retryCache = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
                                     if (retryCache !== null) {
                                         console.log(`✅ Post-preload cache hit: ${account} for ${resolved} = ${retryCache}`);
                                         cacheStats.hits++;
                                         cache.balance.set(cacheKey, retryCache);
                                         return retryCache;
                                     }
+                                    
+                                    // FIX: Cache might not be written yet (race condition)
+                                    // Wait up to 3 seconds for cache to be written, checking every 500ms
+                                    console.log(`⏳ Period ${resolved} marked completed but cache not found - waiting for cache write...`);
+                                    const cacheWaitStart = Date.now();
+                                    const cacheWaitMax = 3000; // 3 seconds max
+                                    while (Date.now() - cacheWaitStart < cacheWaitMax) {
+                                        await new Promise(r => setTimeout(r, 500)); // Check every 500ms
+                                        
+                                        retryCache = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
+                                        if (retryCache !== null) {
+                                            console.log(`✅ Post-preload cache hit (after wait): ${account} for ${resolved} = ${retryCache}`);
+                                            cacheStats.hits++;
+                                            cache.balance.set(cacheKey, retryCache);
+                                            return retryCache;
+                                        }
+                                    }
+                                    
+                                    // Cache still not found - throw BUSY to force re-evaluation
+                                    console.log(`⏳ Period ${resolved} completed but cache not found after ${cacheWaitMax}ms - returning BUSY`);
+                                    throw new Error('BUSY');
                                 }
                                 
                                 // Still miss after wait - check if now running/retrying
@@ -4658,10 +4707,29 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                         const waited = await waitForPeriodCompletion(filtersHash, periodKey, maxWait);
                         
                         if (waited) {
-                            const retryCache = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
+                            let retryCache = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
                             if (retryCache !== null) {
                                 return retryCache;
                             }
+                            
+                            // FIX: Cache might not be written yet (race condition)
+                            // Wait up to 3 seconds for cache to be written, checking every 500ms
+                            console.log(`⏳ Period ${periodKey} marked completed but cache not found - waiting for cache write...`);
+                            const cacheWaitStart = Date.now();
+                            const cacheWaitMax = 3000; // 3 seconds max
+                            while (Date.now() - cacheWaitStart < cacheWaitMax) {
+                                await new Promise(r => setTimeout(r, 500)); // Check every 500ms
+                                
+                                retryCache = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
+                                if (retryCache !== null) {
+                                    console.log(`✅ Post-preload cache hit (after wait): ${account} for ${periodKey} = ${retryCache}`);
+                                    return retryCache;
+                                }
+                            }
+                            
+                            // Cache still not found - throw BUSY to force re-evaluation
+                            console.log(`⏳ Period ${periodKey} completed but cache not found after ${cacheWaitMax}ms - returning BUSY`);
+                            throw new Error('BUSY');
                         }
                         
                         // Still miss after wait - check if still running/retrying
@@ -4702,13 +4770,34 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                         
                         if (waited) {
                             // Preload completed - re-check cache
-                            const retryCache = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
+                            let retryCache = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
                             if (retryCache !== null) {
                                 console.log(`✅ Post-preload cache hit: ${account} for ${periodKey} = ${retryCache}`);
                                 cacheStats.hits++;
                                 cache.balance.set(cacheKey, retryCache);
                                 return retryCache;
                             }
+                            
+                            // FIX: Cache might not be written yet (race condition)
+                            // Wait up to 3 seconds for cache to be written, checking every 500ms
+                            console.log(`⏳ Period ${periodKey} marked completed but cache not found - waiting for cache write...`);
+                            const cacheWaitStart = Date.now();
+                            const cacheWaitMax = 3000; // 3 seconds max
+                            while (Date.now() - cacheWaitStart < cacheWaitMax) {
+                                await new Promise(r => setTimeout(r, 500)); // Check every 500ms
+                                
+                                retryCache = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
+                                if (retryCache !== null) {
+                                    console.log(`✅ Post-preload cache hit (after wait): ${account} for ${periodKey} = ${retryCache}`);
+                                    cacheStats.hits++;
+                                    cache.balance.set(cacheKey, retryCache);
+                                    return retryCache;
+                                }
+                            }
+                            
+                            // Cache still not found - throw BUSY to force re-evaluation
+                            console.log(`⏳ Period ${periodKey} completed but cache not found after ${cacheWaitMax}ms - returning BUSY`);
+                            throw new Error('BUSY');
                         }
                         
                         // Still miss after wait - check if now running/retrying
@@ -7876,4 +7965,5 @@ function CLEARCACHE(itemsJson) {
             }, 5000);
         }
     }
+})();
 })();
