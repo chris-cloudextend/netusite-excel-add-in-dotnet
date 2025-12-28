@@ -8005,4 +8005,3 @@ function CLEARCACHE(itemsJson) {
         }
     }
 })();
-})();
