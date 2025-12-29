@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.0.95';  // DEBUG: Add log after periodActivityRequests block to trace execution flow
+const FUNCTIONS_VERSION = '4.0.0.96';  // DEBUG: Add log after cumulativeRequests block to trace execution flow
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -7518,6 +7518,8 @@ async function processBatchQueue() {
                 console.log(`   📊 Cumulative summary: ${cacheHits} cache hits, ${apiCalls} API calls, ${deduplicated} deduplicated`);
             }
         }
+    
+    console.error(`🔍🔍🔍 CRITICAL DEBUG: After cumulativeRequests block. About to check periodActivityRequests.`);
     
     // ================================================================
     // PERIOD ACTIVITY QUERIES: Handle separately (both fromPeriod and toPeriod)
