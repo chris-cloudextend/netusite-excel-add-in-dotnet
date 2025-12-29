@@ -26,6 +26,96 @@ const FUNCTIONS_VERSION = '4.0.0.80';  // Fix: Remove all transient error throws
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
+// LRU CACHE - Bounded cache with Least Recently Used eviction
+// Prevents memory growth over long Excel sessions
+// Must be defined early because it's used for manifestCache and statusChangeCache
+// ============================================================================
+class LRUCache {
+    constructor(maxSize = 5000, name = 'cache') {
+        this.maxSize = maxSize;
+        this.name = name;
+        this.cache = new Map();
+    }
+    
+    get(key) {
+        if (!this.cache.has(key)) return undefined;
+        // Move to end (most recently used)
+        const value = this.cache.get(key);
+        this.cache.delete(key);
+        this.cache.set(key, value);
+        return value;
+    }
+    
+    set(key, value) {
+        // Delete first to update position if exists
+        if (this.cache.has(key)) {
+            this.cache.delete(key);
+        }
+        this.cache.set(key, value);
+        
+        // Evict oldest entries if over limit
+        if (this.cache.size > this.maxSize) {
+            const evictCount = Math.floor(this.maxSize * 0.1); // Evict 10%
+            let evicted = 0;
+            for (const oldKey of this.cache.keys()) {
+                if (evicted >= evictCount) break;
+                this.cache.delete(oldKey);
+                evicted++;
+            }
+            console.log(`🗑️ ${this.name}: Evicted ${evicted} old entries (size: ${this.cache.size})`);
+        }
+    }
+    
+    has(key) {
+        return this.cache.has(key);
+    }
+    
+    delete(key) {
+        return this.cache.delete(key);
+    }
+    
+    clear() {
+        this.cache.clear();
+    }
+    
+    get size() {
+        return this.cache.size;
+    }
+    
+    keys() {
+        return this.cache.keys();
+    }
+    
+    entries() {
+        return this.cache.entries();
+    }
+    
+    // For iteration support
+    [Symbol.iterator]() {
+        return this.cache[Symbol.iterator]();
+    }
+    
+    /**
+     * Atomic check-and-set for in-flight request tracking
+     * Returns existing value if key exists, otherwise sets and returns the new value
+     * This prevents race conditions where two concurrent calls both pass has() check
+     */
+    getOrSet(key, valueFactory) {
+        if (this.cache.has(key)) {
+            // Move to end (most recently used) and return existing
+            const value = this.cache.get(key);
+            this.cache.delete(key);
+            this.cache.set(key, value);
+            return { exists: true, value };
+        }
+        // Create new value and store
+        const newValue = valueFactory();
+        this.set(key, newValue);
+        return { exists: false, value: newValue };
+    }
+}
+
+// ============================================================================
 // UTILITY: Expand period range from "Jan 2025" to "Dec 2025" → all 12 months
 // Must be defined early because it's used in batch processing
 // ============================================================================
@@ -1217,95 +1307,6 @@ function expandPeriodRange(periods, expandBefore = 1, expandAfter = 1) {
     }
     
     return expanded;
-}
-
-// ============================================================================
-// LRU CACHE - Bounded cache with Least Recently Used eviction
-// Prevents memory growth over long Excel sessions
-// ============================================================================
-class LRUCache {
-    constructor(maxSize = 5000, name = 'cache') {
-        this.maxSize = maxSize;
-        this.name = name;
-        this.cache = new Map();
-    }
-    
-    get(key) {
-        if (!this.cache.has(key)) return undefined;
-        // Move to end (most recently used)
-        const value = this.cache.get(key);
-        this.cache.delete(key);
-        this.cache.set(key, value);
-        return value;
-    }
-    
-    set(key, value) {
-        // Delete first to update position if exists
-        if (this.cache.has(key)) {
-            this.cache.delete(key);
-        }
-        this.cache.set(key, value);
-        
-        // Evict oldest entries if over limit
-        if (this.cache.size > this.maxSize) {
-            const evictCount = Math.floor(this.maxSize * 0.1); // Evict 10%
-            let evicted = 0;
-            for (const oldKey of this.cache.keys()) {
-                if (evicted >= evictCount) break;
-                this.cache.delete(oldKey);
-                evicted++;
-            }
-            console.log(`🗑️ ${this.name}: Evicted ${evicted} old entries (size: ${this.cache.size})`);
-        }
-    }
-    
-    has(key) {
-        return this.cache.has(key);
-    }
-    
-    delete(key) {
-        return this.cache.delete(key);
-    }
-    
-    clear() {
-        this.cache.clear();
-    }
-    
-    get size() {
-        return this.cache.size;
-    }
-    
-    keys() {
-        return this.cache.keys();
-    }
-    
-    entries() {
-        return this.cache.entries();
-    }
-    
-    // For iteration support
-    [Symbol.iterator]() {
-        return this.cache[Symbol.iterator]();
-    }
-    
-    /**
-     * Atomic check-and-set for in-flight request tracking
-     * Returns existing value if key exists, otherwise sets and returns the new value
-     * This prevents race conditions where two concurrent calls both pass has() check
-     */
-    getOrSet(key, valueFactory) {
-        if (this.cache.has(key)) {
-            // Move to end (most recently used) and return existing
-            const value = this.cache.get(key);
-            this.cache.delete(key);
-            this.cache.set(key, value);
-            return { exists: true, value };
-        }
-        // Create new value and store
-        const newValue = valueFactory();
-        this.set(key, newValue);
-        return { exists: false, value: newValue };
-    }
 }
 
 // ============================================================================
@@ -4213,6 +4214,9 @@ async function PARENT(accountNumber, invocation) {
  * Helper function to retry cache lookup with bounded delays
  * Returns a Promise that resolves to a number (never throws for transient states)
  * This preserves Excel's auto-retry behavior while maintaining type contract
+ * 
+ * CRITICAL: If cache not found after retries, returns null to signal caller
+ * to proceed to API path. Caller MUST handle null and proceed to API.
  */
 async function retryCacheLookup(
     account, fromPeriod, toPeriod, subsidiary, filtersHash, cacheKey, periodKey,
@@ -4229,20 +4233,21 @@ async function retryCacheLookup(
         if (localStorageValue !== null) {
             console.log(`✅ Cache found on retry attempt ${attempt + 1}: ${account} for ${periodKey} = ${localStorageValue}`);
             cache.balance.set(cacheKey, localStorageValue);
-            return localStorageValue;
+            return localStorageValue; // ✅ Returns number
         }
         
         // Check in-memory cache
         if (cache.balance.has(cacheKey)) {
             console.log(`✅ Cache found in memory on retry attempt ${attempt + 1}: ${account} for ${periodKey}`);
-            return cache.balance.get(cacheKey);
+            return cache.balance.get(cacheKey); // ✅ Returns number
         }
     }
     
-    // After max retries, return null to signal cache not ready
-    // Caller will proceed to API path (transient state, not terminal error)
-    console.log(`⏳ Cache not found after ${maxRetries} retries - proceeding to API path for ${periodKey}`);
-    return null;
+    // After max retries exhausted, return null to signal cache not ready
+    // CRITICAL: Caller MUST check for null and proceed to API path
+    // This ensures Promise<number> always resolves to a number eventually
+    console.log(`⏳ Cache not found after ${maxRetries} retries - caller will proceed to API path for ${periodKey}`);
+    return null; // Signals caller to proceed to API path
 }
 
 /**
