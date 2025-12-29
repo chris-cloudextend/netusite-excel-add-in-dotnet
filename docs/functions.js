@@ -5089,17 +5089,28 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                             return legacyCacheCheck;
                         }
                         
-                        // CRITICAL: Only trigger preload for Balance Sheet accounts
+                        // CRITICAL: Only trigger preload for Balance Sheet accounts (cumulative queries only)
+                        // Period activity queries (both fromPeriod and toPeriod) should NOT trigger preload
                         // P&L accounts should not trigger BS preload
                         const isBSAccount = isCumulativeRequest(fromPeriod);
-                        if (isBSAccount) {
+                        const isPeriodActivity = !isCumulativeRequest(fromPeriod) && fromPeriod && toPeriod;
+                        
+                        if (isBSAccount && !isPeriodActivity) {
                             // FIX #2: Period not requested - trigger preload EARLY (before queuing)
-                            console.log(`🔄 BS account: Period ${periodKey} not in manifest - triggering preload before queuing API calls`);
-                            addPeriodToRequestQueue(periodKey, { subsidiary, department, location, classId, accountingBook });
+                            // BUT: Only if preload is not already in progress for this period
+                            const preloadStatus = getPeriodStatus(filtersHash, periodKey);
+                            const isPreloadRunning = isPreloadInProgress() || preloadStatus === "running" || preloadStatus === "requested";
                             
-                            // FIX #4: Also trigger auto-preload for BS accounts (if not subsidiary-filtered)
-                            if (!subsidiary) {
-                                triggerAutoPreload(account, periodKey);
+                            if (!isPreloadRunning) {
+                                console.log(`🔄 BS account: Period ${periodKey} not in manifest - triggering preload before queuing API calls`);
+                                addPeriodToRequestQueue(periodKey, { subsidiary, department, location, classId, accountingBook });
+                                
+                                // FIX #4: Also trigger auto-preload for BS accounts (if not subsidiary-filtered)
+                                if (!subsidiary) {
+                                    triggerAutoPreload(account, periodKey);
+                                }
+                            } else {
+                                console.log(`⏸️ BS account: Period ${periodKey} preload already in progress (status: ${preloadStatus}) - skipping trigger`);
                             }
                         } else {
                             // P&L account - don't trigger BS preload, proceed to API call
@@ -5113,9 +5124,10 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                             // (The code continues below to make the API call)
                         }
                         
-                        // CRITICAL FIX: Only wait for preload if this is a BS account
+                        // CRITICAL FIX: Only wait for preload if this is a BS account (cumulative, not period activity)
                         // P&L accounts should NEVER wait for BS preload (they use different cache)
-                        if (isBSAccount) {
+                        // Period activity queries should NOT wait for preload (they use different query path)
+                        if (isBSAccount && !isPeriodActivity) {
                             // FIX #4: Wait for preload with bounded timeout (120s max - increased from 90s)
                             // BS preload can take 60-90s, so 120s gives buffer for network delays
                             const maxWait = 120000; // 120 seconds - bounded wait (increased from 90s)
@@ -6236,19 +6248,29 @@ async function processBatchQueue() {
     pendingRequests.balance.clear();
     
     // ================================================================
-    // CUMULATIVE BS QUERIES: Handle empty fromPeriod separately
-    // These need direct /balance API calls (cumulative from inception)
-    // The batch endpoint only returns period activity, not cumulative totals
+    // ROUTE REQUESTS BY TYPE:
+    // 1. CUMULATIVE BS QUERIES: empty fromPeriod with toPeriod → direct /balance API calls
+    // 2. PERIOD ACTIVITY QUERIES: both fromPeriod and toPeriod → direct /balance API calls (not batch endpoint)
+    // 3. REGULAR REQUESTS: P&L period ranges → batch endpoint
     // ================================================================
     const cumulativeRequests = [];
+    const periodActivityRequests = [];  // BS period activity queries (both fromPeriod and toPeriod)
     const regularRequests = [];
     
     for (const [cacheKey, request] of requests) {
         const { fromPeriod, toPeriod } = request.params;
-        // Cumulative = empty fromPeriod with a toPeriod
-        if ((!fromPeriod || fromPeriod === '') && toPeriod && toPeriod !== '') {
+        const isCumulative = (!fromPeriod || fromPeriod === '') && toPeriod && toPeriod !== '';
+        const isPeriodActivity = fromPeriod && toPeriod && fromPeriod !== toPeriod;
+        
+        if (isCumulative) {
+            // Cumulative = empty fromPeriod with a toPeriod
             cumulativeRequests.push([cacheKey, request]);
+        } else if (isPeriodActivity) {
+            // Period activity query (both fromPeriod and toPeriod) - route to individual /balance calls
+            // The batch endpoint expands period ranges, which is wrong for period activity queries
+            periodActivityRequests.push([cacheKey, request]);
         } else {
+            // Regular P&L period range requests - can use batch endpoint
             regularRequests.push([cacheKey, request]);
         }
     }
@@ -6509,6 +6531,79 @@ async function processBatchQueue() {
         
         if (cacheHits > 0 || apiCalls > 0 || deduplicated > 0) {
             console.log(`   📊 Cumulative summary: ${cacheHits} cache hits, ${apiCalls} API calls, ${deduplicated} deduplicated`);
+        }
+    }
+    
+    // ================================================================
+    // PERIOD ACTIVITY QUERIES: Handle separately (both fromPeriod and toPeriod)
+    // These need direct /balance API calls, not batch endpoint
+    // The batch endpoint expands period ranges, which is wrong for period activity
+    // ================================================================
+    if (periodActivityRequests.length > 0) {
+        console.log(`📊 Processing ${periodActivityRequests.length} PERIOD ACTIVITY requests separately...`);
+        
+        let activityCacheHits = 0;
+        let activityApiCalls = 0;
+        
+        // Process each period activity request individually
+        for (const [cacheKey, request] of periodActivityRequests) {
+            const { account, fromPeriod, toPeriod, subsidiary, department, location, classId, accountingBook } = request.params;
+            
+            // Check in-memory cache first
+            if (cache.balance.has(cacheKey)) {
+                const cachedValue = cache.balance.get(cacheKey);
+                console.log(`   ✅ Period activity cache hit: ${account} (${fromPeriod} → ${toPeriod}) = ${cachedValue}`);
+                cache.balance.set(cacheKey, cachedValue);
+                request.resolve(cachedValue);
+                activityCacheHits++;
+                continue;
+            }
+            
+            // Cache miss - make individual API call
+            try {
+                const apiParams = new URLSearchParams({
+                    account: account,
+                    from_period: fromPeriod,
+                    to_period: toPeriod,
+                    subsidiary: subsidiary || '',
+                    department: department || '',
+                    location: location || '',
+                    class: classId || '',
+                    accountingbook: accountingBook || ''
+                });
+                
+                console.log(`   📤 Period activity API: ${account} (${fromPeriod} → ${toPeriod})`);
+                activityApiCalls++;
+                
+                const response = await fetch(`${SERVER_URL}/balance?${apiParams.toString()}`);
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    const value = data.balance ?? 0;
+                    const errorCode = data.error;
+                    
+                    if (errorCode) {
+                        console.log(`   ⚠️ Period activity result: ${account} = ${errorCode}`);
+                        request.reject(new Error(errorCode));
+                    } else {
+                        console.log(`   ✅ Period activity result: ${account} = ${value.toLocaleString()}`);
+                        cache.balance.set(cacheKey, value);
+                        request.resolve(value);
+                    }
+                } else {
+                    const errorCode = response.status === 408 || response.status === 504 ? 'TIMEOUT' : 'APIERR';
+                    console.error(`   ❌ Period activity API error: ${response.status} → ${errorCode}`);
+                    request.reject(new Error(errorCode));
+                }
+            } catch (error) {
+                const errorCode = error.name === 'AbortError' ? 'TIMEOUT' : 'NETFAIL';
+                console.error(`   ❌ Period activity fetch error: ${error.message} → ${errorCode}`);
+                request.reject(new Error(errorCode));
+            }
+        }
+        
+        if (activityCacheHits > 0 || activityApiCalls > 0) {
+            console.log(`   📊 Period activity summary: ${activityCacheHits} cache hits, ${activityApiCalls} API calls`);
         }
     }
     
