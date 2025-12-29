@@ -2439,6 +2439,264 @@ public class BalanceController : ControllerBase
         public string PeriodEnd { get; set; } = "";
         public string? PeriodId { get; set; }
     }
+
+    /// <summary>
+    /// DEVELOPER-ONLY: Performance test for batched Balance Sheet period activity queries.
+    /// 
+    /// CRITICAL: This test executes EXACTLY ONE NetSuite query to validate the grid batching approach.
+    /// 
+    /// Requirements:
+    /// - Must NOT run during normal Excel recalculation (dev-only endpoint)
+    /// - Must NOT affect Income/Expense logic (only tests BS accounts)
+    /// - Executes: ONE aggregated query for ALL balance sheet accounts × 12-month date span
+    /// - Groups by: account + posting period
+    /// - Returns: period activity amounts only (no raw transactions)
+    /// - Uses same query path and authentication as production
+    /// - Uses production-equivalent timeout (not artificially high)
+    /// 
+    /// Anti-patterns (MUST NOT appear):
+    /// - No loops over accounts
+    /// - No loops over periods
+    /// - No calls to existing per-account balance functions
+    /// - No multiple queries aggregated in code
+    /// </summary>
+    [HttpPost("/dev/test/bs-grid-batching")]
+    public async Task<IActionResult> TestBsGridBatching([FromBody] BsGridBatchingTestRequest? request = null)
+    {
+        var queryStartTime = DateTime.UtcNow;
+        var timeoutSeconds = request?.TimeoutSeconds ?? 300; // Default 5 minutes (production-equivalent)
+        var monthCount = request?.MonthCount ?? 12;
+        
+        _logger.LogWarning("🧪 DEV TEST: BS Grid Batching Single-Query Performance Test");
+        _logger.LogWarning("   This test executes EXACTLY ONE NetSuite query");
+        _logger.LogWarning("   Timeout: {Timeout}s, Months: {Months}", timeoutSeconds, monthCount);
+        
+        try
+        {
+            // Step 1: Get period date range
+            var fromPeriod = request?.FromPeriod;
+            if (string.IsNullOrEmpty(fromPeriod))
+            {
+                var now = DateTime.Now;
+                fromPeriod = $"{now:MMM yyyy}";
+            }
+            
+            var fromPeriodData = await _netSuiteService.GetPeriodAsync(fromPeriod);
+            if (fromPeriodData?.StartDate == null)
+            {
+                return Ok(new BsGridBatchingTestResponse
+                {
+                    Success = false,
+                    Error = $"Could not find period: {fromPeriod}",
+                    ElapsedSeconds = (DateTime.UtcNow - queryStartTime).TotalSeconds
+                });
+            }
+            
+            // Build date range for 12 months
+            var startDate = DateTime.Parse(fromPeriodData.StartDate);
+            var toPeriodDate = startDate.AddMonths(monthCount - 1);
+            var toPeriod = $"{toPeriodDate:MMM yyyy}";
+            var toPeriodData = await _netSuiteService.GetPeriodAsync(toPeriod);
+            
+            if (toPeriodData?.EndDate == null)
+            {
+                return Ok(new BsGridBatchingTestResponse
+                {
+                    Success = false,
+                    Error = $"Could not find period: {toPeriod}",
+                    ElapsedSeconds = (DateTime.UtcNow - queryStartTime).TotalSeconds
+                });
+            }
+            
+            // Use existing static method for date conversion
+            var fromStartDate = ConvertToYYYYMMDD(fromPeriodData.StartDate);
+            var toEndDate = ConvertToYYYYMMDD(toPeriodData.EndDate);
+            
+            _logger.LogInformation("📅 Date range: {FromDate} to {ToDate} ({Months} months)", 
+                fromStartDate, toEndDate, monthCount);
+            
+            // Step 2: Resolve filters (same as production)
+            var subsidiaryId = await _lookupService.ResolveSubsidiaryIdAsync(request?.Subsidiary);
+            var targetSub = subsidiaryId ?? "1";
+            var hierarchySubs = await _lookupService.GetSubsidiaryHierarchyAsync(targetSub);
+            var subFilter = string.Join(", ", hierarchySubs);
+            
+            // Get target period ID for currency conversion (use latest period)
+            var targetPeriodId = toPeriodData.Id;
+            if (string.IsNullOrEmpty(targetPeriodId))
+            {
+                return Ok(new BsGridBatchingTestResponse
+                {
+                    Success = false,
+                    Error = $"Period {toPeriod} has no ID",
+                    ElapsedSeconds = (DateTime.UtcNow - queryStartTime).TotalSeconds
+                });
+            }
+            
+            // Step 3: Build and execute EXACTLY ONE aggregated query
+            // This query gets ALL balance sheet accounts × ALL periods in one go
+            // Groups by account and posting period to get per-period activity
+            _logger.LogInformation("🚀 Executing SINGLE aggregated query for ALL BS accounts × {Months} months...", monthCount);
+            _logger.LogInformation("   CRITICAL: This test executes EXACTLY ONE NetSuite query (no loops, no per-account calls)");
+            
+            var accountingBook = DefaultAccountingBook;
+            var signFlip = $@"
+                CASE 
+                    WHEN a.accttype IN ({AccountType.SignFlipTypesSql}) THEN -1
+                    ELSE 1 
+                END";
+            
+            // CRITICAL: This is the ONE query that validates grid batching
+            // It aggregates ALL balance sheet accounts × ALL periods in a single NetSuite call
+            // Returns: (account, posting_period, period_activity_amount)
+            var aggregatedQuery = $@"
+                SELECT 
+                    a.acctnumber AS account,
+                    ap.periodname AS posting_period,
+                    SUM(
+                        TO_NUMBER(
+                            BUILTIN.CONSOLIDATE(
+                                tal.amount,
+                                'LEDGER',
+                                'DEFAULT',
+                                'DEFAULT',
+                                {targetSub},
+                                {targetPeriodId},
+                                'DEFAULT'
+                            )
+                        ) * {signFlip}
+                    ) AS period_activity_amount
+                FROM transactionaccountingline tal
+                JOIN transaction t ON t.id = tal.transaction
+                JOIN account a ON a.id = tal.account
+                JOIN accountingperiod ap ON ap.id = t.postingperiod
+                JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id
+                WHERE t.posting = 'T'
+                  AND tal.posting = 'T'
+                  AND a.accttype IN ({AccountType.BsTypesSql})
+                  AND a.isinactive = 'F'
+                  AND ap.startdate >= TO_DATE('{fromStartDate}', 'YYYY-MM-DD')
+                  AND ap.enddate <= TO_DATE('{toEndDate}', 'YYYY-MM-DD')
+                  AND tl.subsidiary IN ({subFilter})
+                  AND tal.accountingbook = {accountingBook}
+                GROUP BY a.acctnumber, ap.periodname
+                ORDER BY a.acctnumber, ap.periodname";
+            
+            _logger.LogInformation("📊 Query length: {Length} characters", aggregatedQuery.Length);
+            _logger.LogInformation("⏱️ Query start timestamp: {Timestamp}", queryStartTime);
+            
+            // Execute the SINGLE query with production-equivalent timeout
+            var queryExecutionStart = DateTime.UtcNow;
+            var queryResult = await _netSuiteService.QueryRawWithErrorAsync(aggregatedQuery, timeoutSeconds);
+            var queryExecutionEnd = DateTime.UtcNow;
+            var queryDurationMs = (queryExecutionEnd - queryExecutionStart).TotalMilliseconds;
+            
+            _logger.LogInformation("⏱️ Query end timestamp: {Timestamp}", queryExecutionEnd);
+            _logger.LogInformation("⏱️ Query execution duration: {Duration:F2}ms", queryDurationMs);
+            
+            // Validate results
+            if (!queryResult.Success)
+            {
+                _logger.LogError("❌ Query failed: {Error}", queryResult.ErrorDetails);
+                return Ok(new BsGridBatchingTestResponse
+                {
+                    Success = false,
+                    Error = queryResult.ErrorDetails ?? queryResult.ErrorCode ?? "QUERY_FAILED",
+                    ElapsedSeconds = (DateTime.UtcNow - queryStartTime).TotalSeconds,
+                    Metrics = new Dictionary<string, object>
+                    {
+                        { "query_duration_ms", queryDurationMs },
+                        { "query_start_timestamp", queryStartTime },
+                        { "query_end_timestamp", queryExecutionEnd },
+                        { "error_code", queryResult.ErrorCode },
+                        { "error_details", queryResult.ErrorDetails },
+                        { "timeout_seconds", timeoutSeconds }
+                    }
+                });
+            }
+            
+            var totalRows = queryResult.Items?.Count() ?? 0;
+            var uniqueAccounts = queryResult.Items?
+                .Select(r => r.TryGetProperty("account", out var acc) ? acc.GetString() : null)
+                .Where(a => !string.IsNullOrEmpty(a))
+                .Distinct()
+                .Count() ?? 0;
+            
+            var uniquePeriods = queryResult.Items?
+                .Select(r => r.TryGetProperty("posting_period", out var per) ? per.GetString() : null)
+                .Where(p => !string.IsNullOrEmpty(p))
+                .Distinct()
+                .Count() ?? 0;
+            
+            _logger.LogInformation("✅ Query completed successfully");
+            _logger.LogInformation("   Total rows returned: {Rows}", totalRows);
+            _logger.LogInformation("   Unique accounts: {Accounts}", uniqueAccounts);
+            _logger.LogInformation("   Unique periods: {Periods}", uniquePeriods);
+            _logger.LogInformation("   Execution time: {Duration:F2}ms", queryDurationMs);
+            
+            // Calculate expected row count (approximate)
+            // This is accounts × periods, but may be less if some accounts have no activity in some periods
+            var expectedRowsApprox = uniqueAccounts * monthCount;
+            
+            var elapsedSeconds = (DateTime.UtcNow - queryStartTime).TotalSeconds;
+            
+            return Ok(new BsGridBatchingTestResponse
+            {
+                Success = true,
+                Error = null,
+                AccountCount = uniqueAccounts,
+                PeriodCount = uniquePeriods,
+                TotalQueries = 1, // CRITICAL: Exactly one query
+                TotalRows = totalRows,
+                ElapsedSeconds = elapsedSeconds,
+                AverageQueryTimeSeconds = queryDurationMs / 1000.0,
+                Metrics = new Dictionary<string, object>
+                {
+                    { "query_duration_ms", queryDurationMs },
+                    { "query_start_timestamp", queryStartTime.ToString("O") },
+                    { "query_end_timestamp", queryExecutionEnd.ToString("O") },
+                    { "total_rows_returned", totalRows },
+                    { "unique_accounts", uniqueAccounts },
+                    { "unique_periods", uniquePeriods },
+                    { "expected_rows_approx", expectedRowsApprox },
+                    { "timeout_seconds", timeoutSeconds },
+                    { "query_length_chars", aggregatedQuery.Length },
+                    { "netsuite_error_code", queryResult.ErrorCode },
+                    { "netsuite_error_details", queryResult.ErrorDetails }
+                },
+                SampleAccounts = queryResult.Items?
+                    .Select(r => r.TryGetProperty("account", out var acc) ? acc.GetString() : null)
+                    .Where(a => !string.IsNullOrEmpty(a))
+                    .Distinct()
+                    .Take(10)
+                    .ToList() ?? new List<string>(),
+                Periods = queryResult.Items?
+                    .Select(r => r.TryGetProperty("posting_period", out var per) ? per.GetString() : null)
+                    .Where(p => !string.IsNullOrEmpty(p))
+                    .Distinct()
+                    .OrderBy(p => p)
+                    .ToList() ?? new List<string>()
+            });
+        }
+        catch (Exception ex)
+        {
+            var elapsedSeconds = (DateTime.UtcNow - queryStartTime).TotalSeconds;
+            _logger.LogError(ex, "❌ Test failed with exception");
+            
+            return StatusCode(500, new BsGridBatchingTestResponse
+            {
+                Success = false,
+                Error = ex.Message,
+                ElapsedSeconds = elapsedSeconds,
+                Metrics = new Dictionary<string, object>
+                {
+                    { "exception_type", ex.GetType().Name },
+                    { "exception_message", ex.Message },
+                    { "stack_trace", ex.StackTrace }
+                }
+            });
+        }
+    }
 }
 
 /// <summary>
@@ -2490,5 +2748,47 @@ public class PeriodResult
     public string? Error { get; set; }
     public int AccountCount { get; set; }
     public double ElapsedSeconds { get; set; }
+}
+    /// This endpoint tests the query shape that will be used for grid batching optimization.
+/// </summary>
+public class BsGridBatchingTestRequest
+{
+    /// <summary>
+    /// Starting period (e.g., "Jan 2025"). If not provided, uses current month.
+    /// </summary>
+    public string? FromPeriod { get; set; }
+    
+    /// <summary>
+    /// Number of months to test (default: 12).
+    /// </summary>
+    public int? MonthCount { get; set; }
+    
+    /// <summary>
+    /// Subsidiary filter (optional).
+    /// </summary>
+    public string? Subsidiary { get; set; }
+    
+    /// <summary>
+    /// Hard timeout in seconds (default: 600 = 10 minutes).
+    /// </summary>
+    public int? TimeoutSeconds { get; set; }
+}
+
+/// <summary>
+/// Developer-only performance test response.
+/// </summary>
+public class BsGridBatchingTestResponse
+{
+    public bool Success { get; set; }
+    public string? Error { get; set; }
+    public int AccountCount { get; set; }
+    public int PeriodCount { get; set; }
+    public int TotalQueries { get; set; }
+    public int TotalRows { get; set; }
+    public double ElapsedSeconds { get; set; }
+    public double AverageQueryTimeSeconds { get; set; }
+    public Dictionary<string, object>? Metrics { get; set; }
+    public List<string>? SampleAccounts { get; set; }
+    public List<string>? Periods { get; set; }
 }
 
