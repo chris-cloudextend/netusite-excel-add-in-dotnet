@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.0.94';  // DEBUG: Use console.error for critical debug logs + add backend logging
+const FUNCTIONS_VERSION = '4.0.0.95';  // DEBUG: Add log after periodActivityRequests block to trace execution flow
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -7654,6 +7654,9 @@ async function processBatchQueue() {
             }
         }
     }
+    
+    console.error(`🔍🔍🔍 CRITICAL DEBUG: After periodActivityRequests block. About to start regularRequests processing.`);
+    console.error(`🔍🔍🔍 CRITICAL DEBUG: regularRequests.length=${regularRequests.length}, cumulativeRequests.length=${cumulativeRequests.length}, periodActivityRequests.length=${periodActivityRequests.length}`);
     
     // ================================================================
     // CHECK LOCALSTORAGE PRELOAD CACHE FOR EACH REGULAR REQUEST (Issue 2B Fix)
