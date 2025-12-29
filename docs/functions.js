@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.0.84';  // BS Grid Batching: Cumulative formula support with conservative trigger conditions
+const FUNCTIONS_VERSION = '4.0.0.85';  // BS Grid Batching: Fix account type detection and variable scope
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -2490,7 +2490,11 @@ function needsSignFlip(acctType) {
 async function getAccountType(account) {
     const cacheKey = getCacheKey('type', { account });
     if (cache.type.has(cacheKey)) {
-        return cache.type.get(cacheKey);
+        const cached = cache.type.get(cacheKey);
+        // Handle both string and object responses (cache may contain either)
+        if (typeof cached === 'string') return cached;
+        if (cached && typeof cached === 'object' && cached.type) return cached.type;
+        return cached;
     }
     
     try {
@@ -2501,8 +2505,10 @@ async function getAccountType(account) {
             body: JSON.stringify({ account: String(account) })
         });
         if (response.ok) {
-            const type = await response.text();
-            cache.type.set(cacheKey, type);
+            // Backend returns JSON object: { account, type, display_name }
+            const data = await response.json();
+            const type = data.type || data; // Extract type property, or use data if it's already a string
+            cache.type.set(cacheKey, type); // Store just the type string for consistency
             return type;
         }
     } catch (e) {
@@ -7052,8 +7058,12 @@ async function processBatchQueue() {
             const sampleAccounts = Array.from(cumulativeGridInfo.accounts).slice(0, Math.min(10, cumulativeGridInfo.accounts.size));
             for (const account of sampleAccounts) {
                 try {
-                    const accountType = await getAccountType(account);
-                    if (!isBalanceSheetType(accountType)) {
+                    const accountTypeData = await getAccountType(account);
+                    // Handle both string and object responses (backend may return object with type property)
+                    const accountType = typeof accountTypeData === 'string' ? accountTypeData : 
+                                      (accountTypeData && typeof accountTypeData === 'object' ? accountTypeData.type : accountTypeData);
+                    
+                    if (!accountType || !isBalanceSheetType(accountType)) {
                         console.log(`   ⚠️ Account ${account} is not BS (type: ${accountType}) - falling back to individual processing`);
                         allBsAccounts = false;
                         break;
@@ -7324,26 +7334,27 @@ async function processBatchQueue() {
                     requests.forEach(r => r.reject(new Error(errorCode)));
                 }
             }
-        }
-        
-        // ================================================================
-        // AUTO-SUGGEST BS PRELOAD after slow queries
-        // If we had slow BS queries and more than 1 period, suggest preload
-        // ================================================================
-        if (slowQueryCount > 0 && apiCalls > 0) {
-            console.log(`   ⏱️ SLOW QUERY SUMMARY: ${slowQueryCount}/${apiCalls} queries were slow (>${BS_SLOW_THRESHOLD_MS/1000}s)`);
             
-            // Get all BS periods seen (both in this batch and historically)
-            const allSeenPeriods = getSeenBSPeriods();
-            const periodsToSuggest = allSeenPeriods.length > 0 ? allSeenPeriods : Array.from(bsPeriodsInBatch);
+            // ================================================================
+            // AUTO-SUGGEST BS PRELOAD after slow queries
+            // If we had slow BS queries and more than 1 period, suggest preload
+            // ================================================================
+            if (slowQueryCount > 0 && apiCalls > 0) {
+                console.log(`   ⏱️ SLOW QUERY SUMMARY: ${slowQueryCount}/${apiCalls} queries were slow (>${BS_SLOW_THRESHOLD_MS/1000}s)`);
+                
+                // Get all BS periods seen (both in this batch and historically)
+                const allSeenPeriods = getSeenBSPeriods();
+                const periodsToSuggest = allSeenPeriods.length > 0 ? allSeenPeriods : Array.from(bsPeriodsInBatch);
+                
+                // Only suggest if we haven't suggested recently
+                suggestBSPreload(periodsToSuggest, totalApiTime);
+            }
             
-            // Only suggest if we haven't suggested recently
-            suggestBSPreload(periodsToSuggest, totalApiTime);
+            if (cacheHits > 0 || apiCalls > 0 || deduplicated > 0) {
+                console.log(`   📊 Cumulative summary: ${cacheHits} cache hits, ${apiCalls} API calls, ${deduplicated} deduplicated`);
+            }
         }
-        
-        if (cacheHits > 0 || apiCalls > 0 || deduplicated > 0) {
-            console.log(`   📊 Cumulative summary: ${cacheHits} cache hits, ${apiCalls} API calls, ${deduplicated} deduplicated`);
-        }
+    }
     }
     
     // ================================================================
@@ -7377,8 +7388,12 @@ async function processBatchQueue() {
             const sampleAccounts = Array.from(gridInfo.accounts).slice(0, Math.min(10, gridInfo.accounts.size));
             for (const account of sampleAccounts) {
                 try {
-                    const accountType = await getAccountType(account);
-                    if (!isBalanceSheetType(accountType)) {
+                    const accountTypeData = await getAccountType(account);
+                    // Handle both string and object responses (backend may return object with type property)
+                    const accountType = typeof accountTypeData === 'string' ? accountTypeData : 
+                                      (accountTypeData && typeof accountTypeData === 'object' ? accountTypeData.type : accountTypeData);
+                    
+                    if (!accountType || !isBalanceSheetType(accountType)) {
                         console.log(`   ⚠️ Account ${account} is not BS (type: ${accountType}) - falling back to individual processing`);
                         allBsAccounts = false;
                         break;
