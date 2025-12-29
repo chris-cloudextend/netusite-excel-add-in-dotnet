@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.0.80';  // Fix: Remove all transient error throws (BUSY, CACHE_NOT_READY) - formulas now resolve to numbers
+const FUNCTIONS_VERSION = '4.0.0.81';  // Fix: Prevent checkLocalStorageCache from returning wrong values for period activity queries
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
