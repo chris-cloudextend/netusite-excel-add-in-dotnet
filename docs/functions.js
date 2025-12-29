@@ -8219,6 +8219,7 @@ async function processBatchQueue() {
     const totalBatchTime = ((Date.now() - batchStartTime) / 1000).toFixed(1);
     console.log('========================================');
     console.log(`✅ BATCH PROCESSING COMPLETE in ${totalBatchTime}s`);
+    console.log(`🔍 DEBUG: Final state - regularRequests.length: ${regularRequests.length}, cumulativeRequests.length: ${cumulativeRequests.length}, periodActivityRequests.length: ${periodActivityRequests.length}`);
     console.log('========================================\n');
 }
 
