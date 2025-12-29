@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.0.89';  // REVERT: Route all period activity queries to regularRequests to restore Income Statement
+const FUNCTIONS_VERSION = '4.0.0.90';  // STRUCTURAL FIX: Early account type gate - Income Statement hard return before BS logic
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -1752,6 +1752,22 @@ function isBalanceSheetType(acctType) {
         'RetainedEarnings' // Retained Earnings
     ];
     return bsTypes.includes(acctType);
+}
+
+// Helper: Check if account type is Income Statement (Income or Expense)
+function isIncomeStatementType(acctType) {
+    if (!acctType) return false;
+    // All Income Statement account types (Income and Expense)
+    const plTypes = [
+        // Income (Natural Credit Balance)
+        'Income',         // Revenue/Sales
+        'OthIncome',      // Other Income
+        // Expenses (Natural Debit Balance)
+        'COGS',           // Cost of Goods Sold
+        'Expense',        // Operating Expense
+        'OthExpense'      // Other Expense
+    ];
+    return plTypes.includes(acctType);
 }
 
 // ============================================================================
@@ -5345,6 +5361,112 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         const cacheKey = getCacheKey('balance', params);
         
         // ================================================================
+        // CRITICAL: ACCOUNT TYPE GATE - Hard execution split
+        // Income/Expense accounts MUST be routed away BEFORE any Balance Sheet logic
+        // This prevents Income Statement queries from entering BS inference/batching pipeline
+        // ================================================================
+        // Check account type from cache first (synchronous, fast)
+        const typeCacheKey = getCacheKey('type', { account });
+        let accountType = cache.type.has(typeCacheKey) ? cache.type.get(typeCacheKey) : null;
+        
+        // Handle both string and object responses (cache may contain either)
+        if (accountType && typeof accountType === 'object' && accountType.type) {
+            accountType = accountType.type;
+        }
+        
+        // If not in cache, fetch it (async - but we need to know before proceeding)
+        if (!accountType) {
+            accountType = await getAccountType(account);
+            // Handle both string and object responses
+            if (accountType && typeof accountType === 'object' && accountType.type) {
+                accountType = accountType.type;
+            }
+        }
+        
+        // ================================================================
+        // INCOME STATEMENT PATH (Hard Return - No BS Logic)
+        // ================================================================
+        if (accountType && isIncomeStatementType(accountType)) {
+            // Income/Expense account - route immediately to income statement path
+            // SKIP: manifest checks, preload waits, grid detection, anchor inference, BS batching
+            console.log(`📊 Income Statement account (${accountType}): ${account} - routing to income statement path`);
+            
+            // Check in-memory cache first
+            if (cache.balance.has(cacheKey)) {
+                cacheStats.hits++;
+                return cache.balance.get(cacheKey);
+            }
+            
+            // Check localStorage cache (for cumulative queries only)
+            const filtersHash = getFilterKey({ subsidiary, department, location, classId, accountingBook });
+            const isCumulativeQuery = isCumulativeRequest(fromPeriod);
+            let localStorageValue = null;
+            if (isCumulativeQuery) {
+                localStorageValue = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
+            }
+            if (localStorageValue !== null) {
+                cacheStats.hits++;
+                cache.balance.set(cacheKey, localStorageValue);
+                return localStorageValue;
+            }
+            
+            // Check full year cache (if not subsidiary-filtered)
+            if (!subsidiary) {
+                const fullYearValue = checkFullYearCache(account, fromPeriod || toPeriod, subsidiary);
+                if (fullYearValue !== null) {
+                    cacheStats.hits++;
+                    cache.balance.set(cacheKey, fullYearValue);
+                    return fullYearValue;
+                }
+            }
+            
+            // Cache miss - queue to regularRequests (batch endpoint)
+            // This is the income statement execution path - no BS logic
+            cacheStats.misses++;
+            if (cacheStats.misses < 10) {
+                console.log(`📥 Income Statement: ${account} (${fromPeriod || '(cumulative)'} → ${toPeriod}) → queuing to batch endpoint`);
+            }
+            
+            // Return Promise that will be resolved by batch processor (regularRequests path)
+            return new Promise((resolve, reject) => {
+                pendingRequests.balance.set(cacheKey, {
+                    params,
+                    resolve,
+                    reject,
+                    timestamp: Date.now(),
+                    accountType: 'income_statement' // Mark as income statement for routing
+                });
+                
+                // Start batch timer if not already running
+                if (!isFullRefreshMode) {
+                    if (batchTimer) {
+                        clearTimeout(batchTimer);
+                        batchTimer = null;
+                    }
+                    if (cacheStats.misses < 10) {
+                        console.log(`⏱️ STARTING batch timer (${BATCH_DELAY}ms) for Income Statement`);
+                    }
+                    batchTimer = setTimeout(() => {
+                        console.log('⏱️ Batch timer FIRED!');
+                        batchTimer = null;
+                        processBatchQueue().catch(err => {
+                            console.error('❌ Batch processing error:', err);
+                        });
+                    }, BATCH_DELAY);
+                }
+            });
+        }
+        
+        // ================================================================
+        // BALANCE SHEET PATH (Continue with existing BS logic)
+        // ================================================================
+        // If we reach here, account is Balance Sheet (or type unknown - treat as BS for safety)
+        if (accountType && !isBalanceSheetType(accountType)) {
+            // Unknown account type - log warning but treat as BS (conservative)
+            console.warn(`⚠️ Unknown account type "${accountType}" for ${account} - treating as Balance Sheet`);
+        }
+        
+        // ================================================================
         // PRELOAD COORDINATION: Check manifest for period status FIRST
         // FIX: Check manifest even when global preload is not in progress
         // This allows formulas to detect when precache completed and use cache immediately
@@ -7004,18 +7126,44 @@ async function processBatchQueue() {
     pendingRequests.balance.clear();
     
     // ================================================================
-    // ROUTE REQUESTS BY TYPE:
-    // 1. CUMULATIVE BS QUERIES: empty fromPeriod with toPeriod → direct /balance API calls
-    // 2. PERIOD ACTIVITY QUERIES: both fromPeriod and toPeriod → regularRequests (batch endpoint)
-    //    TEMPORARY: All period activity queries go to regularRequests to restore Income Statement functionality
-    //    TODO: Re-enable BS grid batching with proper synchronous account type checking
-    // 3. REGULAR REQUESTS: P&L period ranges → batch endpoint (Income/Expense accounts)
+    // CRITICAL: ACCOUNT TYPE GATE - Hard execution split
+    // Income Statement requests (marked with accountType: 'income_statement')
+    // MUST be routed to regularRequests immediately - skip all BS logic
     // ================================================================
-    const cumulativeRequests = [];
-    const periodActivityRequests = [];  // Currently unused - BS grid batching disabled temporarily
-    const regularRequests = [];
+    const incomeStatementRequests = [];
+    const balanceSheetRequests = [];
     
     for (const [cacheKey, request] of requests) {
+        // Check if request is marked as Income Statement (from early gate in BALANCE function)
+        if (request.accountType === 'income_statement') {
+            // Income Statement request - route immediately to regularRequests
+            // SKIP: grid detection, anchor inference, BS batching logic
+            incomeStatementRequests.push([cacheKey, request]);
+        } else {
+            // Balance Sheet request (or unknown) - route to BS processing
+            balanceSheetRequests.push([cacheKey, request]);
+        }
+    }
+    
+    // ================================================================
+    // INCOME STATEMENT REQUESTS: Route directly to regularRequests
+    // No BS logic, no grid detection, no anchor inference
+    // ================================================================
+    const regularRequests = [];
+    for (const [cacheKey, request] of incomeStatementRequests) {
+        regularRequests.push([cacheKey, request]);
+    }
+    
+    // ================================================================
+    // BALANCE SHEET REQUESTS: Route by parameter shape
+    // 1. CUMULATIVE BS QUERIES: empty fromPeriod with toPeriod → direct /balance API calls
+    // 2. PERIOD ACTIVITY QUERIES: both fromPeriod and toPeriod → BS grid batching (if pattern detected)
+    // 3. OTHER: fallback to regularRequests
+    // ================================================================
+    const cumulativeRequests = [];
+    const periodActivityRequests = [];  // BS period activity queries (for grid batching)
+    
+    for (const [cacheKey, request] of balanceSheetRequests) {
         const { fromPeriod, toPeriod } = request.params;
         const isCumulative = (!fromPeriod || fromPeriod === '') && toPeriod && toPeriod !== '';
         const isPeriodActivity = fromPeriod && toPeriod && fromPeriod !== toPeriod;
@@ -7025,12 +7173,10 @@ async function processBatchQueue() {
             cumulativeRequests.push([cacheKey, request]);
         } else if (isPeriodActivity) {
             // Period activity query (both fromPeriod and toPeriod)
-            // TEMPORARY FIX: Route ALL period activity queries to regularRequests
-            // This restores Income Statement functionality (Income/Expense period ranges)
-            // BS grid batching optimization disabled until proper account type checking is implemented
-            regularRequests.push([cacheKey, request]);
+            // BS accounts only - can use grid batching
+            periodActivityRequests.push([cacheKey, request]);
         } else {
-            // Regular P&L period range requests - can use batch endpoint
+            // Other BS requests - use regular batch endpoint
             regularRequests.push([cacheKey, request]);
         }
     }
