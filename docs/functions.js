@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.0.77';  // CRITICAL FIX: Made cache operations async to prevent Excel crashes - yields to event loop before large JSON.stringify/setItem
+const FUNCTIONS_VERSION = '4.0.0.78';  // Stability hardening: manifest cache, status change debouncing, bounded async waits, timer cleanup guards
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -514,20 +514,139 @@ window.markAutoPreloadComplete = markAutoPreloadComplete;
 // PRECACHE MANIFEST - Per-period tracking scoped by filtersHash
 // ============================================================================
 
+// In-memory cache for manifest data (keyed by filtersHash)
+// Bounded to prevent unbounded growth
+const manifestCache = new LRUCache(100, 'manifest'); // key: filtersHash, value: {manifest, version}
+const MANIFEST_VERSION_KEY = 'netsuite_precache_manifest_version';
+
+// In-memory cache for status change detection (keyed by statusChangeKey)
+// Bounded to prevent unbounded growth
+const statusChangeCache = new LRUCache(500, 'statusChange'); // key: statusChangeKey, value: status string
+let statusChangeWriteScheduled = false;
+
+/**
+ * Get status change key for a filtersHash and periodKey
+ */
+function getStatusChangeKey(filtersHash, periodKey) {
+    return `precache_status_${filtersHash}_${periodKey}`;
+}
+
+/**
+ * Get status change from cache or localStorage
+ */
+function getStatusChange(filtersHash, periodKey) {
+    const key = getStatusChangeKey(filtersHash, periodKey);
+    
+    // Check in-memory cache first
+    if (statusChangeCache.has(key)) {
+        return statusChangeCache.get(key);
+    }
+    
+    // Cache miss - read from localStorage (one-time cost)
+    try {
+        const stored = localStorage.getItem(key);
+        if (stored) {
+            statusChangeCache.set(key, stored);
+        }
+        return stored;
+    } catch (e) {
+        return null;
+    }
+}
+
+/**
+ * Set status change (updates in-memory cache immediately, schedules async write)
+ */
+function setStatusChange(filtersHash, periodKey, status, immediate = false) {
+    const key = getStatusChangeKey(filtersHash, periodKey);
+    
+    // Update in-memory cache immediately (for reads)
+    statusChangeCache.set(key, status);
+    
+    // Completion events MUST trigger immediate flush (not debounced)
+    if (immediate) {
+        // Immediate flush for completion events
+        try {
+            localStorage.setItem(key, status);
+        } catch (e) {
+            // Ignore errors
+        }
+        return;
+    }
+    
+    // Schedule async write (non-blocking) for intermediate state updates
+    if (!statusChangeWriteScheduled) {
+        statusChangeWriteScheduled = true;
+        setTimeout(() => {
+            flushStatusChangeWrites();
+            statusChangeWriteScheduled = false;
+        }, 0);
+    }
+}
+
+/**
+ * Flush all pending status change writes to localStorage
+ */
+function flushStatusChangeWrites() {
+    // Batch write all pending status changes
+    // Note: LRUCache iteration - entries are automatically managed
+    for (const [key, status] of statusChangeCache.entries()) {
+        try {
+            localStorage.setItem(key, status);
+        } catch (e) {
+            // Ignore errors
+        }
+    }
+}
+
 /**
  * Get manifest for a specific filtersHash
  */
 function getManifest(filtersHash) {
+    // Check in-memory cache first
+    if (manifestCache.has(filtersHash)) {
+        const cached = manifestCache.get(filtersHash);
+        
+        // Verify version hasn't changed (cross-context invalidation)
+        try {
+            const currentVersion = localStorage.getItem(MANIFEST_VERSION_KEY);
+            if (currentVersion && cached.version !== currentVersion) {
+                // Version changed - cache is stale, invalidate
+                manifestCache.delete(filtersHash);
+            } else {
+                // Version matches or no version yet - use cached data
+                return cached.manifest;
+            }
+        } catch (e) {
+            // Version check failed - use cached data (safe fallback)
+            return cached.manifest;
+        }
+    }
+    
+    // Cache miss - read from localStorage (one-time cost)
     try {
         const stored = localStorage.getItem('netsuite_precache_manifest');
         if (!stored) {
-            return { periods: {}, lastUpdated: Date.now() };
+            const manifest = { periods: {}, lastUpdated: Date.now() };
+            const version = localStorage.getItem(MANIFEST_VERSION_KEY) || '0';
+            manifestCache.set(filtersHash, { manifest, version });
+            return manifest;
         }
         const all = JSON.parse(stored);
-        return all[filtersHash] || { periods: {}, lastUpdated: Date.now() };
+        const manifest = all[filtersHash] || { periods: {}, lastUpdated: Date.now() };
+        
+        // Get current version for cache entry
+        const version = localStorage.getItem(MANIFEST_VERSION_KEY) || '0';
+        
+        // Cache for future calls (with version for invalidation)
+        manifestCache.set(filtersHash, { manifest, version });
+        return manifest;
     } catch (e) {
         console.warn('Error reading manifest:', e);
-        return { periods: {}, lastUpdated: Date.now() };
+        const manifest = { periods: {}, lastUpdated: Date.now() };
+        const version = localStorage.getItem(MANIFEST_VERSION_KEY) || '0';
+        manifestCache.set(filtersHash, { manifest, version });
+        return manifest;
     }
 }
 
@@ -581,6 +700,14 @@ function updatePeriodStatus(filtersHash, periodKey, updates) {
         
         // ✅ Atomic write of entire manifest structure
         localStorage.setItem('netsuite_precache_manifest', JSON.stringify(all));
+        
+        // Increment version to invalidate all cached reads (cross-context)
+        const currentVersion = parseInt(localStorage.getItem(MANIFEST_VERSION_KEY) || '0', 10);
+        const newVersion = String(currentVersion + 1);
+        localStorage.setItem(MANIFEST_VERSION_KEY, newVersion);
+        
+        // Invalidate cache so next getManifest() reads fresh data
+        manifestCache.delete(filtersHash);
     } catch (e) {
         console.warn('Error updating manifest:', e);
     }
@@ -3817,14 +3944,17 @@ async function NAME(accountNumber, invocation) {
         pendingRequests.title.set(account, { resolve, reject });
         
         // Start batch timer if not already running
-        if (!titleBatchTimer) {
-            console.log(`⏱️ Starting TITLE batch timer (${TITLE_BATCH_DELAY}ms)`);
-            titleBatchTimer = setTimeout(() => {
-                processTitleBatchQueue().catch(err => {
-                    console.error('❌ TITLE batch processing error:', err);
-                });
-            }, TITLE_BATCH_DELAY);
+        // CRITICAL: Clear existing timer before setting new one (prevent multiple timers)
+        if (titleBatchTimer) {
+            clearTimeout(titleBatchTimer);
+            titleBatchTimer = null;
         }
+        console.log(`⏱️ Starting TITLE batch timer (${TITLE_BATCH_DELAY}ms)`);
+        titleBatchTimer = setTimeout(() => {
+            processTitleBatchQueue().catch(err => {
+                console.error('❌ TITLE batch processing error:', err);
+            });
+        }, TITLE_BATCH_DELAY);
     });
 }
 
@@ -3971,14 +4101,17 @@ async function TYPE(accountNumber, invocation) {
         pendingRequests.type.set(account, { resolve, reject });
         
         // Start batch timer if not already running
-        if (!typeBatchTimer) {
-            console.log(`⏱️ Starting TYPE batch timer (${TYPE_BATCH_DELAY}ms)`);
-            typeBatchTimer = setTimeout(() => {
-                processTypeBatchQueue().catch(err => {
-                    console.error('❌ TYPE batch processing error:', err);
-                });
-            }, TYPE_BATCH_DELAY);
+        // CRITICAL: Clear existing timer before setting new one (prevent multiple timers)
+        if (typeBatchTimer) {
+            clearTimeout(typeBatchTimer);
+            typeBatchTimer = null;
         }
+        console.log(`⏱️ Starting TYPE batch timer (${TYPE_BATCH_DELAY}ms)`);
+        typeBatchTimer = setTimeout(() => {
+            processTypeBatchQueue().catch(err => {
+                console.error('❌ TYPE batch processing error:', err);
+            });
+        }, TYPE_BATCH_DELAY);
     });
 }
 
@@ -4475,46 +4608,43 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                     
                     // OPTION 4: Status change detection - check if this is first time seeing "completed"
                     // Track previous status to detect transition from "running"/"requested" to "completed"
-                    const statusChangeKey = `precache_status_${filtersHash}_${periodKey}`;
-                    const previousStatus = localStorage.getItem(statusChangeKey);
+                    const previousStatus = getStatusChange(filtersHash, periodKey);
                     const justCompleted = previousStatus && (previousStatus === "running" || previousStatus === "requested");
                     
-                    // If status just changed to "completed", return changing value to force Excel recalculation
+                    // If status just changed to "completed", throw error to force Excel recalculation
                     if (justCompleted) {
                         console.log(`🔄 Period ${periodKey} status changed to "completed" - forcing Excel recalculation`);
-                        // Store current status for next evaluation
-                        try {
-                            localStorage.setItem(statusChangeKey, "completed");
-                        } catch (e) {
-                            // Ignore localStorage errors
-                        }
-                        // Return changing value to force Excel to recalculate immediately
-                        // Excel sees value changed → triggers recalculation → next eval returns cached value
-                        return Date.now();
+                        // Store current status for next evaluation (immediate flush for completion)
+                        setStatusChange(filtersHash, periodKey, "completed", true);
+                        // Throw error instead of returning Date.now() (preserves type contract)
+                        throw new Error("CACHE_NOT_READY");
                     }
                     
-                    // Update status tracking
-                    try {
-                        localStorage.setItem(statusChangeKey, "completed");
-                    } catch (e) {
-                        // Ignore localStorage errors
-                    }
+                    // Update status tracking (immediate flush for completion)
+                    setStatusChange(filtersHash, periodKey, "completed", true);
                     
-                    // Cache might not be written yet (race condition) - wait briefly
+                    // Cache not found but status is "completed" - wait briefly for cache write
+                    // Use async waits with bounded timeout, yielding to event loop
                     console.log(`⏳ Period ${periodKey} marked completed but cache not found - waiting for cache write...`);
                     const cacheWaitStart = Date.now();
-                    const cacheWaitMax = 3000; // 3 seconds max
+                    const cacheWaitMax = 2000; // 2 seconds max (reduced from 3s)
+                    const checkInterval = 200; // Check every 200ms (yields to event loop)
+                    
                     while (Date.now() - cacheWaitStart < cacheWaitMax) {
-                        await new Promise(r => setTimeout(r, 500)); // Check every 500ms
+                        // Yield to event loop (non-blocking)
+                        await new Promise(r => setTimeout(r, checkInterval));
                         
+                        // Check cache again
                         localStorageValue = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
                         if (localStorageValue !== null) {
+                            // Cache found - return immediately (no delay)
                             console.log(`✅ Post-preload cache hit (after wait): ${account} for ${periodKey} = ${localStorageValue}`);
                             cacheStats.hits++;
                             cache.balance.set(cacheKey, localStorageValue);
                             return localStorageValue;
                         }
                         
+                        // Also check in-memory cache
                         if (cache.balance.has(cacheKey)) {
                             console.log(`✅ Post-preload cache hit (memory, after wait): ${account} for ${periodKey}`);
                             cacheStats.hits++;
@@ -4522,21 +4652,16 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                         }
                     }
                     
-                    // Cache still not found after wait - return changing value to force recalculation
-                    // This is better than BUSY because Excel will retry immediately when value changes
-                    console.log(`⏳ Period ${periodKey} completed but cache not found after ${cacheWaitMax}ms - forcing recalculation`);
-                    return Date.now();
+                    // Cache still not found after bounded wait - throw error
+                    // Excel will retry on next recalculation cycle
+                    console.log(`⏳ Period ${periodKey} completed but cache not found after ${cacheWaitMax}ms - throwing CACHE_NOT_READY`);
+                    throw new Error("CACHE_NOT_READY");
                 }
                 
                 // If period is being preloaded, wait for it (not global preload)
                 if (status === "running" || status === "requested") {
-                    // Track status for change detection
-                    const statusChangeKey = `precache_status_${filtersHash}_${periodKey}`;
-                    try {
-                        localStorage.setItem(statusChangeKey, status);
-                    } catch (e) {
-                        // Ignore localStorage errors
-                    }
+                    // Track status for change detection (deferred write for intermediate state)
+                    setStatusChange(filtersHash, periodKey, status, false);
                     
                     console.log(`⏳ Period ${periodKey} is ${status} - waiting for this specific period (${account}/${periodKey})`);
                     const maxWait = 120000; // 120s max wait for this period
@@ -4544,24 +4669,19 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                     
                     if (waited) {
                         // Period completed - detect status change and force recalculation if needed
-                        const statusChangeKey = `precache_status_${filtersHash}_${periodKey}`;
-                        const previousStatus = localStorage.getItem(statusChangeKey);
+                        const previousStatus = getStatusChange(filtersHash, periodKey);
                         const justCompleted = previousStatus && (previousStatus === "running" || previousStatus === "requested");
                         
-                        // Update status tracking
-                        try {
-                            localStorage.setItem(statusChangeKey, "completed");
-                        } catch (e) {
-                            // Ignore localStorage errors
-                        }
+                        // Update status tracking (immediate flush for completion)
+                        setStatusChange(filtersHash, periodKey, "completed", true);
                         
                         // Period completed - check cache immediately
                         let localStorageValue = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
                         if (localStorageValue !== null) {
-                            // If status just changed, return changing value to force recalculation
+                            // If status just changed, throw error to force recalculation
                             if (justCompleted) {
                                 console.log(`🔄 Period ${periodKey} just completed - forcing Excel recalculation`);
-                                return Date.now();
+                                throw new Error("CACHE_NOT_READY");
                             }
                             console.log(`✅ Post-preload cache hit (localStorage): ${account} for ${periodKey} = ${localStorageValue}`);
                             cacheStats.hits++;
@@ -4571,38 +4691,44 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                         
                         // Also check in-memory cache
                         if (cache.balance.has(cacheKey)) {
-                            // If status just changed, return changing value to force recalculation
+                            // If status just changed, throw error to force recalculation
                             if (justCompleted) {
                                 console.log(`🔄 Period ${periodKey} just completed - forcing Excel recalculation`);
-                                return Date.now();
+                                throw new Error("CACHE_NOT_READY");
                             }
                             console.log(`✅ Post-preload cache hit (memory): ${account} for ${periodKey}`);
                             cacheStats.hits++;
                             return cache.balance.get(cacheKey);
                         }
                         
-                        // If status just changed to completed, return changing value to force recalculation
+                        // If status just changed to completed, throw error to force recalculation
                         if (justCompleted) {
                             console.log(`🔄 Period ${periodKey} just completed (cache not ready yet) - forcing Excel recalculation`);
-                            return Date.now();
+                            throw new Error("CACHE_NOT_READY");
                         }
                         
-                        // FIX: Cache might not be written yet (race condition)
-                        // Wait up to 3 seconds for cache to be written, checking every 500ms
+                        // Cache not found but status is "completed" - wait briefly for cache write
+                        // Use async waits with bounded timeout, yielding to event loop
                         console.log(`⏳ Period ${periodKey} marked completed but cache not found - waiting for cache write...`);
                         const cacheWaitStart = Date.now();
-                        const cacheWaitMax = 3000; // 3 seconds max
+                        const cacheWaitMax = 2000; // 2 seconds max (reduced from 3s)
+                        const checkInterval = 200; // Check every 200ms (yields to event loop)
+                        
                         while (Date.now() - cacheWaitStart < cacheWaitMax) {
-                            await new Promise(r => setTimeout(r, 500)); // Check every 500ms
+                            // Yield to event loop (non-blocking)
+                            await new Promise(r => setTimeout(r, checkInterval));
                             
+                            // Check cache again
                             localStorageValue = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
                             if (localStorageValue !== null) {
+                                // Cache found - return immediately (no delay)
                                 console.log(`✅ Post-preload cache hit (after wait): ${account} for ${periodKey} = ${localStorageValue}`);
                                 cacheStats.hits++;
                                 cache.balance.set(cacheKey, localStorageValue);
                                 return localStorageValue;
                             }
                             
+                            // Also check in-memory cache
                             if (cache.balance.has(cacheKey)) {
                                 console.log(`✅ Post-preload cache hit (memory, after wait): ${account} for ${periodKey}`);
                                 cacheStats.hits++;
@@ -4610,10 +4736,10 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                             }
                         }
                         
-                        // Cache still not found after wait - return changing value to force recalculation
-                        // This is better than BUSY because Excel will retry immediately when value changes
-                        console.log(`⏳ Period ${periodKey} completed but cache not found after ${cacheWaitMax}ms - forcing recalculation`);
-                        return Date.now();
+                        // Cache still not found after bounded wait - throw error
+                        // Excel will retry on next recalculation cycle
+                        console.log(`⏳ Period ${periodKey} completed but cache not found after ${cacheWaitMax}ms - throwing CACHE_NOT_READY`);
+                        throw new Error("CACHE_NOT_READY");
                     }
                     
                     // Check final status - if still running, return BUSY
@@ -4834,26 +4960,39 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                                             return retryCache;
                                         }
                                         
-                                        // FIX: Cache might not be written yet (race condition)
-                                        // Wait up to 3 seconds for cache to be written, checking every 500ms
+                                        // Cache not found but status is "completed" - wait briefly for cache write
+                                        // Use async waits with bounded timeout, yielding to event loop
                                         console.log(`⏳ Period ${resolved} marked completed but cache not found - waiting for cache write...`);
                                         const cacheWaitStart = Date.now();
-                                        const cacheWaitMax = 3000; // 3 seconds max
+                                        const cacheWaitMax = 2000; // 2 seconds max (reduced from 3s)
+                                        const checkInterval = 200; // Check every 200ms (yields to event loop)
+                                        
                                         while (Date.now() - cacheWaitStart < cacheWaitMax) {
-                                            await new Promise(r => setTimeout(r, 500)); // Check every 500ms
+                                            // Yield to event loop (non-blocking)
+                                            await new Promise(r => setTimeout(r, checkInterval));
                                             
+                                            // Check cache again
                                             retryCache = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
                                             if (retryCache !== null) {
+                                                // Cache found - return immediately (no delay)
                                                 console.log(`✅ Post-preload cache hit (after wait): ${account} for ${resolved} = ${retryCache}`);
                                                 cacheStats.hits++;
                                                 cache.balance.set(cacheKey, retryCache);
                                                 return retryCache;
                                             }
+                                            
+                                            // Also check in-memory cache
+                                            if (cache.balance.has(cacheKey)) {
+                                                console.log(`✅ Post-preload cache hit (memory, after wait): ${account} for ${resolved}`);
+                                                cacheStats.hits++;
+                                                return cache.balance.get(cacheKey);
+                                            }
                                         }
                                         
-                                        // Cache still not found - throw BUSY to force re-evaluation
-                                        console.log(`⏳ Period ${resolved} completed but cache not found after ${cacheWaitMax}ms - returning BUSY`);
-                                        throw new Error('BUSY');
+                                        // Cache still not found after bounded wait - throw error
+                                        // Excel will retry on next recalculation cycle
+                                        console.log(`⏳ Period ${resolved} completed but cache not found after ${cacheWaitMax}ms - throwing CACHE_NOT_READY`);
+                                        throw new Error("CACHE_NOT_READY");
                                     }
                                     
                                     // Still miss after wait - check if now running/retrying
@@ -4894,24 +5033,36 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                                 return retryCache;
                             }
                             
-                            // FIX: Cache might not be written yet (race condition)
-                            // Wait up to 3 seconds for cache to be written, checking every 500ms
+                            // Cache not found but status is "completed" - wait briefly for cache write
+                            // Use async waits with bounded timeout, yielding to event loop
                             console.log(`⏳ Period ${periodKey} marked completed but cache not found - waiting for cache write...`);
                             const cacheWaitStart = Date.now();
-                            const cacheWaitMax = 3000; // 3 seconds max
+                            const cacheWaitMax = 2000; // 2 seconds max (reduced from 3s)
+                            const checkInterval = 200; // Check every 200ms (yields to event loop)
+                            
                             while (Date.now() - cacheWaitStart < cacheWaitMax) {
-                                await new Promise(r => setTimeout(r, 500)); // Check every 500ms
+                                // Yield to event loop (non-blocking)
+                                await new Promise(r => setTimeout(r, checkInterval));
                                 
+                                // Check cache again
                                 retryCache = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
                                 if (retryCache !== null) {
+                                    // Cache found - return immediately (no delay)
                                     console.log(`✅ Post-preload cache hit (after wait): ${account} for ${periodKey} = ${retryCache}`);
                                     return retryCache;
                                 }
+                                
+                                // Also check in-memory cache
+                                if (cache.balance.has(cacheKey)) {
+                                    console.log(`✅ Post-preload cache hit (memory, after wait): ${account} for ${periodKey}`);
+                                    return cache.balance.get(cacheKey);
+                                }
                             }
                             
-                            // Cache still not found - throw BUSY to force re-evaluation
-                            console.log(`⏳ Period ${periodKey} completed but cache not found after ${cacheWaitMax}ms - returning BUSY`);
-                            throw new Error('BUSY');
+                            // Cache still not found after bounded wait - throw error
+                            // Excel will retry on next recalculation cycle
+                            console.log(`⏳ Period ${periodKey} completed but cache not found after ${cacheWaitMax}ms - throwing CACHE_NOT_READY`);
+                            throw new Error("CACHE_NOT_READY");
                         }
                         
                         // Still miss after wait - check if still running/retrying
@@ -4989,26 +5140,39 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                                     return retryCache;
                                 }
                                 
-                                // FIX: Cache might not be written yet (race condition)
-                                // Wait up to 3 seconds for cache to be written, checking every 500ms
+                                // Cache not found but status is "completed" - wait briefly for cache write
+                                // Use async waits with bounded timeout, yielding to event loop
                                 console.log(`⏳ Period ${periodKey} marked completed but cache not found - waiting for cache write...`);
                                 const cacheWaitStart = Date.now();
-                                const cacheWaitMax = 3000; // 3 seconds max
+                                const cacheWaitMax = 2000; // 2 seconds max (reduced from 3s)
+                                const checkInterval = 200; // Check every 200ms (yields to event loop)
+                                
                                 while (Date.now() - cacheWaitStart < cacheWaitMax) {
-                                    await new Promise(r => setTimeout(r, 500)); // Check every 500ms
+                                    // Yield to event loop (non-blocking)
+                                    await new Promise(r => setTimeout(r, checkInterval));
                                     
+                                    // Check cache again
                                     retryCache = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
                                     if (retryCache !== null) {
+                                        // Cache found - return immediately (no delay)
                                         console.log(`✅ Post-preload cache hit (after wait): ${account} for ${periodKey} = ${retryCache}`);
                                         cacheStats.hits++;
                                         cache.balance.set(cacheKey, retryCache);
                                         return retryCache;
                                     }
+                                    
+                                    // Also check in-memory cache
+                                    if (cache.balance.has(cacheKey)) {
+                                        console.log(`✅ Post-preload cache hit (memory, after wait): ${account} for ${periodKey}`);
+                                        cacheStats.hits++;
+                                        return cache.balance.get(cacheKey);
+                                    }
                                 }
                                 
-                                // Cache still not found - throw BUSY to force re-evaluation
-                                console.log(`⏳ Period ${periodKey} completed but cache not found after ${cacheWaitMax}ms - returning BUSY`);
-                                throw new Error('BUSY');
+                                // Cache still not found after bounded wait - throw error
+                                // Excel will retry on next recalculation cycle
+                                console.log(`⏳ Period ${periodKey} completed but cache not found after ${cacheWaitMax}ms - throwing CACHE_NOT_READY`);
+                                throw new Error("CACHE_NOT_READY");
                             }
                             
                             // Still miss after wait - check if now running/retrying
@@ -5135,16 +5299,19 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
             // The task pane will explicitly call processFullRefresh() when ready
             if (!isFullRefreshMode) {
                 // Start batch timer if not already running (Mode 1: small batches)
-                if (!batchTimer) {
-                    console.log(`⏱️ STARTING batch timer (${BATCH_DELAY}ms)`);
-                    batchTimer = setTimeout(() => {
-                        console.log('⏱️ Batch timer FIRED!');
-                        batchTimer = null;
-                        processBatchQueue().catch(err => {
-                            console.error('❌ Batch processing error:', err);
-                        });
-                    }, BATCH_DELAY);
-                } else {
+                // CRITICAL: Clear existing timer before setting new one (prevent multiple timers)
+                if (batchTimer) {
+                    clearTimeout(batchTimer);
+                    batchTimer = null;
+                }
+                console.log(`⏱️ STARTING batch timer (${BATCH_DELAY}ms)`);
+                batchTimer = setTimeout(() => {
+                    console.log('⏱️ Batch timer FIRED!');
+                    batchTimer = null;
+                    processBatchQueue().catch(err => {
+                        console.error('❌ Batch processing error:', err);
+                    });
+                }, BATCH_DELAY);
                     // REDUCED LOGGING: Only log timer status for first few items
                     if (cacheStats.misses < 10) {
                         console.log('   Timer already running, request will be batched');
@@ -5470,7 +5637,12 @@ async function BALANCECURRENCY(account, fromPeriod, toPeriod, subsidiary, curren
             });
             
             // Start batch timer if not already running
-            if (!isFullRefreshMode && !batchTimer) {
+            // CRITICAL: Clear existing timer before setting new one (prevent multiple timers)
+            if (!isFullRefreshMode) {
+                if (batchTimer) {
+                    clearTimeout(batchTimer);
+                    batchTimer = null;
+                }
                 console.log(`⏱️ STARTING batch timer (${BATCH_DELAY}ms) for BALANCECURRENCY`);
                 batchTimer = setTimeout(() => {
                     console.log('⏱️ Batch timer FIRED!');
