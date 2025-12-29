@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.0.86';  // BS Grid Batching: Fix syntax error (extra closing brace)
+const FUNCTIONS_VERSION = '4.0.0.87';  // BS Grid Batching: Fix missing closing brace for period activity block
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -8045,6 +8045,7 @@ async function processBatchQueue() {
         }
         
         console.log(`📊 Final stats: ${resolvedRequests.size} resolved, ${unresolvedCount} force-resolved`);
+        }
     }
     
     const totalBatchTime = ((Date.now() - batchStartTime) / 1000).toFixed(1);
