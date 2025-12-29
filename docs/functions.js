@@ -7154,6 +7154,9 @@ async function processBatchQueue() {
         regularRequests.push([cacheKey, request]);
     }
     
+    console.log(`📊 Routing summary: ${incomeStatementRequests.length} Income Statement, ${balanceSheetRequests.length} Balance Sheet`);
+    console.log(`   → ${regularRequests.length} Income Statement requests routed to regularRequests`);
+    
     // ================================================================
     // BALANCE SHEET REQUESTS: Route by parameter shape
     // 1. CUMULATIVE BS QUERIES: empty fromPeriod with toPeriod → direct /balance API calls
@@ -7645,6 +7648,8 @@ async function processBatchQueue() {
     // CRITICAL: Check preload cache before batching - filter out cache hits
     // This ensures batch mode uses preloaded data instead of making redundant API calls
     // ================================================================
+    console.log(`📦 Processing regularRequests: ${regularRequests.length} requests (Income Statement + other BS)`);
+    
     const regularRequestsToProcess = [];
     let regularCacheHits = 0;
     
