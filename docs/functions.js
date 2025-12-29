@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.0.87';  // BS Grid Batching: Fix missing closing brace for period activity block
+const FUNCTIONS_VERSION = '4.0.0.88';  // Fix: Route Income/Expense period queries to batch endpoint (not BS grid path)
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -7006,12 +7006,13 @@ async function processBatchQueue() {
     // ================================================================
     // ROUTE REQUESTS BY TYPE:
     // 1. CUMULATIVE BS QUERIES: empty fromPeriod with toPeriod → direct /balance API calls
-    // 2. PERIOD ACTIVITY QUERIES: both fromPeriod and toPeriod → direct /balance API calls (not batch endpoint)
-    // 3. REGULAR REQUESTS: P&L period ranges → batch endpoint
+    // 2. PERIOD ACTIVITY QUERIES: both fromPeriod and toPeriod → BS accounts only (for grid batching)
+    // 3. REGULAR REQUESTS: P&L period ranges → batch endpoint (Income/Expense accounts)
     // ================================================================
     const cumulativeRequests = [];
-    const periodActivityRequests = [];  // BS period activity queries (both fromPeriod and toPeriod)
+    const periodActivityRequests = [];  // BS period activity queries ONLY (both fromPeriod and toPeriod)
     const regularRequests = [];
+    const periodActivityRequestsToCheck = [];  // Temporary: period activity queries that need account type check
     
     for (const [cacheKey, request] of requests) {
         const { fromPeriod, toPeriod } = request.params;
@@ -7023,11 +7024,41 @@ async function processBatchQueue() {
             cumulativeRequests.push([cacheKey, request]);
         } else if (isPeriodActivity) {
             // Period activity query (both fromPeriod and toPeriod)
-            // Check if this forms a BS grid pattern for batched processing
-            periodActivityRequests.push([cacheKey, request]);
+            // CRITICAL: Only BS accounts should go to periodActivityRequests for grid batching
+            // Income/Expense accounts should use regularRequests (batch endpoint)
+            // We'll check account type below and route accordingly
+            periodActivityRequestsToCheck.push([cacheKey, request]);
         } else {
             // Regular P&L period range requests - can use batch endpoint
             regularRequests.push([cacheKey, request]);
+        }
+    }
+    
+    // ================================================================
+    // CHECK ACCOUNT TYPES FOR PERIOD ACTIVITY QUERIES
+    // Only BS accounts should use periodActivityRequests (for grid batching)
+    // Income/Expense accounts should use regularRequests (fast batch endpoint)
+    // ================================================================
+    if (periodActivityRequestsToCheck.length > 0) {
+        // Batch check account types for efficiency
+        const accountsToCheck = new Set();
+        for (const [cacheKey, request] of periodActivityRequestsToCheck) {
+            accountsToCheck.add(request.params.account);
+        }
+        
+        // Batch fetch account types
+        const accountTypes = await batchGetAccountTypes(Array.from(accountsToCheck));
+        
+        // Route based on account type
+        for (const [cacheKey, request] of periodActivityRequestsToCheck) {
+            const accountType = accountTypes[request.params.account];
+            if (accountType && isBalanceSheetType(accountType)) {
+                // BS account - can use grid batching
+                periodActivityRequests.push([cacheKey, request]);
+            } else {
+                // Income/Expense account - use fast batch endpoint
+                regularRequests.push([cacheKey, request]);
+            }
         }
     }
     
