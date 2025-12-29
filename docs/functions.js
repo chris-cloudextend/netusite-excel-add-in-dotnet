@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.0.90';  // STRUCTURAL FIX: Early account type gate - Income Statement hard return before BS logic
+const FUNCTIONS_VERSION = '4.0.0.91';  // DEBUG: Add logging to trace why regularRequests aren't being processed
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -7125,6 +7125,8 @@ async function processBatchQueue() {
     const requests = Array.from(pendingRequests.balance.entries());
     pendingRequests.balance.clear();
     
+    console.log(`🔍 DEBUG: Extracted ${requests.length} requests from queue`);
+    
     // ================================================================
     // CRITICAL: ACCOUNT TYPE GATE - Hard execution split
     // Income Statement requests (marked with accountType: 'income_statement')
@@ -7133,8 +7135,15 @@ async function processBatchQueue() {
     const incomeStatementRequests = [];
     const balanceSheetRequests = [];
     
+    // DEBUG: Check first few requests to verify accountType is preserved
+    let debugCount = 0;
     for (const [cacheKey, request] of requests) {
         // Check if request is marked as Income Statement (from early gate in BALANCE function)
+        if (debugCount < 5) {
+            console.log(`   🔍 Request ${debugCount}: accountType=${request.accountType || '(undefined)'}, account=${request.params?.account || 'N/A'}`);
+            debugCount++;
+        }
+        
         if (request.accountType === 'income_statement') {
             // Income Statement request - route immediately to regularRequests
             // SKIP: grid detection, anchor inference, BS batching logic
