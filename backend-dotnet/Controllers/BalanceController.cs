@@ -432,20 +432,54 @@ public class BalanceController : ControllerBase
     [HttpPost("/batch/balance")]
     public async Task<IActionResult> BatchBalance([FromBody] BatchBalanceRequest request)
     {
+        var startTime = DateTime.UtcNow;
+        
         if (request.Accounts == null || !request.Accounts.Any())
             return BadRequest(new { error = "At least one account is required" });
 
         if (request.Periods == null || !request.Periods.Any())
             return BadRequest(new { error = "At least one period is required" });
 
+        // CRITICAL DEBUG: Log batch request details
+        _logger.LogInformation("🔍🔍🔍 BATCH BALANCE REQUEST: {AccountCount} accounts × {PeriodCount} periods, Subsidiary: {Subsidiary}, Department: {Department}, Location: {Location}, Class: {Class}", 
+            request.Accounts.Count, 
+            request.Periods.Count,
+            request.Subsidiary ?? "(empty)",
+            request.Department ?? "(empty)",
+            request.Location ?? "(empty)",
+            request.Class ?? "(empty)");
+        
+        if (request.Accounts.Count <= 10)
+        {
+            _logger.LogInformation("   Accounts: {Accounts}", string.Join(", ", request.Accounts));
+        }
+        else
+        {
+            _logger.LogInformation("   Accounts (first 10): {Accounts}...", string.Join(", ", request.Accounts.Take(10)));
+        }
+        
+        if (request.Periods.Count <= 10)
+        {
+            _logger.LogInformation("   Periods: {Periods}", string.Join(", ", request.Periods));
+        }
+        else
+        {
+            _logger.LogInformation("   Periods (first 10): {Periods}...", string.Join(", ", request.Periods.Take(10)));
+        }
+
         try
         {
             var result = await _balanceService.GetBatchBalanceAsync(request);
+            var elapsed = (DateTime.UtcNow - startTime).TotalSeconds;
+            _logger.LogInformation("✅ BATCH BALANCE COMPLETE: {AccountCount} accounts × {PeriodCount} periods in {Elapsed:F2}s", 
+                request.Accounts.Count, request.Periods.Count, elapsed);
             return Ok(result);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error getting batch balances");
+            var elapsed = (DateTime.UtcNow - startTime).TotalSeconds;
+            _logger.LogError(ex, "❌ BATCH BALANCE ERROR after {Elapsed:F2}s: {AccountCount} accounts × {PeriodCount} periods", 
+                elapsed, request.Accounts.Count, request.Periods.Count);
             return StatusCode(500, new { error = ex.Message });
         }
     }

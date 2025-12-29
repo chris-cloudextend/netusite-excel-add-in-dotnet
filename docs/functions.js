@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.0.93';  // DEBUG: Add comprehensive logging to trace execution path
+const FUNCTIONS_VERSION = '4.0.0.94';  // DEBUG: Use console.error for critical debug logs + add backend logging
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -7165,7 +7165,7 @@ async function processBatchQueue() {
     
     console.log(`📊 Routing summary: ${incomeStatementRequests.length} Income Statement, ${balanceSheetRequests.length} Balance Sheet`);
     console.log(`   → ${regularRequests.length} Income Statement requests routed to regularRequests`);
-    console.log(`🔍 DEBUG: About to process BS requests. cumulativeRequests will be built from ${balanceSheetRequests.length} BS requests`);
+    console.error(`🔍🔍🔍 CRITICAL DEBUG: About to process BS requests. cumulativeRequests will be built from ${balanceSheetRequests.length} BS requests`);
     
     // ================================================================
     // BALANCE SHEET REQUESTS: Route by parameter shape
@@ -7199,7 +7199,7 @@ async function processBatchQueue() {
     // CRITICAL: This is the most common CPA workflow (BALANCE(account, , toPeriod))
     // Grid batching can dramatically improve performance for large grids
     // ================================================================
-    console.log(`🔍 DEBUG: Checking cumulativeRequests.length: ${cumulativeRequests.length}`);
+    console.error(`🔍🔍🔍 CRITICAL DEBUG: Checking cumulativeRequests.length: ${cumulativeRequests.length}`);
     if (cumulativeRequests.length > 0) {
         // Step 1: Attempt BS Grid Batching (conservative - only if pattern detected)
         // CRITICAL: Safety limits are enforced INSIDE detectBsGridPattern() before:
@@ -7529,7 +7529,7 @@ async function processBatchQueue() {
     // - Max periods: 36 (BS_GRID_MAX_PERIODS)
     // If limits exceeded, detectBsGridPattern() returns null → falls back to individual processing
     // ================================================================
-    console.log(`🔍 DEBUG: Checking periodActivityRequests.length: ${periodActivityRequests.length}`);
+    console.error(`🔍🔍🔍 CRITICAL DEBUG: Checking periodActivityRequests.length: ${periodActivityRequests.length}`);
     if (periodActivityRequests.length > 0) {
         // Step 1: Attempt BS Grid Batching (conservative - only if pattern detected)
         // CRITICAL: Safety limits are enforced INSIDE detectBsGridPattern() before:
@@ -7660,7 +7660,7 @@ async function processBatchQueue() {
     // CRITICAL: Check preload cache before batching - filter out cache hits
     // This ensures batch mode uses preloaded data instead of making redundant API calls
     // ================================================================
-    console.log(`🔍 DEBUG: About to process regularRequests. Length: ${regularRequests.length}, cumulativeRequests: ${cumulativeRequests.length}, periodActivityRequests: ${periodActivityRequests.length}`);
+    console.error(`🔍🔍🔍 CRITICAL DEBUG: About to process regularRequests. Length: ${regularRequests.length}, cumulativeRequests: ${cumulativeRequests.length}, periodActivityRequests: ${periodActivityRequests.length}`);
     console.log(`📦 Processing regularRequests: ${regularRequests.length} requests (Income Statement + other BS)`);
     
     const regularRequestsToProcess = [];
@@ -8086,6 +8086,9 @@ async function processBatchQueue() {
                 console.log(`  📤 Chunk ${chunkIndex}/${totalChunks}: ${accountChunk.length} accounts × ${periodChunk.length} periods (fetching...)`);
             
                 try {
+                    // CRITICAL DEBUG: Log before making batch API call
+                    console.error(`🔍🔍🔍 CRITICAL DEBUG: About to call /batch/balance with ${accountChunk.length} accounts × ${periodChunk.length} periods`);
+                    
                     // Make batch API call
                     const response = await fetch(`${SERVER_URL}/batch/balance`, {
                         method: 'POST',
@@ -8102,6 +8105,9 @@ async function processBatchQueue() {
                         // BALANCECURRENCY requests are handled separately above
                     })
                     });
+                    
+                    // CRITICAL DEBUG: Log response status
+                    console.error(`🔍🔍🔍 CRITICAL DEBUG: /batch/balance response status: ${response.status}`);
                 
                     if (!response.ok) {
                         console.error(`  ❌ API error: ${response.status}`);
@@ -8219,7 +8225,7 @@ async function processBatchQueue() {
     const totalBatchTime = ((Date.now() - batchStartTime) / 1000).toFixed(1);
     console.log('========================================');
     console.log(`✅ BATCH PROCESSING COMPLETE in ${totalBatchTime}s`);
-    console.log(`🔍 DEBUG: Final state - regularRequests.length: ${regularRequests.length}, cumulativeRequests.length: ${cumulativeRequests.length}, periodActivityRequests.length: ${periodActivityRequests.length}`);
+    console.error(`🔍🔍🔍 CRITICAL DEBUG: Final state - regularRequests.length: ${regularRequests.length}, cumulativeRequests.length: ${cumulativeRequests.length}, periodActivityRequests.length: ${periodActivityRequests.length}`);
     console.log('========================================\n');
 }
 
