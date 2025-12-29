@@ -16,6 +16,8 @@ ARCHITECTURE (v3.0.5.190+):
 - Taskpane UI page: taskpane.html (actual UI)
 - This separation ensures Mac's "Developer Window" is blank, not a duplicate UI
 
+LAST UPDATED: 2025-12-29 14:30:00 (Version 4.0.0.80 - LRUCache init fix + validation report)
+
 Context menu uses ExecuteFunction (runs in blank sharedruntime.html):
 1. ExecuteFunction sets localStorage flag with cell info
 2. ExecuteFunction calls Office.addin.showAsTaskpane()
