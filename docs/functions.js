@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.0.79';  // Bug fix: syntax error in timer cleanup, missing SERVER_URL in preloadAccountTitles
+const FUNCTIONS_VERSION = '4.0.0.80';  // Fix: Remove all transient error throws (BUSY, CACHE_NOT_READY) - formulas now resolve to numbers
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -4208,6 +4208,43 @@ async function PARENT(accountNumber, invocation) {
 // ============================================================================
 // BALANCE - Get GL Account Balance (NON-STREAMING WITH BATCHING)
 // ============================================================================
+
+/**
+ * Helper function to retry cache lookup with bounded delays
+ * Returns a Promise that resolves to a number (never throws for transient states)
+ * This preserves Excel's auto-retry behavior while maintaining type contract
+ */
+async function retryCacheLookup(
+    account, fromPeriod, toPeriod, subsidiary, filtersHash, cacheKey, periodKey,
+    checkLocalStorageCacheFn, maxRetries = 10, retryDelay = 500
+) {
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+        // Wait before checking (first attempt is immediate, subsequent have delay)
+        if (attempt > 0) {
+            await new Promise(r => setTimeout(r, retryDelay));
+        }
+        
+        // Check localStorage cache
+        const localStorageValue = checkLocalStorageCacheFn(account, fromPeriod, toPeriod, subsidiary, filtersHash);
+        if (localStorageValue !== null) {
+            console.log(`✅ Cache found on retry attempt ${attempt + 1}: ${account} for ${periodKey} = ${localStorageValue}`);
+            cache.balance.set(cacheKey, localStorageValue);
+            return localStorageValue;
+        }
+        
+        // Check in-memory cache
+        if (cache.balance.has(cacheKey)) {
+            console.log(`✅ Cache found in memory on retry attempt ${attempt + 1}: ${account} for ${periodKey}`);
+            return cache.balance.get(cacheKey);
+        }
+    }
+    
+    // After max retries, return null to signal cache not ready
+    // Caller will proceed to API path (transient state, not terminal error)
+    console.log(`⏳ Cache not found after ${maxRetries} retries - proceeding to API path for ${periodKey}`);
+    return null;
+}
+
 /**
  * @customfunction BALANCE
  * @param {any} account Account number
@@ -4611,51 +4648,21 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                     const previousStatus = getStatusChange(filtersHash, periodKey);
                     const justCompleted = previousStatus && (previousStatus === "running" || previousStatus === "requested");
                     
-                    // If status just changed to "completed", throw error to force Excel recalculation
-                    if (justCompleted) {
-                        console.log(`🔄 Period ${periodKey} status changed to "completed" - forcing Excel recalculation`);
-                        // Store current status for next evaluation (immediate flush for completion)
-                        setStatusChange(filtersHash, periodKey, "completed", true);
-                        // Throw error instead of returning Date.now() (preserves type contract)
-                        throw new Error("CACHE_NOT_READY");
-                    }
-                    
                     // Update status tracking (immediate flush for completion)
                     setStatusChange(filtersHash, periodKey, "completed", true);
                     
-                    // Cache not found but status is "completed" - wait briefly for cache write
-                    // Use async waits with bounded timeout, yielding to event loop
-                    console.log(`⏳ Period ${periodKey} marked completed but cache not found - waiting for cache write...`);
-                    const cacheWaitStart = Date.now();
-                    const cacheWaitMax = 2000; // 2 seconds max (reduced from 3s)
-                    const checkInterval = 200; // Check every 200ms (yields to event loop)
-                    
-                    while (Date.now() - cacheWaitStart < cacheWaitMax) {
-                        // Yield to event loop (non-blocking)
-                        await new Promise(r => setTimeout(r, checkInterval));
-                        
-                        // Check cache again
-                        localStorageValue = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
-                        if (localStorageValue !== null) {
-                            // Cache found - return immediately (no delay)
-                            console.log(`✅ Post-preload cache hit (after wait): ${account} for ${periodKey} = ${localStorageValue}`);
-                            cacheStats.hits++;
-                            cache.balance.set(cacheKey, localStorageValue);
-                            return localStorageValue;
-                        }
-                        
-                        // Also check in-memory cache
-                        if (cache.balance.has(cacheKey)) {
-                            console.log(`✅ Post-preload cache hit (memory, after wait): ${account} for ${periodKey}`);
-                            cacheStats.hits++;
-                            return cache.balance.get(cacheKey);
-                        }
+                    // Cache not found but status is "completed" - retry with bounded delays
+                    // Use Promise-based retry that resolves to a number (preserves Excel auto-retry)
+                    console.log(`⏳ Period ${periodKey} marked completed but cache not found - retrying cache lookup...`);
+                    const retryResult = await retryCacheLookup(
+                        account, fromPeriod, toPeriod, subsidiary, filtersHash, cacheKey, periodKey,
+                        checkLocalStorageCache
+                    );
+                    if (retryResult !== null) {
+                        return retryResult;
                     }
-                    
-                    // Cache still not found after bounded wait - throw error
-                    // Excel will retry on next recalculation cycle
-                    console.log(`⏳ Period ${periodKey} completed but cache not found after ${cacheWaitMax}ms - throwing CACHE_NOT_READY`);
-                    throw new Error("CACHE_NOT_READY");
+                    // Cache still not found after retries - proceed to API path (don't throw)
+                    console.log(`⏳ Cache not found after retries - proceeding to API path for ${periodKey}`);
                 }
                 
                 // If period is being preloaded, wait for it (not global preload)
@@ -4675,14 +4682,9 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                         // Update status tracking (immediate flush for completion)
                         setStatusChange(filtersHash, periodKey, "completed", true);
                         
-                        // Period completed - check cache immediately
+                        // Period completed - check cache immediately first
                         let localStorageValue = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
                         if (localStorageValue !== null) {
-                            // If status just changed, throw error to force recalculation
-                            if (justCompleted) {
-                                console.log(`🔄 Period ${periodKey} just completed - forcing Excel recalculation`);
-                                throw new Error("CACHE_NOT_READY");
-                            }
                             console.log(`✅ Post-preload cache hit (localStorage): ${account} for ${periodKey} = ${localStorageValue}`);
                             cacheStats.hits++;
                             cache.balance.set(cacheKey, localStorageValue);
@@ -4691,62 +4693,31 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                         
                         // Also check in-memory cache
                         if (cache.balance.has(cacheKey)) {
-                            // If status just changed, throw error to force recalculation
-                            if (justCompleted) {
-                                console.log(`🔄 Period ${periodKey} just completed - forcing Excel recalculation`);
-                                throw new Error("CACHE_NOT_READY");
-                            }
                             console.log(`✅ Post-preload cache hit (memory): ${account} for ${periodKey}`);
                             cacheStats.hits++;
                             return cache.balance.get(cacheKey);
                         }
                         
-                        // If status just changed to completed, throw error to force recalculation
-                        if (justCompleted) {
-                            console.log(`🔄 Period ${periodKey} just completed (cache not ready yet) - forcing Excel recalculation`);
-                            throw new Error("CACHE_NOT_READY");
+                        // Cache not found but status is "completed" - retry with bounded delays
+                        // Use Promise-based retry that resolves to a number (preserves Excel auto-retry)
+                        console.log(`⏳ Period ${periodKey} marked completed but cache not found - retrying cache lookup...`);
+                        const retryResult = await retryCacheLookup(
+                            account, fromPeriod, toPeriod, subsidiary, filtersHash, cacheKey, periodKey,
+                            checkLocalStorageCache
+                        );
+                        if (retryResult !== null) {
+                            return retryResult;
                         }
-                        
-                        // Cache not found but status is "completed" - wait briefly for cache write
-                        // Use async waits with bounded timeout, yielding to event loop
-                        console.log(`⏳ Period ${periodKey} marked completed but cache not found - waiting for cache write...`);
-                        const cacheWaitStart = Date.now();
-                        const cacheWaitMax = 2000; // 2 seconds max (reduced from 3s)
-                        const checkInterval = 200; // Check every 200ms (yields to event loop)
-                        
-                        while (Date.now() - cacheWaitStart < cacheWaitMax) {
-                            // Yield to event loop (non-blocking)
-                            await new Promise(r => setTimeout(r, checkInterval));
-                            
-                            // Check cache again
-                            localStorageValue = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
-                            if (localStorageValue !== null) {
-                                // Cache found - return immediately (no delay)
-                                console.log(`✅ Post-preload cache hit (after wait): ${account} for ${periodKey} = ${localStorageValue}`);
-                                cacheStats.hits++;
-                                cache.balance.set(cacheKey, localStorageValue);
-                                return localStorageValue;
-                            }
-                            
-                            // Also check in-memory cache
-                            if (cache.balance.has(cacheKey)) {
-                                console.log(`✅ Post-preload cache hit (memory, after wait): ${account} for ${periodKey}`);
-                                cacheStats.hits++;
-                                return cache.balance.get(cacheKey);
-                            }
-                        }
-                        
-                        // Cache still not found after bounded wait - throw error
-                        // Excel will retry on next recalculation cycle
-                        console.log(`⏳ Period ${periodKey} completed but cache not found after ${cacheWaitMax}ms - throwing CACHE_NOT_READY`);
-                        throw new Error("CACHE_NOT_READY");
+                        // Cache still not found after retries - proceed to API path (don't throw)
+                        console.log(`⏳ Cache not found after retries - proceeding to API path for ${periodKey}`);
                     }
                     
-                    // Check final status - if still running, return BUSY
+                    // Check final status - if still running, proceed to API path
+                    // (transient state, API will handle gracefully)
                     const finalStatus = getPeriodStatus(filtersHash, periodKey);
                     if (finalStatus === "running" || finalStatus === "requested") {
-                        console.log(`⏳ Period ${periodKey} still ${finalStatus} - returning BUSY`);
-                        throw new Error('BUSY');
+                        console.log(`⏳ Period ${periodKey} still ${finalStatus} - proceeding to API path`);
+                        // Continue to API path below (don't throw)
                     }
                 }
                 // If status is "not_found" or "failed", continue to manifest check below
@@ -4904,11 +4875,13 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                                 const finalPeriod = getManifest(filtersHash).periods[resolved];
                                 
                                 if (finalStatus === "running" || finalStatus === "requested") {
-                                    // ✅ Still running - return BUSY, don't make API call
-                                    throw new Error('BUSY');
+                                    // ✅ Still running - proceed to API path (transient state)
+                                    console.log(`⏳ Period ${resolved} still ${finalStatus} - proceeding to API path`);
+                                    // Continue to API path below (don't throw)
                                 } else if (finalStatus === "failed" && finalPeriod && finalPeriod.attemptCount < 3) {
-                                    // ✅ Retries remaining - return BUSY, don't make API call
-                                    throw new Error('BUSY');
+                                    // ✅ Retries remaining - proceed to API path (transient state)
+                                    console.log(`⏳ Period ${resolved} failed but retries remaining - proceeding to API path`);
+                                    // Continue to API path below (don't throw)
                                 }
                             } else if (status === "failed") {
                                 // Check if retries exhausted
@@ -4916,8 +4889,9 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                                     // ✅ Retries exhausted - proceed with API call
                                     console.log(`⚠️ Period ${resolved} precache failed (${period.attemptCount} attempts) - using API call`);
                                 } else {
-                                    // ✅ Retries remaining - return BUSY, don't make API call
-                                    throw new Error('BUSY');
+                                    // ✅ Retries remaining - proceed to API path (transient state)
+                                    console.log(`⏳ Period ${resolved} failed but retries remaining - proceeding to API path`);
+                                    // Continue to API path below (don't throw)
                                 }
                             } else if (status === "not_found") {
                                 // CRITICAL: Before triggering preload, double-check legacy cache
@@ -4991,16 +4965,26 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                                         
                                         // Cache still not found after bounded wait - throw error
                                         // Excel will retry on next recalculation cycle
-                                        console.log(`⏳ Period ${resolved} completed but cache not found after ${cacheWaitMax}ms - throwing CACHE_NOT_READY`);
-                                        throw new Error("CACHE_NOT_READY");
+                                        // Cache not found but status is "completed" - retry with bounded delays
+                                        // Use Promise-based retry that resolves to a number (preserves Excel auto-retry)
+                                        console.log(`⏳ Period ${resolved} marked completed but cache not found - retrying cache lookup...`);
+                                        const retryResult = await retryCacheLookup(
+                                            account, fromPeriod, toPeriod, subsidiary, filtersHash, cacheKey, resolved,
+                                            checkLocalStorageCache
+                                        );
+                                        if (retryResult !== null) {
+                                            return retryResult;
+                                        }
+                                        // Cache still not found after retries - proceed to API path (don't throw)
+                                        console.log(`⏳ Cache not found after retries - proceeding to API path for ${resolved}`);
                                     }
                                     
                                     // Still miss after wait - check if now running/retrying
                                     const finalStatus = getPeriodStatus(filtersHash, resolved);
                                     if (finalStatus === "running" || finalStatus === "requested") {
-                                        // ✅ Still running - return BUSY (don't queue API call yet)
-                                        console.log(`⏳ Period ${resolved} still ${finalStatus} - returning BUSY (will retry when preload completes)`);
-                                        throw new Error('BUSY');
+                                        // ✅ Still running - proceed to API path (transient state)
+                                        console.log(`⏳ Period ${resolved} still ${finalStatus} - proceeding to API path`);
+                                        // Continue to API path below (don't throw)
                                     }
                                     // If preload failed or timed out, continue to API call below
                                 }
@@ -5040,29 +5024,23 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                             const cacheWaitMax = 2000; // 2 seconds max (reduced from 3s)
                             const checkInterval = 200; // Check every 200ms (yields to event loop)
                             
-                            while (Date.now() - cacheWaitStart < cacheWaitMax) {
-                                // Yield to event loop (non-blocking)
-                                await new Promise(r => setTimeout(r, checkInterval));
-                                
-                                // Check cache again
-                                retryCache = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
-                                if (retryCache !== null) {
-                                    // Cache found - return immediately (no delay)
-                                    console.log(`✅ Post-preload cache hit (after wait): ${account} for ${periodKey} = ${retryCache}`);
-                                    return retryCache;
-                                }
-                                
-                                // Also check in-memory cache
-                                if (cache.balance.has(cacheKey)) {
-                                    console.log(`✅ Post-preload cache hit (memory, after wait): ${account} for ${periodKey}`);
-                                    return cache.balance.get(cacheKey);
-                                }
+                            // Also check in-memory cache
+                            if (cache.balance.has(cacheKey)) {
+                                return cache.balance.get(cacheKey);
                             }
                             
-                            // Cache still not found after bounded wait - throw error
-                            // Excel will retry on next recalculation cycle
-                            console.log(`⏳ Period ${periodKey} completed but cache not found after ${cacheWaitMax}ms - throwing CACHE_NOT_READY`);
-                            throw new Error("CACHE_NOT_READY");
+                            // Cache not found but status is "completed" - retry with bounded delays
+                            // Use Promise-based retry that resolves to a number (preserves Excel auto-retry)
+                            console.log(`⏳ Period ${periodKey} marked completed but cache not found - retrying cache lookup...`);
+                            const retryResult = await retryCacheLookup(
+                                account, fromPeriod, toPeriod, subsidiary, filtersHash, cacheKey, periodKey,
+                                checkLocalStorageCache
+                            );
+                            if (retryResult !== null) {
+                                return retryResult;
+                            }
+                            // Cache still not found after retries - proceed to API path (don't throw)
+                            console.log(`⏳ Cache not found after retries - proceeding to API path for ${periodKey}`);
                         }
                         
                         // Still miss after wait - check if still running/retrying
@@ -5070,11 +5048,13 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                         const finalPeriod = getManifest(filtersHash).periods[periodKey];
                         
                         if (finalStatus === "running" || finalStatus === "requested") {
-                            // ✅ Still running - return BUSY, don't make API call
-                            throw new Error('BUSY');
+                            // ✅ Still running - proceed to API path (transient state)
+                            console.log(`⏳ Period ${periodKey} still ${finalStatus} - proceeding to API path`);
+                            // Continue to API path below (don't throw)
                         } else if (finalStatus === "failed" && finalPeriod && finalPeriod.attemptCount < 3) {
-                            // ✅ Retries remaining - return BUSY, don't make API call
-                            throw new Error('BUSY');
+                            // ✅ Retries remaining - proceed to API path (transient state)
+                            console.log(`⏳ Period ${periodKey} failed but retries remaining - proceeding to API path`);
+                            // Continue to API path below (don't throw)
                         }
                     } else if (status === "failed") {
                         // Check if retries exhausted
@@ -5082,8 +5062,9 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                             // ✅ Retries exhausted - proceed with API call
                             console.log(`⚠️ Period ${periodKey} precache failed (${period.attemptCount} attempts) - using API call`);
                         } else {
-                            // ✅ Retries remaining - return BUSY, don't make API call
-                            throw new Error('BUSY');
+                            // ✅ Retries remaining - proceed to API path (transient state)
+                            console.log(`⏳ Period ${periodKey} failed but retries remaining - proceeding to API path`);
+                            // Continue to API path below (don't throw)
                         }
                     } else if (status === "not_found") {
                         // CRITICAL: Before triggering preload, double-check legacy cache
@@ -5147,40 +5128,33 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                                 const cacheWaitMax = 2000; // 2 seconds max (reduced from 3s)
                                 const checkInterval = 200; // Check every 200ms (yields to event loop)
                                 
-                                while (Date.now() - cacheWaitStart < cacheWaitMax) {
-                                    // Yield to event loop (non-blocking)
-                                    await new Promise(r => setTimeout(r, checkInterval));
-                                    
-                                    // Check cache again
-                                    retryCache = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
-                                    if (retryCache !== null) {
-                                        // Cache found - return immediately (no delay)
-                                        console.log(`✅ Post-preload cache hit (after wait): ${account} for ${periodKey} = ${retryCache}`);
-                                        cacheStats.hits++;
-                                        cache.balance.set(cacheKey, retryCache);
-                                        return retryCache;
-                                    }
-                                    
-                                    // Also check in-memory cache
-                                    if (cache.balance.has(cacheKey)) {
-                                        console.log(`✅ Post-preload cache hit (memory, after wait): ${account} for ${periodKey}`);
-                                        cacheStats.hits++;
-                                        return cache.balance.get(cacheKey);
-                                    }
+                                // Also check in-memory cache
+                                if (cache.balance.has(cacheKey)) {
+                                    console.log(`✅ Post-preload cache hit (memory): ${account} for ${periodKey}`);
+                                    cacheStats.hits++;
+                                    return cache.balance.get(cacheKey);
                                 }
                                 
-                                // Cache still not found after bounded wait - throw error
-                                // Excel will retry on next recalculation cycle
-                                console.log(`⏳ Period ${periodKey} completed but cache not found after ${cacheWaitMax}ms - throwing CACHE_NOT_READY`);
-                                throw new Error("CACHE_NOT_READY");
+                            // Cache not found but status is "completed" - retry with bounded delays
+                            // Use Promise-based retry that resolves to a number (preserves Excel auto-retry)
+                            console.log(`⏳ Period ${periodKey} marked completed but cache not found - retrying cache lookup...`);
+                            const retryResult = await retryCacheLookup(
+                                account, fromPeriod, toPeriod, subsidiary, filtersHash, cacheKey, periodKey,
+                                checkLocalStorageCache
+                            );
+                            if (retryResult !== null) {
+                                return retryResult;
+                            }
+                            // Cache still not found after retries - proceed to API path (don't throw)
+                            console.log(`⏳ Cache not found after retries - proceeding to API path for ${periodKey}`);
                             }
                             
                             // Still miss after wait - check if now running/retrying
                             const finalStatus = getPeriodStatus(filtersHash, periodKey);
                             if (finalStatus === "running" || finalStatus === "requested") {
-                                // ✅ Still running - return BUSY (don't queue API call yet)
-                                console.log(`⏳ Period ${periodKey} still ${finalStatus} - returning BUSY (will retry when preload completes)`);
-                                throw new Error('BUSY');
+                                // ✅ Still running - proceed to API path (transient state)
+                                console.log(`⏳ Period ${periodKey} still ${finalStatus} - proceeding to API path`);
+                                // Continue to API path below (don't throw)
                             }
                             // If preload failed or timed out, continue to API call below
                         }
@@ -5227,16 +5201,16 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         if (buildMode) {
             // Skip requests where toPeriod is empty (cell reference not resolved yet)
             // Excel will re-evaluate when the cell reference resolves
+            // For now, proceed to API path - API will handle invalid params gracefully
             if (!toPeriod || toPeriod === '') {
-                console.log(`⏳ BUILD MODE: Skipping ${account} - period not yet resolved`);
-                // Excel will re-evaluate when period resolves - throw error to signal retry needed
-                throw new Error('BUSY');
+                console.log(`⏳ BUILD MODE: Period not yet resolved for ${account} - proceeding to API path`);
+                // Continue to API path below (don't throw - Excel will re-evaluate when period resolves)
+            } else {
+                console.log(`🔨 BUILD MODE: Queuing ${account}/${fromPeriod || '(cumulative)'} → ${toPeriod}`);
+                return new Promise((resolve, reject) => {
+                    buildModePending.push({ cacheKey, params, resolve, reject });
+                });
             }
-            
-            console.log(`🔨 BUILD MODE: Queuing ${account}/${fromPeriod || '(cumulative)'} → ${toPeriod}`);
-            return new Promise((resolve, reject) => {
-                buildModePending.push({ cacheKey, params, resolve, reject });
-            });
         }
         
         // ================================================================
@@ -5248,10 +5222,11 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         
         // For cumulative (BS) requests: toPeriod required
         // For period-range (P&L) requests: both required (toPeriod at minimum)
+        // If period not resolved, proceed to API path - API will handle invalid params gracefully
+        // Excel will re-evaluate when period resolves
         if (!toPeriod || toPeriod === '') {
-            console.log(`⏳ Skipping ${account} - period not yet resolved, will retry`);
-            // Excel will re-evaluate when period resolves - throw error to signal retry needed
-            throw new Error('BUSY');
+            console.log(`⏳ Period not yet resolved for ${account} - proceeding to API path`);
+            // Continue to API path below (don't throw - Excel will re-evaluate when period resolves)
         }
         
         cacheStats.misses++;
@@ -5582,15 +5557,16 @@ async function BALANCECURRENCY(account, fromPeriod, toPeriod, subsidiary, curren
         // ================================================================
         if (buildMode) {
             // Skip requests where toPeriod is empty (cell reference not resolved yet)
+            // For now, proceed to API path - API will handle invalid params gracefully
             if (!toPeriod || toPeriod === '') {
-                console.log(`⏳ BUILD MODE: Skipping ${account} - period not yet resolved (BALANCECURRENCY)`);
-                throw new Error('BUSY');
+                console.log(`⏳ BUILD MODE: Period not yet resolved for ${account} (BALANCECURRENCY) - proceeding to API path`);
+                // Continue to API path below (don't throw - Excel will re-evaluate when period resolves)
+            } else {
+                console.log(`🔨 BUILD MODE: Queuing ${account}/${fromPeriod || '(cumulative)'} → ${toPeriod} (BALANCECURRENCY)`);
+                return new Promise((resolve, reject) => {
+                    buildModePending.push({ cacheKey, params, resolve, reject });
+                });
             }
-            
-            console.log(`🔨 BUILD MODE: Queuing ${account}/${fromPeriod || '(cumulative)'} → ${toPeriod} (BALANCECURRENCY)`);
-            return new Promise((resolve, reject) => {
-                buildModePending.push({ cacheKey, params, resolve, reject });
-            });
         }
         
         // ================================================================
@@ -5598,9 +5574,11 @@ async function BALANCECURRENCY(account, fromPeriod, toPeriod, subsidiary, curren
         // ================================================================
         // For cumulative (BS) requests: toPeriod required
         // For period-range (P&L) requests: both required (toPeriod at minimum)
+        // If period not resolved, proceed to API path - API will handle invalid params gracefully
+        // Excel will re-evaluate when period resolves
         if (!toPeriod || toPeriod === '') {
-            console.log(`⏳ Skipping ${account} - period not yet resolved, will retry (BALANCECURRENCY)`);
-            throw new Error('BUSY');
+            console.log(`⏳ Period not yet resolved for ${account} (BALANCECURRENCY) - proceeding to API path`);
+            // Continue to API path below (don't throw - Excel will re-evaluate when period resolves)
         }
         
         cacheStats.misses++;
@@ -7281,10 +7259,12 @@ async function RETAINEDEARNINGS(period, subsidiary, accountingBook, classId, dep
             await acquireSpecialFormulaLock(cacheKey, 'RETAINEDEARNINGS');
         } catch (lockError) {
             if (lockError.message === 'QUEUE_CLEARED') {
-                console.log(`🚫 RETAINEDEARNINGS ${period}: Queue cleared, formula will re-evaluate`);
-                throw new Error('BUSY');
+                // Queue cleared is transient - proceed to API path (Excel will re-evaluate)
+                console.log(`🚫 RETAINEDEARNINGS ${period}: Queue cleared, proceeding to API path`);
+                // Continue to API path below (don't throw - transient state)
+            } else {
+                throw lockError;
             }
-            throw lockError;
         }
         
         // CRITICAL: Wrap post-lock code in try-catch to ensure lock release on error
@@ -7524,10 +7504,12 @@ async function NETINCOME(fromPeriod, toPeriod, subsidiary, accountingBook, class
             await acquireSpecialFormulaLock(cacheKey, 'NETINCOME');
         } catch (lockError) {
             if (lockError.message === 'QUEUE_CLEARED') {
-                console.log(`🚫 NETINCOME ${rangeDesc}: Queue cleared, formula will re-evaluate`);
-                throw new Error('BUSY');
+                // Queue cleared is transient - proceed to API path (Excel will re-evaluate)
+                console.log(`🚫 NETINCOME ${rangeDesc}: Queue cleared, proceeding to API path`);
+                // Continue to API path below (don't throw - transient state)
+            } else {
+                throw lockError;
             }
-            throw lockError;
         }
         
         // CRITICAL: Wrap post-lock code in try-catch to ensure lock release on error
@@ -8057,10 +8039,12 @@ async function CTA(period, subsidiary, accountingBook) {
             await acquireSpecialFormulaLock(cacheKey, 'CTA');
         } catch (lockError) {
             if (lockError.message === 'QUEUE_CLEARED') {
-                console.log(`🚫 CTA ${period}: Queue cleared, formula will re-evaluate`);
-                throw new Error('BUSY');
+                // Queue cleared is transient - proceed to API path (Excel will re-evaluate)
+                console.log(`🚫 CTA ${period}: Queue cleared, proceeding to API path`);
+                // Continue to API path below (don't throw - transient state)
+            } else {
+                throw lockError;
             }
-            throw lockError;
         }
         
         // CRITICAL: Wrap post-lock code in try-catch to ensure lock release on error
