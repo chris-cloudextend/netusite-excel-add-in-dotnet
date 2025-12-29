@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.0.97';  // FIX: Add missing closing brace for cumulativeRequests if block
+const FUNCTIONS_VERSION = '4.0.0.98';  // FIX: Prevent Excel crash during intellisense - async localStorage access and longer setInterval
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -5038,11 +5038,14 @@ async function retryCacheLookup(
 async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, location, classId, accountingBook) {
     
     // Cross-context cache invalidation - taskpane signals via localStorage
-    // FIX #1 & #5: Synchronize cache clear - clear in-memory cache FIRST, then check signal
-    // This ensures cache is cleared before formulas evaluate
+    // CRITICAL: Use async-safe localStorage access to prevent blocking during intellisense
+    // Excel may inspect functions during intellisense, and synchronous localStorage can crash
     try {
-        // CRITICAL: Clear in-memory cache FIRST (before checking signal)
-        // This ensures cache is cleared synchronously, not async
+        // Use setTimeout(0) to yield to event loop before localStorage access
+        // This prevents blocking during intellisense inspection
+        await new Promise(resolve => setTimeout(resolve, 0));
+        
+        // Now safe to check localStorage (non-blocking after yield)
         const clearSignal = localStorage.getItem('netsuite_cache_clear_signal');
         if (clearSignal) {
             const { timestamp, reason } = JSON.parse(clearSignal);
@@ -9552,21 +9555,35 @@ function CLEARCACHE(itemsJson) {
         });
     } else {
         // Fallback: Office.js not loaded yet, wait for it
+        // CRITICAL: Use longer interval (200ms) to prevent event loop starvation
+        // Short intervals (50ms) can crash Excel during intellisense inspection
         if (typeof window !== 'undefined') {
-            var checkOffice = setInterval(function() {
+            var checkOffice = null;
+            var registrationAttempted = false;
+            
+            // Use longer interval to prevent event loop starvation
+            checkOffice = setInterval(function() {
                 if (typeof Office !== 'undefined' && Office.onReady) {
                     clearInterval(checkOffice);
-                    Office.onReady(function(info) {
-                        console.log('📋 Office.onReady() fired (delayed) - registering custom functions');
-                        doRegistration();
-                    });
+                    checkOffice = null;
+                    if (!registrationAttempted) {
+                        registrationAttempted = true;
+                        Office.onReady(function(info) {
+                            console.log('📋 Office.onReady() fired (delayed) - registering custom functions');
+                            doRegistration();
+                        });
+                    }
                 }
-            }, 50);
+            }, 200); // Increased from 50ms to 200ms to prevent event loop starvation
             
             // Timeout after 5 seconds
             setTimeout(function() {
-                clearInterval(checkOffice);
-                if (typeof CustomFunctions !== 'undefined') {
+                if (checkOffice) {
+                    clearInterval(checkOffice);
+                    checkOffice = null;
+                }
+                if (!registrationAttempted && typeof CustomFunctions !== 'undefined') {
+                    registrationAttempted = true;
                     console.warn('⚠️ Office.onReady() timeout - attempting registration anyway');
                     doRegistration();
                 }
