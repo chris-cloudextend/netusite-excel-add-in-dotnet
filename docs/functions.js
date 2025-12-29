@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.0.85';  // BS Grid Batching: Fix account type detection and variable scope
+const FUNCTIONS_VERSION = '4.0.0.86';  // BS Grid Batching: Fix syntax error (extra closing brace)
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -7354,8 +7354,6 @@ async function processBatchQueue() {
                 console.log(`   📊 Cumulative summary: ${cacheHits} cache hits, ${apiCalls} API calls, ${deduplicated} deduplicated`);
             }
         }
-    }
-    }
     
     // ================================================================
     // PERIOD ACTIVITY QUERIES: Handle separately (both fromPeriod and toPeriod)
