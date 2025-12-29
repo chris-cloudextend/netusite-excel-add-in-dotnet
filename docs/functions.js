@@ -4605,22 +4605,23 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         
         // CRITICAL: For period activity queries (fromPeriod provided), skip manifest/preload logic
         // Period activity queries are faster and don't need preload coordination
+        // NOTE: Do NOT use checkLocalStorageCache for period activity - it only looks up cumulative balances
+        // Period activity queries must use in-memory cache (with proper cache key) or go to API
         if (!isCumulativeQuery && lookupPeriod) {
-            // P&L account - check cache first, skip manifest/preload logic
-            const filtersHash = getFilterKey({ subsidiary, department, location, classId, accountingBook });
-            const localStorageValue = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
-            if (localStorageValue !== null) {
+            // Period activity query - only check in-memory cache (which uses proper cache key with both periods)
+            // Do NOT use checkLocalStorageCache - it would return wrong value (cumulative for fromPeriod)
+            if (cache.balance.has(cacheKey)) {
+                const cachedValue = cache.balance.get(cacheKey);
                 // Reduced logging - only log first few cache hits to reduce noise
                 if (cacheStats.hits < 5) {
-                    console.log(`✅ P&L cache hit: ${account}/${lookupPeriod} = ${localStorageValue}`);
+                    console.log(`✅ Period activity cache hit: ${account} (${fromPeriod} → ${toPeriod}) = ${cachedValue}`);
                 }
                 cacheStats.hits++;
-                cache.balance.set(cacheKey, localStorageValue);
-                return localStorageValue;
+                return cachedValue;
             }
-            // Cache miss for P&L - log first few misses for debugging, then reduce noise
+            // Cache miss for period activity - log first few misses for debugging, then reduce noise
             if (cacheStats.misses < 10) {
-                console.log(`📭 P&L cache miss: ${account}/${lookupPeriod} - using API`);
+                console.log(`📭 Period activity cache miss: ${account} (${fromPeriod} → ${toPeriod}) - using API`);
             }
             cacheStats.misses++;
         }
@@ -4816,11 +4817,16 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
             return cache.balance.get(cacheKey);
         }
         
-        // Check localStorage cache (BUT NOT for subsidiary-filtered queries!)
-        // localStorage is keyed by account+period only, not subsidiary
-        // So we skip it when subsidiary is specified to avoid returning wrong values
+        // Check localStorage cache (BUT NOT for subsidiary-filtered queries OR period activity queries!)
+        // localStorage is keyed by account+period only (cumulative), not for period ranges
+        // Period activity queries (both fromPeriod and toPeriod) must NOT use localStorage cache
+        // because checkLocalStorageCache only looks up cumulative balances (single period)
         const filtersHash = getFilterKey({ subsidiary, department, location, classId, accountingBook });
-        const localStorageValue = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
+        let localStorageValue = null;
+        // Only check localStorage for cumulative queries (point-in-time, not period activity)
+        if (isCumulativeQuery) {
+            localStorageValue = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
+        }
         if (localStorageValue !== null) {
             // Reduced logging - only log first few hits
             if (cacheStats.hits < 5) {
@@ -6517,16 +6523,17 @@ async function processBatchQueue() {
     for (const [cacheKey, request] of regularRequests) {
         const { account, fromPeriod, toPeriod, subsidiary } = request.params;
         
-        // Check localStorage preload cache (skip for subsidiary-filtered queries)
-        if (!subsidiary) {
-            const localStorageValue = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary);
-            if (localStorageValue !== null) {
-                console.log(`   ✅ Preload cache hit (regular batch): ${account} for ${fromPeriod || '(cumulative)'} → ${toPeriod} = ${localStorageValue}`);
-                cache.balance.set(cacheKey, localStorageValue);
-                request.resolve(localStorageValue);
-                regularCacheHits++;
-                continue; // Skip this request - already resolved from cache
-            }
+        // CRITICAL: Do NOT use checkLocalStorageCache for period activity queries (regularRequests)
+        // checkLocalStorageCache only looks up cumulative balances (single period), not period activity
+        // Period activity queries must use in-memory cache (with proper cache key) or go to API
+        // Only check in-memory cache for period activity queries
+        if (cache.balance.has(cacheKey)) {
+            const cachedValue = cache.balance.get(cacheKey);
+            console.log(`   ✅ Period activity cache hit (regular batch): ${account} (${fromPeriod} → ${toPeriod}) = ${cachedValue}`);
+            cache.balance.set(cacheKey, cachedValue);
+            request.resolve(cachedValue);
+            regularCacheHits++;
+            continue; // Skip this request - already resolved from cache
         }
         
         // Cache miss - add to batch processing
@@ -6641,12 +6648,21 @@ async function processBatchQueue() {
                     const reqCurrency = request.params.currency || '';
                     
                     // ================================================================
-                    // CHECK LOCALSTORAGE PRELOAD CACHE FIRST (Issue 2B Fix)
-                    // CRITICAL: Check preload cache before making API calls
-                    // Note: BALANCECURRENCY uses currency, so preload cache may not apply
-                    // But still check for non-currency requests
+                    // CHECK CACHE FIRST (Issue 2B Fix)
+                    // CRITICAL: For period activity queries, do NOT use checkLocalStorageCache
+                    // It only looks up cumulative balances, not period activity
+                    // Only check in-memory cache for period activity queries
                     // ================================================================
-                    if (!subsidiary && !reqCurrency) {  // Skip for subsidiary/currency-filtered queries
+                    // Check in-memory cache first (works for both cumulative and period activity)
+                    if (cache.balance.has(cacheKey)) {
+                        const cachedValue = cache.balance.get(cacheKey);
+                        console.log(`   ✅ Cache hit (BALANCECURRENCY batch): ${account} (${fromPeriod || '(cumulative)'} → ${toPeriod}) = ${cachedValue}`);
+                        cache.balance.set(cacheKey, cachedValue);
+                        request.resolve(cachedValue);
+                        continue; // Skip API call
+                    }
+                    // For cumulative queries only, also check localStorage (skip for subsidiary/currency-filtered or period activity)
+                    if (!subsidiary && !reqCurrency && (!fromPeriod || fromPeriod === '')) {
                         const localStorageValue = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary);
                         if (localStorageValue !== null) {
                             console.log(`   ✅ Preload cache hit (BALANCECURRENCY batch): ${account} for ${fromPeriod || '(cumulative)'} → ${toPeriod} = ${localStorageValue}`);
