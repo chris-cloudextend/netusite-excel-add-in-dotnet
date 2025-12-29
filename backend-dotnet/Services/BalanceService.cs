@@ -347,7 +347,8 @@ public class BalanceService : IBalanceService
                 }
                 
                 // Convert dates to YYYY-MM-DD format for range query
-                // Reuse existing variables from outer scope
+                // Use accounting period dates (not transaction dates) to match P&L behavior
+                // This ensures we only include transactions posted in the specified periods
                 var bsFromStartDate = ConvertToYYYYMMDD(fromPeriodData.StartDate);
                 var bsToEndDate = ConvertToYYYYMMDD(toPeriodData.EndDate);
                 
@@ -370,11 +371,12 @@ public class BalanceService : IBalanceService
                     bsSegmentWhere = $"AND {string.Join(" AND ", bsSegmentFilters)}";
                 }
                 
-                var tlJoin = needsTransactionLineJoin 
-                    ? "JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id" 
-                    : "";
+                // CRITICAL: Must join TransactionLine for segment filters AND accounting period
+                // Even if no segment filters, we need the accounting period join for date filtering
+                var tlJoin = "JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id";
                 
-                // Single range-bounded query: transactions between fromDate and toDate
+                // Single range-bounded query: transactions posted in periods between fromPeriod and toPeriod
+                // Uses accounting period dates (not transaction dates) to match P&L behavior
                 // This produces the same result as: Balance(toDate) - Balance(beforeFromDate)
                 // but only scans the date range, not all history
                 var rangeActivityQuery = $@"
@@ -395,12 +397,13 @@ public class BalanceService : IBalanceService
                         FROM transactionaccountingline tal
                         JOIN transaction t ON t.id = tal.transaction
                         JOIN account a ON a.id = tal.account
+                        JOIN accountingperiod ap ON ap.id = t.postingperiod
                         {tlJoin}
                         WHERE t.posting = 'T'
                           AND tal.posting = 'T'
                           AND {NetSuiteService.BuildAccountFilter(new[] { request.Account })}
-                          AND t.trandate >= TO_DATE('{bsFromStartDate}', 'YYYY-MM-DD')
-                          AND t.trandate <= TO_DATE('{bsToEndDate}', 'YYYY-MM-DD')
+                          AND ap.startdate >= TO_DATE('{bsFromStartDate}', 'YYYY-MM-DD')
+                          AND ap.enddate <= TO_DATE('{bsToEndDate}', 'YYYY-MM-DD')
                           AND tal.accountingbook = {accountingBook}
                           {bsSegmentWhere}
                     ) x";
