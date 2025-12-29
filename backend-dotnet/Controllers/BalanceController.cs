@@ -272,6 +272,60 @@ public class BalanceController : ControllerBase
                 });
             }
             
+            // OPTIMIZATION: If from_period == to_period, return period-only change (not cumulative)
+            // This allows users to get period activity: XAVI.BALANCECHANGE("10010", "Feb 2025", "Feb 2025")
+            // Uses period-only query (much faster) instead of cumulative
+            if (from_period.Equals(to_period, StringComparison.OrdinalIgnoreCase))
+            {
+                _logger.LogInformation("BALANCECHANGE: from_period == to_period, using period-only query for {Period}", to_period);
+                
+                // Use period-only query (like P&L) - scans only that period's transactions
+                var periodOnlyRequest = new BalanceRequest
+                {
+                    Account = account,
+                    FromPeriod = to_period,  // Period range: from = to = same period
+                    ToPeriod = to_period,
+                    Subsidiary = subsidiary,
+                    Department = department,
+                    Class = classFilter,
+                    Location = location,
+                    Book = book
+                };
+                
+                // Force period-only mode by setting a flag or using period range logic
+                // The GetBalanceAsync will detect from_period == to_period and use period range
+                var periodResult = await _balanceService.GetBalanceAsync(periodOnlyRequest);
+                
+                if (!string.IsNullOrEmpty(periodResult.Error))
+                {
+                    _logger.LogWarning("BALANCECHANGE: period-only query failed with {Error}", periodResult.Error);
+                    return Ok(new BalanceChangeResponse 
+                    { 
+                        Account = account,
+                        AccountType = acctType,
+                        FromPeriod = from_period,
+                        ToPeriod = to_period,
+                        Error = periodResult.Error
+                    });
+                }
+                
+                // Return period change directly (not cumulative)
+                _logger.LogInformation("BALANCECHANGE: {Account} period-only {Period}: {Change:N2}",
+                    account, to_period, periodResult.Balance);
+                
+                return Ok(new BalanceChangeResponse
+                {
+                    Account = account,
+                    AccountType = acctType,
+                    FromPeriod = from_period,
+                    ToPeriod = to_period,
+                    FromBalance = 0,  // Period-only, no baseline
+                    ToBalance = periodResult.Balance,
+                    Change = periodResult.Balance,  // Period change is the result
+                    Cached = periodResult.Cached
+                });
+            }
+            
             // Step 2: Get balance as of fromDate (cumulative, so from_period is empty)
             var fromRequest = new BalanceRequest
             {

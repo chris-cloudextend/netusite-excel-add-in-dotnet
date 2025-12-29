@@ -126,3 +126,4 @@ package-lock.json
 *.temp
 *.bak
 *.backup
+*.zip

@@ -106,9 +106,21 @@ public class BalanceService : IBalanceService
         // AUTO-DETECT BALANCE SHEET ACCOUNTS
         // BS accounts need CUMULATIVE balance (inception through to_period)
         // P&L accounts need PERIOD RANGE balance (from_period through to_period)
+        // 
+        // SPECIAL CASE: If from_period == to_period for BS accounts, use period-only query
+        // This allows BALANCECHANGE("10010", "Feb 2025", "Feb 2025") to get period activity
         // ========================================================================
         bool isBsAccount = false;
         string? detectedAccountType = null;
+        bool usePeriodOnly = false;  // Force period-only query even for BS accounts
+        
+        // Check if from_period == to_period (period-only mode)
+        if (!string.IsNullOrEmpty(fromPeriod) && !string.IsNullOrEmpty(toPeriod) && 
+            fromPeriod.Equals(toPeriod, StringComparison.OrdinalIgnoreCase))
+        {
+            usePeriodOnly = true;
+            _logger.LogDebug("Period-only mode detected: from_period == to_period == {Period}", toPeriod);
+        }
         
         if (!string.IsNullOrEmpty(request.Account) && !request.Account.Contains('*'))
         {
@@ -121,7 +133,8 @@ public class BalanceService : IBalanceService
                     ? typeProp.GetString() ?? "" : "";
                 detectedAccountType = acctType;
                 isBsAccount = AccountType.IsBalanceSheet(acctType);
-                _logger.LogDebug("Account {Account} type: {Type}, is_bs: {IsBs}", request.Account, acctType, isBsAccount);
+                _logger.LogDebug("Account {Account} type: {Type}, is_bs: {IsBs}, period_only: {PeriodOnly}", 
+                    request.Account, acctType, isBsAccount, usePeriodOnly);
             }
         }
         else if (!string.IsNullOrEmpty(request.Account) && request.Account.Contains('*'))
@@ -156,10 +169,19 @@ public class BalanceService : IBalanceService
         }
 
         // For BS accounts, ignore from_period (use cumulative from inception)
-        if (isBsAccount && !string.IsNullOrEmpty(fromPeriod) && !string.IsNullOrEmpty(toPeriod))
+        // EXCEPTION: If from_period == to_period, use period-only query (for BALANCECHANGE optimization)
+        bool usePeriodOnlyForBs = isBsAccount && !string.IsNullOrEmpty(fromPeriod) && !string.IsNullOrEmpty(toPeriod) 
+                                   && fromPeriod.Equals(toPeriod, StringComparison.OrdinalIgnoreCase);
+        
+        if (isBsAccount && !usePeriodOnlyForBs && !string.IsNullOrEmpty(fromPeriod) && !string.IsNullOrEmpty(toPeriod))
         {
             _logger.LogDebug("BS account detected: using cumulative through {ToPeriod} (ignoring from_period={FromPeriod})", toPeriod, fromPeriod);
             fromPeriod = ""; // Clear from_period for cumulative calculation
+        }
+        else if (usePeriodOnlyForBs)
+        {
+            _logger.LogDebug("BS account with from_period==to_period: using period-only query for {Period}", toPeriod);
+            // Keep from_period == to_period to use period range query
         }
 
         // Get period dates
@@ -262,7 +284,62 @@ public class BalanceService : IBalanceService
         string query;
         int queryTimeout;
         
-        if (isBsAccount)
+        // SPECIAL CASE: BS account with from_period == to_period uses period-only query (like P&L)
+        // This allows BALANCECHANGE("10010", "Feb 2025", "Feb 2025") to get period activity efficiently
+        if (isBsAccount && usePeriodOnlyForBs)
+        {
+            // PERIOD-ONLY for BS: Query only transactions in the target period
+            // Uses target period's exchange rate (critical for multi-currency)
+            var signFlip = $"CASE WHEN a.accttype IN ({AccountType.SignFlipTypesSql}) THEN -1 ELSE 1 END";
+            
+            // Period-only queries are much faster (similar to P&L)
+            queryTimeout = 30;
+            
+            // Need TransactionLine join for period filtering
+            var tlJoin = "JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id";
+            
+            // Need from_period for period range
+            if (string.IsNullOrEmpty(fromStartDate))
+            {
+                fromStartDate = ConvertToYYYYMMDD(toPeriodData.StartDate ?? toPeriodData.EndDate!);
+            }
+            
+            _logger.LogDebug("BS period-only query: period={Period}, fromDate={FromDate}, toDate={ToDate}, periodId={PeriodId}", 
+                toPeriod, fromStartDate, toEndDate, targetPeriodId);
+            
+            // CRITICAL: Use TARGET period ID for exchange rate (not t.postingperiod)
+            // This ensures period transactions convert at the target period's rate
+            // (required for incremental calculation: baseline + period change = cumulative)
+            query = $@"
+                SELECT SUM(x.cons_amt) AS balance
+                FROM (
+                    SELECT
+                        TO_NUMBER(
+                            BUILTIN.CONSOLIDATE(
+                                tal.amount,
+                                'LEDGER',
+                                'DEFAULT',
+                                'DEFAULT',
+                                {targetSub},
+                                {targetPeriodId},
+                                'DEFAULT'
+                            )
+                        ) * {signFlip} AS cons_amt
+                    FROM transactionaccountingline tal
+                    JOIN transaction t ON t.id = tal.transaction
+                    JOIN account a ON a.id = tal.account
+                    JOIN accountingperiod ap ON ap.id = t.postingperiod
+                    {tlJoin}
+                    WHERE t.posting = 'T'
+                      AND tal.posting = 'T'
+                      AND {NetSuiteService.BuildAccountFilter(new[] { request.Account })}
+                      AND ap.startdate >= TO_DATE('{fromStartDate}', 'YYYY-MM-DD')
+                      AND ap.enddate <= TO_DATE('{toEndDate}', 'YYYY-MM-DD')
+                      AND tal.accountingbook = {accountingBook}
+                      AND {segmentWhere}
+                ) x";
+        }
+        else if (isBsAccount)
         {
             // BALANCE SHEET: Cumulative from inception through to_period
             // Use t.trandate (transaction date) instead of ap.startdate/enddate
