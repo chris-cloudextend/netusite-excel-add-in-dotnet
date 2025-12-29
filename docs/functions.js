@@ -8225,7 +8225,6 @@ async function processBatchQueue() {
         }
         
         console.log(`📊 Final stats: ${resolvedRequests.size} resolved, ${unresolvedCount} force-resolved`);
-        }
     }
     
     const totalBatchTime = ((Date.now() - batchStartTime) / 1000).toFixed(1);
