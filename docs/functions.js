@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.0.78';  // Stability hardening: manifest cache, status change debouncing, bounded async waits, timer cleanup guards
+const FUNCTIONS_VERSION = '4.0.0.79';  // Bug fix: syntax error in timer cleanup, missing SERVER_URL in preloadAccountTitles
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
