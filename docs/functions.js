@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.0.91';  // DEBUG: Add logging to trace why regularRequests aren't being processed
+const FUNCTIONS_VERSION = '4.0.0.92';  // DEBUG: Add log before regularRequests processing to verify code path
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -7657,6 +7657,7 @@ async function processBatchQueue() {
     // CRITICAL: Check preload cache before batching - filter out cache hits
     // This ensures batch mode uses preloaded data instead of making redundant API calls
     // ================================================================
+    console.log(`🔍 DEBUG: About to process regularRequests. Length: ${regularRequests.length}, cumulativeRequests: ${cumulativeRequests.length}, periodActivityRequests: ${periodActivityRequests.length}`);
     console.log(`📦 Processing regularRequests: ${regularRequests.length} requests (Income Statement + other BS)`);
     
     const regularRequestsToProcess = [];
