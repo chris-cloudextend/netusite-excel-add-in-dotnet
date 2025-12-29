@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.0.76';  // CRITICAL FIX: Made cache operations async to prevent Excel crashes - yields to event loop before large JSON.stringify/setItem
+const FUNCTIONS_VERSION = '4.0.0.77';  // CRITICAL FIX: Made cache operations async to prevent Excel crashes - yields to event loop before large JSON.stringify/setItem
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -307,8 +307,9 @@ const BS_ACCOUNT_TYPES = ['Bank', 'AcctRec', 'OthCurrAsset', 'FixedAsset', 'OthA
                           'Equity', 'RetainedEarnings', 'UnbilledRec'];
 
 /**
- * Check if a request is for a cumulative (BS) account.
- * BS accounts have no fromPeriod (cumulative from inception).
+ * Check if a request is for a point-in-time (cumulative) query.
+ * Point-in-time queries have no fromPeriod (cumulative from inception).
+ * Period activity queries have both fromPeriod and toPeriod.
  */
 function isCumulativeRequest(fromPeriod) {
     return !fromPeriod || fromPeriod === '';
@@ -4417,17 +4418,19 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         // FIX: Check manifest even when global preload is not in progress
         // This allows formulas to detect when precache completed and use cache immediately
         // 
-        // CRITICAL: Manifest/preload logic ONLY applies to Balance Sheet accounts
-        // P&L accounts (Income, Expense, COGS) should use cache directly without waiting
-        // BS accounts have no fromPeriod (cumulative), P&L accounts have fromPeriod
+        // PARAMETER-DRIVEN BEHAVIOR:
+        // - Point-in-time (fromPeriod null/empty): Cumulative query (uses manifest/preload)
+        // - Period activity (fromPeriod provided): Period range query (skip manifest/preload)
+        // 
+        // Note: isCumulativeRequest checks if fromPeriod is null/empty to determine query type
         // ================================================================
         // Normalize lookupPeriod early for period-specific checks
         const lookupPeriod = normalizePeriodKey(fromPeriod || toPeriod, false);
-        const isBSAccount = isCumulativeRequest(fromPeriod); // BS accounts have no fromPeriod
+        const isCumulativeQuery = isCumulativeRequest(fromPeriod); // Point-in-time if fromPeriod is null/empty
         
-        // CRITICAL: For P&L accounts, skip manifest/preload logic and check cache directly
-        // Income statement accounts are P&L and should not wait for BS preload
-        if (!isBSAccount && lookupPeriod) {
+        // CRITICAL: For period activity queries (fromPeriod provided), skip manifest/preload logic
+        // Period activity queries are faster and don't need preload coordination
+        if (!isCumulativeQuery && lookupPeriod) {
             // P&L account - check cache first, skip manifest/preload logic
             const filtersHash = getFilterKey({ subsidiary, department, location, classId, accountingBook });
             const localStorageValue = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
@@ -4447,10 +4450,10 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
             cacheStats.misses++;
         }
         
-        // Manifest/preload logic ONLY for Balance Sheet accounts
+        // Manifest/preload logic ONLY for point-in-time (cumulative) queries
         // CRITICAL FIX: Check manifest for period status REGARDLESS of global preload status
         // This ensures formulas can detect "completed" status even after global preload finishes
-        if (isBSAccount && lookupPeriod) {
+        if (isCumulativeQuery && lookupPeriod) {
             const periodKey = normalizePeriodKey(lookupPeriod);
             if (periodKey) {
                 const filtersHash = getFilterKey({ subsidiary, department, location, classId, accountingBook });
@@ -4628,7 +4631,7 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         // GLOBAL PRELOAD WAIT (legacy behavior for non-normalized periods)
         // CRITICAL: Skip this wait for P&L accounts - they should never wait for BS preload
         // ================================================================
-        if (isPreloadInProgress() && lookupPeriod && isBSAccount) {
+        if (isPreloadInProgress() && lookupPeriod && isCumulativeQuery) {
             const periodKey = normalizePeriodKey(lookupPeriod);
             if (!periodKey) {
                 // Cannot normalize period - fall back to global preload wait (legacy behavior)
@@ -4739,7 +4742,7 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
             // P&L accounts should skip this entirely and proceed directly to API call
             // ================================================================
             // ✅ Check manifest ONLY for BS accounts (P&L accounts skip this)
-            if (isBSAccount && lookupPeriod) {
+            if (isCumulativeQuery && lookupPeriod) {
                 const periodKey = normalizePeriodKey(lookupPeriod);
                 if (!periodKey) {
                     // If numeric ID, try to resolve it
@@ -4802,10 +4805,10 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                                     return legacyCacheCheck;
                                 }
                                 
-                                // CRITICAL: Only trigger preload for BS accounts
-                                // P&L accounts should not trigger BS preload
-                                const isBSAccountResolved = isCumulativeRequest(fromPeriod);
-                                if (isBSAccountResolved) {
+                                // CRITICAL: Only trigger preload for point-in-time (cumulative) queries
+                                // Period activity queries should not trigger preload
+                                const isCumulativeQueryResolved = isCumulativeRequest(fromPeriod);
+                                if (isCumulativeQueryResolved) {
                                     // FIX #2: Period not requested - trigger preload EARLY (before queuing)
                                     console.log(`🔄 Period ${resolved} not in manifest - triggering preload before queuing API calls`);
                                     addPeriodToRequestQueue(resolved, { subsidiary, department, location, classId, accountingBook });

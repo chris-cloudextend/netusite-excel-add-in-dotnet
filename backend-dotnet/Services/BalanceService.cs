@@ -91,6 +91,26 @@ public class BalanceService : IBalanceService
     /// </summary>
     public async Task<BalanceResponse> GetBalanceAsync(BalanceRequest request)
     {
+        // ========================================================================
+        // VALIDATE PARAMETER SHAPE FIRST (before any defaults)
+        // ========================================================================
+        bool hasFromPeriod = !string.IsNullOrEmpty(request.FromPeriod);
+        bool hasToPeriod = !string.IsNullOrEmpty(request.ToPeriod);
+        
+        // Invalid: fromPeriod provided but toPeriod is empty
+        if (hasFromPeriod && !hasToPeriod)
+        {
+            _logger.LogWarning("Invalid parameter shape: fromPeriod provided ({FromPeriod}) but toPeriod is empty", request.FromPeriod);
+            return new BalanceResponse
+            {
+                Account = request.Account,
+                FromPeriod = request.FromPeriod,
+                ToPeriod = request.ToPeriod,
+                Balance = 0,
+                Error = "Invalid parameters: fromPeriod provided but toPeriod is required. For point-in-time balance, leave fromPeriod empty."
+            };
+        }
+        
         var fromPeriod = request.FromPeriod;
         var toPeriod = string.IsNullOrEmpty(request.ToPeriod) ? request.FromPeriod : request.ToPeriod;
 
@@ -103,86 +123,29 @@ public class BalanceService : IBalanceService
         }
 
         // ========================================================================
-        // AUTO-DETECT BALANCE SHEET ACCOUNTS
-        // BS accounts need CUMULATIVE balance (inception through to_period)
-        // P&L accounts need PERIOD RANGE balance (from_period through to_period)
+        // PARAMETER-DRIVEN BEHAVIOR (No account-type branching)
         // 
-        // SPECIAL CASE: If from_period == to_period for BS accounts, use period-only query
-        // This allows BALANCECHANGE("10010", "Feb 2025", "Feb 2025") to get period activity
+        // 1. Point-in-time balance (fromPeriod null/empty + toPeriod provided):
+        //    - Return consolidated balance as of end of toPeriod
+        //    - Always use BUILTIN.CONSOLIDATE(..., targetPeriodId = toPeriod)
+        //    - Query: t.trandate <= toEndDate (cumulative from inception)
+        //
+        // 2. Period activity (both fromPeriod AND toPeriod provided):
+        //    - Return net activity between fromPeriod and toPeriod
+        //    - Always use BUILTIN.CONSOLIDATE(..., targetPeriodId = toPeriod)
+        //    - Query: ap.startdate >= fromStartDate AND ap.enddate <= toEndDate
         // ========================================================================
-        bool isBsAccount = false;
-        string? detectedAccountType = null;
-        bool usePeriodOnly = false;  // Force period-only query even for BS accounts
         
-        // Check if from_period == to_period (period-only mode)
-        if (!string.IsNullOrEmpty(fromPeriod) && !string.IsNullOrEmpty(toPeriod) && 
-            fromPeriod.Equals(toPeriod, StringComparison.OrdinalIgnoreCase))
-        {
-            usePeriodOnly = true;
-            _logger.LogDebug("Period-only mode detected: from_period == to_period == {Period}", toPeriod);
-        }
+        // Re-validate after year expansion
+        hasFromPeriod = !string.IsNullOrEmpty(fromPeriod);
+        hasToPeriod = !string.IsNullOrEmpty(toPeriod);
         
-        if (!string.IsNullOrEmpty(request.Account) && !request.Account.Contains('*'))
-        {
-            // For single account, query its type
-            var typeQuery = $"SELECT accttype FROM Account WHERE acctnumber = '{NetSuiteService.EscapeSql(request.Account)}'";
-            var typeResult = await _netSuiteService.QueryRawAsync(typeQuery);
-            if (typeResult.Any())
-            {
-                var acctType = typeResult.First().TryGetProperty("accttype", out var typeProp) 
-                    ? typeProp.GetString() ?? "" : "";
-                detectedAccountType = acctType;
-                isBsAccount = AccountType.IsBalanceSheet(acctType);
-                _logger.LogDebug("Account {Account} type: {Type}, is_bs: {IsBs}, period_only: {PeriodOnly}", 
-                    request.Account, acctType, isBsAccount, usePeriodOnly);
-            }
-        }
-        else if (!string.IsNullOrEmpty(request.Account) && request.Account.Contains('*'))
-        {
-            // For wildcard accounts, check if ALL matching accounts are BS or P&L
-            var wildcardFilter = NetSuiteService.BuildAccountFilter(new[] { request.Account }, "acctnumber");
-            var typeQuery = $"SELECT DISTINCT accttype FROM Account WHERE {wildcardFilter}";
-            var typeResult = await _netSuiteService.QueryRawAsync(typeQuery);
-            if (typeResult.Any())
-            {
-                var types = typeResult.Select(r => r.TryGetProperty("accttype", out var p) ? p.GetString() ?? "" : "").ToList();
-                var bsTypes = types.Where(AccountType.IsBalanceSheet).ToList();
-                var plTypes = types.Where(t => !AccountType.IsBalanceSheet(t)).ToList();
-                
-                if (bsTypes.Any() && !plTypes.Any())
-                {
-                    isBsAccount = true;
-                    _logger.LogDebug("Wildcard {Account}: ALL matching accounts are BS", request.Account);
-                }
-                else if (plTypes.Any() && !bsTypes.Any())
-                {
-                    isBsAccount = false;
-                    _logger.LogDebug("Wildcard {Account}: ALL matching accounts are P&L", request.Account);
-                }
-                else
-                {
-                    // Mixed types - default to P&L behavior (safer)
-                    isBsAccount = false;
-                    _logger.LogDebug("Wildcard {Account}: MIXED types - using P&L behavior", request.Account);
-                }
-            }
-        }
-
-        // For BS accounts, ignore from_period (use cumulative from inception)
-        // EXCEPTION: If from_period == to_period, use period-only query (for BALANCECHANGE optimization)
-        bool usePeriodOnlyForBs = isBsAccount && !string.IsNullOrEmpty(fromPeriod) && !string.IsNullOrEmpty(toPeriod) 
-                                   && fromPeriod.Equals(toPeriod, StringComparison.OrdinalIgnoreCase);
+        // Determine query mode based on parameters
+        bool isPointInTime = !hasFromPeriod && hasToPeriod;
+        bool isPeriodActivity = hasFromPeriod && hasToPeriod;
         
-        if (isBsAccount && !usePeriodOnlyForBs && !string.IsNullOrEmpty(fromPeriod) && !string.IsNullOrEmpty(toPeriod))
-        {
-            _logger.LogDebug("BS account detected: using cumulative through {ToPeriod} (ignoring from_period={FromPeriod})", toPeriod, fromPeriod);
-            fromPeriod = ""; // Clear from_period for cumulative calculation
-        }
-        else if (usePeriodOnlyForBs)
-        {
-            _logger.LogDebug("BS account with from_period==to_period: using period-only query for {Period}", toPeriod);
-            // Keep from_period == to_period to use period range query
-        }
+        _logger.LogDebug("BALANCE query mode: PointInTime={PointInTime}, PeriodActivity={PeriodActivity}, fromPeriod={FromPeriod}, toPeriod={ToPeriod}",
+            isPointInTime, isPeriodActivity, fromPeriod, toPeriod);
 
         // Get period dates
         var toPeriodData = await _netSuiteService.GetPeriodAsync(toPeriod);
@@ -284,77 +247,23 @@ public class BalanceService : IBalanceService
         string query;
         int queryTimeout;
         
-        // SPECIAL CASE: BS account with from_period == to_period uses period-only query (like P&L)
-        // This allows BALANCECHANGE("10010", "Feb 2025", "Feb 2025") to get period activity efficiently
-        if (isBsAccount && usePeriodOnlyForBs)
+        // Universal sign flip: Handles both BS and P&L accounts
+        // BS: Liabilities/Equity need flip (stored negative, display positive)
+        // P&L: Income needs flip (stored negative, display positive)
+        var signFlip = $@"
+            CASE 
+                WHEN a.accttype IN ({AccountType.SignFlipTypesSql}) THEN -1  -- BS: Liabilities/Equity
+                WHEN a.accttype IN ({AccountType.IncomeTypesSql}) THEN -1     -- P&L: Income
+                ELSE 1 
+            END";
+        
+        if (isPointInTime)
         {
-            // PERIOD-ONLY for BS: Query only transactions in the target period
-            // Uses target period's exchange rate (critical for multi-currency)
-            var signFlip = $"CASE WHEN a.accttype IN ({AccountType.SignFlipTypesSql}) THEN -1 ELSE 1 END";
+            // POINT-IN-TIME BALANCE: Cumulative from inception through to_period
+            // Use t.trandate (transaction date) for date filtering
+            // Always use BUILTIN.CONSOLIDATE with targetPeriodId (toPeriod's rate)
             
-            // Period-only queries are much faster (similar to P&L)
-            queryTimeout = 30;
-            
-            // Need TransactionLine join for period filtering
-            var tlJoin = "JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id";
-            
-            // Need from_period for period range
-            if (string.IsNullOrEmpty(fromStartDate))
-            {
-                fromStartDate = ConvertToYYYYMMDD(toPeriodData.StartDate ?? toPeriodData.EndDate!);
-            }
-            
-            _logger.LogDebug("BS period-only query: period={Period}, fromDate={FromDate}, toDate={ToDate}, periodId={PeriodId}", 
-                toPeriod, fromStartDate, toEndDate, targetPeriodId);
-            
-            // CRITICAL: Use TARGET period ID for exchange rate (not t.postingperiod)
-            // This ensures period transactions convert at the target period's rate
-            // (required for incremental calculation: baseline + period change = cumulative)
-            query = $@"
-                SELECT SUM(x.cons_amt) AS balance
-                FROM (
-                    SELECT
-                        TO_NUMBER(
-                            BUILTIN.CONSOLIDATE(
-                                tal.amount,
-                                'LEDGER',
-                                'DEFAULT',
-                                'DEFAULT',
-                                {targetSub},
-                                {targetPeriodId},
-                                'DEFAULT'
-                            )
-                        ) * {signFlip} AS cons_amt
-                    FROM transactionaccountingline tal
-                    JOIN transaction t ON t.id = tal.transaction
-                    JOIN account a ON a.id = tal.account
-                    JOIN accountingperiod ap ON ap.id = t.postingperiod
-                    {tlJoin}
-                    WHERE t.posting = 'T'
-                      AND tal.posting = 'T'
-                      AND {NetSuiteService.BuildAccountFilter(new[] { request.Account })}
-                      AND ap.startdate >= TO_DATE('{fromStartDate}', 'YYYY-MM-DD')
-                      AND ap.enddate <= TO_DATE('{toEndDate}', 'YYYY-MM-DD')
-                      AND tal.accountingbook = {accountingBook}
-                      AND {segmentWhere}
-                ) x";
-        }
-        else if (isBsAccount)
-        {
-            // BALANCE SHEET: Cumulative from inception through to_period
-            // Use t.trandate (transaction date) instead of ap.startdate/enddate
-            // 
-            // SIGN FLIP for Balance Sheet:
-            // - Assets (Bank, AcctRec, FixedAsset, etc.): Stored positive (debit balance) → NO FLIP
-            // - Liabilities (AcctPay, CredCard, LongTermLiab, etc.): Stored negative (credit balance) → FLIP to positive
-            // - Equity (Equity, RetainedEarnings): Stored negative (credit balance) → FLIP to positive
-            //
-            // This matches NetSuite's standard Balance Sheet report display.
-            var signFlip = $"CASE WHEN a.accttype IN ({AccountType.SignFlipTypesSql}) THEN -1 ELSE 1 END";
-            
-            // Use longer timeout for cumulative BS queries (they scan all historical data)
-            // NetSuite CONSOLIDATE over all historical data can take 2-3 minutes
-            queryTimeout = 180;
+            queryTimeout = 180; // Cumulative queries scan all history
             
             // OPTIMIZATION: Skip TransactionLine join for root consolidated subsidiary with no filters
             var tlJoin = needsTransactionLineJoin 
@@ -362,10 +271,10 @@ public class BalanceService : IBalanceService
                 : "";
             var whereSegment = needsTransactionLineJoin ? $"AND {segmentWhere}" : "";
             
-            _logger.LogDebug("BS query: needsTlJoin={NeedsTl}, toEndDate={EndDate}, sub={Sub}, periodId={PeriodId}", 
-                needsTransactionLineJoin, toEndDate, targetSub, targetPeriodId);
+            _logger.LogDebug("Point-in-time query: toEndDate={EndDate}, sub={Sub}, periodId={PeriodId}", 
+                toEndDate, targetSub, targetPeriodId);
             
-            // CRITICAL: For Balance Sheet, use TARGET period ID (not t.postingperiod)
+            // CRITICAL: Use TARGET period ID (toPeriod) for exchange rate
             // This ensures ALL historical transactions convert at the SAME exchange rate
             // (the target period's rate), which is required for Balance Sheet to balance correctly
             query = $@"
@@ -395,23 +304,53 @@ public class BalanceService : IBalanceService
                       {whereSegment}
                 ) x";
         }
-        else
+        else if (isPeriodActivity)
         {
-            // P&L: Period range from from_period to to_period
-            // Sign flip for Income types (credits stored negative, display positive)
-            var signFlip = $"CASE WHEN a.accttype IN ({AccountType.IncomeTypesSql}) THEN -1 ELSE 1 END";
+            // PERIOD ACTIVITY: Net activity between from_period and to_period
+            // Conceptually: Balance(toPeriod) - Balance(end of period immediately before fromPeriod)
+            // Always use BUILTIN.CONSOLIDATE with targetPeriodId (toPeriod's rate)
             
-            // Standard timeout for P&L queries
-            queryTimeout = 30;
+            queryTimeout = 180; // May need two cumulative queries
             
-            // Need from_period for P&L
-            if (string.IsNullOrEmpty(fromStartDate))
+            // Get period immediately before fromPeriod
+            // For period activity, we need: Balance(toPeriod) - Balance(before fromPeriod)
+            // We'll calculate this as two separate cumulative queries and subtract
+            
+            // Get the end date of the period immediately before fromPeriod
+            var fromPeriodData = await _netSuiteService.GetPeriodAsync(fromPeriod);
+            if (fromPeriodData?.StartDate == null)
             {
-                _logger.LogWarning("P&L account but no from_period specified, using to_period as range");
-                fromStartDate = ConvertToYYYYMMDD(toPeriodData.StartDate ?? toPeriodData.EndDate!);
+                _logger.LogWarning("Could not find period dates for from_period: {FromPeriod}", fromPeriod);
+                return new BalanceResponse
+                {
+                    Account = request.Account,
+                    FromPeriod = request.FromPeriod,
+                    ToPeriod = toPeriod,
+                    Balance = 0,
+                    Error = $"Could not find period: {fromPeriod}"
+                };
             }
-
-            query = $@"
+            
+            // Calculate end date of period immediately before fromPeriod
+            // This is the day before fromPeriod's start date
+            // StartDate is a string in MM/DD/YYYY format, convert to DateTime first
+            var fromStartDateObj = DateTime.Parse(fromPeriodData.StartDate!);
+            var beforeFromPeriodEndDateObj = fromStartDateObj.AddDays(-1);
+            var beforeFromPeriodEndDate = ConvertToYYYYMMDD(beforeFromPeriodEndDateObj.ToString("MM/dd/yyyy"));
+            
+            _logger.LogDebug("Period activity query: fromPeriod={FromPeriod}, toPeriod={ToPeriod}, beforeFromEndDate={BeforeFromEndDate}, periodId={PeriodId}", 
+                fromPeriod, toPeriod, beforeFromPeriodEndDate, targetPeriodId);
+            
+            // Calculate Balance(toPeriod) - Balance(before fromPeriod)
+            // Both use targetPeriodId (toPeriod's rate) for currency conversion
+            
+            var tlJoin = needsTransactionLineJoin 
+                ? "JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id" 
+                : "";
+            var whereSegment = needsTransactionLineJoin ? $"AND {segmentWhere}" : "";
+            
+            // Query for balance as of toPeriod (cumulative)
+            var toBalanceQuery = $@"
                 SELECT SUM(x.cons_amt) AS balance
                 FROM (
                     SELECT
@@ -422,23 +361,129 @@ public class BalanceService : IBalanceService
                                 'DEFAULT',
                                 'DEFAULT',
                                 {targetSub},
-                                t.postingperiod,
+                                {targetPeriodId},
                                 'DEFAULT'
                             )
                         ) * {signFlip} AS cons_amt
                     FROM transactionaccountingline tal
                     JOIN transaction t ON t.id = tal.transaction
                     JOIN account a ON a.id = tal.account
-                    JOIN accountingperiod ap ON ap.id = t.postingperiod
-                    JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id
+                    {tlJoin}
                     WHERE t.posting = 'T'
                       AND tal.posting = 'T'
                       AND {NetSuiteService.BuildAccountFilter(new[] { request.Account })}
-                      AND ap.startdate >= TO_DATE('{fromStartDate}', 'YYYY-MM-DD')
-                      AND ap.enddate <= TO_DATE('{toEndDate}', 'YYYY-MM-DD')
+                      AND t.trandate <= TO_DATE('{toEndDate}', 'YYYY-MM-DD')
                       AND tal.accountingbook = {accountingBook}
-                      AND {segmentWhere}
+                      {whereSegment}
                 ) x";
+            
+            // Query for balance as of period before fromPeriod (cumulative)
+            var beforeFromBalanceQuery = $@"
+                SELECT SUM(x.cons_amt) AS balance
+                FROM (
+                    SELECT
+                        TO_NUMBER(
+                            BUILTIN.CONSOLIDATE(
+                                tal.amount,
+                                'LEDGER',
+                                'DEFAULT',
+                                'DEFAULT',
+                                {targetSub},
+                                {targetPeriodId},
+                                'DEFAULT'
+                            )
+                        ) * {signFlip} AS cons_amt
+                    FROM transactionaccountingline tal
+                    JOIN transaction t ON t.id = tal.transaction
+                    JOIN account a ON a.id = tal.account
+                    {tlJoin}
+                    WHERE t.posting = 'T'
+                      AND tal.posting = 'T'
+                      AND {NetSuiteService.BuildAccountFilter(new[] { request.Account })}
+                      AND t.trandate <= TO_DATE('{beforeFromPeriodEndDate}', 'YYYY-MM-DD')
+                      AND tal.accountingbook = {accountingBook}
+                      {whereSegment}
+                ) x";
+            
+            // Execute both queries
+            var toBalanceResult = await _netSuiteService.QueryRawWithErrorAsync(toBalanceQuery, queryTimeout);
+            var beforeFromBalanceResult = await _netSuiteService.QueryRawWithErrorAsync(beforeFromBalanceQuery, queryTimeout);
+            
+            if (!toBalanceResult.Success)
+            {
+                _logger.LogWarning("Period activity: toPeriod balance query failed: {Error}", toBalanceResult.ErrorDetails);
+                return new BalanceResponse
+                {
+                    Account = request.Account,
+                    FromPeriod = request.FromPeriod,
+                    ToPeriod = toPeriod,
+                    Balance = 0,
+                    Error = toBalanceResult.ErrorCode ?? "QUERY_FAILED"
+                };
+            }
+            
+            if (!beforeFromBalanceResult.Success)
+            {
+                _logger.LogWarning("Period activity: before fromPeriod balance query failed: {Error}", beforeFromBalanceResult.ErrorDetails);
+                return new BalanceResponse
+                {
+                    Account = request.Account,
+                    FromPeriod = request.FromPeriod,
+                    ToPeriod = toPeriod,
+                    Balance = 0,
+                    Error = beforeFromBalanceResult.ErrorCode ?? "QUERY_FAILED"
+                };
+            }
+            
+            // Extract balances
+            decimal toBalance = 0;
+            if (toBalanceResult.Items.Any())
+            {
+                var row = toBalanceResult.Items.First();
+                if (row.TryGetProperty("balance", out var balProp))
+                    toBalance = ParseBalance(balProp);
+            }
+            
+            decimal beforeFromBalance = 0;
+            if (beforeFromBalanceResult.Items.Any())
+            {
+                var row = beforeFromBalanceResult.Items.First();
+                if (row.TryGetProperty("balance", out var balProp))
+                    beforeFromBalance = ParseBalance(balProp);
+            }
+            
+            // Calculate activity: Balance(toPeriod) - Balance(before fromPeriod)
+            var activity = toBalance - beforeFromBalance;
+            
+            _logger.LogInformation("Period activity: Balance({ToPeriod})={ToBalance:N2}, Balance(before {FromPeriod})={BeforeBalance:N2}, Activity={Activity:N2}",
+                toPeriod, toBalance, fromPeriod, beforeFromBalance, activity);
+            
+            // Get account name and type for response
+            var accountNameForActivity = await _lookupService.GetAccountNameAsync(request.Account);
+            var accountTypeForActivity = await _lookupService.GetAccountTypeAsync(request.Account);
+            
+            return new BalanceResponse
+            {
+                Account = request.Account,
+                AccountName = accountNameForActivity,
+                AccountType = accountTypeForActivity,
+                FromPeriod = request.FromPeriod,
+                ToPeriod = toPeriod,
+                Balance = activity
+            };
+        }
+        else
+        {
+            // Should not reach here (validation above should catch invalid parameter shapes)
+            _logger.LogError("Invalid query mode: fromPeriod={FromPeriod}, toPeriod={ToPeriod}", fromPeriod, toPeriod);
+            return new BalanceResponse
+            {
+                Account = request.Account,
+                FromPeriod = request.FromPeriod,
+                ToPeriod = request.ToPeriod,
+                Balance = 0,
+                Error = "Invalid parameter combination"
+            };
         }
 
         // Use error-aware query method to propagate failures to Excel
@@ -462,7 +507,7 @@ public class BalanceService : IBalanceService
 
         decimal balance = 0;
         string? accountName = null;
-        string? accountType = detectedAccountType;
+        string? accountType = null; // No longer detecting account type (parameter-driven)
 
         if (queryResult.Items.Any())
         {
