@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.0.92';  // DEBUG: Add log before regularRequests processing to verify code path
+const FUNCTIONS_VERSION = '4.0.0.93';  // DEBUG: Add comprehensive logging to trace execution path
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -7165,6 +7165,7 @@ async function processBatchQueue() {
     
     console.log(`📊 Routing summary: ${incomeStatementRequests.length} Income Statement, ${balanceSheetRequests.length} Balance Sheet`);
     console.log(`   → ${regularRequests.length} Income Statement requests routed to regularRequests`);
+    console.log(`🔍 DEBUG: About to process BS requests. cumulativeRequests will be built from ${balanceSheetRequests.length} BS requests`);
     
     // ================================================================
     // BALANCE SHEET REQUESTS: Route by parameter shape
@@ -7198,6 +7199,7 @@ async function processBatchQueue() {
     // CRITICAL: This is the most common CPA workflow (BALANCE(account, , toPeriod))
     // Grid batching can dramatically improve performance for large grids
     // ================================================================
+    console.log(`🔍 DEBUG: Checking cumulativeRequests.length: ${cumulativeRequests.length}`);
     if (cumulativeRequests.length > 0) {
         // Step 1: Attempt BS Grid Batching (conservative - only if pattern detected)
         // CRITICAL: Safety limits are enforced INSIDE detectBsGridPattern() before:
@@ -7527,6 +7529,7 @@ async function processBatchQueue() {
     // - Max periods: 36 (BS_GRID_MAX_PERIODS)
     // If limits exceeded, detectBsGridPattern() returns null → falls back to individual processing
     // ================================================================
+    console.log(`🔍 DEBUG: Checking periodActivityRequests.length: ${periodActivityRequests.length}`);
     if (periodActivityRequests.length > 0) {
         // Step 1: Attempt BS Grid Batching (conservative - only if pattern detected)
         // CRITICAL: Safety limits are enforced INSIDE detectBsGridPattern() before:
