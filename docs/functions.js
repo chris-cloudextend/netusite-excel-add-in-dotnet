@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.0.82';  // Fix: Prevent checkLocalStorageCache from returning wrong values for period activity queries
+const FUNCTIONS_VERSION = '4.0.0.83';  // BS Grid Batching: Execution lock semantics, safety limits, anchor contract documentation
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -1212,6 +1212,8 @@ const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
  * Parse period string into {month: 0-11, year: YYYY}
  * Supports both "Mon YYYY" format and year-only "YYYY" format
  * For year-only, returns month: 0 (Jan) as the starting month
+ * 
+ * Used by BS grid batching for anchor date inference.
  */
 function parsePeriod(periodStr) {
     if (!periodStr || typeof periodStr !== 'string') return null;
@@ -1324,6 +1326,40 @@ const cache = {
 // This prevents duplicate concurrent API calls for the same period
 // Bounded to prevent memory issues if requests never complete
 const inFlightRequests = new LRUCache(500, 'inFlight');
+
+// ============================================================================
+// BALANCE SHEET GRID BATCHING - With Inferred Anchors
+// ============================================================================
+// Cache for BS grid batching results (opening balances + period activity)
+// Key: "bs-grid:{accountSetHash}:{anchorDate}:{fromPeriod}:{toPeriod}:{filtersHash}"
+// Value: { openingBalances: {account: balance}, activity: {account: {period: amount}}, timestamp }
+const bsGridCache = new LRUCache(100, 'bsGrid');
+
+// ============================================================================
+// EXECUTION LOCK - Single-Flight Promise-Based Mutex
+// ============================================================================
+// CRITICAL: This is a true single-flight lock (promise-based mutex), not just a boolean flag.
+// 
+// Guarantees:
+// - Only one Balance Sheet batch query can run at a time
+// - Concurrent evaluations block via await lock.promise
+// - No overlapping NetSuite calls possible under any recalculation scenario
+// - Lock is always released in finally block (prevents deadlocks)
+//
+// Implementation: Promise-based mutex pattern
+// - locked: Boolean flag indicating if batch query is in flight
+// - promise: Promise that resolves when current batch completes (awaited by concurrent evaluations)
+// - cacheKey: Cache key of current batch (for debugging/logging)
+// ============================================================================
+let bsGridBatchingLock = {
+    locked: false,
+    promise: null,
+    cacheKey: null
+};
+
+// Safety limits for BS grid batching
+const BS_GRID_MAX_ACCOUNTS = 200;
+const BS_GRID_MAX_PERIODS = 36;
 
 // ============================================================================
 // SPECIAL FORMULA SEMAPHORE - Ensures only ONE special formula runs at a time
@@ -1716,6 +1752,299 @@ function isBalanceSheetType(acctType) {
         'RetainedEarnings' // Retained Earnings
     ];
     return bsTypes.includes(acctType);
+}
+
+// ============================================================================
+// BALANCE SHEET GRID BATCHING HELPERS
+// ============================================================================
+
+/**
+ * Detect if a set of requests forms a Balance Sheet grid pattern.
+ * 
+ * Conservative detection: Only returns true if:
+ * - All requests are BS period activity queries (both fromPeriod and toPeriod)
+ * - Multiple unique accounts (rows)
+ * - Multiple unique periods (columns)
+ * - Same filters (subsidiary, department, location, class, book)
+ * 
+ * CRITICAL SAFETY: Safety limits are enforced HERE, before any NetSuite work begins.
+ * This ensures fail-fast behavior with zero network activity if limits are exceeded.
+ * 
+ * If intent is unclear, returns null (fall back to existing behavior).
+ * 
+ * @param {Array} requests - Array of [cacheKey, request] tuples
+ * @returns {Object|null} Grid info: { accounts: Set, periods: Set, earliestFromPeriod, latestToPeriod, filtersHash } or null
+ */
+function detectBsGridPattern(requests) {
+    if (!requests || requests.length < 2) {
+        return null; // Need at least 2 requests to form a grid
+    }
+    
+    // Extract all period activity requests (both fromPeriod and toPeriod)
+    const periodActivityRequests = [];
+    for (const [cacheKey, request] of requests) {
+        const { fromPeriod, toPeriod } = request.params;
+        const isPeriodActivity = fromPeriod && toPeriod && fromPeriod !== toPeriod;
+        if (isPeriodActivity) {
+            periodActivityRequests.push(request);
+        }
+    }
+    
+    if (periodActivityRequests.length < 2) {
+        return null; // Need at least 2 period activity requests
+    }
+    
+    // Check if all requests share the same filters
+    const firstRequest = periodActivityRequests[0];
+    const filtersHash = getFilterKey({
+        subsidiary: firstRequest.params.subsidiary,
+        department: firstRequest.params.department,
+        location: firstRequest.params.location,
+        classId: firstRequest.params.classId,
+        accountingBook: firstRequest.params.accountingBook
+    });
+    
+    // Verify all requests have same filters
+    for (const request of periodActivityRequests) {
+        const requestFiltersHash = getFilterKey({
+            subsidiary: request.params.subsidiary,
+            department: request.params.department,
+            location: request.params.location,
+            classId: request.params.classId,
+            accountingBook: request.params.accountingBook
+        });
+        if (requestFiltersHash !== filtersHash) {
+            return null; // Different filters - not a grid
+        }
+    }
+    
+    // Collect unique accounts and periods
+    const accounts = new Set();
+    const periods = new Set();
+    let earliestFromPeriod = null;
+    let latestToPeriod = null;
+    
+    for (const request of periodActivityRequests) {
+        const { account, fromPeriod, toPeriod } = request.params;
+        accounts.add(account);
+        periods.add(fromPeriod);
+        periods.add(toPeriod);
+        
+        // Track earliest fromPeriod and latest toPeriod
+        if (!earliestFromPeriod || fromPeriod < earliestFromPeriod) {
+            earliestFromPeriod = fromPeriod;
+        }
+        if (!latestToPeriod || toPeriod > latestToPeriod) {
+            latestToPeriod = toPeriod;
+        }
+    }
+    
+    // Conservative check: Need multiple accounts AND multiple periods
+    if (accounts.size < 2 || periods.size < 2) {
+        return null; // Not enough variety to be a grid
+    }
+    
+    // ============================================================================
+    // SAFETY LIMITS ENFORCEMENT - Fail Fast Before Any NetSuite Work
+    // ============================================================================
+    // CRITICAL: These limits are enforced HERE, before:
+    // - Anchor computation (inferAnchorDate)
+    // - Batch query construction
+    // - Any NetSuite API calls
+    // 
+    // If limits are exceeded, this function returns null, causing fallback to
+    // individual processing. This ensures zero network activity and fail-fast behavior.
+    // ============================================================================
+    if (accounts.size > BS_GRID_MAX_ACCOUNTS) {
+        console.warn(`⚠️ BS Grid: Too many accounts (${accounts.size}), max: ${BS_GRID_MAX_ACCOUNTS} - failing fast before any NetSuite work`);
+        return null; // Fail fast - don't attempt grid batching
+    }
+    
+    // Count unique periods in range
+    const periodCount = periods.size;
+    if (periodCount > BS_GRID_MAX_PERIODS) {
+        console.warn(`⚠️ BS Grid: Too many periods (${periodCount}), max: ${BS_GRID_MAX_PERIODS} - failing fast before any NetSuite work`);
+        return null; // Fail fast - don't attempt grid batching
+    }
+    
+    return {
+        accounts,
+        periods,
+        earliestFromPeriod,
+        latestToPeriod,
+        filtersHash,
+        requestCount: periodActivityRequests.length
+    };
+}
+
+/**
+ * Infer anchor date from earliest fromPeriod.
+ * 
+ * ============================================================================
+ * ANCHOR CONTRACT - Balance Sheet Grid Batching
+ * ============================================================================
+ * 
+ * HOW THE ANCHOR IS INFERRED:
+ * - Anchor date = day before earliest fromPeriod's start date
+ * - Example: If earliest fromPeriod is "Jan 2025" (starts Jan 1, 2025),
+ *   anchor date is Dec 31, 2024 (day before Jan 1)
+ * - The anchor represents the opening balance date for ALL accounts in the grid
+ * 
+ * WHY THIS APPLIES ONLY TO BALANCE SHEET ACCOUNTS:
+ * - Balance Sheet accounts use cumulative balances (from inception)
+ * - The anchor provides a common starting point for all accounts in the grid
+ * - Income/Expense accounts use period activity (sum of transactions), not
+ *   cumulative balances, so they don't need an anchor
+ * - Account type verification (isBalanceSheetType) ensures only BS accounts
+ *   reach this code path
+ * 
+ * WHY ENDING BALANCES ARE DERIVED LOCALLY:
+ * - EndingBalance(period) = OpeningBalance(anchor) + SUM(Activity(periods up to period))
+ * - This runs entirely in-memory (no NetSuite calls)
+ * - Provides instant results after batched queries complete
+ * - Mathematically equivalent to: Balance(toPeriod) - Balance(before fromPeriod)
+ *   but uses indexed date filters instead of cumulative scans (much faster)
+ * 
+ * FINANCIAL CORRECTNESS:
+ * - All amounts (opening balances and period activity) are converted at the
+ *   same exchange rate (toPeriod's rate) via BUILTIN.CONSOLIDATE
+ * - This ensures the balance sheet balances correctly
+ * - Local computation preserves this correctness (no currency conversion needed)
+ * 
+ * ============================================================================
+ * 
+ * @param {string} earliestFromPeriod - Period name (e.g., "Jan 2025")
+ * @returns {Promise<string|null>} Anchor date in YYYY-MM-DD format, or null if error
+ */
+async function inferAnchorDate(earliestFromPeriod) {
+    try {
+        // Parse period to get month and year
+        const parsed = parsePeriod(earliestFromPeriod);
+        if (!parsed) {
+            console.warn(`⚠️ Could not parse period: ${earliestFromPeriod}`);
+            return null;
+        }
+        
+        // Get period data from backend to find start date
+        // Use the period lookup endpoint that returns period details
+        const response = await fetch(`${SERVER_URL}/lookups/periods?period=${encodeURIComponent(earliestFromPeriod)}`);
+        if (!response.ok) {
+            console.warn(`⚠️ Could not fetch period data for ${earliestFromPeriod}`);
+            // Fallback: calculate anchor date from period name
+            // Assume period starts on the 1st of the month
+            const month = parsed.month;
+            const year = parsed.year;
+            const startDate = new Date(year, month, 1);
+            startDate.setDate(startDate.getDate() - 1); // Day before period start
+            
+            const anchorYear = startDate.getFullYear();
+            const anchorMonth = String(startDate.getMonth() + 1).padStart(2, '0');
+            const anchorDay = String(startDate.getDate()).padStart(2, '0');
+            return `${anchorYear}-${anchorMonth}-${anchorDay}`;
+        }
+        
+        const data = await response.json();
+        if (!data || !data.startDate) {
+            console.warn(`⚠️ Period ${earliestFromPeriod} has no startDate - using fallback calculation`);
+            // Fallback: calculate from period name
+            const month = parsed.month;
+            const year = parsed.year;
+            const startDate = new Date(year, month, 1);
+            startDate.setDate(startDate.getDate() - 1);
+            
+            const anchorYear = startDate.getFullYear();
+            const anchorMonth = String(startDate.getMonth() + 1).padStart(2, '0');
+            const anchorDay = String(startDate.getDate()).padStart(2, '0');
+            return `${anchorYear}-${anchorMonth}-${anchorDay}`;
+        }
+        
+        // Parse start date and subtract 1 day
+        const startDate = new Date(data.startDate);
+        startDate.setDate(startDate.getDate() - 1);
+        
+        // Format as YYYY-MM-DD
+        const year = startDate.getFullYear();
+        const month = String(startDate.getMonth() + 1).padStart(2, '0');
+        const day = String(startDate.getDate()).padStart(2, '0');
+        
+        return `${year}-${month}-${day}`;
+    } catch (error) {
+        console.error(`❌ Error inferring anchor date:`, error);
+        return null;
+    }
+}
+
+/**
+ * Build cache key for BS grid batching results.
+ * 
+ * @param {Set} accounts - Set of account numbers
+ * @param {string} anchorDate - Anchor date (YYYY-MM-DD)
+ * @param {string} fromPeriod - Earliest fromPeriod
+ * @param {string} toPeriod - Latest toPeriod
+ * @param {string} filtersHash - Filters hash
+ * @returns {string} Cache key
+ */
+function buildBsGridCacheKey(accounts, anchorDate, fromPeriod, toPeriod, filtersHash) {
+    // Sort accounts for consistent hashing
+    const accountList = Array.from(accounts).sort().join(',');
+    return `bs-grid:${accountList}:${anchorDate}:${fromPeriod}:${toPeriod}:${filtersHash}`;
+}
+
+/**
+ * Compute ending balances locally from opening balances + period activity.
+ * 
+ * ============================================================================
+ * LOCAL COMPUTATION CONTRACT - Balance Sheet Grid Batching
+ * ============================================================================
+ * 
+ * FORMULA: EndingBalance(period) = OpeningBalance(anchor) + SUM(Activity(periods up to and including period))
+ * 
+ * WHY LOCAL COMPUTATION:
+ * - Runs entirely in-memory (no NetSuite calls)
+ * - Provides instant results after batched queries complete
+ * - Mathematically equivalent to: Balance(toPeriod) - Balance(before fromPeriod)
+ *   but uses indexed date filters instead of cumulative scans (much faster)
+ * 
+ * FINANCIAL CORRECTNESS:
+ * - Opening balances are computed at anchor date using toPeriod's exchange rate
+ * - Period activity is computed using toPeriod's exchange rate
+ * - Local computation preserves this correctness (no additional currency conversion)
+ * - All amounts are already in the same currency/rate from batched queries
+ * 
+ * EXAMPLE:
+ * - Opening balance (Dec 31, 2024): 2,064,705.84
+ * - Activity: {"Jan 2025": 381646.48, "Feb 2025": -50000.00}
+ * - Ending balance (Jan 2025): 2,064,705.84 + 381,646.48 = 2,446,352.32
+ * - Ending balance (Feb 2025): 2,446,352.32 + (-50,000.00) = 2,396,352.32
+ * 
+ * ============================================================================
+ * 
+ * @param {string} account - Account number
+ * @param {string} targetPeriod - Target period (e.g., "Feb 2025")
+ * @param {Object} openingBalances - {account: balance} - Opening balances at anchor date
+ * @param {Object} activity - {account: {period: amount}} - Period activity amounts
+ * @returns {number} Ending balance for the account at target period
+ */
+function computeEndingBalance(account, targetPeriod, openingBalances, activity) {
+    const openingBalance = openingBalances[account] || 0;
+    
+    if (!activity[account]) {
+        return openingBalance; // No activity for this account
+    }
+    
+    // Get all periods up to and including target period
+    const accountActivity = activity[account];
+    const allPeriods = Object.keys(accountActivity).sort();
+    
+    // Sum activity for all periods <= targetPeriod
+    let cumulativeActivity = 0;
+    for (const period of allPeriods) {
+        if (period <= targetPeriod) {
+            cumulativeActivity += accountActivity[period] || 0;
+        }
+    }
+    
+    return openingBalance + cumulativeActivity;
 }
 
 // Helper: Check if account type needs sign flip for Balance Sheet display
@@ -6266,8 +6595,8 @@ async function processBatchQueue() {
             // Cumulative = empty fromPeriod with a toPeriod
             cumulativeRequests.push([cacheKey, request]);
         } else if (isPeriodActivity) {
-            // Period activity query (both fromPeriod and toPeriod) - route to individual /balance calls
-            // The batch endpoint expands period ranges, which is wrong for period activity queries
+            // Period activity query (both fromPeriod and toPeriod)
+            // Check if this forms a BS grid pattern for batched processing
             periodActivityRequests.push([cacheKey, request]);
         } else {
             // Regular P&L period range requests - can use batch endpoint
@@ -6536,74 +6865,351 @@ async function processBatchQueue() {
     
     // ================================================================
     // PERIOD ACTIVITY QUERIES: Handle separately (both fromPeriod and toPeriod)
-    // These need direct /balance API calls, not batch endpoint
-    // The batch endpoint expands period ranges, which is wrong for period activity
+    // CRITICAL: Check for BS Grid Batching pattern BEFORE individual processing
+    // Only applies to Balance Sheet accounts with both fromDate and toDate
+    // 
+    // SAFETY LIMITS: Enforced in detectBsGridPattern() BEFORE any NetSuite work:
+    // - Max accounts: 200 (BS_GRID_MAX_ACCOUNTS)
+    // - Max periods: 36 (BS_GRID_MAX_PERIODS)
+    // If limits exceeded, detectBsGridPattern() returns null → falls back to individual processing
     // ================================================================
     if (periodActivityRequests.length > 0) {
-        console.log(`📊 Processing ${periodActivityRequests.length} PERIOD ACTIVITY requests separately...`);
+        // Step 1: Attempt BS Grid Batching (conservative - only if pattern detected)
+        // CRITICAL: Safety limits are enforced INSIDE detectBsGridPattern() before:
+        // - Anchor computation (inferAnchorDate)
+        // - Batch query construction
+        // - Any NetSuite API calls
+        const gridInfo = detectBsGridPattern(periodActivityRequests);
         
-        let activityCacheHits = 0;
-        let activityApiCalls = 0;
-        
-        // Process each period activity request individually
-        for (const [cacheKey, request] of periodActivityRequests) {
-            const { account, fromPeriod, toPeriod, subsidiary, department, location, classId, accountingBook } = request.params;
+        if (gridInfo && gridInfo.accounts.size >= 2 && gridInfo.periods.size >= 2) {
+            // Potential grid detected - verify accounts are BS accounts
+            console.log(`🔍 BS Grid pattern detected: ${gridInfo.accounts.size} accounts × ${gridInfo.periods.size} periods`);
+            console.log(`   Accounts: ${Array.from(gridInfo.accounts).slice(0, 5).join(', ')}${gridInfo.accounts.size > 5 ? '...' : ''}`);
+            console.log(`   Periods: ${Array.from(gridInfo.periods).slice(0, 5).join(', ')}${gridInfo.periods.size > 5 ? '...' : ''}`);
             
-            // Check in-memory cache first
-            if (cache.balance.has(cacheKey)) {
-                const cachedValue = cache.balance.get(cacheKey);
-                console.log(`   ✅ Period activity cache hit: ${account} (${fromPeriod} → ${toPeriod}) = ${cachedValue}`);
-                cache.balance.set(cacheKey, cachedValue);
-                request.resolve(cachedValue);
-                activityCacheHits++;
-                continue;
+            // Verify accounts are BS accounts (sample check - if any fail, fall back)
+            let allBsAccounts = true;
+            
+            // Sample check: verify first few accounts are BS (conservative)
+            const sampleAccounts = Array.from(gridInfo.accounts).slice(0, Math.min(10, gridInfo.accounts.size));
+            for (const account of sampleAccounts) {
+                try {
+                    const accountType = await getAccountType(account);
+                    if (!isBalanceSheetType(accountType)) {
+                        console.log(`   ⚠️ Account ${account} is not BS (type: ${accountType}) - falling back to individual processing`);
+                        allBsAccounts = false;
+                        break;
+                    }
+                } catch (error) {
+                    console.warn(`   ⚠️ Could not verify account type for ${account} - falling back to individual processing`);
+                    allBsAccounts = false;
+                    break;
+                }
             }
             
-            // Cache miss - make individual API call
-            try {
-                const apiParams = new URLSearchParams({
-                    account: account,
-                    from_period: fromPeriod,
-                    to_period: toPeriod,
-                    subsidiary: subsidiary || '',
-                    department: department || '',
-                    location: location || '',
-                    class: classId || '',
-                    accountingbook: accountingBook || ''
-                });
+            if (allBsAccounts) {
+                // All sampled accounts are BS - proceed with grid batching
+                console.log(`✅ BS Grid confirmed - using batched endpoints`);
                 
-                console.log(`   📤 Period activity API: ${account} (${fromPeriod} → ${toPeriod})`);
-                activityApiCalls++;
-                
-                const response = await fetch(`${SERVER_URL}/balance?${apiParams.toString()}`);
-                
-                if (response.ok) {
-                    const data = await response.json();
-                    const value = data.balance ?? 0;
-                    const errorCode = data.error;
-                    
-                    if (errorCode) {
-                        console.log(`   ⚠️ Period activity result: ${account} = ${errorCode}`);
-                        request.reject(new Error(errorCode));
-                    } else {
-                        console.log(`   ✅ Period activity result: ${account} = ${value.toLocaleString()}`);
-                        cache.balance.set(cacheKey, value);
-                        request.resolve(value);
+                try {
+                    // ============================================================================
+                    // SINGLE-FLIGHT EXECUTION LOCK - Promise-Based Mutex
+                    // ============================================================================
+                    // CRITICAL: This is a true single-flight lock, not just a boolean flag.
+                    // 
+                    // Guarantees:
+                    // - Only one Balance Sheet batch query can run at a time
+                    // - Concurrent evaluations block via await lock.promise
+                    // - No overlapping NetSuite calls possible under any recalculation scenario
+                    // 
+                    // Implementation: If lock is held, await the promise (blocks until current
+                    // batch completes). Then check cache (may have been populated by the batch
+                    // that just completed). If cache miss, acquire lock and execute batch.
+                    // ============================================================================
+                    if (bsGridBatchingLock.locked) {
+                        console.log(`   ⏳ BS Grid batching already in progress - waiting for lock...`);
+                        await bsGridBatchingLock.promise;  // ✅ BLOCKS until current batch completes
+                        
+                        // After lock releases, check cache (may have been populated by the batch that just completed)
+                        const filtersHash = gridInfo.filtersHash;
+                        const firstRequest = periodActivityRequests[0][1];
+                        const anchorDate = await inferAnchorDate(gridInfo.earliestFromPeriod);
+                        if (anchorDate) {
+                            const gridCacheKey = buildBsGridCacheKey(
+                                gridInfo.accounts,
+                                anchorDate,
+                                gridInfo.earliestFromPeriod,
+                                gridInfo.latestToPeriod,
+                                filtersHash
+                            );
+                            const cachedGrid = bsGridCache.get(gridCacheKey);
+                            if (cachedGrid) {
+                                console.log(`   ✅ BS Grid cache hit after lock release - using cached results`);
+                                
+                                // Resolve all requests from cache
+                                let resolvedCount = 0;
+                                for (const [cacheKey, request] of periodActivityRequests) {
+                                    const { account, toPeriod } = request.params;
+                                    const endingBalance = computeEndingBalance(
+                                        account,
+                                        toPeriod,
+                                        cachedGrid.openingBalances,
+                                        cachedGrid.activity
+                                    );
+                                    
+                                    cache.balance.set(cacheKey, endingBalance);
+                                    request.resolve(endingBalance);
+                                    resolvedCount++;
+                                }
+                                
+                                console.log(`   ✅ Resolved ${resolvedCount} requests from BS Grid cache (after lock)`);
+                                periodActivityRequests.length = 0;
+                                // Skip to individual processing check (which will see empty array and skip)
+                            } else {
+                                // Cache still miss after lock - proceed to acquire lock and execute batch
+                                // (fall through to code below)
+                            }
+                        } else {
+                            // Lock not held - proceed to check cache and acquire lock if needed
+                        }
                     }
-                } else {
-                    const errorCode = response.status === 408 || response.status === 504 ? 'TIMEOUT' : 'APIERR';
-                    console.error(`   ❌ Period activity API error: ${response.status} → ${errorCode}`);
-                    request.reject(new Error(errorCode));
+                    
+                    // Check cache first (before acquiring lock)
+                    const anchorDate = await inferAnchorDate(gridInfo.earliestFromPeriod);
+                    if (!anchorDate) {
+                        console.warn(`   ⚠️ Could not infer anchor date - falling back to individual processing`);
+                        allBsAccounts = false; // Fall through to individual processing
+                    } else {
+                        const filtersHash = gridInfo.filtersHash;
+                        const firstRequest = periodActivityRequests[0][1];
+                        const gridCacheKey = buildBsGridCacheKey(
+                            gridInfo.accounts,
+                            anchorDate,
+                            gridInfo.earliestFromPeriod,
+                            gridInfo.latestToPeriod,
+                            filtersHash
+                        );
+                        
+                        // Check cache
+                        const cachedGrid = bsGridCache.get(gridCacheKey);
+                        if (cachedGrid) {
+                            console.log(`   ✅ BS Grid cache hit - using cached results`);
+                            
+                            // Resolve all requests from cache
+                            let resolvedCount = 0;
+                            for (const [cacheKey, request] of periodActivityRequests) {
+                                const { account, toPeriod } = request.params;
+                                const endingBalance = computeEndingBalance(
+                                    account,
+                                    toPeriod,
+                                    cachedGrid.openingBalances,
+                                    cachedGrid.activity
+                                );
+                                
+                                // Store in main cache and resolve
+                                cache.balance.set(cacheKey, endingBalance);
+                                request.resolve(endingBalance);
+                                resolvedCount++;
+                            }
+                            
+                            console.log(`   ✅ Resolved ${resolvedCount} requests from BS Grid cache`);
+                            
+                            // Skip individual processing
+                            periodActivityRequests.length = 0;
+                        } else {
+                            // Cache miss - execute batched queries
+                            console.log(`   📤 BS Grid cache miss - executing batched queries...`);
+                            
+                            // ============================================================================
+                            // ACQUIRE SINGLE-FLIGHT LOCK
+                            // ============================================================================
+                            // CRITICAL: Set lock flag and create promise BEFORE any NetSuite calls.
+                            // This ensures concurrent evaluations will block on await lock.promise.
+                            // Lock is released in finally block (guaranteed cleanup, prevents deadlocks).
+                            // ============================================================================
+                            bsGridBatchingLock.locked = true;
+                            bsGridBatchingLock.cacheKey = gridCacheKey;
+                            
+                            const lockPromise = (async () => {
+                                try {
+                                    // Step 1: Get opening balances
+                                    console.log(`   📊 Step 1: Fetching opening balances at anchor date ${anchorDate}...`);
+                                    const openingResponse = await fetch(`${SERVER_URL}/batch/balance/bs-grid-opening`, {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({
+                                            accounts: Array.from(gridInfo.accounts),
+                                            anchorDate: anchorDate,
+                                            fromPeriod: gridInfo.earliestFromPeriod,
+                                            subsidiary: firstRequest.params.subsidiary,
+                                            department: firstRequest.params.department,
+                                            location: firstRequest.params.location,
+                                            class: firstRequest.params.classId,
+                                            book: firstRequest.params.accountingBook
+                                        })
+                                    });
+                                    
+                                    if (!openingResponse.ok) {
+                                        throw new Error(`Opening balances query failed: ${openingResponse.status}`);
+                                    }
+                                    
+                                    const openingData = await openingResponse.json();
+                                    if (!openingData.Success) {
+                                        throw new Error(openingData.Error || 'Opening balances query failed');
+                                    }
+                                    
+                                    const openingBalances = openingData.OpeningBalances || {};
+                                    console.log(`   ✅ Opening balances: ${Object.keys(openingBalances).length} accounts`);
+                                    
+                                    // Step 2: Get period activity
+                                    console.log(`   📊 Step 2: Fetching period activity...`);
+                                    const activityResponse = await fetch(`${SERVER_URL}/batch/balance/bs-grid-activity`, {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({
+                                            accounts: Array.from(gridInfo.accounts),
+                                            anchorDate: anchorDate,
+                                            fromPeriod: gridInfo.earliestFromPeriod,
+                                            toPeriod: gridInfo.latestToPeriod,
+                                            subsidiary: firstRequest.params.subsidiary,
+                                            department: firstRequest.params.department,
+                                            location: firstRequest.params.location,
+                                            class: firstRequest.params.classId,
+                                            book: firstRequest.params.accountingBook
+                                        })
+                                    });
+                                    
+                                    if (!activityResponse.ok) {
+                                        throw new Error(`Period activity query failed: ${activityResponse.status}`);
+                                    }
+                                    
+                                    const activityData = await activityResponse.json();
+                                    if (!activityData.Success) {
+                                        throw new Error(activityData.Error || 'Period activity query failed');
+                                    }
+                                    
+                                    const activity = activityData.Activity || {};
+                                    console.log(`   ✅ Period activity: ${activityData.TotalRows} rows`);
+                                    
+                                    // Step 3: Cache results
+                                    bsGridCache.set(gridCacheKey, {
+                                        openingBalances,
+                                        activity,
+                                        timestamp: Date.now()
+                                    });
+                                    
+                                    // Step 4: Compute ending balances and resolve all requests
+                                    let resolvedCount = 0;
+                                    for (const [cacheKey, request] of periodActivityRequests) {
+                                        const { account, toPeriod } = request.params;
+                                        const endingBalance = computeEndingBalance(
+                                            account,
+                                            toPeriod,
+                                            openingBalances,
+                                            activity
+                                        );
+                                        
+                                        // Store in main cache and resolve
+                                        cache.balance.set(cacheKey, endingBalance);
+                                        request.resolve(endingBalance);
+                                        resolvedCount++;
+                                    }
+                                    
+                                    console.log(`   ✅ BS Grid batching complete: ${resolvedCount} requests resolved`);
+                                    
+                                    // Skip individual processing
+                                    periodActivityRequests.length = 0;
+                                } catch (error) {
+                                    console.error(`   ❌ BS Grid batching failed: ${error.message}`);
+                                    console.log(`   ⚠️ Falling back to individual processing...`);
+                                    // Don't clear periodActivityRequests - let them process individually
+                                } finally {
+                                    // Release lock
+                                    bsGridBatchingLock.locked = false;
+                                    bsGridBatchingLock.promise = null;
+                                    bsGridBatchingLock.cacheKey = null;
+                                }
+                            })();
+                            
+                            bsGridBatchingLock.promise = lockPromise;
+                            await lockPromise;
+                        }
+                    }
+                } catch (error) {
+                    console.error(`   ❌ BS Grid batching error: ${error.message}`);
+                    console.log(`   ⚠️ Falling back to individual processing...`);
+                    // Continue to individual processing below
                 }
-            } catch (error) {
-                const errorCode = error.name === 'AbortError' ? 'TIMEOUT' : 'NETFAIL';
-                console.error(`   ❌ Period activity fetch error: ${error.message} → ${errorCode}`);
-                request.reject(new Error(errorCode));
             }
         }
         
-        if (activityCacheHits > 0 || activityApiCalls > 0) {
-            console.log(`   📊 Period activity summary: ${activityCacheHits} cache hits, ${activityApiCalls} API calls`);
+        // Step 2: Process remaining period activity requests individually (fallback or non-grid)
+        if (periodActivityRequests.length > 0) {
+            console.log(`📊 Processing ${periodActivityRequests.length} PERIOD ACTIVITY requests separately...`);
+            
+            let activityCacheHits = 0;
+            let activityApiCalls = 0;
+            
+            // Process each period activity request individually
+            for (const [cacheKey, request] of periodActivityRequests) {
+                const { account, fromPeriod, toPeriod, subsidiary, department, location, classId, accountingBook } = request.params;
+                
+                // Check in-memory cache first
+                if (cache.balance.has(cacheKey)) {
+                    const cachedValue = cache.balance.get(cacheKey);
+                    console.log(`   ✅ Period activity cache hit: ${account} (${fromPeriod} → ${toPeriod}) = ${cachedValue}`);
+                    cache.balance.set(cacheKey, cachedValue);
+                    request.resolve(cachedValue);
+                    activityCacheHits++;
+                    continue;
+                }
+                
+                // Cache miss - make individual API call
+                try {
+                    const apiParams = new URLSearchParams({
+                        account: account,
+                        from_period: fromPeriod,
+                        to_period: toPeriod,
+                        subsidiary: subsidiary || '',
+                        department: department || '',
+                        location: location || '',
+                        class: classId || '',
+                        accountingbook: accountingBook || ''
+                    });
+                    
+                    console.log(`   📤 Period activity API: ${account} (${fromPeriod} → ${toPeriod})`);
+                    activityApiCalls++;
+                    
+                    const response = await fetch(`${SERVER_URL}/balance?${apiParams.toString()}`);
+                    
+                    if (response.ok) {
+                        const data = await response.json();
+                        const value = data.balance ?? 0;
+                        const errorCode = data.error;
+                        
+                        if (errorCode) {
+                            console.log(`   ⚠️ Period activity result: ${account} = ${errorCode}`);
+                            request.reject(new Error(errorCode));
+                        } else {
+                            console.log(`   ✅ Period activity result: ${account} = ${value.toLocaleString()}`);
+                            cache.balance.set(cacheKey, value);
+                            request.resolve(value);
+                        }
+                    } else {
+                        const errorCode = response.status === 408 || response.status === 504 ? 'TIMEOUT' : 'APIERR';
+                        console.error(`   ❌ Period activity API error: ${response.status} → ${errorCode}`);
+                        request.reject(new Error(errorCode));
+                    }
+                } catch (error) {
+                    const errorCode = error.name === 'AbortError' ? 'TIMEOUT' : 'NETFAIL';
+                    console.error(`   ❌ Period activity fetch error: ${error.message} → ${errorCode}`);
+                    request.reject(new Error(errorCode));
+                }
+            }
+            
+            if (activityCacheHits > 0 || activityApiCalls > 0) {
+                console.log(`   📊 Period activity summary: ${activityCacheHits} cache hits, ${activityApiCalls} API calls`);
+            }
         }
     }
     

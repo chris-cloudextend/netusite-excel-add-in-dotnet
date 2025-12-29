@@ -2697,6 +2697,410 @@ public class BalanceController : ControllerBase
             });
         }
     }
+    
+    /// <summary>
+    /// Balance Sheet Grid Batching: Get opening balances at anchor date.
+    /// 
+    /// This endpoint executes a single point-in-time query for all specified Balance Sheet accounts
+    /// as of the anchor date (day before earliest fromDate). Used for grid batching with inferred anchors.
+    /// 
+    /// Returns: Dictionary of account -> opening balance
+    /// </summary>
+    [HttpPost("/batch/balance/bs-grid-opening")]
+    public async Task<IActionResult> GetBsGridOpeningBalances([FromBody] BsGridBatchingRequest request)
+    {
+        var startTime = DateTime.UtcNow;
+        
+        _logger.LogInformation("📊 BS Grid Opening Balances: {AccountCount} accounts at anchor date {AnchorDate}", 
+            request.Accounts.Count, request.AnchorDate);
+        
+        // Safety limits
+        const int MAX_ACCOUNTS = 200;
+        if (request.Accounts.Count > MAX_ACCOUNTS)
+        {
+            return BadRequest(new BsGridOpeningBalancesResponse
+            {
+                Success = false,
+                Error = $"Too many accounts: {request.Accounts.Count} (max: {MAX_ACCOUNTS})",
+                ElapsedSeconds = (DateTime.UtcNow - startTime).TotalSeconds
+            });
+        }
+        
+        try
+        {
+            // Parse anchor date
+            if (!DateTime.TryParse(request.AnchorDate, out var anchorDate))
+            {
+                return BadRequest(new BsGridOpeningBalancesResponse
+                {
+                    Success = false,
+                    Error = $"Invalid anchor date: {request.AnchorDate}",
+                    ElapsedSeconds = (DateTime.UtcNow - startTime).TotalSeconds
+                });
+            }
+            
+            var anchorDateStr = anchorDate.ToString("yyyy-MM-dd");
+            
+            // Resolve filters
+            var subsidiaryId = await _lookupService.ResolveSubsidiaryIdAsync(request.Subsidiary);
+            var targetSub = subsidiaryId ?? "1";
+            var hierarchySubs = await _lookupService.GetSubsidiaryHierarchyAsync(targetSub);
+            var subFilter = string.Join(", ", hierarchySubs);
+            
+            // Get period ID for currency conversion
+            // For opening balances, we use the period from the earliest fromPeriod (if provided)
+            // Otherwise, we'll use a fallback
+            string targetPeriodId;
+            if (!string.IsNullOrEmpty(request.FromPeriod))
+            {
+                // Use the fromPeriod's ID for currency conversion (consistent with period activity)
+                var fromPeriodData = await _netSuiteService.GetPeriodAsync(request.FromPeriod);
+                targetPeriodId = fromPeriodData?.Id ?? "1";
+            }
+            else
+            {
+                // Fallback: use period 1
+                targetPeriodId = "1";
+            }
+            
+            var accountingBook = request.Book ?? DefaultAccountingBook;
+            
+            // Build segment filters
+            var segmentFilters = new List<string>();
+            segmentFilters.Add($"tl.subsidiary IN ({subFilter})");
+            if (!string.IsNullOrEmpty(request.Department))
+            {
+                var deptId = await _lookupService.ResolveDimensionIdAsync("department", request.Department);
+                if (!string.IsNullOrEmpty(deptId))
+                    segmentFilters.Add($"tl.department = {deptId}");
+            }
+            if (!string.IsNullOrEmpty(request.Class))
+            {
+                var classId = await _lookupService.ResolveDimensionIdAsync("class", request.Class);
+                if (!string.IsNullOrEmpty(classId))
+                    segmentFilters.Add($"tl.class = {classId}");
+            }
+            if (!string.IsNullOrEmpty(request.Location))
+            {
+                var locId = await _lookupService.ResolveDimensionIdAsync("location", request.Location);
+                if (!string.IsNullOrEmpty(locId))
+                    segmentFilters.Add($"tl.location = {locId}");
+            }
+            var segmentWhere = segmentFilters.Any() ? string.Join(" AND ", segmentFilters) : "1=1";
+            
+            // Sign flip for Balance Sheet accounts
+            var signFlip = $@"
+                CASE 
+                    WHEN a.accttype IN ({AccountType.SignFlipTypesSql}) THEN -1
+                    ELSE 1 
+                END";
+            
+            // Build account filter
+            var accountFilter = NetSuiteService.BuildAccountFilter(request.Accounts);
+            
+            // Single point-in-time query for all accounts at anchor date
+            var query = $@"
+                SELECT 
+                    a.acctnumber AS account,
+                    SUM(
+                        TO_NUMBER(
+                            BUILTIN.CONSOLIDATE(
+                                tal.amount,
+                                'LEDGER',
+                                'DEFAULT',
+                                'DEFAULT',
+                                {targetSub},
+                                {targetPeriodId},
+                                'DEFAULT'
+                            )
+                        ) * {signFlip}
+                    ) AS opening_balance
+                FROM transactionaccountingline tal
+                JOIN transaction t ON t.id = tal.transaction
+                JOIN account a ON a.id = tal.account
+                JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id
+                WHERE t.posting = 'T'
+                  AND tal.posting = 'T'
+                  AND {accountFilter}
+                  AND a.accttype IN ({AccountType.BsTypesSql})
+                  AND a.isinactive = 'F'
+                  AND t.trandate <= TO_DATE('{anchorDateStr}', 'YYYY-MM-DD')
+                  AND tal.accountingbook = {accountingBook}
+                  AND {segmentWhere}
+                GROUP BY a.acctnumber
+                ORDER BY a.acctnumber";
+            
+            _logger.LogDebug("Opening balances query: {AccountCount} accounts, anchor={AnchorDate}", 
+                request.Accounts.Count, anchorDateStr);
+            
+            var queryResult = await _netSuiteService.QueryRawWithErrorAsync(query, 180);
+            
+            if (!queryResult.Success)
+            {
+                _logger.LogError("Opening balances query failed: {Error}", queryResult.ErrorDetails);
+                return Ok(new BsGridOpeningBalancesResponse
+                {
+                    Success = false,
+                    Error = queryResult.ErrorDetails ?? queryResult.ErrorCode ?? "QUERY_FAILED",
+                    ElapsedSeconds = (DateTime.UtcNow - startTime).TotalSeconds
+                });
+            }
+            
+            var openingBalances = new Dictionary<string, decimal>();
+            foreach (var row in queryResult.Items ?? Enumerable.Empty<JsonElement>())
+            {
+                if (row.TryGetProperty("account", out var accProp) && 
+                    row.TryGetProperty("opening_balance", out var balProp))
+                {
+                    var account = accProp.GetString() ?? "";
+                    var balance = ParseBalance(balProp);
+                    openingBalances[account] = balance;
+                }
+            }
+            
+            // Ensure all requested accounts are in the result (set to 0 if missing)
+            foreach (var account in request.Accounts)
+            {
+                if (!openingBalances.ContainsKey(account))
+                {
+                    openingBalances[account] = 0;
+                }
+            }
+            
+            var elapsedSeconds = (DateTime.UtcNow - startTime).TotalSeconds;
+            _logger.LogInformation("✅ Opening balances: {Count} accounts in {Elapsed:F2}s", 
+                openingBalances.Count, elapsedSeconds);
+            
+            return Ok(new BsGridOpeningBalancesResponse
+            {
+                Success = true,
+                OpeningBalances = openingBalances,
+                ElapsedSeconds = elapsedSeconds
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error in opening balances query");
+            return StatusCode(500, new BsGridOpeningBalancesResponse
+            {
+                Success = false,
+                Error = ex.Message,
+                ElapsedSeconds = (DateTime.UtcNow - startTime).TotalSeconds
+            });
+        }
+    }
+    
+    /// <summary>
+    /// Balance Sheet Grid Batching: Get period activity for all accounts × all periods.
+    /// 
+    /// This endpoint executes a single aggregated query that returns period activity
+    /// (not balances) for all specified Balance Sheet accounts across the date range.
+    /// Used for grid batching with inferred anchors.
+    /// 
+    /// Returns: Dictionary of account -> Dictionary of period -> activity amount
+    /// </summary>
+    [HttpPost("/batch/balance/bs-grid-activity")]
+    public async Task<IActionResult> GetBsGridPeriodActivity([FromBody] BsGridBatchingRequest request)
+    {
+        var startTime = DateTime.UtcNow;
+        
+        _logger.LogInformation("📊 BS Grid Period Activity: {AccountCount} accounts, {FromPeriod} to {ToPeriod}", 
+            request.Accounts.Count, request.FromPeriod, request.ToPeriod);
+        
+        // Safety limits
+        const int MAX_ACCOUNTS = 200;
+        const int MAX_PERIODS = 36;
+        if (request.Accounts.Count > MAX_ACCOUNTS)
+        {
+            return BadRequest(new BsGridPeriodActivityResponse
+            {
+                Success = false,
+                Error = $"Too many accounts: {request.Accounts.Count} (max: {MAX_ACCOUNTS})",
+                ElapsedSeconds = (DateTime.UtcNow - startTime).TotalSeconds
+            });
+        }
+        
+        try
+        {
+            if (string.IsNullOrEmpty(request.FromPeriod) || string.IsNullOrEmpty(request.ToPeriod))
+            {
+                return BadRequest(new BsGridPeriodActivityResponse
+                {
+                    Success = false,
+                    Error = "FromPeriod and ToPeriod are required",
+                    ElapsedSeconds = (DateTime.UtcNow - startTime).TotalSeconds
+                });
+            }
+            
+            // Get period dates
+            var fromPeriodData = await _netSuiteService.GetPeriodAsync(request.FromPeriod);
+            var toPeriodData = await _netSuiteService.GetPeriodAsync(request.ToPeriod);
+            
+            if (fromPeriodData?.StartDate == null || toPeriodData?.EndDate == null)
+            {
+                return BadRequest(new BsGridPeriodActivityResponse
+                {
+                    Success = false,
+                    Error = $"Could not find periods: {request.FromPeriod} or {request.ToPeriod}",
+                    ElapsedSeconds = (DateTime.UtcNow - startTime).TotalSeconds
+                });
+            }
+            
+            var fromStartDate = ConvertToYYYYMMDD(fromPeriodData.StartDate);
+            var toEndDate = ConvertToYYYYMMDD(toPeriodData.EndDate);
+            
+            // Resolve filters
+            var subsidiaryId = await _lookupService.ResolveSubsidiaryIdAsync(request.Subsidiary);
+            var targetSub = subsidiaryId ?? "1";
+            var hierarchySubs = await _lookupService.GetSubsidiaryHierarchyAsync(targetSub);
+            var subFilter = string.Join(", ", hierarchySubs);
+            
+            // Get target period ID for currency conversion (use latest period)
+            var targetPeriodId = toPeriodData.Id;
+            if (string.IsNullOrEmpty(targetPeriodId))
+            {
+                return BadRequest(new BsGridPeriodActivityResponse
+                {
+                    Success = false,
+                    Error = $"Period {request.ToPeriod} has no ID",
+                    ElapsedSeconds = (DateTime.UtcNow - startTime).TotalSeconds
+                });
+            }
+            
+            var accountingBook = request.Book ?? DefaultAccountingBook;
+            
+            // Build segment filters
+            var segmentFilters = new List<string>();
+            segmentFilters.Add($"tl.subsidiary IN ({subFilter})");
+            if (!string.IsNullOrEmpty(request.Department))
+            {
+                var deptId = await _lookupService.ResolveDimensionIdAsync("department", request.Department);
+                if (!string.IsNullOrEmpty(deptId))
+                    segmentFilters.Add($"tl.department = {deptId}");
+            }
+            if (!string.IsNullOrEmpty(request.Class))
+            {
+                var classId = await _lookupService.ResolveDimensionIdAsync("class", request.Class);
+                if (!string.IsNullOrEmpty(classId))
+                    segmentFilters.Add($"tl.class = {classId}");
+            }
+            if (!string.IsNullOrEmpty(request.Location))
+            {
+                var locId = await _lookupService.ResolveDimensionIdAsync("location", request.Location);
+                if (!string.IsNullOrEmpty(locId))
+                    segmentFilters.Add($"tl.location = {locId}");
+            }
+            var segmentWhere = segmentFilters.Any() ? string.Join(" AND ", segmentFilters) : "1=1";
+            
+            // Sign flip for Balance Sheet accounts
+            var signFlip = $@"
+                CASE 
+                    WHEN a.accttype IN ({AccountType.SignFlipTypesSql}) THEN -1
+                    ELSE 1 
+                END";
+            
+            // Build account filter
+            var accountFilter = NetSuiteService.BuildAccountFilter(request.Accounts);
+            
+            // Single aggregated query for all accounts × all periods
+            // Returns: (account, posting_period, period_activity_amount)
+            var query = $@"
+                SELECT 
+                    a.acctnumber AS account,
+                    ap.periodname AS posting_period,
+                    SUM(
+                        TO_NUMBER(
+                            BUILTIN.CONSOLIDATE(
+                                tal.amount,
+                                'LEDGER',
+                                'DEFAULT',
+                                'DEFAULT',
+                                {targetSub},
+                                {targetPeriodId},
+                                'DEFAULT'
+                            )
+                        ) * {signFlip}
+                    ) AS period_activity_amount
+                FROM transactionaccountingline tal
+                JOIN transaction t ON t.id = tal.transaction
+                JOIN account a ON a.id = tal.account
+                JOIN accountingperiod ap ON ap.id = t.postingperiod
+                JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id
+                WHERE t.posting = 'T'
+                  AND tal.posting = 'T'
+                  AND {accountFilter}
+                  AND a.accttype IN ({AccountType.BsTypesSql})
+                  AND a.isinactive = 'F'
+                  AND ap.startdate >= TO_DATE('{fromStartDate}', 'YYYY-MM-DD')
+                  AND ap.enddate <= TO_DATE('{toEndDate}', 'YYYY-MM-DD')
+                  AND tal.accountingbook = {accountingBook}
+                  AND {segmentWhere}
+                GROUP BY a.acctnumber, ap.periodname
+                ORDER BY a.acctnumber, ap.periodname";
+            
+            _logger.LogDebug("Period activity query: {AccountCount} accounts, {FromDate} to {ToDate}", 
+                request.Accounts.Count, fromStartDate, toEndDate);
+            
+            var queryResult = await _netSuiteService.QueryRawWithErrorAsync(query, 300);
+            
+            if (!queryResult.Success)
+            {
+                _logger.LogError("Period activity query failed: {Error}", queryResult.ErrorDetails);
+                return Ok(new BsGridPeriodActivityResponse
+                {
+                    Success = false,
+                    Error = queryResult.ErrorDetails ?? queryResult.ErrorCode ?? "QUERY_FAILED",
+                    ElapsedSeconds = (DateTime.UtcNow - startTime).TotalSeconds
+                });
+            }
+            
+            // Build nested dictionary: account -> period -> activity
+            var activity = new Dictionary<string, Dictionary<string, decimal>>();
+            var totalRows = 0;
+            
+            foreach (var row in queryResult.Items ?? Enumerable.Empty<JsonElement>())
+            {
+                if (row.TryGetProperty("account", out var accProp) && 
+                    row.TryGetProperty("posting_period", out var perProp) &&
+                    row.TryGetProperty("period_activity_amount", out var actProp))
+                {
+                    var account = accProp.GetString() ?? "";
+                    var period = perProp.GetString() ?? "";
+                    var activityAmount = ParseBalance(actProp);
+                    
+                    if (!activity.ContainsKey(account))
+                    {
+                        activity[account] = new Dictionary<string, decimal>();
+                    }
+                    
+                    activity[account][period] = activityAmount;
+                    totalRows++;
+                }
+            }
+            
+            var elapsedSeconds = (DateTime.UtcNow - startTime).TotalSeconds;
+            _logger.LogInformation("✅ Period activity: {Rows} rows ({AccountCount} accounts) in {Elapsed:F2}s", 
+                totalRows, activity.Count, elapsedSeconds);
+            
+            return Ok(new BsGridPeriodActivityResponse
+            {
+                Success = true,
+                Activity = activity,
+                TotalRows = totalRows,
+                ElapsedSeconds = elapsedSeconds
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error in period activity query");
+            return StatusCode(500, new BsGridPeriodActivityResponse
+            {
+                Success = false,
+                Error = ex.Message,
+                ElapsedSeconds = (DateTime.UtcNow - startTime).TotalSeconds
+            });
+        }
+    }
 }
 
 /// <summary>
@@ -2790,5 +3194,57 @@ public class BsGridBatchingTestResponse
     public Dictionary<string, object>? Metrics { get; set; }
     public List<string>? SampleAccounts { get; set; }
     public List<string>? Periods { get; set; }
+}
+
+/// <summary>
+/// Request for Balance Sheet grid batching with inferred anchors.
+/// Used for opening balances (point-in-time at anchor date) and period activity queries.
+/// </summary>
+public class BsGridBatchingRequest
+{
+    /// <summary>List of account numbers to query</summary>
+    public List<string> Accounts { get; set; } = new();
+    
+    /// <summary>Anchor date (YYYY-MM-DD) - day before earliest fromDate</summary>
+    public string AnchorDate { get; set; } = "";
+    
+    /// <summary>Earliest fromPeriod (for period activity queries)</summary>
+    public string? FromPeriod { get; set; }
+    
+    /// <summary>Latest toPeriod (for period activity queries)</summary>
+    public string? ToPeriod { get; set; }
+    
+    public string? Subsidiary { get; set; }
+    public string? Department { get; set; }
+    public string? Class { get; set; }
+    public string? Location { get; set; }
+    public int? Book { get; set; }
+}
+
+/// <summary>
+/// Response for opening balances query (point-in-time at anchor date).
+/// Returns one balance per account.
+/// </summary>
+public class BsGridOpeningBalancesResponse
+{
+    public bool Success { get; set; }
+    public string? Error { get; set; }
+    /// <summary>Dictionary: account -> opening balance</summary>
+    public Dictionary<string, decimal> OpeningBalances { get; set; } = new();
+    public double ElapsedSeconds { get; set; }
+}
+
+/// <summary>
+/// Response for period activity query (batched).
+/// Returns period activity for all accounts × all periods.
+/// </summary>
+public class BsGridPeriodActivityResponse
+{
+    public bool Success { get; set; }
+    public string? Error { get; set; }
+    /// <summary>Dictionary: account -> Dictionary: period -> activity amount</summary>
+    public Dictionary<string, Dictionary<string, decimal>> Activity { get; set; } = new();
+    public int TotalRows { get; set; }
+    public double ElapsedSeconds { get; set; }
 }
 
