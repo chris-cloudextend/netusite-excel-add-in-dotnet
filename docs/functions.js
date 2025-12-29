@@ -5312,11 +5312,6 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                         console.error('❌ Batch processing error:', err);
                     });
                 }, BATCH_DELAY);
-                    // REDUCED LOGGING: Only log timer status for first few items
-                    if (cacheStats.misses < 10) {
-                        console.log('   Timer already running, request will be batched');
-                    }
-                }
             } else {
                 console.log('   Full refresh mode - NOT starting timer');
             }

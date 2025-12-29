@@ -19158,6 +19158,7 @@ export default {
         async function preloadAccountTitles() {
             try {
                 console.log('🔄 Preloading account titles...');
+                const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
                 const response = await fetch(`${SERVER_URL}/account/preload_titles`);
                 
                 if (response.ok) {
