@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.5.0';  // Fix: Limit concurrent batch queries (global semaphore) + retry logic for 524 errors
+const FUNCTIONS_VERSION = '4.0.6.0';  // Phase 4: Enable validation and debug flags for column-based BS batching
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
