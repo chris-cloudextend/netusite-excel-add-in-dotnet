@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.0';  // Phase 4: Enable validation and debug flags for column-based BS batching
+const FUNCTIONS_VERSION = '4.0.6.1';  // Fix: Handle period_activity response correctly in old row-based path
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
