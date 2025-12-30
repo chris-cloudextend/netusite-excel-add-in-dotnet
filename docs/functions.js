@@ -764,7 +764,15 @@ function isColumnBatchExecutionAllowed(accountType, gridDetection) {
         return { allowed: false, reason: 'VALIDATE_COLUMN_BASED_BS_BATCHING disabled (validation required)' };
     }
     
-    // Condition 5: Trust must be earned (no mismatches in session)
+    // Condition 5: No validation mismatches in current session
+    if (validationStats.totalMismatches > 0) {
+        return { 
+            allowed: false, 
+            reason: `Validation mismatches detected in session (${validationStats.totalMismatches} mismatch(es))` 
+        };
+    }
+    
+    // Condition 6: Trust must be earned (N consecutive successful validations)
     if (!columnBatchingTrustedForSession) {
         return { 
             allowed: false, 
@@ -772,7 +780,7 @@ function isColumnBatchExecutionAllowed(accountType, gridDetection) {
         };
     }
     
-    // Condition 6: Grid size within safety limits
+    // Condition 7: Grid size within safety limits
     const accountCount = gridDetection.allAccounts?.size || 0;
     const periodCount = gridDetection.columns?.length || 0;
     const MAX_ACCOUNTS_PER_BATCH = 100;
