@@ -417,6 +417,14 @@ function isCumulativeRequest(fromPeriod) {
 const USE_COLUMN_BASED_BS_BATCHING = false;
 
 /**
+ * PHASE 4: Validation flag for column-based balance sheet batching.
+ * When true, enables dual-run validation: per-cell (primary) + column-based (async validation).
+ * Independent of USE_COLUMN_BASED_BS_BATCHING - can be enabled while execution flag is false.
+ * Defaults to false - no validation overhead in production.
+ */
+const VALIDATE_COLUMN_BASED_BS_BATCHING = false;
+
+/**
  * Debug flag for column-based batching detection logging.
  * Only logs when true - no behavior changes.
  */
@@ -5869,6 +5877,20 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                     // Fall through to per-cell logic below
                 }
             }
+        }
+        
+        // PHASE 4: Validation detection (independent of execution flag)
+        // Check eligibility for validation (Balance Sheet + eligible grid)
+        let columnBasedDetectionForValidation = null;
+        if (VALIDATE_COLUMN_BASED_BS_BATCHING && accountType === 'Balance Sheet') {
+            const evaluatingRequests = Array.from(pendingEvaluation.balance.values());
+            columnBasedDetectionForValidation = detectColumnBasedBSGrid(evaluatingRequests);
+            
+            if (!columnBasedDetectionForValidation.eligible) {
+                columnBasedDetectionForValidation = null; // Clear if not eligible
+            } else if (DEBUG_COLUMN_BASED_BS_BATCHING) {
+                console.log(`🔬 VALIDATION: Eligible for validation (${columnBasedDetectionForValidation.mode}) - ${columnBasedDetectionForValidation.allAccounts.size} accounts, ${columnBasedDetectionForValidation.columns.length} columns`);
+            }
         } else {
             // PHASE 1: Column-based detection (logging only, no behavior change)
             // This runs regardless of feature flag to validate detection logic
@@ -6192,6 +6214,14 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
             cacheStats.hits++;
             // Also save to in-memory cache for next time
             cache.balance.set(cacheKey, localStorageValue);
+            
+            // PHASE 4: Trigger async validation if eligible (fire-and-forget)
+            if (columnBasedDetectionForValidation) {
+                // Fire-and-forget: don't await, don't block
+                validateColumnBasedBSBatch(account, toPeriod, filters, localStorageValue, columnBasedDetectionForValidation)
+                    .catch(() => {}); // Swallow any errors - validation never throws
+            }
+            
             return localStorageValue;
         } else {
             // Reduced logging - only log first few misses
