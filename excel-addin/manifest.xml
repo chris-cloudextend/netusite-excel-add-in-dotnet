@@ -16,7 +16,7 @@ ARCHITECTURE (v3.0.5.190+):
 - Taskpane UI page: taskpane.html (actual UI)
 - This separation ensures Mac's "Developer Window" is blank, not a duplicate UI
 
-LAST UPDATED: 2025-12-30 (Version 4.0.1.9 - FIX: Add async boundary at start of all custom functions to prevent #VALUE errors)
+LAST UPDATED: 2025-12-30 (Version 4.0.2.0 - RESTORE: Reverted to balance-sheet-before-anchor-batching restore point)
 
 Context menu uses ExecuteFunction (runs in blank sharedruntime.html):
 1. ExecuteFunction sets localStorage flag with cell info
