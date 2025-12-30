@@ -85,6 +85,7 @@ Clears Excel caches for add-in updates without removing the application.
 - Clears Excel containers (including add-in data and WEF folder)
 - Clears Excel saved application state
 - Clears Office group containers (shared add-in data)
+- Recreates the WEF folder after clearing
 
 **Note**: Some files may be protected by macOS System Integrity Protection (this is normal).
 
@@ -92,6 +93,30 @@ Clears Excel caches for add-in updates without removing the application.
 1. Restart Excel (if running, close and reopen)
 2. Re-add your Excel add-in from the manifest
 3. Test the new version
+
+---
+
+### 5. Create and Open WEF Folder
+**File**: `create-wef-folder.sh`
+
+Creates the WEF folder where Excel stores manifest files for sideloaded add-ins, and opens it in Finder.
+
+**Usage**:
+```bash
+./useful-commands/create-wef-folder.sh
+```
+
+**What it does**:
+- Creates the WEF folder at `~/Library/Containers/com.microsoft.Excel/Data/Documents/wef`
+- Opens the folder in Finder
+- Displays instructions for sideloading add-ins
+
+**Location**: `~/Library/Containers/com.microsoft.Excel/Data/Documents/wef`
+
+**To sideload an add-in**:
+1. Copy your `manifest.xml` file to this folder
+2. Restart Excel
+3. The add-in should appear in Excel's Insert > Add-ins menu
 
 ---
 
@@ -109,6 +134,9 @@ Clears Excel caches for add-in updates without removing the application.
 
 # Clear Excel cache (before testing new version)
 ./useful-commands/clear-excel-cache.sh
+
+# Create and open WEF folder (for sideloading add-ins)
+./useful-commands/create-wef-folder.sh
 ```
 
 ---
