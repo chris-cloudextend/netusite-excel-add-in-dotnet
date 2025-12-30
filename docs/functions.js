@@ -5832,47 +5832,71 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         const evalKey = `${account}::${fromPeriod || ''}::${toPeriod}::${JSON.stringify(filters)}`;
         pendingEvaluation.balance.set(evalKey, { account, fromPeriod, toPeriod, filters });
         
-        // PHASE 3: Column-based batch execution (behind feature flag)
-        // This runs only when feature flag is enabled AND account is Balance Sheet
+        // PHASE 5: Column-based batch execution (controlled enablement)
+        // Execution allowed only when all conditions are met (including trust earned)
         if (USE_COLUMN_BASED_BS_BATCHING && accountType === 'Balance Sheet') {
             const evaluatingRequests = Array.from(pendingEvaluation.balance.values());
             const columnBasedDetection = detectColumnBasedBSGrid(evaluatingRequests);
             
             if (columnBasedDetection.eligible) {
-                if (DEBUG_COLUMN_BASED_BS_BATCHING) {
-                    console.log(`🔍 COLUMN-BASED BS DETECT: Eligible (${columnBasedDetection.mode}) - ${columnBasedDetection.allAccounts.size} accounts, ${columnBasedDetection.columns.length} columns`);
-                }
+                // PHASE 5: Check execution eligibility (includes trust check)
+                const executionCheck = isColumnBatchExecutionAllowed(accountType, columnBasedDetection);
                 
-                try {
-                    // Execute column-based batch query
-                    const batchResults = await executeColumnBasedBSBatch(columnBasedDetection);
+                if (executionCheck.allowed) {
+                    // PHASE 5: Execution allowed - use column-based batch
+                    if (DEBUG_COLUMN_BASED_BS_BATCHING) {
+                        const accountCount = columnBasedDetection.allAccounts.size;
+                        const periodCount = columnBasedDetection.columns.length;
+                        const periods = columnBasedDetection.columns.map(col => col.period);
+                        const anchorPeriod = inferAnchorPeriod(periods);
+                        console.log(`🚀 COLUMN-BASED BS EXECUTION ENABLED:
+Grid: ${accountCount} accounts × ${periodCount} periods
+Anchor: ${anchorPeriod || 'N/A'}
+Mode: ${columnBasedDetection.mode}
+Trust: ${columnBatchingTrustedForSession ? 'EARNED' : 'PROVISIONAL'}`);
+                    }
                     
-                    // Get result for this specific account and period
-                    const balance = batchResults[account]?.[toPeriod];
-                    
-                    if (balance !== undefined && balance !== null && typeof balance === 'number') {
-                        // Cache result (local scope only - no global cache mutation)
-                        cache.balance.set(cacheKey, balance);
+                    try {
+                        // Execute column-based batch query
+                        const batchResults = await executeColumnBasedBSBatch(columnBasedDetection);
                         
-                        if (DEBUG_COLUMN_BASED_BS_BATCHING) {
-                            console.log(`✅ COLUMN-BASED BS RESULT: ${account} for ${toPeriod} = ${balance}`);
+                        // Get result for this specific account and period
+                        const balance = batchResults[account]?.[toPeriod];
+                        
+                        if (balance !== undefined && balance !== null && typeof balance === 'number') {
+                            // Cache result (local scope only - no global cache mutation)
+                            cache.balance.set(cacheKey, balance);
+                            
+                            if (DEBUG_COLUMN_BASED_BS_BATCHING) {
+                                console.log(`✅ COLUMN-BASED BS RESULT: ${account} for ${toPeriod} = ${balance}`);
+                            }
+                            
+                            // Remove from pendingEvaluation (batch executed successfully)
+                            pendingEvaluation.balance.delete(evalKey);
+                            return balance;
+                        } else {
+                            // Missing result - reset trust and fall back to per-cell logic
+                            columnBatchingTrustedForSession = false;
+                            validationStats.consecutiveMatches = 0;
+                            if (DEBUG_COLUMN_BASED_BS_BATCHING) {
+                                console.log(`⚠️ COLUMN-BASED BS: Missing result for ${account}/${toPeriod} - trust reset, falling back to per-cell`);
+                            }
+                            // Fall through to per-cell logic below
                         }
-                        
-                        // Remove from pendingEvaluation (batch executed successfully)
-                        pendingEvaluation.balance.delete(evalKey);
-                        return balance;
-                    } else {
-                        // Missing result - fall back to per-cell logic
+                    } catch (error) {
+                        // Reset trust on error and fall back to per-cell logic
+                        columnBatchingTrustedForSession = false;
+                        validationStats.consecutiveMatches = 0;
+                        // Never throw from batch execution into Excel
                         if (DEBUG_COLUMN_BASED_BS_BATCHING) {
-                            console.log(`⚠️ COLUMN-BASED BS: Missing result for ${account}/${toPeriod} - falling back to per-cell`);
+                            console.error(`❌ COLUMN-BASED BS BATCH ERROR: ${error.message} - trust reset, falling back to per-cell`);
                         }
                         // Fall through to per-cell logic below
                     }
-                } catch (error) {
-                    // Swallow error and fall back to per-cell logic
-                    // Never throw from batch execution into Excel
+                } else {
+                    // PHASE 5: Execution not allowed - log reason and fall back
                     if (DEBUG_COLUMN_BASED_BS_BATCHING) {
-                        console.error(`❌ COLUMN-BASED BS BATCH ERROR: ${error.message} - falling back to per-cell`);
+                        console.log(`⏸️ COLUMN-BASED BS EXECUTION BLOCKED: ${executionCheck.reason}`);
                     }
                     // Fall through to per-cell logic below
                 }
