@@ -535,7 +535,10 @@ function checkBatchEligibilitySynchronous(account, fromPeriod, toPeriod, filters
     });
     
     // Step 4: Collect all periods (queued + current)
-    const allPeriods = new Set(bsCumulativeRequests.map(r => r.params.toPeriod));
+    const allPeriods = new Set(bsCumulativeRequests.map(r => {
+        const rParams = r.params || r;
+        return rParams.toPeriod;
+    }));
     allPeriods.add(toPeriod);
     
     // Step 5: Need at least 2 periods for batching
@@ -5189,7 +5192,14 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         // CRITICAL: This runs BEFORE manifest lookup, preload trigger, and preload wait
         // ================================================================
         const filters = { subsidiary, department, location, classId, accountingBook };
+        
+        // Add this request to pendingEvaluation BEFORE checking eligibility
+        // This allows the eligibility check to see other requests currently being evaluated in the same wave
+        const evalKey = `${account}::${fromPeriod || ''}::${toPeriod}::${JSON.stringify(filters)}`;
+        pendingEvaluation.balance.set(evalKey, { account, fromPeriod, toPeriod, filters });
+        
         const batchEligibility = checkBatchEligibilitySynchronous(account, fromPeriod, toPeriod, filters);
+        console.log(`🔍 BATCH ELIGIBILITY RESULT: ${account}/${toPeriod} - eligible=${batchEligibility.eligible}`);
         
         if (batchEligibility.eligible) {
             // PATH B: Eligible for batching - execute immediately, bypass preload entirely
