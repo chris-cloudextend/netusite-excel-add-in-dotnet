@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.2.3';  // Balance sheet grid batching: queue-based pattern detection and batched queries
+const FUNCTIONS_VERSION = '4.0.2.4';  // Fix: BS batch query readonly property error - changed cumulativeRequests to let
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -6632,7 +6632,7 @@ async function processBatchQueue() {
     // 2. PERIOD ACTIVITY QUERIES: both fromPeriod and toPeriod → direct /balance API calls (not batch endpoint)
     // 3. REGULAR REQUESTS: P&L period ranges → batch endpoint
     // ================================================================
-    const cumulativeRequests = [];
+    let cumulativeRequests = [];  // Changed to 'let' to allow reassignment after batch filtering
     const periodActivityRequests = [];  // BS period activity queries (both fromPeriod and toPeriod)
     const regularRequests = [];
     
