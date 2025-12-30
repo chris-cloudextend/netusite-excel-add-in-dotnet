@@ -6531,61 +6531,63 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                                     console.log(`⚡ ${reason} - skipping preload wait, using grid batching`);
                                     // Continue to API path below (grid batching will process these together)
                                 } else {
-                                // FIX #4: Wait for preload with bounded timeout (120s max - increased from 90s)
-                                // BS preload can take 60-90s, so 120s gives buffer for network delays
-                                const maxWait = 120000; // 120 seconds - bounded wait (increased from 90s)
-                                console.log(`⏳ Waiting for preload to start/complete (max ${maxWait/1000}s)...`);
-                                const waited = await waitForPeriodCompletion(filtersHash, periodKey, maxWait);
-                            
-                                if (waited) {
-                                    // Preload completed - re-check cache
-                                    let retryCache = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
-                                    if (retryCache !== null) {
-                                        console.log(`✅ Post-preload cache hit: ${account} for ${periodKey} = ${retryCache}`);
-                                        cacheStats.hits++;
-                                        cache.balance.set(cacheKey, retryCache);
-                                        return retryCache;
-                                    }
-                                    
-                                    // Cache not found but status is "completed" - wait briefly for cache write
-                                    // Use async waits with bounded timeout, yielding to event loop
-                                    console.log(`⏳ Period ${periodKey} marked completed but cache not found - waiting for cache write...`);
-                                    const cacheWaitStart = Date.now();
-                                    const cacheWaitMax = 2000; // 2 seconds max (reduced from 3s)
-                                    const checkInterval = 200; // Check every 200ms (yields to event loop)
-                                    
-                                    // Also check in-memory cache
-                                    if (cache.balance.has(cacheKey)) {
-                                        console.log(`✅ Post-preload cache hit (memory): ${account} for ${periodKey}`);
-                                        cacheStats.hits++;
-                                        return cache.balance.get(cacheKey);
-                                    }
-                                    
-                                // Cache not found but status is "completed" - retry with bounded delays
-                                // Use Promise-based retry that resolves to a number (preserves Excel auto-retry)
-                                console.log(`⏳ Period ${periodKey} marked completed but cache not found - retrying cache lookup...`);
-                                const retryResult = await retryCacheLookup(
-                                    account, fromPeriod, toPeriod, subsidiary, filtersHash, cacheKey, periodKey,
-                                    checkLocalStorageCache
-                                );
-                                if (retryResult !== null) {
-                                    return retryResult;
-                                }
-                                // Cache still not found after retries - proceed to API path (don't throw)
-                                console.log(`⏳ Cache not found after retries - proceeding to API path for ${periodKey}`);
-                                }
+                                    // FIX #4: Wait for preload with bounded timeout (120s max - increased from 90s)
+                                    // BS preload can take 60-90s, so 120s gives buffer for network delays
+                                    const maxWait = 120000; // 120 seconds - bounded wait (increased from 90s)
+                                    console.log(`⏳ Waiting for preload to start/complete (max ${maxWait/1000}s)...`);
+                                    const waited = await waitForPeriodCompletion(filtersHash, periodKey, maxWait);
                                 
-                                // Still miss after wait - check if now running/retrying
-                                const finalStatus = getPeriodStatus(filtersHash, periodKey);
-                                if (finalStatus === "running" || finalStatus === "requested") {
-                                    // ✅ Still running - proceed to API path (transient state)
-                                    console.log(`⏳ Period ${periodKey} still ${finalStatus} - proceeding to API path`);
-                                    // Continue to API path below (don't throw)
+                                    if (waited) {
+                                        // Preload completed - re-check cache
+                                        let retryCache = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
+                                        if (retryCache !== null) {
+                                            console.log(`✅ Post-preload cache hit: ${account} for ${periodKey} = ${retryCache}`);
+                                            cacheStats.hits++;
+                                            cache.balance.set(cacheKey, retryCache);
+                                            return retryCache;
+                                        }
+                                        
+                                        // Cache not found but status is "completed" - wait briefly for cache write
+                                        // Use async waits with bounded timeout, yielding to event loop
+                                        console.log(`⏳ Period ${periodKey} marked completed but cache not found - waiting for cache write...`);
+                                        const cacheWaitStart = Date.now();
+                                        const cacheWaitMax = 2000; // 2 seconds max (reduced from 3s)
+                                        const checkInterval = 200; // Check every 200ms (yields to event loop)
+                                        
+                                        // Also check in-memory cache
+                                        if (cache.balance.has(cacheKey)) {
+                                            console.log(`✅ Post-preload cache hit (memory): ${account} for ${periodKey}`);
+                                            cacheStats.hits++;
+                                            return cache.balance.get(cacheKey);
+                                        }
+                                        
+                                        // Cache not found but status is "completed" - retry with bounded delays
+                                        // Use Promise-based retry that resolves to a number (preserves Excel auto-retry)
+                                        console.log(`⏳ Period ${periodKey} marked completed but cache not found - retrying cache lookup...`);
+                                        const retryResult = await retryCacheLookup(
+                                            account, fromPeriod, toPeriod, subsidiary, filtersHash, cacheKey, periodKey,
+                                            checkLocalStorageCache
+                                        );
+                                        if (retryResult !== null) {
+                                            return retryResult;
+                                        }
+                                        // Cache still not found after retries - proceed to API path (don't throw)
+                                        console.log(`⏳ Cache not found after retries - proceeding to API path for ${periodKey}`);
+                                    }
+                                    
+                                    // Still miss after wait - check if now running/retrying
+                                    const finalStatus = getPeriodStatus(filtersHash, periodKey);
+                                    if (finalStatus === "running" || finalStatus === "requested") {
+                                        // ✅ Still running - proceed to API path (transient state)
+                                        console.log(`⏳ Period ${periodKey} still ${finalStatus} - proceeding to API path`);
+                                        // Continue to API path below (don't throw)
+                                    }
+                                    // If preload failed or timed out, continue to API call below
                                 }
-                                // If preload failed or timed out, continue to API call below
                             }
                         }
                         // P&L accounts skip the wait entirely - proceed directly to API call
+                    }
                 }
             }
         }
@@ -6718,7 +6720,6 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                 console.log('   Full refresh mode - NOT starting timer');
             }
         });
-    }
     } catch (error) {
         console.error('BALANCE error:', error);
         // Re-throw if already an Error, otherwise wrap
