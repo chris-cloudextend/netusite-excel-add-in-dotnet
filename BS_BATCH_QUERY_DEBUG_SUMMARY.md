@@ -75,32 +75,38 @@ The error occurs in `processBatchQueue()` when trying to resolve promises for ba
 
 **Status**: ✅ Fixed - Server running with updated code.
 
-### 4. Current Issue: Readonly Property Assignment Error
+### 4. Readonly Property Assignment Error (FIXED)
 **Issue**: Batch query completes successfully but fails when assigning results to promises.
 
 **Root Cause**: JavaScript error `TypeError: Attempted to assign to readonly property` at line 6697 in `processBatchQueue()`.
 
-**Next Steps Needed**:
-1. Examine the code at line 6697 where batch results are being assigned
-2. Identify which property is readonly (likely in the request object or promise resolver)
-3. Fix the assignment logic to avoid readonly property mutation
-4. Add defensive error handling to prevent silent failures
+**Root Cause Identified**: `cumulativeRequests` was declared as `const` on line 6635, but the code attempted to reassign it on line 6697 after filtering out batched requests:
+```javascript
+cumulativeRequests = cumulativeRequests.filter(([key]) => !batchedCacheKeys.has(key));
+```
+
+**Fix Applied**:
+- Changed `const cumulativeRequests = []` to `let cumulativeRequests = []` on line 6635
+- This allows the variable to be reassigned after batch filtering
+- Added comment explaining why `let` is needed
+
+**Status**: ✅ Fixed - Variable can now be reassigned after batch processing
 
 ## Current Status
 
 - ✅ Pattern detection: Working
 - ✅ Batch query execution: Working (queries complete successfully)
 - ✅ Backend API: Working (accepts `anchor_date` parameter)
-- ❌ Result assignment: **FAILING** (readonly property error)
-- ❌ Fallback behavior: Working (but too slow - falls back to individual requests)
+- ✅ Result assignment: **FIXED** (readonly property error resolved)
+- ⏳ **READY FOR TESTING** - All fixes applied, awaiting user verification
 
 ## Next Steps for Resolution
 
-1. **Fix Readonly Property Error** (CRITICAL):
-   - Locate exact line causing the error (line 6697)
-   - Identify which property is readonly
-   - Refactor assignment logic to avoid readonly mutation
-   - Test with a simple grid scenario
+1. **Fix Readonly Property Error** (CRITICAL): ✅ **COMPLETED**
+   - Located exact line causing the error (line 6697)
+   - Identified that `cumulativeRequests` was declared as `const` but needed reassignment
+   - Changed declaration from `const` to `let`
+   - Ready for testing
 
 2. **Add Better Error Handling**:
    - Wrap result assignment in try/catch
@@ -130,6 +136,7 @@ The error occurs in `processBatchQueue()` when trying to resolve promises for ba
 
 - **4.0.2.2**: Initial batch query implementation
 - **4.0.2.3**: Fixed backend parameter handling, frontend parameter construction, compilation errors
+- **4.0.2.4**: Fixed readonly property error (changed `cumulativeRequests` from `const` to `let`)
 
 ## Testing Checklist
 
