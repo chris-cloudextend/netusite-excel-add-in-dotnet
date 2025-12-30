@@ -20,11 +20,11 @@
 // 4. Replace ALL code with this file
 // 5. Click: Save and Deploy
 //
-// CURRENT TUNNEL URL: https://dish-image-reserves-assuming.trycloudflare.com
+// CURRENT TUNNEL URL: https://tobago-induced-postcards-women.trycloudflare.com
 // CURRENT ACCOUNT: 589861 (Production)
 // BACKEND: .NET Core (backend-dotnet/) - PRIMARY/TARGET
 // NOTE: Python backend (backend/server.py) is legacy and being replaced
-// Last Updated: Dec 29, 2025 (Tunnel: dish-image-reserves-assuming))))))))
+// Last Updated: Dec 30, 2025 (Tunnel: tobago-induced-postcards-women))
 // ════════════════════════════════════════════════════════════════════
 
 export default {
@@ -33,7 +33,7 @@ export default {
     // ⚠️ UPDATE THIS when .NET backend tunnel URL changes
     // To get the URL, run: cloudflared tunnel --url http://localhost:5002
     // Copy the https://xxxxx.trycloudflare.com URL and paste it here
-    const TUNNEL_URL = 'https://dish-image-reserves-assuming.trycloudflare.com';
+    const TUNNEL_URL = 'https://tobago-induced-postcards-women.trycloudflare.com';
 
     // Handle CORS preflight requests
     if (request.method === 'OPTIONS') {
