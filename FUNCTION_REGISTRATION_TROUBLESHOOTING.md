@@ -3,6 +3,11 @@
 ## Problem
 `XAVI.BALANCE` and other custom functions return `#VALUE` errors immediately. Functions are not being registered with Excel.
 
+## ROOT CAUSE FOUND (v4.0.1.7)
+**Orphaned JSDoc closing tag** at line 9195: A standalone `*/` without a matching opening `/**` was breaking the JSDoc parser. This prevented Excel from properly parsing function metadata, causing registration to fail silently.
+
+**Fix Applied**: Removed the orphaned `*/` tag. All 12 custom functions now have properly formatted JSDoc blocks.
+
 ## Symptoms
 - Functions return `#VALUE` immediately when entered
 - No registration logs appear in sharedruntime console
