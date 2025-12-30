@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.1.9';  // FIX: Add async boundary at start of all custom functions to prevent #VALUE errors
+const FUNCTIONS_VERSION = '4.0.1.10';  // FIX: Remove extra closing brace causing #VALUE errors - file now ends with })(); matching restore point
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -8099,10 +8099,11 @@ async function processBatchQueue() {
                 }
             }
         }
-        
-        // Step 2: Process remaining cumulative requests individually (fallback or non-grid)
-        if (cumulativeRequests.length > 0) {
-            console.log(`📊 Processing ${cumulativeRequests.length} CUMULATIVE (BS) requests separately...`);
+    } // Close the if (cumulativeRequests.length > 0) block from line 7967
+    
+    // Step 2: Process remaining cumulative requests individually (fallback or non-grid)
+    if (cumulativeRequests.length > 0) {
+        console.log(`📊 Processing ${cumulativeRequests.length} CUMULATIVE (BS) requests separately...`);
             
             let cacheHits = 0;
             let apiCalls = 0;
@@ -10476,4 +10477,3 @@ console.log('   Office.onReady available:', typeof Office !== 'undefined' && typ
         }
     }
 })();
-}
