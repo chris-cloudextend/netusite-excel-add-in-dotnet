@@ -8099,11 +8099,10 @@ async function processBatchQueue() {
                 }
             }
         }
-    } // Close the if (cumulativeRequests.length > 0) block from line 7967
-    
-    // Step 2: Process remaining cumulative requests individually (fallback or non-grid)
-    if (cumulativeRequests.length > 0) {
-        console.log(`📊 Processing ${cumulativeRequests.length} CUMULATIVE (BS) requests separately...`);
+        
+        // Step 2: Process remaining cumulative requests individually (fallback or non-grid)
+        if (cumulativeRequests.length > 0) {
+            console.log(`📊 Processing ${cumulativeRequests.length} CUMULATIVE (BS) requests separately...`);
             
             let cacheHits = 0;
             let apiCalls = 0;
@@ -8360,7 +8359,7 @@ async function processBatchQueue() {
                 console.log(`   📊 Cumulative summary: ${cacheHits} cache hits, ${apiCalls} API calls, ${deduplicated} deduplicated`);
             }
         }
-    }
+    } // Close the if (cumulativeRequests.length > 0) block from line 7967
     
     console.error(`🔍🔍🔍 CRITICAL DEBUG: After cumulativeRequests block. About to check periodActivityRequests.`);
     
