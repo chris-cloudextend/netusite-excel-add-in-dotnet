@@ -729,90 +729,97 @@ function detectBalanceSheetGridPattern(cumulativeRequests) {
 const bsBatchQueryInFlight = new Map(); // Map<string, Promise<Object>>
 
 async function executeBalanceSheetBatchQuery(gridPattern) {
-    // Single-flight lock
-    if (bsBatchQueryInFlight) {
-        console.log('⏳ BS batch query already in flight - waiting...');
-        // Wait for existing query to complete
-        while (bsBatchQueryInFlight) {
-            await new Promise(r => setTimeout(r, 100));
-        }
-        // Return null to indicate we should fall back to individual requests
-        return null;
+    // This function is used by queue-based pattern detection (processBatchQueue)
+    // It should use the same account-specific lock as executeBalanceSheetBatchQueryImmediate
+    const { account, filters, periods } = gridPattern;
+    
+    // Check if this account already has a batch query in flight (from immediate path)
+    if (bsBatchQueryInFlight.has(account)) {
+        console.log(`⏳ BS batch query for ${account} already in flight (from immediate path) - waiting for results...`);
+        // Wait for the existing query to complete
+        const results = await bsBatchQueryInFlight.get(account);
+        return results; // Return the shared results
     }
     
-    bsBatchQueryInFlight = true;
+    // Start new batch query for this account (queue-based path)
+    const queryPromise = (async () => {
+        try {
+            // Safety limits (fail fast before NetSuite calls)
+            const MAX_PERIODS = 24; // 2 years max
+            
+            if (periods.length > MAX_PERIODS) {
+                throw new Error(`Too many periods: ${periods.length} (max: ${MAX_PERIODS})`);
+            }
+            
+            // Verify account type is Balance Sheet (if not in cache, fetch it)
+            const typeCacheKey = getCacheKey('type', { account });
+            let accountType = cache.type.has(typeCacheKey) ? cache.type.get(typeCacheKey) : null;
+            
+            if (!accountType) {
+                accountType = await getAccountType(account);
+            }
+            
+            // CRITICAL: If account is Income/Expense, abort batching immediately
+            if (accountType && (accountType === 'Income' || accountType === 'COGS' || accountType === 'Expense' || 
+                accountType === 'OthIncome' || accountType === 'OthExpense')) {
+                throw new Error('Account is Income/Expense - should not enter batch path');
+            }
+            
+            // Infer anchor date
+            const anchorDate = inferAnchorDate(periods);
+            if (!anchorDate) {
+                throw new Error('Could not infer anchor date');
+            }
+            
+            console.log(`🚀 BS BATCH QUERY: ${account}, ${periods.length} periods, anchor: ${anchorDate}`);
+            
+            // Sort periods chronologically
+            const sortedPeriods = periods
+                .map(p => ({ period: p, date: parsePeriodToDate(p) }))
+                .filter(p => p.date !== null)
+                .sort((a, b) => a.date.getTime() - b.date.getTime());
+            
+            if (sortedPeriods.length === 0) {
+                throw new Error('No valid periods after sorting');
+            }
+            
+            const earliestPeriod = sortedPeriods[0].period;
+            const latestPeriod = sortedPeriods[sortedPeriods.length - 1].period;
+            
+            // Query 1: Opening balance as of anchor (using existing /balance endpoint)
+            console.log(`📊 Query 1: Opening balance as of ${anchorDate}`);
+            const openingBalance = await fetchOpeningBalance(account, anchorDate, filters);
+            
+            // Query 2: Period activity for earliest → latest period (using existing /balance endpoint with batch parameters)
+            console.log(`📊 Query 2: Period activity from ${earliestPeriod} to ${latestPeriod}`);
+            const periodActivity = await fetchPeriodActivityBatch(account, earliestPeriod, latestPeriod, filters);
+            
+            // Compute ending balances locally
+            const results = computeRunningBalances(
+                sortedPeriods.map(p => p.period),
+                openingBalance,
+                periodActivity
+            );
+            
+            console.log(`✅ BS BATCH QUERY COMPLETE: ${Object.keys(results).length} period results`);
+            
+            return results; // {period: balance}
+            
+        } catch (error) {
+            console.error(`❌ BS batch query failed for ${account}:`, error);
+            // Re-throw the error so waiting requests also see the failure
+            throw error;
+        } finally {
+            // Remove from lock after completion (success or failure)
+            bsBatchQueryInFlight.delete(account);
+        }
+    })();
     
-    try {
-        const { account, filters, periods } = gridPattern;
-        
-        // Safety limits (fail fast before NetSuite calls)
-        const MAX_PERIODS = 24; // 2 years max
-        
-        if (periods.length > MAX_PERIODS) {
-            throw new Error(`Too many periods: ${periods.length} (max: ${MAX_PERIODS})`);
-        }
-        
-        // Verify account type is Balance Sheet (if not in cache, fetch it)
-        const typeCacheKey = getCacheKey('type', { account });
-        let accountType = cache.type.has(typeCacheKey) ? cache.type.get(typeCacheKey) : null;
-        
-        if (!accountType) {
-            accountType = await getAccountType(account);
-        }
-        
-        // CRITICAL: If account is Income/Expense, abort batching immediately
-        if (accountType && (accountType === 'Income' || accountType === 'COGS' || accountType === 'Expense' || 
-            accountType === 'OthIncome' || accountType === 'OthExpense')) {
-            throw new Error('Account is Income/Expense - should not enter batch path');
-        }
-        
-        // Infer anchor date
-        const anchorDate = inferAnchorDate(periods);
-        if (!anchorDate) {
-            throw new Error('Could not infer anchor date');
-        }
-        
-        console.log(`🚀 BS BATCH QUERY: ${account}, ${periods.length} periods, anchor: ${anchorDate}`);
-        
-        // Sort periods chronologically
-        const sortedPeriods = periods
-            .map(p => ({ period: p, date: parsePeriodToDate(p) }))
-            .filter(p => p.date !== null)
-            .sort((a, b) => a.date.getTime() - b.date.getTime());
-        
-        if (sortedPeriods.length === 0) {
-            throw new Error('No valid periods after sorting');
-        }
-        
-        const earliestPeriod = sortedPeriods[0].period;
-        const latestPeriod = sortedPeriods[sortedPeriods.length - 1].period;
-        
-        // Query 1: Opening balance as of anchor (using existing /balance endpoint)
-        console.log(`📊 Query 1: Opening balance as of ${anchorDate}`);
-        const openingBalance = await fetchOpeningBalance(account, anchorDate, filters);
-        
-        // Query 2: Period activity for earliest → latest period (using existing /balance endpoint with batch parameters)
-        console.log(`📊 Query 2: Period activity from ${earliestPeriod} to ${latestPeriod}`);
-        const periodActivity = await fetchPeriodActivityBatch(account, earliestPeriod, latestPeriod, filters);
-        
-        // Compute ending balances locally
-        const results = computeRunningBalances(
-            sortedPeriods.map(p => p.period),
-            openingBalance,
-            periodActivity
-        );
-        
-        console.log(`✅ BS BATCH QUERY COMPLETE: ${Object.keys(results).length} period results`);
-        
-        return results; // {period: balance}
-        
-    } catch (error) {
-        console.error('❌ BS batch query failed:', error);
-        // Return null to indicate fallback to individual requests
-        return null;
-    } finally {
-        bsBatchQueryInFlight = false;
-    }
+    // Store the promise in the lock BEFORE awaiting (so other requests can join)
+    bsBatchQueryInFlight.set(account, queryPromise);
+    
+    // Await and return the results
+    return await queryPromise;
 }
 
 /**
