@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.3.0';  // Synchronous batch decision model - eligibility check before preload, immediate execution
+const FUNCTIONS_VERSION = '4.0.3.1';  // Add debug logging to batch eligibility check
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -477,17 +477,20 @@ function inferAnchorDate(periods) {
 function checkBatchEligibilitySynchronous(account, fromPeriod, toPeriod, filters) {
     // Step 1: Must be cumulative (no fromPeriod)
     if (fromPeriod && fromPeriod !== '') {
+        console.log(`🔍 BATCH CHECK: Not cumulative (fromPeriod=${fromPeriod}) - not eligible`);
         return { eligible: false };
     }
     
     // Step 2: Must have toPeriod
     if (!toPeriod || toPeriod === '') {
+        console.log(`🔍 BATCH CHECK: Missing toPeriod - not eligible`);
         return { eligible: false };
     }
     
     // Step 3: Check if there are other queued requests that form a grid pattern
     // SYNCHRONOUS read - no await, no promises, no blocking
     const queuedRequests = Array.from(pendingRequests.balance.values());
+    console.log(`🔍 BATCH CHECK: ${account}/${toPeriod} - checking ${queuedRequests.length} queued requests`);
     const bsCumulativeRequests = queuedRequests.filter(r => {
         const rParams = r.params;
         // Must be cumulative (no fromPeriod)
@@ -534,6 +537,7 @@ function checkBatchEligibilitySynchronous(account, fromPeriod, toPeriod, filters
     
     // Step 5: Need at least 2 periods for batching
     if (allPeriods.size < 2) {
+        console.log(`🔍 BATCH CHECK: Only ${allPeriods.size} period(s) - need at least 2 - not eligible`);
         return { eligible: false };
     }
     
@@ -574,10 +578,12 @@ function checkBatchEligibilitySynchronous(account, fromPeriod, toPeriod, filters
     // Reject if gap is too large (more than 2 months = not contiguous)
     // This prevents batching random months like "Jan 2025" and "Jun 2025"
     if (maxGap > 2) {
+        console.log(`🔍 BATCH CHECK: Periods not contiguous (max gap: ${maxGap} months) - not eligible`);
         return { eligible: false }; // Periods not contiguous enough
     }
     
     // Step 8: Eligible for batching
+    console.log(`🔍 BATCH CHECK: ✅ ELIGIBLE - ${account}, ${periodDates.length} periods: ${periodDates.map(p => p.period).join(', ')}`);
     return {
         eligible: true,
         periods: periodDates.map(p => p.period),
