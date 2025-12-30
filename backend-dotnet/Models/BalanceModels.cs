@@ -49,6 +49,15 @@ public class BalanceRequest
     public string? AnchorDate { get; set; }
     
     /// <summary>
+    /// Anchor period for opening balance queries (e.g., "Dec 2024").
+    /// When provided with empty from_period and to_period, returns opening balance as of the end of this period.
+    /// Used for column-based balance sheet grid batching.
+    /// Backend resolves period to date using accounting calendar.
+    /// </summary>
+    [JsonPropertyName("anchor_period")]
+    public string? AnchorPeriod { get; set; }
+    
+    /// <summary>
     /// Enable batch mode for period activity breakdown.
     /// When true with include_period_breakdown=true, returns per-period activity breakdown.
     /// Used for balance sheet grid batching.
@@ -193,6 +202,55 @@ public class BalanceResponse
     /// <summary>
     /// One-word error code if query failed (e.g., TIMEOUT, RATELIMIT, NETFAIL).
     /// When set, balance will be 0 and Excel should display this error instead.
+    /// </summary>
+    [JsonPropertyName("error")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Error { get; set; }
+}
+
+/// <summary>
+/// Response for column-based balance sheet batch opening balances.
+/// Returns opening balances for multiple accounts as of anchor period.
+/// </summary>
+public class BatchOpeningBalancesResponse
+{
+    /// <summary>
+    /// Opening balances by account ID.
+    /// Key: account number (e.g., "10010"), Value: opening balance as of anchor period.
+    /// All requested accounts must be present (missing accounts indicate error).
+    /// </summary>
+    [JsonPropertyName("balances")]
+    public Dictionary<string, decimal> Balances { get; set; } = new();
+    
+    /// <summary>
+    /// One-word error code if batch query failed (e.g., TIMEOUT, RATELIMIT, NETFAIL).
+    /// When set, balances may be incomplete and Excel should display this error.
+    /// </summary>
+    [JsonPropertyName("error")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Error { get; set; }
+}
+
+/// <summary>
+/// Response for column-based balance sheet batch period activity.
+/// Returns per-period activity for multiple accounts across a period range.
+/// </summary>
+public class BatchPeriodActivityResponse
+{
+    /// <summary>
+    /// Period activity by account ID, then by period.
+    /// Outer key: account number (e.g., "10010")
+    /// Inner key: period name (e.g., "Jan 2025")
+    /// Value: activity amount for that account in that period.
+    /// Always returns nested structure, even for single period.
+    /// Missing periods are explicitly returned as 0.
+    /// </summary>
+    [JsonPropertyName("period_activity")]
+    public Dictionary<string, Dictionary<string, decimal>> PeriodActivity { get; set; } = new();
+    
+    /// <summary>
+    /// One-word error code if batch query failed (e.g., TIMEOUT, RATELIMIT, NETFAIL).
+    /// When set, period_activity may be incomplete and Excel should display this error.
     /// </summary>
     [JsonPropertyName("error")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]

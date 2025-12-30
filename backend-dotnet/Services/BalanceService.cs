@@ -2139,8 +2139,9 @@ public class BalanceService : IBalanceService
     
     /// <summary>
     /// Get all period names between fromPeriod and toPeriod (inclusive).
+    /// Made public for controller to check period count limits.
     /// </summary>
-    private async Task<List<string>> GetPeriodsInRangeAsync(string fromPeriod, string toPeriod)
+    public async Task<List<string>> GetPeriodsInRangeAsync(string fromPeriod, string toPeriod)
     {
         var periods = new List<string>();
         
@@ -2308,6 +2309,402 @@ public class BalanceService : IBalanceService
 
         return periods;
     }
+    
+    /// <summary>
+    /// PHASE 2: Column-based batch opening balances for multiple accounts.
+    /// Returns opening balances as of anchor period (resolved to date in service layer).
+    /// 
+    /// CRITICAL: This is additive only - does not modify existing single-account behavior.
+    /// Loops accounts internally for correctness (NetSuite batching optimization TODO).
+    /// </summary>
+    public async Task<BatchOpeningBalancesResponse> GetOpeningBalancesBatchAsync(
+        List<string> accounts,
+        string anchorPeriod,
+        string? subsidiary = null,
+        string? department = null,
+        string? classFilter = null,
+        string? location = null,
+        int? book = null)
+    {
+        _logger.LogInformation("Batch opening balances: {AccountCount} accounts, anchor_period={AnchorPeriod}", 
+            accounts.Count, anchorPeriod);
+        
+        // Resolve anchor period to date (delegate to accounting calendar)
+        var anchorPeriodData = await _netSuiteService.GetPeriodAsync(anchorPeriod);
+        if (anchorPeriodData?.EndDate == null)
+        {
+            return new BatchOpeningBalancesResponse
+            {
+                Error = $"Could not resolve anchor period: {anchorPeriod}"
+            };
+        }
+        
+        // Parse anchor date (end of anchor period)
+        var anchorDate = ParseDate(anchorPeriodData.EndDate);
+        if (anchorDate == null)
+        {
+            return new BatchOpeningBalancesResponse
+            {
+                Error = $"Could not parse anchor date from period: {anchorPeriod}"
+            };
+        }
+        
+        var anchorDateStr = anchorDate.Value.ToString("yyyy-MM-dd");
+        _logger.LogDebug("Resolved anchor_period={AnchorPeriod} to anchor_date={AnchorDate}", 
+            anchorPeriod, anchorDateStr);
+        
+        // Resolve subsidiary and get hierarchy
+        var subsidiaryId = await _lookupService.ResolveSubsidiaryIdAsync(subsidiary);
+        var targetSub = subsidiaryId ?? "1";
+        var hierarchySubs = await _lookupService.GetSubsidiaryHierarchyAsync(targetSub);
+        var subFilter = string.Join(", ", hierarchySubs);
+        
+        // Resolve dimension filters
+        var departmentId = await _lookupService.ResolveDimensionIdAsync("department", department);
+        var classId = await _lookupService.ResolveDimensionIdAsync("class", classFilter);
+        var locationId = await _lookupService.ResolveDimensionIdAsync("location", location);
+        
+        var needsTransactionLineJoin = !string.IsNullOrEmpty(departmentId) || 
+                                        !string.IsNullOrEmpty(classId) || 
+                                        !string.IsNullOrEmpty(locationId) ||
+                                        targetSub != "1";
+        
+        var segmentFilters = new List<string>();
+        if (needsTransactionLineJoin)
+        {
+            segmentFilters.Add($"tl.subsidiary IN ({subFilter})");
+            if (!string.IsNullOrEmpty(departmentId))
+                segmentFilters.Add($"tl.department = {departmentId}");
+            if (!string.IsNullOrEmpty(classId))
+                segmentFilters.Add($"tl.class = {classId}");
+            if (!string.IsNullOrEmpty(locationId))
+                segmentFilters.Add($"tl.location = {locationId}");
+        }
+        var segmentWhere = segmentFilters.Any() ? string.Join(" AND ", segmentFilters) : "1=1";
+        var whereSegment = needsTransactionLineJoin ? $"AND {segmentWhere}" : "";
+        
+        var accountingBook = book ?? DefaultAccountingBook;
+        
+        // Universal sign flip
+        var signFlip = $@"
+            CASE 
+                WHEN a.accttype IN ({AccountType.SignFlipTypesSql}) THEN -1
+                WHEN a.accttype IN ({AccountType.IncomeTypesSql}) THEN -1
+                ELSE 1 
+            END";
+        
+        var tlJoin = needsTransactionLineJoin 
+            ? "JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id" 
+            : "";
+        
+        // ========================================================================
+        // PHASE 2: Loop accounts internally for correctness
+        // TODO: Optimize with NetSuite batching (single SuiteQL query with IN clause)
+        // ========================================================================
+        var balances = new Dictionary<string, decimal>();
+        var errors = new List<string>();
+        
+        foreach (var account in accounts)
+        {
+            try
+            {
+                // Query opening balance for this account
+                var query = $@"
+                    SELECT SUM(x.cons_amt) AS balance
+                    FROM (
+                        SELECT
+                            TO_NUMBER(
+                                BUILTIN.CONSOLIDATE(
+                                    tal.amount,
+                                    'LEDGER',
+                                    'DEFAULT',
+                                    'DEFAULT',
+                                    {targetSub},
+                                    t.postingperiod,
+                                    'DEFAULT'
+                                )
+                            ) * {signFlip} AS cons_amt
+                        FROM transactionaccountingline tal
+                        JOIN transaction t ON t.id = tal.transaction
+                        JOIN account a ON a.id = tal.account
+                        {tlJoin}
+                        WHERE t.posting = 'T'
+                          AND tal.posting = 'T'
+                          AND {NetSuiteService.BuildAccountFilter(new[] { account })}
+                          AND t.trandate <= TO_DATE('{anchorDateStr}', 'YYYY-MM-DD')
+                          AND tal.accountingbook = {accountingBook}
+                          {whereSegment}
+                    ) x";
+                
+                var queryResult = await _netSuiteService.QueryRawWithErrorAsync(query, 180);
+                
+                if (!queryResult.Success)
+                {
+                    _logger.LogError("Opening balance query failed for account {Account}: {Error}", 
+                        account, queryResult.ErrorDetails);
+                    errors.Add($"{account}: {queryResult.ErrorCode ?? "NETFAIL"}");
+                    continue;
+                }
+                
+                var balance = 0m;
+                if (queryResult.Items != null && queryResult.Items.Any())
+                {
+                    var row = queryResult.Items.First();
+                    balance = ParseBalance(row.TryGetProperty("balance", out var balProp) ? balProp : default);
+                }
+                
+                balances[account] = balance;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting opening balance for account {Account}", account);
+                errors.Add($"{account}: {ex.Message}");
+            }
+        }
+        
+        // CRITICAL: All accounts must be present (missing accounts indicate error)
+        if (balances.Count != accounts.Count)
+        {
+            var missingAccounts = accounts.Where(a => !balances.ContainsKey(a)).ToList();
+            return new BatchOpeningBalancesResponse
+            {
+                Balances = balances,
+                Error = $"Missing accounts: {string.Join(", ", missingAccounts)}"
+            };
+        }
+        
+        if (errors.Any())
+        {
+            return new BatchOpeningBalancesResponse
+            {
+                Balances = balances,
+                Error = $"Partial failure: {string.Join("; ", errors)}"
+            };
+        }
+        
+        return new BatchOpeningBalancesResponse
+        {
+            Balances = balances
+        };
+    }
+    
+    /// <summary>
+    /// PHASE 2: Column-based batch period activity for multiple accounts.
+    /// Returns per-period activity breakdown for all accounts across period range.
+    /// 
+    /// CRITICAL: This is additive only - does not modify existing single-account behavior.
+    /// Loops accounts internally for correctness (NetSuite batching optimization TODO).
+    /// Always returns nested { account → { period → number } } shape, even for single period.
+    /// </summary>
+    public async Task<BatchPeriodActivityResponse> GetPeriodActivityBatchAsync(
+        List<string> accounts,
+        string fromPeriod,
+        string toPeriod,
+        string? subsidiary = null,
+        string? department = null,
+        string? classFilter = null,
+        string? location = null,
+        int? book = null)
+    {
+        _logger.LogInformation("Batch period activity: {AccountCount} accounts, from_period={FromPeriod}, to_period={ToPeriod}", 
+            accounts.Count, fromPeriod, toPeriod);
+        
+        // Get all periods between fromPeriod and toPeriod
+        var periods = await GetPeriodsInRangeAsync(fromPeriod, toPeriod);
+        if (!periods.Any())
+        {
+            return new BatchPeriodActivityResponse
+            {
+                Error = "Could not find periods in range"
+            };
+        }
+        
+        // Resolve subsidiary and get hierarchy
+        var subsidiaryId = await _lookupService.ResolveSubsidiaryIdAsync(subsidiary);
+        var targetSub = subsidiaryId ?? "1";
+        var hierarchySubs = await _lookupService.GetSubsidiaryHierarchyAsync(targetSub);
+        var subFilter = string.Join(", ", hierarchySubs);
+        
+        // Resolve dimension filters
+        var departmentId = await _lookupService.ResolveDimensionIdAsync("department", department);
+        var classId = await _lookupService.ResolveDimensionIdAsync("class", classFilter);
+        var locationId = await _lookupService.ResolveDimensionIdAsync("location", location);
+        
+        var needsTransactionLineJoin = !string.IsNullOrEmpty(departmentId) || 
+                                        !string.IsNullOrEmpty(classId) || 
+                                        !string.IsNullOrEmpty(locationId) ||
+                                        targetSub != "1";
+        
+        var segmentFilters = new List<string>();
+        if (needsTransactionLineJoin)
+        {
+            segmentFilters.Add($"tl.subsidiary IN ({subFilter})");
+            if (!string.IsNullOrEmpty(departmentId))
+                segmentFilters.Add($"tl.department = {departmentId}");
+            if (!string.IsNullOrEmpty(classId))
+                segmentFilters.Add($"tl.class = {classId}");
+            if (!string.IsNullOrEmpty(locationId))
+                segmentFilters.Add($"tl.location = {locationId}");
+        }
+        var segmentWhere = segmentFilters.Any() ? string.Join(" AND ", segmentFilters) : "1=1";
+        var whereSegment = needsTransactionLineJoin ? $"AND {segmentWhere}" : "";
+        
+        var accountingBook = book ?? DefaultAccountingBook;
+        
+        // Universal sign flip
+        var signFlip = $@"
+            CASE 
+                WHEN a.accttype IN ({AccountType.SignFlipTypesSql}) THEN -1
+                WHEN a.accttype IN ({AccountType.IncomeTypesSql}) THEN -1
+                ELSE 1 
+            END";
+        
+        var tlJoin = needsTransactionLineJoin 
+            ? "JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id" 
+            : "";
+        
+        // Get period IDs for the range
+        var periodIds = new List<string>();
+        var periodNames = new List<string>();
+        foreach (var period in periods)
+        {
+            var periodData = await _netSuiteService.GetPeriodAsync(period);
+            if (periodData?.Id != null)
+            {
+                periodIds.Add(periodData.Id);
+                periodNames.Add(period);
+            }
+        }
+        
+        if (!periodIds.Any())
+        {
+            return new BatchPeriodActivityResponse
+            {
+                Error = "Could not resolve period IDs"
+            };
+        }
+        
+        // ========================================================================
+        // PHASE 2: Loop accounts internally for correctness
+        // TODO: Optimize with NetSuite batching (single SuiteQL query with IN clause for accounts)
+        // ========================================================================
+        var periodActivity = new Dictionary<string, Dictionary<string, decimal>>();
+        var errors = new List<string>();
+        
+        foreach (var account in accounts)
+        {
+            try
+            {
+                // Query per-period activity for this account
+                var periodIdList = string.Join(",", periodIds);
+                var query = $@"
+                    SELECT 
+                        ap.periodname AS period_name,
+                        SUM(
+                            TO_NUMBER(
+                                BUILTIN.CONSOLIDATE(
+                                    tal.amount,
+                                    'LEDGER',
+                                    'DEFAULT',
+                                    'DEFAULT',
+                                    {targetSub},
+                                    ap.id,
+                                    'DEFAULT'
+                                )
+                            ) * {signFlip}
+                        ) AS period_activity
+                    FROM transactionaccountingline tal
+                    JOIN transaction t ON t.id = tal.transaction
+                    JOIN account a ON a.id = tal.account
+                    JOIN accountingperiod ap ON ap.id = t.postingperiod
+                    {tlJoin}
+                    WHERE t.posting = 'T'
+                      AND tal.posting = 'T'
+                      AND {NetSuiteService.BuildAccountFilter(new[] { account })}
+                      AND ap.id IN ({periodIdList})
+                      AND tal.accountingbook = {accountingBook}
+                      {whereSegment}
+                    GROUP BY ap.periodname
+                    ORDER BY ap.startdate";
+                
+                _logger.LogDebug("Period activity query for account {Account}: {PeriodCount} periods", 
+                    account, periodIds.Count);
+                
+                var queryResult = await _netSuiteService.QueryRawWithErrorAsync(query, 300);
+                
+                if (!queryResult.Success)
+                {
+                    _logger.LogError("Period activity query failed for account {Account}: {Error}", 
+                        account, queryResult.ErrorDetails);
+                    errors.Add($"{account}: {queryResult.ErrorCode ?? "NETFAIL"}");
+                    continue;
+                }
+                
+                // Build period activity dictionary for this account
+                var accountActivity = new Dictionary<string, decimal>();
+                
+                if (queryResult.Items != null)
+                {
+                    foreach (var row in queryResult.Items)
+                    {
+                        var periodName = row.TryGetProperty("period_name", out var pnProp) 
+                            ? pnProp.GetString() ?? "" 
+                            : "";
+                        var activity = ParseBalance(row.TryGetProperty("period_activity", out var actProp) 
+                            ? actProp 
+                            : default);
+                        
+                        if (!string.IsNullOrEmpty(periodName))
+                        {
+                            accountActivity[periodName] = activity;
+                        }
+                    }
+                }
+                
+                // CRITICAL: Ensure all periods in range are included (even if zero activity)
+                // Missing periods must be explicitly returned as 0
+                foreach (var periodName in periodNames)
+                {
+                    if (!accountActivity.ContainsKey(periodName))
+                    {
+                        accountActivity[periodName] = 0m;
+                    }
+                }
+                
+                periodActivity[account] = accountActivity;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting period activity for account {Account}", account);
+                errors.Add($"{account}: {ex.Message}");
+            }
+        }
+        
+        // CRITICAL: All accounts must be present (missing accounts indicate error)
+        if (periodActivity.Count != accounts.Count)
+        {
+            var missingAccounts = accounts.Where(a => !periodActivity.ContainsKey(a)).ToList();
+            return new BatchPeriodActivityResponse
+            {
+                PeriodActivity = periodActivity,
+                Error = $"Missing accounts: {string.Join(", ", missingAccounts)}"
+            };
+        }
+        
+        if (errors.Any())
+        {
+            return new BatchPeriodActivityResponse
+            {
+                PeriodActivity = periodActivity,
+                Error = $"Partial failure: {string.Join("; ", errors)}"
+            };
+        }
+        
+        return new BatchPeriodActivityResponse
+        {
+            PeriodActivity = periodActivity
+        };
+    }
 }
 
 /// <summary>
@@ -2324,5 +2721,38 @@ public interface IBalanceService
     /// Get per-account balances for an account type (drill-down).
     /// </summary>
     Task<List<AccountBalance>> GetTypeBalanceAccountsAsync(TypeBalanceRequest request, bool useSpecialAccountType = false);
+    
+    /// <summary>
+    /// PHASE 2: Column-based batch opening balances for multiple accounts.
+    /// Returns opening balances as of anchor period (resolved to date in service layer).
+    /// </summary>
+    Task<BatchOpeningBalancesResponse> GetOpeningBalancesBatchAsync(
+        List<string> accounts,
+        string anchorPeriod,
+        string? subsidiary = null,
+        string? department = null,
+        string? classFilter = null,
+        string? location = null,
+        int? book = null);
+    
+    /// <summary>
+    /// PHASE 2: Column-based batch period activity for multiple accounts.
+    /// Returns per-period activity breakdown for all accounts across period range.
+    /// </summary>
+    Task<BatchPeriodActivityResponse> GetPeriodActivityBatchAsync(
+        List<string> accounts,
+        string fromPeriod,
+        string toPeriod,
+        string? subsidiary = null,
+        string? department = null,
+        string? classFilter = null,
+        string? location = null,
+        int? book = null);
+    
+    /// <summary>
+    /// Get all period names between fromPeriod and toPeriod (inclusive).
+    /// Made public for controller to check period count limits.
+    /// </summary>
+    Task<List<string>> GetPeriodsInRangeAsync(string fromPeriod, string toPeriod);
 }
 

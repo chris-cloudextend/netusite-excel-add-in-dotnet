@@ -62,12 +62,106 @@ public class BalanceController : ControllerBase
         [FromQuery] string? location = null,
         [FromQuery] int? book = null,
         [FromQuery] string? anchor_date = null,
+        [FromQuery] string? anchor_period = null,
         [FromQuery] bool batch_mode = false,
         [FromQuery] bool include_period_breakdown = false)
     {
         if (string.IsNullOrEmpty(account))
             return BadRequest(new { error = "Account number is required" });
 
+        // ========================================================================
+        // PHASE 2: Column-Based Batch Mode Support (Additive Only)
+        // ========================================================================
+        // When batch_mode=true and account contains comma-separated IDs,
+        // route to batch methods. Otherwise, use existing single-account path.
+        // ========================================================================
+        if (batch_mode)
+        {
+            // Parse comma-separated accounts
+            var accounts = account.Split(',', StringSplitOptions.RemoveEmptyEntries)
+                                  .Select(a => a.Trim())
+                                  .Where(a => !string.IsNullOrEmpty(a))
+                                  .ToList();
+            
+            // Safety limits
+            const int MAX_ACCOUNTS_PER_BATCH = 100;
+            const int MAX_PERIODS_PER_BATCH = 24;
+            
+            if (accounts.Count == 0)
+                return BadRequest(new { error = "At least one account is required" });
+            
+            if (accounts.Count > MAX_ACCOUNTS_PER_BATCH)
+                return BadRequest(new { error = $"Too many accounts: {accounts.Count} (max: {MAX_ACCOUNTS_PER_BATCH})" });
+            
+            // Single account: use existing path (no behavior change)
+            if (accounts.Count == 1)
+            {
+                // Fall through to existing single-account logic below
+                account = accounts[0];
+            }
+            else
+            {
+                // Multi-account batch mode
+                try
+                {
+                    // Opening balance batch: anchor_period provided
+                    if (!string.IsNullOrEmpty(anchor_period))
+                    {
+                        if (!string.IsNullOrEmpty(anchor_date))
+                            return BadRequest(new { error = "Cannot provide both anchor_date and anchor_period" });
+                        
+                        if (!string.IsNullOrEmpty(from_period) || !string.IsNullOrEmpty(to_period))
+                            return BadRequest(new { error = "Cannot provide periods with anchor_period" });
+                        
+                        var batchResult = await _balanceService.GetOpeningBalancesBatchAsync(
+                            accounts,
+                            anchor_period,
+                            subsidiary,
+                            department,
+                            classFilter,
+                            location,
+                            book);
+                        
+                        return Ok(batchResult);
+                    }
+                    
+                    // Period activity batch: from_period, to_period, and include_period_breakdown=true
+                    if (include_period_breakdown && 
+                        !string.IsNullOrEmpty(from_period) && 
+                        !string.IsNullOrEmpty(to_period))
+                    {
+                        // Check period count limit
+                        var periods = await _balanceService.GetPeriodsInRangeAsync(from_period, to_period);
+                        if (periods.Count > MAX_PERIODS_PER_BATCH)
+                            return BadRequest(new { error = $"Too many periods: {periods.Count} (max: {MAX_PERIODS_PER_BATCH})" });
+                        
+                        var batchResult = await _balanceService.GetPeriodActivityBatchAsync(
+                            accounts,
+                            from_period,
+                            to_period,
+                            subsidiary,
+                            department,
+                            classFilter,
+                            location,
+                            book);
+                        
+                        return Ok(batchResult);
+                    }
+                    
+                    // Invalid batch mode combination
+                    return BadRequest(new { error = "Batch mode requires either anchor_period (for opening balances) or from_period+to_period+include_period_breakdown=true (for period activity)" });
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error in batch balance query for {AccountCount} accounts", accounts.Count);
+                    return StatusCode(500, new { error = ex.Message });
+                }
+            }
+        }
+
+        // ========================================================================
+        // EXISTING SINGLE-ACCOUNT PATH (Unchanged)
+        // ========================================================================
         // If anchor_date is provided, from_period and to_period can both be empty/omitted
         // Otherwise, need at least one period for any query
         // Note: Empty strings from URL are treated as null by [FromQuery], so we check both null and empty
