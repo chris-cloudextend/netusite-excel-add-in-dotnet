@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.1.7';  // FIX: Remove orphaned JSDoc closing tag that was breaking function registration
+const FUNCTIONS_VERSION = '4.0.1.9';  // FIX: Add async boundary at start of all custom functions to prevent #VALUE errors
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -5308,6 +5308,9 @@ async function processTitleBatchQueue() {
  * @cancelable
  */
 async function NAME(accountNumber, invocation) {
+    // CRITICAL: Force async boundary before any synchronous logic
+    await Promise.resolve();
+    
     // Retry logic for drag/drop scenarios where cell references may not be ready
     let account = normalizeAccountNumber(accountNumber);
     
@@ -5463,6 +5466,9 @@ async function processTypeBatchQueue() {
  * @cancelable
  */
 async function TYPE(accountNumber, invocation) {
+    // CRITICAL: Force async boundary before any synchronous logic
+    await Promise.resolve();
+    
     // Retry logic for drag/drop scenarios where cell references may not be ready
     let account = normalizeAccountNumber(accountNumber);
     
@@ -5555,6 +5561,9 @@ async function TYPE(accountNumber, invocation) {
  * @cancelable
  */
 async function PARENT(accountNumber, invocation) {
+    // CRITICAL: Force async boundary before any synchronous logic
+    await Promise.resolve();
+    
     // Retry logic for drag/drop scenarios where cell references may not be ready
     let account = normalizeAccountNumber(accountNumber);
     
@@ -6973,6 +6982,9 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
  * @requiresAddress
  */
 async function BALANCECURRENCY(account, fromPeriod, toPeriod, subsidiary, currency, department, location, classId, accountingBook) {
+    // CRITICAL: Force async boundary before any synchronous logic
+    await Promise.resolve();
+    
     try {
         // Removed excessive debug logging - only log on actual errors
         
@@ -7307,6 +7319,9 @@ async function BALANCECURRENCY(account, fromPeriod, toPeriod, subsidiary, curren
  * @requiresAddress
  */
 async function BALANCECHANGE(account, fromPeriod, toPeriod, subsidiary, department, location, classId, accountingBook) {
+    // CRITICAL: Force async boundary before any synchronous logic
+    await Promise.resolve();
+    
     try {
         // Normalize account number
         account = normalizeAccountNumber(account);
@@ -7422,6 +7437,9 @@ async function BALANCECHANGE(account, fromPeriod, toPeriod, subsidiary, departme
  * @requiresAddress
  */
 async function BUDGET(account, fromPeriod, toPeriod, subsidiary, department, location, classId, accountingBook, budgetCategory) {
+    // CRITICAL: Force async boundary before any synchronous logic
+    await Promise.resolve();
+    
     try {
         // Normalize inputs
         account = normalizeAccountNumber(account);
@@ -9212,6 +9230,9 @@ async function fetchBatchBalances(accounts, periods, filters, allRequests, retry
  * @returns {Promise<number>} Retained earnings value
  */
 async function RETAINEDEARNINGS(period, subsidiary, accountingBook, classId, department, location) {
+    // CRITICAL: Force async boundary before any synchronous logic
+    await Promise.resolve();
+    
     try {
         // RETAINEDEARNINGS is a point-in-time balance - use end of year for year-only values
         // This ensures "2025" calculates RE as of Dec 31, 2025
@@ -9417,6 +9438,9 @@ async function RETAINEDEARNINGS(period, subsidiary, accountingBook, classId, dep
  * @returns {Promise<number>} Net income value
  */
 async function NETINCOME(fromPeriod, toPeriod, subsidiary, accountingBook, classId, department, location) {
+    // CRITICAL: Force async boundary before any synchronous logic
+    await Promise.resolve();
+    
     try {
         console.log(`📊 NETINCOME called with: fromPeriod=${fromPeriod} (type: ${typeof fromPeriod}), toPeriod=${toPeriod} (type: ${typeof toPeriod}), subsidiary=${subsidiary}`);
         
@@ -9652,6 +9676,8 @@ async function NETINCOME(fromPeriod, toPeriod, subsidiary, accountingBook, class
  * @returns {Promise<number>} Total balance for all accounts of the specified type
  */
 async function TYPEBALANCE(accountType, fromPeriod, toPeriod, subsidiary, department, location, classId, accountingBook, useSpecialAccount) {
+    // CRITICAL: Force async boundary before any synchronous logic
+    await Promise.resolve();
     
     // Cross-context cache invalidation - taskpane signals via localStorage
     // This is CRITICAL for subsidiary changes - must clear in-memory cache to read fresh localStorage data
@@ -9996,6 +10022,9 @@ async function TYPEBALANCE(accountType, fromPeriod, toPeriod, subsidiary, depart
  * @returns {Promise<number>} CTA value
  */
 async function CTA(period, subsidiary, accountingBook) {
+    // CRITICAL: Force async boundary before any synchronous logic
+    await Promise.resolve();
+    
     try {
         // CTA is a point-in-time balance - use end of year for year-only values
         // This ensures "2025" calculates CTA as of Dec 31, 2025
