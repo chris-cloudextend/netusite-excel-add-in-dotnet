@@ -693,6 +693,291 @@ function detectColumnBasedBSGrid(evaluatingRequests) {
 }
 
 /**
+ * Check if periods are contiguous (consecutive months).
+ * Used to determine if single multi-period query is possible.
+ * 
+ * @param {Array<string>} periods - Array of period strings (e.g., ["Jan 2025", "Feb 2025", "Mar 2025"])
+ * @returns {boolean} - True if all periods are consecutive months
+ */
+function arePeriodsContiguous(periods) {
+    if (!periods || periods.length < 2) return false;
+    
+    const periodDates = periods
+        .map(p => ({ period: p, date: parsePeriodToDate(p) }))
+        .filter(p => p.date !== null)
+        .sort((a, b) => a.date.getTime() - b.date.getTime());
+    
+    if (periodDates.length < 2) return false;
+    
+    // Check if periods are consecutive months
+    for (let i = 1; i < periodDates.length; i++) {
+        const prevDate = periodDates[i - 1].date;
+        const currDate = periodDates[i].date;
+        
+        const monthsDiff = (currDate.getFullYear() - prevDate.getFullYear()) * 12 +
+                          (currDate.getMonth() - prevDate.getMonth());
+        
+        if (monthsDiff !== 1) {
+            return false; // Not consecutive
+        }
+    }
+    
+    return true; // All consecutive
+}
+
+/**
+ * Infer anchor period (period immediately preceding earliest requested period).
+ * Returns period name (e.g., "Dec 2024") for "Jan 2025".
+ * 
+ * CRITICAL: This is period-based, not date-based. Backend resolves period to date.
+ * 
+ * @param {Array<string>} periods - Array of period strings (e.g., ["Jan 2025", "Feb 2025"])
+ * @returns {string|null} - Anchor period name or null if invalid
+ */
+function inferAnchorPeriod(periods) {
+    if (!periods || periods.length === 0) return null;
+    
+    // Find earliest period
+    const sortedPeriods = periods
+        .map(p => ({ period: p, date: parsePeriodToDate(p) }))
+        .filter(p => p.date !== null)
+        .sort((a, b) => a.date.getTime() - b.date.getTime());
+    
+    if (sortedPeriods.length === 0) return null;
+    
+    const earliestDate = sortedPeriods[0].date;
+    
+    // Calculate previous month
+    const anchorDate = new Date(earliestDate);
+    anchorDate.setMonth(anchorDate.getMonth() - 1);
+    
+    // Format as "Mon YYYY"
+    const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 
+                        'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const month = monthNames[anchorDate.getMonth()];
+    const year = anchorDate.getFullYear();
+    
+    return `${month} ${year}`;
+}
+
+/**
+ * PHASE 3: Execute column-based balance sheet batch query.
+ * 
+ * Pure execution function - no side effects outside its own scope.
+ * No mutation of global caches.
+ * No dependency on row-based batching code.
+ * 
+ * @param {Object} grid - Grid detection result from detectColumnBasedBSGrid()
+ * @returns {Promise<Object>} - Map of {account: {period: balance}} or throws error
+ */
+async function executeColumnBasedBSBatch(grid) {
+    const { allAccounts, columns, filters } = grid;
+    const accounts = Array.from(allAccounts);
+    const periods = columns.map(col => col.period).sort((a, b) => {
+        const aDate = parsePeriodToDate(a);
+        const bDate = parsePeriodToDate(b);
+        if (!aDate || !bDate) return 0;
+        return aDate.getTime() - bDate.getTime();
+    });
+    
+    if (DEBUG_COLUMN_BASED_BS_BATCHING) {
+        console.log(`🚀 COLUMN-BASED BS BATCH: ${accounts.length} accounts, ${periods.length} periods`);
+    }
+    
+    // Infer anchor period (period immediately preceding earliest period)
+    const anchorPeriod = inferAnchorPeriod(periods);
+    if (!anchorPeriod) {
+        throw new Error('Could not infer anchor period');
+    }
+    
+    if (DEBUG_COLUMN_BASED_BS_BATCHING) {
+        console.log(`📊 Query 1: Opening balances for ${accounts.length} accounts, anchor_period=${anchorPeriod}`);
+    }
+    
+    // Query 1: Opening balances for all accounts
+    const openingBalances = await fetchOpeningBalancesBatch(accounts, anchorPeriod, filters);
+    
+    // Query 2: Period activity
+    const isContiguous = arePeriodsContiguous(periods);
+    let periodActivity;
+    
+    if (isContiguous) {
+        // Single multi-period query
+        if (DEBUG_COLUMN_BASED_BS_BATCHING) {
+            console.log(`📊 Query 2: Period activity for ${accounts.length} accounts, ${periods.length} periods (contiguous)`);
+        }
+        periodActivity = await fetchPeriodActivityBatch(accounts, periods[0], periods[periods.length - 1], filters);
+    } else {
+        // Per-period queries (sequential, not parallel)
+        if (DEBUG_COLUMN_BASED_BS_BATCHING) {
+            console.log(`📊 Query 2: Period activity for ${accounts.length} accounts, ${periods.length} periods (non-contiguous, sequential)`);
+        }
+        periodActivity = {};
+        
+        for (const account of accounts) {
+            periodActivity[account] = {};
+        }
+        
+        for (const period of periods) {
+            const periodData = await fetchPeriodActivityBatch(accounts, period, period, filters);
+            
+            // Merge into periodActivity
+            for (const account of accounts) {
+                if (!periodActivity[account]) {
+                    periodActivity[account] = {};
+                }
+                const accountPeriodData = periodData[account] || {};
+                periodActivity[account][period] = accountPeriodData[period] || 0;
+            }
+        }
+    }
+    
+    // Local computation: runningBalance = opening + cumulative(periodActivity)
+    const results = {};
+    
+    for (const account of accounts) {
+        const opening = openingBalances[account];
+        if (opening === undefined) {
+            throw new Error(`Missing opening balance for account ${account}`);
+        }
+        
+        results[account] = {};
+        let runningBalance = opening;
+        
+        // Process periods in fiscal order (already sorted)
+        for (const period of periods) {
+            const activity = periodActivity[account]?.[period] ?? 0;
+            runningBalance += activity;
+            results[account][period] = runningBalance;
+        }
+    }
+    
+    // Validation: All accounts and periods must be present
+    for (const account of accounts) {
+        if (!results[account]) {
+            throw new Error(`Missing results for account ${account}`);
+        }
+        for (const period of periods) {
+            if (results[account][period] === undefined) {
+                throw new Error(`Missing result for account ${account}, period ${period}`);
+            }
+        }
+    }
+    
+    if (DEBUG_COLUMN_BASED_BS_BATCHING) {
+        console.log(`✅ COLUMN-BASED BS BATCH COMPLETE: ${accounts.length} accounts × ${periods.length} periods`);
+    }
+    
+    return results; // {account: {period: balance}}
+}
+
+/**
+ * Fetch opening balances for multiple accounts as of anchor period.
+ * 
+ * @param {Array<string>} accounts - Array of account numbers
+ * @param {string} anchorPeriod - Anchor period (e.g., "Dec 2024")
+ * @param {Object} filters - Filter object
+ * @returns {Promise<Object>} - Map of {account: balance}
+ */
+async function fetchOpeningBalancesBatch(accounts, anchorPeriod, filters) {
+    const params = new URLSearchParams();
+    params.append('account', accounts.join(',')); // Comma-separated
+    params.append('anchor_period', anchorPeriod);
+    params.append('batch_mode', 'true');
+    
+    // Add filters (only non-empty values)
+    if (filters.subsidiary) params.append('subsidiary', filters.subsidiary);
+    if (filters.department) params.append('department', filters.department);
+    if (filters.location) params.append('location', filters.location);
+    if (filters.classId) params.append('class', filters.classId);
+    if (filters.accountingBook) params.append('book', filters.accountingBook);
+    
+    const url = `${SERVER_URL}/balance?${params.toString()}`;
+    
+    if (DEBUG_COLUMN_BASED_BS_BATCHING) {
+        console.log(`🔍 Opening balances URL: ${url}`);
+    }
+    
+    const response = await fetch(url);
+    if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Opening balances query failed: ${response.status} - ${errorText}`);
+    }
+    
+    const data = await response.json();
+    
+    // Validate response shape
+    if (!data.balances || typeof data.balances !== 'object') {
+        throw new Error(`Invalid opening balances response: missing balances object`);
+    }
+    
+    // Validate all accounts are present
+    for (const account of accounts) {
+        if (!(account in data.balances)) {
+            throw new Error(`Missing opening balance for account ${account}`);
+        }
+    }
+    
+    return data.balances; // {account: balance}
+}
+
+/**
+ * Fetch period activity for multiple accounts across period range.
+ * 
+ * @param {Array<string>} accounts - Array of account numbers
+ * @param {string} fromPeriod - From period (e.g., "Jan 2025")
+ * @param {string} toPeriod - To period (e.g., "Apr 2025")
+ * @param {Object} filters - Filter object
+ * @returns {Promise<Object>} - Map of {account: {period: activity}}
+ */
+async function fetchPeriodActivityBatch(accounts, fromPeriod, toPeriod, filters) {
+    const params = new URLSearchParams();
+    params.append('account', accounts.join(',')); // Comma-separated
+    params.append('from_period', fromPeriod);
+    params.append('to_period', toPeriod);
+    params.append('batch_mode', 'true');
+    params.append('include_period_breakdown', 'true');
+    
+    // Add filters (only non-empty values)
+    if (filters.subsidiary) params.append('subsidiary', filters.subsidiary);
+    if (filters.department) params.append('department', filters.department);
+    if (filters.location) params.append('location', filters.location);
+    if (filters.classId) params.append('class', filters.classId);
+    if (filters.accountingBook) params.append('book', filters.accountingBook);
+    
+    const url = `${SERVER_URL}/balance?${params.toString()}`;
+    
+    if (DEBUG_COLUMN_BASED_BS_BATCHING) {
+        console.log(`🔍 Period activity URL: ${url}`);
+    }
+    
+    const response = await fetch(url);
+    if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Period activity query failed: ${response.status} - ${errorText}`);
+    }
+    
+    const data = await response.json();
+    
+    // Validate response shape
+    if (!data.period_activity || typeof data.period_activity !== 'object') {
+        throw new Error(`Invalid period activity response: missing period_activity object`);
+    }
+    
+    // Validate all accounts are present
+    for (const account of accounts) {
+        if (!(account in data.period_activity)) {
+            throw new Error(`Missing period activity for account ${account}`);
+        }
+        if (typeof data.period_activity[account] !== 'object') {
+            throw new Error(`Invalid period activity for account ${account}: expected object`);
+        }
+    }
+    
+    return data.period_activity; // {account: {period: activity}}
+}
+
+/**
  * Synchronously check if a BS request is eligible for batching.
  * This check is non-blocking and reads from the current request queue.
  * 
@@ -5539,13 +5824,60 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         const evalKey = `${account}::${fromPeriod || ''}::${toPeriod}::${JSON.stringify(filters)}`;
         pendingEvaluation.balance.set(evalKey, { account, fromPeriod, toPeriod, filters });
         
-        // PHASE 1: Column-based detection (logging only, no behavior change)
-        // This runs regardless of feature flag to validate detection logic
-        if (DEBUG_COLUMN_BASED_BS_BATCHING) {
+        // PHASE 3: Column-based batch execution (behind feature flag)
+        // This runs only when feature flag is enabled AND account is Balance Sheet
+        if (USE_COLUMN_BASED_BS_BATCHING && accountType === 'Balance Sheet') {
             const evaluatingRequests = Array.from(pendingEvaluation.balance.values());
             const columnBasedDetection = detectColumnBasedBSGrid(evaluatingRequests);
+            
             if (columnBasedDetection.eligible) {
-                console.log(`🔍 COLUMN-BASED BS DETECT: Eligible (${columnBasedDetection.mode}) - ${columnBasedDetection.allAccounts.size} accounts, ${columnBasedDetection.columns.length} columns`);
+                if (DEBUG_COLUMN_BASED_BS_BATCHING) {
+                    console.log(`🔍 COLUMN-BASED BS DETECT: Eligible (${columnBasedDetection.mode}) - ${columnBasedDetection.allAccounts.size} accounts, ${columnBasedDetection.columns.length} columns`);
+                }
+                
+                try {
+                    // Execute column-based batch query
+                    const batchResults = await executeColumnBasedBSBatch(columnBasedDetection);
+                    
+                    // Get result for this specific account and period
+                    const balance = batchResults[account]?.[toPeriod];
+                    
+                    if (balance !== undefined && balance !== null && typeof balance === 'number') {
+                        // Cache result (local scope only - no global cache mutation)
+                        cache.balance.set(cacheKey, balance);
+                        
+                        if (DEBUG_COLUMN_BASED_BS_BATCHING) {
+                            console.log(`✅ COLUMN-BASED BS RESULT: ${account} for ${toPeriod} = ${balance}`);
+                        }
+                        
+                        // Remove from pendingEvaluation (batch executed successfully)
+                        pendingEvaluation.balance.delete(evalKey);
+                        return balance;
+                    } else {
+                        // Missing result - fall back to per-cell logic
+                        if (DEBUG_COLUMN_BASED_BS_BATCHING) {
+                            console.log(`⚠️ COLUMN-BASED BS: Missing result for ${account}/${toPeriod} - falling back to per-cell`);
+                        }
+                        // Fall through to per-cell logic below
+                    }
+                } catch (error) {
+                    // Swallow error and fall back to per-cell logic
+                    // Never throw from batch execution into Excel
+                    if (DEBUG_COLUMN_BASED_BS_BATCHING) {
+                        console.error(`❌ COLUMN-BASED BS BATCH ERROR: ${error.message} - falling back to per-cell`);
+                    }
+                    // Fall through to per-cell logic below
+                }
+            }
+        } else {
+            // PHASE 1: Column-based detection (logging only, no behavior change)
+            // This runs regardless of feature flag to validate detection logic
+            if (DEBUG_COLUMN_BASED_BS_BATCHING) {
+                const evaluatingRequests = Array.from(pendingEvaluation.balance.values());
+                const columnBasedDetection = detectColumnBasedBSGrid(evaluatingRequests);
+                if (columnBasedDetection.eligible) {
+                    console.log(`🔍 COLUMN-BASED BS DETECT: Eligible (${columnBasedDetection.mode}) - ${columnBasedDetection.allAccounts.size} accounts, ${columnBasedDetection.columns.length} columns`);
+                }
             }
         }
         
