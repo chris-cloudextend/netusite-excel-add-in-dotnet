@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.1.11';  // FIX: Correct brace structure for cumulativeRequests block - fix runtime syntax error
+const FUNCTIONS_VERSION = '4.0.2.0';  // RESTORE: Reverted to balance-sheet-before-anchor-batching restore point
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -1212,8 +1212,6 @@ const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
  * Parse period string into {month: 0-11, year: YYYY}
  * Supports both "Mon YYYY" format and year-only "YYYY" format
  * For year-only, returns month: 0 (Jan) as the starting month
- * 
- * Used by BS grid batching for anchor date inference.
  */
 function parsePeriod(periodStr) {
     if (!periodStr || typeof periodStr !== 'string') return null;
@@ -1326,40 +1324,6 @@ const cache = {
 // This prevents duplicate concurrent API calls for the same period
 // Bounded to prevent memory issues if requests never complete
 const inFlightRequests = new LRUCache(500, 'inFlight');
-
-// ============================================================================
-// BALANCE SHEET GRID BATCHING - With Inferred Anchors
-// ============================================================================
-// Cache for BS grid batching results (opening balances + period activity)
-// Key: "bs-grid:{accountSetHash}:{anchorDate}:{fromPeriod}:{toPeriod}:{filtersHash}"
-// Value: { openingBalances: {account: balance}, activity: {account: {period: amount}}, timestamp }
-const bsGridCache = new LRUCache(100, 'bsGrid');
-
-// ============================================================================
-// EXECUTION LOCK - Single-Flight Promise-Based Mutex
-// ============================================================================
-// CRITICAL: This is a true single-flight lock (promise-based mutex), not just a boolean flag.
-// 
-// Guarantees:
-// - Only one Balance Sheet batch query can run at a time
-// - Concurrent evaluations block via await lock.promise
-// - No overlapping NetSuite calls possible under any recalculation scenario
-// - Lock is always released in finally block (prevents deadlocks)
-//
-// Implementation: Promise-based mutex pattern
-// - locked: Boolean flag indicating if batch query is in flight
-// - promise: Promise that resolves when current batch completes (awaited by concurrent evaluations)
-// - cacheKey: Cache key of current batch (for debugging/logging)
-// ============================================================================
-let bsGridBatchingLock = {
-    locked: false,
-    promise: null,
-    cacheKey: null
-};
-
-// Safety limits for BS grid batching
-const BS_GRID_MAX_ACCOUNTS = 200;
-const BS_GRID_MAX_PERIODS = 36;
 
 // ============================================================================
 // SPECIAL FORMULA SEMAPHORE - Ensures only ONE special formula runs at a time
@@ -1754,1391 +1718,6 @@ function isBalanceSheetType(acctType) {
     return bsTypes.includes(acctType);
 }
 
-// Helper: Check if account type is Income Statement (Income or Expense)
-function isIncomeStatementType(acctType) {
-    if (!acctType) return false;
-    // All Income Statement account types (Income and Expense)
-    const plTypes = [
-        // Income (Natural Credit Balance)
-        'Income',         // Revenue/Sales
-        'OthIncome',      // Other Income
-        // Expenses (Natural Debit Balance)
-        'COGS',           // Cost of Goods Sold
-        'Expense',        // Operating Expense
-        'OthExpense'      // Other Expense
-    ];
-    return plTypes.includes(acctType);
-}
-
-// ============================================================================
-// BALANCE SHEET GRID BATCHING HELPERS
-// ============================================================================
-
-/**
- * Detect if a set of requests forms a Balance Sheet grid pattern.
- * 
- * ============================================================================
- * GRID DETECTION - Supports Two Query Types
- * ============================================================================
- * 
- * CASE 1 - CUMULATIVE QUERIES (fromPeriod empty):
- *   Formula: BALANCE(account, , toPeriod)
- *   - Most common CPA workflow
- *   - Anchor = day before earliest toPeriod in grid
- *   - EndingBalance(period) = OpeningBalance(anchor) + SUM(Activity(periods up to period))
- * 
- * CASE 2 - PERIOD ACTIVITY QUERIES (both fromPeriod and toPeriod):
- *   Formula: BALANCE(account, fromPeriod, toPeriod)
- *   - Explicit period range query
- *   - Anchor = day before earliest fromPeriod in grid
- *   - Result(period) = SUM(Activity(fromPeriod → toPeriod))
- * 
- * CONSERVATIVE TRIGGER CONDITIONS (ALL must be true for cumulative queries):
- * 1. Account type is Balance Sheet (verified separately in processBatchQueue)
- * 2. fromPeriod is empty (verified here)
- * 3. The formula appears in a contiguous grid (verified via request count vs expected grid size)
- * 4. There are multiple adjacent columns (periods.size >= 2, verified here)
- * 5. toPeriod differs across those columns (periods.size >= 2, verified here)
- * 6. All formulas in the detected block are XAVI.BALANCE (implicit - only BALANCE requests processed)
- * 7. Account references vary only by row (verified via account-to-period mapping)
- * 8. Period references vary only by column (verified via period-to-account mapping)
- * 
- * Additional conservative checks:
- * - All requests are the SAME query type (all cumulative OR all period activity)
- * - Same filters (subsidiary, department, location, class, book)
- * - Grid coverage >= 50% (allows some missing cells but ensures grid-like structure)
- * 
- * CRITICAL SAFETY: Safety limits are enforced HERE, before any NetSuite work begins.
- * This ensures fail-fast behavior with zero network activity if limits are exceeded.
- * 
- * If intent is unclear, returns null (fall back to existing behavior).
- * 
- * @param {Array} requests - Array of [cacheKey, request] tuples
- * @returns {Object|null} Grid info: { queryType: 'cumulative'|'periodActivity', accounts: Set, periods: Set, earliestPeriod, latestPeriod, filtersHash } or null
- */
-function detectBsGridPattern(requests) {
-    if (!requests || requests.length < 2) {
-        return null; // Need at least 2 requests to form a grid
-    }
-    
-    // ============================================================================
-    // STEP 1: Separate cumulative and period activity requests
-    // ============================================================================
-    // CRITICAL: All requests in a grid must be the SAME query type.
-    // Mixed types indicate ambiguous intent → fall back to individual processing.
-    // ============================================================================
-    const cumulativeRequests = [];
-    const periodActivityRequests = [];
-    
-    for (const [cacheKey, request] of requests) {
-        const { fromPeriod, toPeriod } = request.params;
-        const isCumulative = (!fromPeriod || fromPeriod === '') && toPeriod && toPeriod !== '';
-        const isPeriodActivity = fromPeriod && toPeriod && fromPeriod !== toPeriod;
-        
-        if (isCumulative) {
-            cumulativeRequests.push(request);
-        } else if (isPeriodActivity) {
-            periodActivityRequests.push(request);
-        }
-        // Ignore other types (they don't form grids)
-    }
-    
-    // Determine which query type to process (must be homogeneous)
-    let queryType = null;
-    let selectedRequests = [];
-    
-    if (cumulativeRequests.length >= 2 && periodActivityRequests.length === 0) {
-        // CASE 1: All cumulative queries
-        queryType = 'cumulative';
-        selectedRequests = cumulativeRequests;
-    } else if (periodActivityRequests.length >= 2 && cumulativeRequests.length === 0) {
-        // CASE 2: All period activity queries
-        queryType = 'periodActivity';
-        selectedRequests = periodActivityRequests;
-    } else {
-        // Mixed types or insufficient requests → not a grid
-        return null;
-    }
-    
-    if (selectedRequests.length < 2) {
-        return null; // Need at least 2 requests of the same type
-    }
-    
-    // ============================================================================
-    // STEP 2: Verify all requests share the same filters
-    // ============================================================================
-    const firstRequest = selectedRequests[0];
-    const filtersHash = getFilterKey({
-        subsidiary: firstRequest.params.subsidiary,
-        department: firstRequest.params.department,
-        location: firstRequest.params.location,
-        classId: firstRequest.params.classId,
-        accountingBook: firstRequest.params.accountingBook
-    });
-    
-    // Verify all requests have same filters
-    for (const request of selectedRequests) {
-        const requestFiltersHash = getFilterKey({
-            subsidiary: request.params.subsidiary,
-            department: request.params.department,
-            location: request.params.location,
-            classId: request.params.classId,
-            accountingBook: request.params.accountingBook
-        });
-        if (requestFiltersHash !== filtersHash) {
-            return null; // Different filters - not a grid
-        }
-    }
-    
-    // ============================================================================
-    // STEP 3: Collect unique accounts and periods
-    // ============================================================================
-    // CRITICAL CONSERVATIVE CHECKS FOR CUMULATIVE QUERIES:
-    // For cumulative queries, we require VERY strict conditions to ensure
-    // grid intent is unmistakable before enabling inferred-anchor batching.
-    // ============================================================================
-    const accounts = new Set();
-    const periods = new Set();
-    let earliestPeriod = null;
-    let latestPeriod = null;
-    
-    // For cumulative queries: Track account-to-period mappings to verify grid structure
-    const accountPeriodMap = new Map(); // account -> Set of periods
-    
-    for (const request of selectedRequests) {
-        const { account, fromPeriod, toPeriod } = request.params;
-        
-        // CRITICAL CHECK 1: For cumulative queries, fromPeriod MUST be empty
-        if (queryType === 'cumulative') {
-            if (fromPeriod && fromPeriod !== '') {
-                console.warn(`⚠️ BS Grid: Cumulative query has non-empty fromPeriod - not a grid`);
-                return null; // Not a cumulative query
-            }
-            
-            // CRITICAL CHECK 2: toPeriod MUST be present and non-empty
-            if (!toPeriod || toPeriod === '') {
-                console.warn(`⚠️ BS Grid: Cumulative query missing toPeriod - not a grid`);
-                return null;
-            }
-            
-            // Track account-to-period mappings
-            if (!accountPeriodMap.has(account)) {
-                accountPeriodMap.set(account, new Set());
-            }
-            accountPeriodMap.get(account).add(toPeriod);
-            
-            accounts.add(account);
-            periods.add(toPeriod);
-            
-            if (!earliestPeriod || toPeriod < earliestPeriod) {
-                earliestPeriod = toPeriod;
-            }
-            if (!latestPeriod || toPeriod > latestPeriod) {
-                latestPeriod = toPeriod;
-            }
-        } else {
-            // For period activity queries, track both fromPeriod and toPeriod
-            periods.add(fromPeriod);
-            periods.add(toPeriod);
-            if (!earliestPeriod || fromPeriod < earliestPeriod) {
-                earliestPeriod = fromPeriod;
-            }
-            if (!latestPeriod || toPeriod > latestPeriod) {
-                latestPeriod = toPeriod;
-            }
-            accounts.add(account);
-        }
-    }
-    
-    // ============================================================================
-    // CRITICAL CHECK 3: Need multiple accounts AND multiple periods
-    // ============================================================================
-    if (accounts.size < 2 || periods.size < 2) {
-        console.warn(`⚠️ BS Grid: Insufficient variety (${accounts.size} accounts, ${periods.size} periods) - not a grid`);
-        return null; // Not enough variety to be a grid
-    }
-    
-    // ============================================================================
-    // OPTIMIZATION: Check for earlier cached period to use as anchor
-    // If January is already computed and February/March/April are pending,
-    // use January as the anchor instead of calculating from February
-    // ============================================================================
-    if (queryType === 'cumulative') {
-        // Get filters from first request (all requests should have same filters)
-        const firstRequest = selectedRequests[0];
-        const { subsidiary, department, location, classId, accountingBook } = firstRequest.params;
-        const filtersHash = getFilterKey({ subsidiary, department, location, classId, accountingBook });
-        
-        // Check if there's a cached period earlier than earliestPeriod for any account
-        // If we find one, use it as the anchor period
-        let foundEarlierPeriod = null;
-        const sortedPeriods = Array.from(periods).sort();
-        
-        // Try to find an earlier period by checking cache for a sample of accounts
-        // We'll check a few months before the earliest pending period
-        const sampleAccounts = Array.from(accounts).slice(0, Math.min(5, accounts.size));
-        const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-        
-        if (sortedPeriods.length > 0 && earliestPeriod) {
-            const earliestParsed = parsePeriod(earliestPeriod);
-            if (earliestParsed) {
-                // Check up to 3 months before the earliest pending period
-                for (let monthsBack = 1; monthsBack <= 3; monthsBack++) {
-                    let checkMonth = earliestParsed.month - monthsBack;
-                    let checkYear = earliestParsed.year;
-                    if (checkMonth < 0) {
-                        checkMonth += 12;
-                        checkYear--;
-                    }
-                    const checkPeriod = `${monthNames[checkMonth]} ${checkYear}`;
-                    
-                    // Check if this period is cached for at least one account
-                    let foundInCache = false;
-                    for (const account of sampleAccounts) {
-                        const cacheValue = checkLocalStorageCache(account, '', checkPeriod, subsidiary, filtersHash);
-                        if (cacheValue !== null) {
-                            foundInCache = true;
-                            console.log(`   ✅ Found earlier cached period: ${checkPeriod} for account ${account} - will use as anchor`);
-                            break;
-                        }
-                    }
-                    
-                    if (foundInCache) {
-                        foundEarlierPeriod = checkPeriod;
-                        break; // Use the most recent earlier period found
-                    }
-                }
-            }
-        }
-        
-        // If we found an earlier period, update earliestPeriod to use it as anchor
-        if (foundEarlierPeriod) {
-            console.log(`   🔒 Using earlier cached period ${foundEarlierPeriod} as anchor (instead of ${earliestPeriod})`);
-            // Note: We don't change earliestPeriod in the gridInfo, but we'll handle this in processBsGridBatching
-            // by checking for cached anchor periods
-        }
-    
-    // ============================================================================
-    // CRITICAL CHECK 4: For cumulative queries, verify grid-like structure
-    // ============================================================================
-    // We can't verify actual cell positions, but we can verify that:
-    // - Each account appears with multiple periods (suggests columns)
-    // - Each period appears with multiple accounts (suggests rows)
-    // - The total request count is reasonable for a grid (accounts × periods, or close)
-    // ============================================================================
-    if (queryType === 'cumulative') {
-        // CRITICAL CHECK 4A: Each account should appear with multiple periods (columns)
-        let accountsWithMultiplePeriods = 0;
-        for (const [account, periodSet] of accountPeriodMap) {
-            if (periodSet.size >= 2) {
-                accountsWithMultiplePeriods++;
-            }
-        }
-        
-        // At least 2 accounts must have multiple periods (suggests multiple columns)
-        if (accountsWithMultiplePeriods < 2) {
-            console.warn(`⚠️ BS Grid: Only ${accountsWithMultiplePeriods} accounts have multiple periods - not a clear grid pattern`);
-            return null;
-        }
-        
-        // CRITICAL CHECK 4B: Verify periods differ across requests (multiple columns)
-        // This is already verified by periods.size >= 2, but add explicit check
-        if (periods.size < 2) {
-            console.warn(`⚠️ BS Grid: Only ${periods.size} unique period(s) - need multiple columns`);
-            return null;
-        }
-        
-        // CRITICAL CHECK 4C: Verify reasonable grid size
-        // Expected: accounts × periods (or close, allowing for some missing cells)
-        const expectedGridSize = accounts.size * periods.size;
-        const actualRequestCount = selectedRequests.length;
-        const gridCoverage = actualRequestCount / expectedGridSize;
-        
-        // Require at least 50% coverage (allows for some missing cells but ensures grid-like structure)
-        if (gridCoverage < 0.5) {
-            console.warn(`⚠️ BS Grid: Request count (${actualRequestCount}) doesn't match grid pattern (expected ~${expectedGridSize}, coverage: ${(gridCoverage * 100).toFixed(1)}%)`);
-            return null; // Not a clear grid pattern
-        }
-        
-        // CRITICAL CHECK 4D: Verify each period appears with multiple accounts (suggests multiple rows)
-        const periodAccountMap = new Map(); // period -> Set of accounts
-        for (const request of selectedRequests) {
-            const { account, toPeriod } = request.params;
-            if (!periodAccountMap.has(toPeriod)) {
-                periodAccountMap.set(toPeriod, new Set());
-            }
-            periodAccountMap.get(toPeriod).add(account);
-        }
-        
-        let periodsWithMultipleAccounts = 0;
-        for (const [period, accountSet] of periodAccountMap) {
-            if (accountSet.size >= 2) {
-                periodsWithMultipleAccounts++;
-            }
-        }
-        
-        // At least 2 periods must have multiple accounts (suggests multiple rows)
-        if (periodsWithMultipleAccounts < 2) {
-            console.warn(`⚠️ BS Grid: Only ${periodsWithMultipleAccounts} periods have multiple accounts - not a clear grid pattern`);
-            return null;
-        }
-    }
-    
-    // ============================================================================
-    // SAFETY LIMITS ENFORCEMENT - Fail Fast Before Any NetSuite Work
-    // ============================================================================
-    // CRITICAL: These limits are enforced HERE, before:
-    // - Anchor computation (inferAnchorDate)
-    // - Batch query construction
-    // - Any NetSuite API calls
-    // 
-    // If limits are exceeded, this function returns null, causing fallback to
-    // individual processing. This ensures zero network activity and fail-fast behavior.
-    // ============================================================================
-    if (accounts.size > BS_GRID_MAX_ACCOUNTS) {
-        console.warn(`⚠️ BS Grid: Too many accounts (${accounts.size}), max: ${BS_GRID_MAX_ACCOUNTS} - failing fast before any NetSuite work`);
-        return null; // Fail fast - don't attempt grid batching
-    }
-    
-    // Count unique periods in range
-    const periodCount = periods.size;
-    if (periodCount > BS_GRID_MAX_PERIODS) {
-        console.warn(`⚠️ BS Grid: Too many periods (${periodCount}), max: ${BS_GRID_MAX_PERIODS} - failing fast before any NetSuite work`);
-        return null; // Fail fast - don't attempt grid batching
-    }
-    
-    return {
-        queryType,  // 'cumulative' or 'periodActivity'
-        accounts,
-        periods,
-        earliestPeriod,  // Earliest period in grid (toPeriod for cumulative, fromPeriod for period activity)
-        latestPeriod,    // Latest period in grid (toPeriod for both types)
-        filtersHash,
-        requestCount: selectedRequests.length,
-        requests: selectedRequests  // Store requests for processing
-    };
-}
-
-/**
- * Infer anchor date from earliest period in grid.
- * 
- * ============================================================================
- * ANCHOR CONTRACT - Balance Sheet Grid Batching
- * ============================================================================
- * 
- * HOW THE ANCHOR IS INFERRED:
- * 
- * CASE 1 - CUMULATIVE QUERIES (fromPeriod empty):
- *   - Anchor date = day before earliest toPeriod's start date
- *   - Example: If earliest toPeriod is "Jan 2025" (starts Jan 1, 2025),
- *     anchor date is Dec 31, 2024 (day before Jan 1)
- *   - The anchor represents the opening balance date for ALL accounts in the grid
- *   - All subsequent columns build forward from this anchor
- * 
- * CASE 2 - PERIOD ACTIVITY QUERIES (both fromPeriod and toPeriod):
- *   - Anchor date = day before earliest fromPeriod's start date
- *   - Example: If earliest fromPeriod is "Jan 2025" (starts Jan 1, 2025),
- *     anchor date is Dec 31, 2024 (day before Jan 1)
- *   - The anchor represents the opening balance date for period activity calculations
- * 
- * KEY PRINCIPLE: For Balance Sheet grids, the lowest period in the grid defines
- * the anchor. All subsequent columns build forward from that anchor.
- * 
- * WHY THIS APPLIES ONLY TO BALANCE SHEET ACCOUNTS:
- * - Balance Sheet accounts use cumulative balances (from inception)
- * - The anchor provides a common starting point for all accounts in the grid
- * - Income/Expense accounts use period activity (sum of transactions), not
- *   cumulative balances, so they don't need an anchor
- * - Account type verification (isBalanceSheetType) ensures only BS accounts
- *   reach this code path
- * 
- * WHY ENDING BALANCES ARE DERIVED LOCALLY:
- * - EndingBalance(period) = OpeningBalance(anchor) + SUM(Activity(periods up to period))
- * - This runs entirely in-memory (no NetSuite calls)
- * - Provides instant results after batched queries complete
- * - Mathematically equivalent to: Balance(toPeriod) - Balance(before fromPeriod)
- *   but uses indexed date filters instead of cumulative scans (much faster)
- * 
- * FINANCIAL CORRECTNESS:
- * - All amounts (opening balances and period activity) are converted at the
- *   same exchange rate (toPeriod's rate) via BUILTIN.CONSOLIDATE
- * - This ensures the balance sheet balances correctly
- * - Local computation preserves this correctness (no currency conversion needed)
- * 
- * ============================================================================
- * 
- * @param {string} earliestPeriod - Period name (e.g., "Jan 2025") - toPeriod for cumulative, fromPeriod for period activity
- * @returns {Promise<string|null>} Anchor date in YYYY-MM-DD format, or null if error
- */
-async function inferAnchorDate(earliestPeriod) {
-    try {
-        console.log(`   🔍 Inferring anchor date for earliest period: ${earliestPeriod}`);
-        
-        // Parse period to get month and year
-        const parsed = parsePeriod(earliestPeriod);
-        if (!parsed) {
-            console.warn(`⚠️ Could not parse period: ${earliestPeriod}`);
-            return null;
-        }
-        
-        console.log(`   📅 Parsed period: month=${parsed.month} (${MONTH_NAMES[parsed.month]}), year=${parsed.year}`);
-        
-        // Get period data from backend to find start date
-        // Use the period lookup endpoint that returns period details
-        const response = await fetch(`${SERVER_URL}/lookups/periods?period=${encodeURIComponent(earliestPeriod)}`);
-        if (!response.ok) {
-            console.warn(`⚠️ Could not fetch period data for ${earliestPeriod} (${response.status}) - using fallback calculation`);
-            // Fallback: calculate anchor date from period name
-            // Assume period starts on the 1st of the month
-            // CRITICAL: parsed.month is 0-indexed (0=Jan, 1=Feb, etc.), which matches JavaScript Date constructor
-            const month = parsed.month;
-            const year = parsed.year;
-            const startDate = new Date(year, month, 1);
-            startDate.setDate(startDate.getDate() - 1); // Day before period start
-            
-            const anchorYear = startDate.getFullYear();
-            const anchorMonth = String(startDate.getMonth() + 1).padStart(2, '0');
-            const anchorDay = String(startDate.getDate()).padStart(2, '0');
-            const anchorDate = `${anchorYear}-${anchorMonth}-${anchorDay}`;
-            console.log(`   ✅ Fallback anchor date: ${anchorDate} (day before ${MONTH_NAMES[month]} ${year})`);
-            return anchorDate;
-        }
-        
-        const data = await response.json();
-        if (!data || !data.startDate) {
-            console.warn(`⚠️ Period ${earliestPeriod} has no startDate - using fallback calculation`);
-            // Fallback: calculate from period name
-            const month = parsed.month;
-            const year = parsed.year;
-            const startDate = new Date(year, month, 1);
-            startDate.setDate(startDate.getDate() - 1);
-            
-            const anchorYear = startDate.getFullYear();
-            const anchorMonth = String(startDate.getMonth() + 1).padStart(2, '0');
-            const anchorDay = String(startDate.getDate()).padStart(2, '0');
-            const anchorDate = `${anchorYear}-${anchorMonth}-${anchorDay}`;
-            console.log(`   ✅ Fallback anchor date: ${anchorDate} (day before ${MONTH_NAMES[month]} ${year})`);
-            return anchorDate;
-        }
-        
-        // Parse start date and subtract 1 day
-        const startDate = new Date(data.startDate);
-        console.log(`   📅 Period start date from backend: ${data.startDate}`);
-        startDate.setDate(startDate.getDate() - 1);
-        
-        // Format as YYYY-MM-DD
-        const year = startDate.getFullYear();
-        const month = String(startDate.getMonth() + 1).padStart(2, '0');
-        const day = String(startDate.getDate()).padStart(2, '0');
-        const anchorDate = `${year}-${month}-${day}`;
-        console.log(`   ✅ Anchor date from backend: ${anchorDate} (day before period start)`);
-        return anchorDate;
-    } catch (error) {
-        console.error(`❌ Error inferring anchor date for ${earliestPeriod}:`, error);
-        return null;
-    }
-}
-
-/**
- * Build cache key for BS grid batching results.
- * 
- * @param {Set} accounts - Set of account numbers
- * @param {string} anchorDate - Anchor date (YYYY-MM-DD)
- * @param {string} earliestPeriod - Earliest period in grid
- * @param {string} latestPeriod - Latest period in grid
- * @param {string} filtersHash - Filters hash
- * @param {string} queryType - 'cumulative' or 'periodActivity'
- * @returns {string} Cache key
- */
-function buildBsGridCacheKey(accounts, anchorDate, earliestPeriod, latestPeriod, filtersHash, queryType) {
-    // Sort accounts for consistent hashing
-    const accountList = Array.from(accounts).sort().join(',');
-    return `bs-grid:${queryType}:${accountList}:${anchorDate}:${earliestPeriod}:${latestPeriod}:${filtersHash}`;
-}
-
-/**
- * Get period sequence numbers from NetSuite for verifying contiguity.
- * 
- * Queries NetSuite for accountingperiod.sequence for each period.
- * This ensures we use NetSuite's accounting calendar, not string matching.
- * 
- * @param {Array<string>} periodNames - Array of period names (e.g., ["Jan 2025", "Feb 2025"])
- * @returns {Promise<Object|null>} Map of periodName -> sequence number, or null if error
- */
-async function getPeriodSequenceMap(periodNames) {
-    try {
-        // Query NetSuite for period sequences
-        // For now, we'll use period name comparison as a fallback
-        // TODO: Backend should add sequence to period lookup response
-        // For standard monthly calendars, we can infer sequence from period names
-        const sequenceMap = {};
-        
-        // Try to get period data and infer sequence
-        // If backend doesn't return sequence, we'll use a conservative approach:
-        // Only batch if periods are clearly sequential by name (e.g., "Jan 2025", "Feb 2025")
-        const periodDataList = [];
-        
-        for (const periodName of periodNames) {
-            try {
-                const response = await fetch(`${SERVER_URL}/lookups/periods?period=${encodeURIComponent(periodName)}`);
-                if (response.ok) {
-                    const data = await response.json();
-                    if (data) {
-                        periodDataList.push({ name: periodName, data });
-                        // If backend returns sequence, use it
-                        if (data.sequence !== undefined) {
-                            sequenceMap[periodName] = data.sequence;
-                        }
-                    }
-                }
-            } catch (error) {
-                console.warn(`Failed to get period data for ${periodName}:`, error);
-                // Continue - we'll use fallback
-            }
-        }
-        
-        // If we have sequences for all periods, use them
-        if (Object.keys(sequenceMap).length === periodNames.length) {
-            return sequenceMap;
-        }
-        
-        // Fallback: Use period start dates to determine sequence
-        // Sort periods by start date, then assign sequence numbers
-        const periodsWithDates = [];
-        for (const { name, data } of periodDataList) {
-            if (data.startDate) {
-                periodsWithDates.push({ name, startDate: new Date(data.startDate) });
-            }
-        }
-        
-        if (periodsWithDates.length === periodNames.length) {
-            // Sort by start date
-            periodsWithDates.sort((a, b) => a.startDate - b.startDate);
-            
-            // Assign sequence numbers (1, 2, 3, ...)
-            for (let i = 0; i < periodsWithDates.length; i++) {
-                sequenceMap[periodsWithDates[i].name] = i + 1;
-            }
-            
-            return sequenceMap;
-        }
-        
-        // If we can't determine sequence reliably, fall back to individual processing
-        console.warn(`⚠️ Could not determine period sequences reliably - falling back to individual processing`);
-        return null;
-    } catch (error) {
-        console.warn('Failed to get period sequences:', error);
-        return null;
-    }
-}
-
-/**
- * Detect single-row, horizontal drag pattern for BALANCE formulas.
- * 
- * This is a specialized optimization for the common case of dragging
- * BALANCE(account,, Period) across columns (same account, contiguous periods).
- * 
- * Detection Criteria (ALL must be true):
- * 1. Same formula shape: fromPeriod empty, toPeriod present
- * 2. Same account: All requests use identical account parameter
- * 3. Same context: Same subsidiary, department, location, class, book
- * 4. Contiguous periods: Periods are sequential in NetSuite accounting calendar
- * 5. Drag-generated: Temporal clustering suggests drag-fill (optional heuristic)
- * 
- * CRITICAL ANCHOR RULE:
- * - Anchor = EARLIEST PERIOD (minimum sequence) in the contiguous series
- * - Anchor is based on PERIOD ORDER, NOT evaluation order/timestamp
- * - Excel evaluation order is non-deterministic and does not reflect user intent
- * - If series includes Jan, Jan must be anchor even if Mar is evaluated first
- * - Anchor is IMMUTABLE once selected for the batch
- * - Anchor must NEVER be recomputed based on evaluation order or which cell is evaluated first
- * - All roll-forward calculations must reference this period-order anchor
- * 
- * @param {Array} requests - Array of [cacheKey, request] tuples
- * @returns {Promise<Object|null>} Pattern info: { account, periods: Array, anchorPeriod, filtersHash } or null
- */
-async function detectSingleRowDragPattern(requests) {
-    if (!requests || requests.length < 2) {
-        return null; // Need at least 2 periods for optimization
-    }
-    
-    try {
-        // Step 1: Filter to cumulative queries only
-        const cumulativeRequests = [];
-        for (const [cacheKey, request] of requests) {
-            const { fromPeriod, toPeriod } = request.params;
-            const isCumulative = (!fromPeriod || fromPeriod === '') && toPeriod && toPeriod !== '';
-            if (isCumulative) {
-                cumulativeRequests.push([cacheKey, request]);
-            }
-        }
-        
-        if (cumulativeRequests.length < 2) {
-            return null; // Need at least 2 cumulative requests
-        }
-        
-        // Step 2: Verify same account
-        const firstRequest = cumulativeRequests[0][1];
-        const account = firstRequest.params.account;
-        
-        for (const [cacheKey, request] of cumulativeRequests) {
-            if (request.params.account !== account) {
-                return null; // Different accounts - not a single-row pattern
-            }
-        }
-        
-        // Step 3: Verify same context (filters)
-        const filtersHash = getFilterKey({
-            subsidiary: firstRequest.params.subsidiary,
-            department: firstRequest.params.department,
-            location: firstRequest.params.location,
-            classId: firstRequest.params.classId,
-            accountingBook: firstRequest.params.accountingBook
-        });
-        
-        for (const [cacheKey, request] of cumulativeRequests) {
-            const requestFiltersHash = getFilterKey({
-                subsidiary: request.params.subsidiary,
-                department: request.params.department,
-                location: request.params.location,
-                classId: request.params.classId,
-                accountingBook: request.params.accountingBook
-            });
-            if (requestFiltersHash !== filtersHash) {
-                return null; // Different filters - not a pattern
-            }
-        }
-        
-        // Step 4: Collect periods
-        const periods = [];
-        for (const [cacheKey, request] of cumulativeRequests) {
-            periods.push(request.params.toPeriod);
-        }
-        
-        // Remove duplicates
-        const uniquePeriods = Array.from(new Set(periods));
-        
-        if (uniquePeriods.length < 2) {
-            return null; // Need at least 2 different periods
-        }
-        
-        // Step 5: Verify periods are contiguous using NetSuite sequence
-        // CRITICAL: Must query NetSuite for period sequence numbers
-        // This ensures we respect fiscal calendars (4-4-5, 13-period years, etc.)
-        const periodSequenceMap = await getPeriodSequenceMap(uniquePeriods);
-        if (!periodSequenceMap) {
-            // If sequence lookup fails, fall back to individual processing
-            // This is safe - we don't want to batch if we can't verify contiguity
-            return null;
-        }
-        
-        // Sort periods by sequence number (ascending)
-        const sortedPeriods = uniquePeriods.sort((a, b) => {
-            const seqA = periodSequenceMap[a];
-            const seqB = periodSequenceMap[b];
-            if (seqA === undefined || seqB === undefined) return 0;
-            return seqA - seqB;
-        });
-        
-        // Verify contiguity: Each period's sequence should be previous + 1
-        for (let i = 1; i < sortedPeriods.length; i++) {
-            const prevSeq = periodSequenceMap[sortedPeriods[i - 1]];
-            const currSeq = periodSequenceMap[sortedPeriods[i]];
-            if (prevSeq === undefined || currSeq === undefined || currSeq !== prevSeq + 1) {
-                return null; // Periods are not contiguous
-            }
-        }
-        
-        // Step 6: Determine anchor period (CRITICAL - based on period order, NOT evaluation order)
-        // Anchor = earliest period (minimum sequence) in the contiguous series
-        // This is the leftmost column in a typical drag-right scenario
-        // Excel evaluation order is non-deterministic, so we must use period order
-        const anchorPeriod = sortedPeriods[0]; // Earliest period (minimum sequence)
-        
-        // Step 7: Optional - Detect drag-fill pattern
-        // Heuristic: Check if requests were queued within short time window
-        // This helps distinguish drag-fill from manual entry
-        const timestamps = cumulativeRequests.map(([cacheKey, req]) => req.timestamp || 0);
-        const timeSpan = Math.max(...timestamps) - Math.min(...timestamps);
-        const DRAG_FILL_WINDOW_MS = 2000; // 2 seconds
-        
-        if (timeSpan > DRAG_FILL_WINDOW_MS) {
-            // Requests span too long - might be manual entry
-            // Still allow optimization if periods are contiguous (conservative)
-            // But log for monitoring
-            console.log(`⚠️ Single-row pattern detected but time span is ${timeSpan}ms (might be manual entry)`);
-        }
-        
-        // Pattern detected!
-        // CRITICAL: Anchor is the EARLIEST PERIOD (minimum sequence), NOT the first evaluated cell
-        // Excel evaluation order is non-deterministic and does not reflect user intent
-        // If series includes Jan, Jan must be anchor even if Mar is evaluated first
-        console.log(`   🔒 Anchor determined by period order: ${anchorPeriod} (earliest in contiguous series)`);
-        
-        return {
-            account,
-            periods: sortedPeriods,
-            anchorPeriod, // Immutable anchor from period order (earliest period, never recomputed)
-            filtersHash,
-            requestCount: cumulativeRequests.length
-        };
-    } catch (error) {
-        // Any error in detection - fall back to individual processing
-        console.warn(`⚠️ Error in single-row pattern detection: ${error.message}`);
-        return null;
-    }
-}
-
-/**
- * Get period data (including end date and sequence) from NetSuite.
- * 
- * @param {string} periodName - Period name (e.g., "Jan 2025")
- * @returns {Promise<Object|null>} Period data with endDate and sequence, or null if error
- */
-async function getPeriodData(periodName) {
-    try {
-        // Use existing period lookup endpoint
-        const response = await fetch(`${SERVER_URL}/lookups/periods?period=${encodeURIComponent(periodName)}`);
-        if (!response.ok) {
-            return null;
-        }
-        const data = await response.json();
-        return data;
-    } catch (error) {
-        console.warn(`Failed to get period data for ${periodName}:`, error);
-        return null;
-    }
-}
-
-/**
- * Execute single-row drag optimization.
- * 
- * For a detected single-row pattern (1 account × contiguous periods):
- * 1. Fetch anchor balance (as of anchor period end date)
- * 2. Fetch incremental activity for subsequent periods
- * 3. Roll-forward balances internally
- * 4. Populate all cells
- * 
- * CRITICAL: CONS_AMT must be anchored to each period's end date for FX correctness.
- * 
- * @param {Object} pattern - Pattern info from detectSingleRowDragPattern()
- * @param {Array} requests - Array of [cacheKey, request] tuples
- * @returns {Promise<void>}
- */
-async function processSingleRowDragOptimization(pattern, requests) {
-    const { account, periods, anchorPeriod, filtersHash } = pattern;
-    
-    // CRITICAL: anchorPeriod is IMMUTABLE - it's the EARLIEST PERIOD (minimum sequence) in the contiguous series
-    // This anchor is determined by PERIOD ORDER, NOT evaluation order
-    // Excel evaluation order is non-deterministic and does not reflect user intent
-    // This anchor must NEVER be recomputed, even if:
-    // - Excel evaluates cells in different order
-    // - Later cells are evaluated before earlier ones
-    // - Formulas are re-evaluated in different order
-    // All roll-forward calculations must reference this period-order anchor
-    
-    try {
-        // Step 1: Get anchor period end date
-        // CRITICAL: Anchor is the END DATE of the anchor period (earliest period in contiguous series)
-        // Anchor is determined by PERIOD ORDER, NOT evaluation order
-        const anchorPeriodData = await getPeriodData(anchorPeriod);
-        if (!anchorPeriodData || !anchorPeriodData.endDate) {
-            throw new Error(`Could not get anchor period data for ${anchorPeriod}`);
-        }
-        
-        const anchorEndDate = anchorPeriodData.endDate; // YYYY-MM-DD format
-        
-        console.log(`   🔒 Anchor locked: ${anchorPeriod} (earliest period in contiguous series, determined by period order)`);
-        
-        // Step 2: Fetch anchor balance (as of anchor period end date)
-        console.log(`   📊 Step 1: Fetching anchor balance at ${anchorPeriod} end date (${anchorEndDate})...`);
-        const firstRequest = requests[0][1];
-        const anchorResponse = await fetch(`${SERVER_URL}/balance`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                account,
-                fromPeriod: '', // Empty for cumulative
-                toPeriod: anchorPeriod, // Anchor period
-                subsidiary: firstRequest.params.subsidiary,
-                department: firstRequest.params.department,
-                location: firstRequest.params.location,
-                class: firstRequest.params.classId,
-                book: firstRequest.params.accountingBook
-            })
-        });
-        
-        if (!anchorResponse.ok) {
-            throw new Error(`Anchor balance query failed: ${anchorResponse.status}`);
-        }
-        
-        const anchorData = await anchorResponse.json();
-        if (!anchorData.Success) {
-            throw new Error(anchorData.Error || 'Anchor balance query failed');
-        }
-        
-        const anchorBalance = anchorData.Balance || 0;
-        console.log(`   ✅ Anchor balance: ${anchorBalance}`);
-        
-        // Step 3: Fetch incremental activity for subsequent periods
-        // CRITICAL: Activity query must return CONS_AMT anchored to each period's end date
-        const subsequentPeriods = periods.slice(1); // All periods after anchor
-        
-        if (subsequentPeriods.length > 0) {
-            console.log(`   📊 Step 2: Fetching activity for ${subsequentPeriods.length} subsequent periods...`);
-            const activityResponse = await fetch(`${SERVER_URL}/batch/balance/bs-grid-activity`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    accounts: [account],
-                    fromPeriod: anchorPeriod, // Start from anchor (inclusive)
-                    toPeriod: periods[periods.length - 1], // End at last period (inclusive)
-                    anchorDate: anchorEndDate, // Anchor date (not used for activity query but included for consistency)
-                    subsidiary: firstRequest.params.subsidiary,
-                    department: firstRequest.params.department,
-                    location: firstRequest.params.location,
-                    class: firstRequest.params.classId,
-                    book: firstRequest.params.accountingBook
-                })
-            });
-            
-            if (!activityResponse.ok) {
-                throw new Error(`Activity query failed: ${activityResponse.status}`);
-            }
-            
-            const activityData = await activityResponse.json();
-            if (!activityData.Success) {
-                throw new Error(activityData.Error || 'Activity query failed');
-            }
-            
-            // Activity data structure: { account: { period: amount } }
-            const activity = activityData.Activity || {};
-            const accountActivity = activity[account] || {};
-            
-            // Step 4: Roll-forward balances
-            // CRITICAL: All calculations must reference the original anchor (anchorPeriod)
-            // This anchor is immutable and was determined by PERIOD ORDER (earliest period)
-            // NOT by evaluation order - Excel may evaluate Mar before Jan, but anchor is still Jan
-            let currentBalance = anchorBalance; // Start from anchor (earliest period in series)
-            const balances = { [anchorPeriod]: anchorBalance };
-            
-            // Roll forward from anchor to each subsequent period
-            // Each balance = anchor + sum of activity from anchor to that period
-            // This works regardless of Excel's evaluation order
-            for (const period of subsequentPeriods) {
-                const periodActivity = accountActivity[period] || 0;
-                currentBalance = currentBalance + periodActivity; // Explicitly references anchor via anchorBalance
-                balances[period] = currentBalance;
-            }
-            
-            console.log(`   ✅ Roll-forward complete: All balances computed from anchor ${anchorPeriod} (earliest period)`);
-            
-            // Step 5: Resolve all requests
-            // CRITICAL: Ensure we don't double-resolve requests
-            let resolvedCount = 0;
-            let rejectedCount = 0;
-            for (const [cacheKey, request] of requests) {
-                try {
-                    const { toPeriod } = request.params;
-                    const balance = balances[toPeriod];
-                    
-                    if (balance === undefined) {
-                        console.warn(`   ⚠️ No balance computed for period ${toPeriod} - rejecting request`);
-                        request.reject(new Error(`No balance computed for period ${toPeriod}`));
-                        rejectedCount++;
-                        continue;
-                    }
-                    
-                    // Cache the result
-                    cache.balance.set(cacheKey, balance);
-                    request.resolve(balance);
-                    resolvedCount++;
-                } catch (error) {
-                    // Safety: If resolving fails, reject the request to prevent hanging
-                    console.error(`   ❌ Error resolving request for ${request.params.toPeriod}:`, error);
-                    try {
-                        request.reject(error);
-                        rejectedCount++;
-                    } catch (rejectError) {
-                        // Request might already be resolved/rejected - ignore
-                        console.warn(`   ⚠️ Could not reject request (may already be resolved):`, rejectError);
-                    }
-                }
-            }
-            
-            console.log(`   ✅ Single-row optimization complete: ${resolvedCount} resolved, ${rejectedCount} rejected`);
-        } else {
-            // Only anchor period - just resolve it
-            for (const [cacheKey, request] of requests) {
-                try {
-                    if (request.params.toPeriod === anchorPeriod) {
-                        cache.balance.set(cacheKey, anchorBalance);
-                        request.resolve(anchorBalance);
-                    }
-                } catch (error) {
-                    // Safety: If resolving fails, reject the request
-                    console.error(`   ❌ Error resolving anchor request:`, error);
-                    try {
-                        request.reject(error);
-                    } catch (rejectError) {
-                        // Request might already be resolved/rejected - ignore
-                    }
-                }
-            }
-        }
-    } catch (error) {
-        console.error(`   ❌ Single-row optimization failed: ${error.message}`);
-        throw error; // Re-throw to be caught by caller
-    }
-}
-
-/**
- * Process BS Grid Batching for both cumulative and period activity queries.
- * 
- * This unified function handles:
- * - CASE 1: Cumulative queries (BALANCE(account, , toPeriod))
- * - CASE 2: Period activity queries (BALANCE(account, fromPeriod, toPeriod))
- * 
- * @param {Object} gridInfo - Grid detection result from detectBsGridPattern()
- * @param {Array} requests - Array of [cacheKey, request] tuples
- * @returns {Promise<void>}
- */
-async function processBsGridBatching(gridInfo, requests) {
-    if (!gridInfo || !requests || requests.length === 0) {
-        return;
-    }
-    
-    const { queryType, accounts, earliestPeriod, latestPeriod, filtersHash } = gridInfo;
-    
-    console.log(`   🔍 Grid batching: earliestPeriod=${earliestPeriod}, latestPeriod=${latestPeriod}, accounts=${accounts.size}`);
-    
-    // ============================================================================
-    // CRITICAL: Check for earlier cached period to use as anchor
-    // If January is already computed and February/March/April are pending,
-    // use January as the anchor instead of calculating from February
-    // ============================================================================
-    let anchorPeriod = earliestPeriod;
-    let anchorFromCache = false;
-    
-    if (queryType === 'cumulative') {
-        const firstRequest = requests[0][1];
-        const { subsidiary, department, location, classId, accountingBook } = firstRequest.params;
-        
-        // Check if there's a cached period earlier than earliestPeriod
-        // Try up to 3 months before the earliest pending period
-        const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-        const earliestParsed = parsePeriod(earliestPeriod);
-        
-        if (earliestParsed) {
-            // Check a few months before the earliest pending period
-            for (let monthsBack = 1; monthsBack <= 3; monthsBack++) {
-                let checkMonth = earliestParsed.month - monthsBack;
-                let checkYear = earliestParsed.year;
-                if (checkMonth < 0) {
-                    checkMonth += 12;
-                    checkYear--;
-                }
-                const checkPeriod = `${monthNames[checkMonth]} ${checkYear}`;
-                
-                // Check if this period is cached for at least 50% of accounts (suggests it's the anchor column)
-                let cachedCount = 0;
-                const sampleSize = Math.min(10, accounts.size); // Sample first 10 accounts
-                const sampleAccounts = Array.from(accounts).slice(0, sampleSize);
-                
-                for (const account of sampleAccounts) {
-                    const cacheValue = checkLocalStorageCache(account, '', checkPeriod, subsidiary, filtersHash);
-                    if (cacheValue !== null) {
-                        cachedCount++;
-                    }
-                }
-                
-                // If at least 50% of sampled accounts have this period cached, use it as anchor
-                if (cachedCount >= Math.ceil(sampleSize * 0.5)) {
-                    anchorPeriod = checkPeriod;
-                    anchorFromCache = true;
-                    console.log(`   🔒 Found earlier cached period: ${checkPeriod} (${cachedCount}/${sampleSize} accounts cached) - using as anchor`);
-                    break; // Use the most recent earlier period found
-                }
-            }
-        }
-    }
-    
-    // Infer anchor date from the anchor period (either earliestPeriod or earlier cached period)
-    // CRITICAL: If anchor is from cache (e.g., January), we need January's END DATE, not the day before January
-    // because we're using January's ending balance as the opening balance for subsequent periods
-    let anchorDate;
-    if (anchorFromCache && anchorPeriod) {
-        // Get the anchor period's end date (this is the balance date for the cached period)
-        const anchorPeriodData = await getPeriodData(anchorPeriod);
-        if (anchorPeriodData && anchorPeriodData.endDate) {
-            anchorDate = anchorPeriodData.endDate; // Use end date directly (YYYY-MM-DD format)
-            console.log(`   ✅ Using cached anchor period ${anchorPeriod} end date: ${anchorDate}`);
-        } else {
-            // Fallback: calculate end date from period name
-            const parsed = parsePeriod(anchorPeriod);
-            if (parsed) {
-                // Calculate last day of the month
-                const lastDay = new Date(parsed.year, parsed.month + 1, 0); // Day 0 of next month = last day of current month
-                const year = lastDay.getFullYear();
-                const month = String(lastDay.getMonth() + 1).padStart(2, '0');
-                const day = String(lastDay.getDate()).padStart(2, '0');
-                anchorDate = `${year}-${month}-${day}`;
-                console.log(`   ✅ Calculated cached anchor period ${anchorPeriod} end date: ${anchorDate}`);
-            } else {
-                console.warn(`   ⚠️ Could not parse cached anchor period ${anchorPeriod} - falling back to inferAnchorDate`);
-                anchorDate = await inferAnchorDate(anchorPeriod);
-            }
-        }
-    } else {
-        // No cached anchor - use day before earliest period starts
-        anchorDate = await inferAnchorDate(anchorPeriod);
-    }
-    
-    if (!anchorDate) {
-        console.warn(`   ⚠️ Could not determine anchor date for ${anchorPeriod} - falling back to individual processing`);
-        throw new Error('Could not determine anchor date');
-    }
-    
-    if (anchorFromCache) {
-        console.log(`   ✅ Using cached anchor period ${anchorPeriod} (end date: ${anchorDate}) instead of ${earliestPeriod}`);
-    } else {
-        console.log(`   ✅ Anchor date calculated: ${anchorDate} (day before ${earliestPeriod} starts)`);
-    }
-    
-    const firstRequest = requests[0][1];
-    const gridCacheKey = buildBsGridCacheKey(
-        accounts,
-        anchorDate,
-        earliestPeriod,
-        latestPeriod,
-        filtersHash,
-        queryType
-    );
-    
-    // Check cache first
-    const cachedGrid = bsGridCache.get(gridCacheKey);
-    if (cachedGrid) {
-        console.log(`   ✅ BS Grid cache hit - using cached results`);
-        
-        // Resolve all requests from cache
-        let resolvedCount = 0;
-        for (const [cacheKey, request] of requests) {
-            const { account, toPeriod, fromPeriod } = request.params;
-            const endingBalance = computeEndingBalance(
-                account,
-                toPeriod,
-                cachedGrid.openingBalances,
-                cachedGrid.activity,
-                queryType,
-                fromPeriod
-            );
-            
-            cache.balance.set(cacheKey, endingBalance);
-            request.resolve(endingBalance);
-            resolvedCount++;
-        }
-        
-        console.log(`   ✅ Resolved ${resolvedCount} requests from BS Grid cache`);
-        return;
-    }
-    
-    // Cache miss - check execution lock
-    if (bsGridBatchingLock.locked) {
-        console.log(`   ⏳ BS Grid batching already in progress - waiting for lock...`);
-        await bsGridBatchingLock.promise;
-        
-        // After lock releases, check cache again (may have been populated)
-        const cachedGridAfterLock = bsGridCache.get(gridCacheKey);
-        if (cachedGridAfterLock) {
-            console.log(`   ✅ BS Grid cache hit after lock release - using cached results`);
-            
-            let resolvedCount = 0;
-            for (const [cacheKey, request] of requests) {
-                const { account, toPeriod, fromPeriod } = request.params;
-                const endingBalance = computeEndingBalance(
-                    account,
-                    toPeriod,
-                    cachedGridAfterLock.openingBalances,
-                    cachedGridAfterLock.activity,
-                    queryType,
-                    fromPeriod
-                );
-                
-                cache.balance.set(cacheKey, endingBalance);
-                request.resolve(endingBalance);
-                resolvedCount++;
-            }
-            
-            console.log(`   ✅ Resolved ${resolvedCount} requests from BS Grid cache (after lock)`);
-            return;
-        }
-    }
-    
-    // Acquire lock and execute batched queries
-    console.log(`   📤 BS Grid cache miss - executing batched queries (${queryType})...`);
-    
-    bsGridBatchingLock.locked = true;
-    bsGridBatchingLock.cacheKey = gridCacheKey;
-    
-    const lockPromise = (async () => {
-        try {
-            // Step 1: Get opening balances
-            // If anchor is from cache (e.g., January), use cached balances instead of querying
-            let openingBalances = {};
-            
-            if (anchorFromCache && anchorPeriod) {
-                console.log(`   📊 Step 1: Using cached balances from anchor period ${anchorPeriod}...`);
-                const { subsidiary, department, location, classId, accountingBook } = firstRequest.params;
-                
-                // Load cached balances for all accounts from the anchor period
-                for (const account of accounts) {
-                    const cachedBalance = checkLocalStorageCache(account, '', anchorPeriod, subsidiary, filtersHash);
-                    if (cachedBalance !== null) {
-                        openingBalances[account] = cachedBalance;
-                    }
-                }
-                
-                console.log(`   ✅ Loaded ${Object.keys(openingBalances).length} cached balances from ${anchorPeriod}`);
-                
-                // If some accounts don't have cached balances, we still need to query for them
-                const missingAccounts = Array.from(accounts).filter(acc => !(acc in openingBalances));
-                if (missingAccounts.length > 0) {
-                    console.log(`   ⚠️ ${missingAccounts.length} accounts missing from cache - querying opening balances for them...`);
-                    // Query opening balances for missing accounts
-                    const openingResponse = await fetch(`${SERVER_URL}/batch/balance/bs-grid-opening`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            accounts: missingAccounts,
-                            anchorDate: anchorDate,
-                            fromPeriod: anchorPeriod,  // Use anchor period for missing accounts
-                            subsidiary: firstRequest.params.subsidiary,
-                            department: firstRequest.params.department,
-                            location: firstRequest.params.location,
-                            class: firstRequest.params.classId,
-                            book: firstRequest.params.accountingBook
-                        })
-                    });
-                    
-                    if (openingResponse.ok) {
-                        const openingData = await openingResponse.json();
-                        if (openingData.Success) {
-                            Object.assign(openingBalances, openingData.OpeningBalances || {});
-                            console.log(`   ✅ Queried ${missingAccounts.length} missing accounts`);
-                        }
-                    }
-                }
-            } else {
-                // No cached anchor - query opening balances normally
-                console.log(`   📊 Step 1: Fetching opening balances at anchor date ${anchorDate}...`);
-                const openingResponse = await fetch(`${SERVER_URL}/batch/balance/bs-grid-opening`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        accounts: Array.from(accounts),
-                        anchorDate: anchorDate,
-                        fromPeriod: earliestPeriod,  // For cumulative, this is earliest toPeriod; for period activity, this is earliest fromPeriod
-                        subsidiary: firstRequest.params.subsidiary,
-                        department: firstRequest.params.department,
-                        location: firstRequest.params.location,
-                        class: firstRequest.params.classId,
-                        book: firstRequest.params.accountingBook
-                    })
-                });
-                
-                if (!openingResponse.ok) {
-                    throw new Error(`Opening balances query failed: ${openingResponse.status}`);
-                }
-                
-                const openingData = await openingResponse.json();
-                if (!openingData.Success) {
-                    throw new Error(openingData.Error || 'Opening balances query failed');
-                }
-                
-                openingBalances = openingData.OpeningBalances || {};
-                console.log(`   ✅ Opening balances: ${Object.keys(openingBalances).length} accounts`);
-            }
-            
-            // Step 2: Get period activity
-            // For cumulative queries: fetch activity from anchor period to latest toPeriod
-            // If anchor is from cache (e.g., January), fetch activity from anchor period (Jan) to latest period (Apr)
-            // This gives us activity for all periods including anchor, but we'll use anchor balance and add subsequent activity
-            // If anchor is not from cache, fetch from earliestPeriod (first pending period) to latestPeriod
-            const activityFromPeriod = anchorFromCache ? anchorPeriod : earliestPeriod;
-            console.log(`   📊 Step 2: Fetching period activity from ${activityFromPeriod} to ${latestPeriod}...`);
-            const activityResponse = await fetch(`${SERVER_URL}/batch/balance/bs-grid-activity`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    accounts: Array.from(accounts),
-                    anchorDate: anchorDate,
-                    fromPeriod: activityFromPeriod,  // Use anchor period if from cache, otherwise earliestPeriod
-                    toPeriod: latestPeriod,      // Latest period in grid
-                    subsidiary: firstRequest.params.subsidiary,
-                    department: firstRequest.params.department,
-                    location: firstRequest.params.location,
-                    class: firstRequest.params.classId,
-                    book: firstRequest.params.accountingBook
-                })
-            });
-            
-            if (!activityResponse.ok) {
-                throw new Error(`Period activity query failed: ${activityResponse.status}`);
-            }
-            
-            const activityData = await activityResponse.json();
-            if (!activityData.Success) {
-                throw new Error(activityData.Error || 'Period activity query failed');
-            }
-            
-            const activity = activityData.Activity || {};
-            console.log(`   ✅ Period activity: ${activityData.TotalRows} rows`);
-            
-            // Step 3: Cache results
-            bsGridCache.set(gridCacheKey, {
-                openingBalances,
-                activity,
-                timestamp: Date.now()
-            });
-            
-            // Step 4: Compute ending balances and resolve all requests
-            // CRITICAL: If anchor is from cache (e.g., January), exclude anchor period's activity
-            // from the roll-forward since the cached balance already includes that period's activity
-            let resolvedCount = 0;
-            for (const [cacheKey, request] of requests) {
-                const { account, toPeriod, fromPeriod } = request.params;
-                const endingBalance = computeEndingBalance(
-                    account,
-                    toPeriod,
-                    openingBalances,
-                    activity,
-                    queryType,
-                    fromPeriod,
-                    anchorFromCache ? anchorPeriod : null  // Exclude anchor period activity if anchor is from cache
-                );
-                
-                cache.balance.set(cacheKey, endingBalance);
-                request.resolve(endingBalance);
-                resolvedCount++;
-            }
-            
-            console.log(`   ✅ BS Grid batching complete: ${resolvedCount} requests resolved`);
-        } catch (error) {
-            console.error(`   ❌ BS Grid batching failed: ${error.message}`);
-            throw error; // Re-throw to be caught by caller
-        } finally {
-            // Release lock
-            bsGridBatchingLock.locked = false;
-            bsGridBatchingLock.promise = null;
-            bsGridBatchingLock.cacheKey = null;
-        }
-    })();
-    
-    bsGridBatchingLock.promise = lockPromise;
-    await lockPromise;
-}
-
-/**
- * Compute ending balances locally from opening balances + period activity.
- * 
- * ============================================================================
- * LOCAL COMPUTATION CONTRACT - Balance Sheet Grid Batching
- * ============================================================================
- * 
- * CASE 1 - CUMULATIVE QUERIES (fromPeriod empty):
- *   FORMULA: EndingBalance(period) = OpeningBalance(anchor) + SUM(Activity(periods up to and including period))
- *   
- *   This is the most common CPA workflow. The formula BALANCE(account, , toPeriod)
- *   is reinterpreted internally as a cumulative balance building from the anchor.
- *   From the user's perspective, the semantics don't change - they still get the
- *   ending balance for that period, but computed efficiently via grid batching.
- * 
- * CASE 2 - PERIOD ACTIVITY QUERIES (both fromPeriod and toPeriod):
- *   FORMULA: Result(period) = SUM(Activity(fromPeriod → toPeriod))
- *   
- *   This respects the user's explicit intent for period activity. The result is
- *   the net change during the period, not a cumulative balance.
- * 
- * WHY LOCAL COMPUTATION:
- * - Runs entirely in-memory (no NetSuite calls)
- * - Provides instant results after batched queries complete
- * - Mathematically equivalent to: Balance(toPeriod) - Balance(before fromPeriod)
- *   but uses indexed date filters instead of cumulative scans (much faster)
- * 
- * FINANCIAL CORRECTNESS:
- * - Opening balances are computed at anchor date using toPeriod's exchange rate
- * - Period activity is computed using toPeriod's exchange rate
- * - Local computation preserves this correctness (no additional currency conversion)
- * - All amounts are already in the same currency/rate from batched queries
- * 
- * EXAMPLE (Cumulative):
- * - Opening balance (Dec 31, 2024): 2,064,705.84
- * - Activity: {"Jan 2025": 381646.48, "Feb 2025": -50000.00}
- * - Ending balance (Jan 2025): 2,064,705.84 + 381,646.48 = 2,446,352.32
- * - Ending balance (Feb 2025): 2,446,352.32 + (-50,000.00) = 2,396,352.32
- * 
- * ============================================================================
- * 
- * @param {string} account - Account number
- * @param {string} targetPeriod - Target period (e.g., "Feb 2025")
- * @param {Object} openingBalances - {account: balance} - Opening balances at anchor date
- * @param {Object} activity - {account: {period: amount}} - Period activity amounts
- * @param {string} queryType - 'cumulative' or 'periodActivity'
- * @param {string} fromPeriod - Optional: fromPeriod for period activity queries
- * @returns {number} Ending balance for the account at target period
- */
-function computeEndingBalance(account, targetPeriod, openingBalances, activity, queryType = 'cumulative', fromPeriod = null, excludeAnchorPeriod = null) {
-    if (queryType === 'periodActivity' && fromPeriod) {
-        // CASE 2: Period activity query - return activity for the specific period range
-        // For period activity, we need to sum activity from fromPeriod to toPeriod
-        // The activity object contains period-level activity, so we sum all periods
-        // between fromPeriod and toPeriod (inclusive)
-        if (!activity[account]) {
-            return 0; // No activity for this account in this period
-        }
-        
-        const accountActivity = activity[account];
-        const allPeriods = Object.keys(accountActivity).sort();
-        
-        // Sum activity for all periods between fromPeriod and targetPeriod (inclusive)
-        let periodActivity = 0;
-        for (const period of allPeriods) {
-            if (period >= fromPeriod && period <= targetPeriod) {
-                periodActivity += accountActivity[period] || 0;
-            }
-        }
-        
-        return periodActivity;
-    } else {
-        // CASE 1: Cumulative query - build ending balance from anchor
-        const openingBalance = openingBalances[account] || 0;
-        
-        if (!activity[account]) {
-            return openingBalance; // No activity for this account
-        }
-        
-        // Get all periods up to and including target period
-        const accountActivity = activity[account];
-        const allPeriods = Object.keys(accountActivity).sort();
-        
-        // Sum activity for all periods <= targetPeriod
-        // CRITICAL: If excludeAnchorPeriod is provided (anchor is from cache), exclude that period's activity
-        // because the cached balance already includes that period's activity
-        let cumulativeActivity = 0;
-        for (const period of allPeriods) {
-            if (period <= targetPeriod) {
-                // Exclude anchor period if specified (anchor is from cache)
-                if (excludeAnchorPeriod && period === excludeAnchorPeriod) {
-                    continue; // Skip anchor period's activity - already included in cached balance
-                }
-                cumulativeActivity += accountActivity[period] || 0;
-            }
-        }
-        
-        return openingBalance + cumulativeActivity;
-    }
-}
-
 // Helper: Check if account type needs sign flip for Balance Sheet display
 // Liabilities and Equity are stored as negative credits but display as positive
 function needsSignFlip(acctType) {
@@ -3161,11 +1740,7 @@ function needsSignFlip(acctType) {
 async function getAccountType(account) {
     const cacheKey = getCacheKey('type', { account });
     if (cache.type.has(cacheKey)) {
-        const cached = cache.type.get(cacheKey);
-        // Handle both string and object responses (cache may contain either)
-        if (typeof cached === 'string') return cached;
-        if (cached && typeof cached === 'object' && cached.type) return cached.type;
-        return cached;
+        return cache.type.get(cacheKey);
     }
     
     try {
@@ -3176,10 +1751,8 @@ async function getAccountType(account) {
             body: JSON.stringify({ account: String(account) })
         });
         if (response.ok) {
-            // Backend returns JSON object: { account, type, display_name }
-            const data = await response.json();
-            const type = data.type || data; // Extract type property, or use data if it's already a string
-            cache.type.set(cacheKey, type); // Store just the type string for consistency
+            const type = await response.text();
+            cache.type.set(cacheKey, type);
             return type;
         }
     } catch (e) {
@@ -5308,9 +3881,6 @@ async function processTitleBatchQueue() {
  * @cancelable
  */
 async function NAME(accountNumber, invocation) {
-    // CRITICAL: Force async boundary before any synchronous logic
-    await Promise.resolve();
-    
     // Retry logic for drag/drop scenarios where cell references may not be ready
     let account = normalizeAccountNumber(accountNumber);
     
@@ -5466,9 +4036,6 @@ async function processTypeBatchQueue() {
  * @cancelable
  */
 async function TYPE(accountNumber, invocation) {
-    // CRITICAL: Force async boundary before any synchronous logic
-    await Promise.resolve();
-    
     // Retry logic for drag/drop scenarios where cell references may not be ready
     let account = normalizeAccountNumber(accountNumber);
     
@@ -5561,9 +4128,6 @@ async function TYPE(accountNumber, invocation) {
  * @cancelable
  */
 async function PARENT(accountNumber, invocation) {
-    // CRITICAL: Force async boundary before any synchronous logic
-    await Promise.resolve();
-    
     // Retry logic for drag/drop scenarios where cell references may not be ready
     let account = normalizeAccountNumber(accountNumber);
     
@@ -5702,14 +4266,11 @@ async function retryCacheLookup(
 async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, location, classId, accountingBook) {
     
     // Cross-context cache invalidation - taskpane signals via localStorage
-    // CRITICAL: Use async-safe localStorage access to prevent blocking during intellisense
-    // Excel may inspect functions during intellisense, and synchronous localStorage can crash
+    // FIX #1 & #5: Synchronize cache clear - clear in-memory cache FIRST, then check signal
+    // This ensures cache is cleared before formulas evaluate
     try {
-        // Use setTimeout(0) to yield to event loop before localStorage access
-        // This prevents blocking during intellisense inspection
-        await new Promise(resolve => setTimeout(resolve, 0));
-        
-        // Now safe to check localStorage (non-blocking after yield)
+        // CRITICAL: Clear in-memory cache FIRST (before checking signal)
+        // This ensures cache is cleared synchronously, not async
         const clearSignal = localStorage.getItem('netsuite_cache_clear_signal');
         if (clearSignal) {
             const { timestamp, reason } = JSON.parse(clearSignal);
@@ -6026,112 +4587,6 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         
         const params = { account, fromPeriod, toPeriod, subsidiary, department, location, classId, accountingBook };
         const cacheKey = getCacheKey('balance', params);
-        
-        // ================================================================
-        // CRITICAL: ACCOUNT TYPE GATE - Hard execution split
-        // Income/Expense accounts MUST be routed away BEFORE any Balance Sheet logic
-        // This prevents Income Statement queries from entering BS inference/batching pipeline
-        // ================================================================
-        // Check account type from cache first (synchronous, fast)
-        const typeCacheKey = getCacheKey('type', { account });
-        let accountType = cache.type.has(typeCacheKey) ? cache.type.get(typeCacheKey) : null;
-        
-        // Handle both string and object responses (cache may contain either)
-        if (accountType && typeof accountType === 'object' && accountType.type) {
-            accountType = accountType.type;
-        }
-        
-        // If not in cache, fetch it (async - but we need to know before proceeding)
-        if (!accountType) {
-            accountType = await getAccountType(account);
-            // Handle both string and object responses
-            if (accountType && typeof accountType === 'object' && accountType.type) {
-                accountType = accountType.type;
-            }
-        }
-        
-        // ================================================================
-        // INCOME STATEMENT PATH (Hard Return - No BS Logic)
-        // ================================================================
-        if (accountType && isIncomeStatementType(accountType)) {
-            // Income/Expense account - route immediately to income statement path
-            // SKIP: manifest checks, preload waits, grid detection, anchor inference, BS batching
-            console.log(`📊 Income Statement account (${accountType}): ${account} - routing to income statement path`);
-            
-            // Check in-memory cache first
-            if (cache.balance.has(cacheKey)) {
-                cacheStats.hits++;
-                return cache.balance.get(cacheKey);
-            }
-            
-            // Check localStorage cache (for cumulative queries only)
-            const filtersHash = getFilterKey({ subsidiary, department, location, classId, accountingBook });
-            const isCumulativeQuery = isCumulativeRequest(fromPeriod);
-            let localStorageValue = null;
-            if (isCumulativeQuery) {
-                localStorageValue = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
-            }
-            if (localStorageValue !== null) {
-                cacheStats.hits++;
-                cache.balance.set(cacheKey, localStorageValue);
-                return localStorageValue;
-            }
-            
-            // Check full year cache (if not subsidiary-filtered)
-            if (!subsidiary) {
-                const fullYearValue = checkFullYearCache(account, fromPeriod || toPeriod, subsidiary);
-                if (fullYearValue !== null) {
-                    cacheStats.hits++;
-                    cache.balance.set(cacheKey, fullYearValue);
-                    return fullYearValue;
-                }
-            }
-            
-            // Cache miss - queue to regularRequests (batch endpoint)
-            // This is the income statement execution path - no BS logic
-            cacheStats.misses++;
-            if (cacheStats.misses < 10) {
-                console.log(`📥 Income Statement: ${account} (${fromPeriod || '(cumulative)'} → ${toPeriod}) → queuing to batch endpoint`);
-            }
-            
-            // Return Promise that will be resolved by batch processor (regularRequests path)
-            return new Promise((resolve, reject) => {
-                pendingRequests.balance.set(cacheKey, {
-                    params,
-                    resolve,
-                    reject,
-                    timestamp: Date.now(),
-                    accountType: 'income_statement' // Mark as income statement for routing
-                });
-                
-                // Start batch timer if not already running
-                if (!isFullRefreshMode) {
-                    if (batchTimer) {
-                        clearTimeout(batchTimer);
-                        batchTimer = null;
-                    }
-                    if (cacheStats.misses < 10) {
-                        console.log(`⏱️ STARTING batch timer (${BATCH_DELAY}ms) for Income Statement`);
-                    }
-                    batchTimer = setTimeout(() => {
-                        console.log('⏱️ Batch timer FIRED!');
-                        batchTimer = null;
-                        processBatchQueue().catch(err => {
-                            console.error('❌ Batch processing error:', err);
-                        });
-                    }, BATCH_DELAY);
-                }
-            });
-        }
-        
-        // ================================================================
-        // BALANCE SHEET PATH (Continue with existing BS logic)
-        // ================================================================
-        // If we reach here, account is Balance Sheet (or type unknown - treat as BS for safety)
-        if (accountType && !isBalanceSheetType(accountType)) {
-            // Unknown account type - log warning but treat as BS (conservative)
-            console.warn(`⚠️ Unknown account type "${accountType}" for ${account} - treating as Balance Sheet`);
-        }
         
         // ================================================================
         // PRELOAD COORDINATION: Check manifest for period status FIRST
@@ -6673,149 +5128,60 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                         // P&L accounts should NEVER wait for BS preload (they use different cache)
                         // Period activity queries should NOT wait for preload (they use different query path)
                         if (isBSAccount && !isPeriodActivity) {
-                            // CRITICAL: If period is not in manifest (status "not_found"), it's a new period
-                            // that needs to be queried, not preloaded. Skip preload wait to allow batching.
-                            // This prevents deadlock where all cells wait for preload that never starts.
-                            if (status === "not_found") {
-                                console.log(`⚡ Period ${periodKey} not in manifest (new period) - skipping preload wait, will batch query`);
-                                // Continue to API path below (grid batching will process these together)
-                            } else {
-                                // OPTIMIZATION: Skip preload wait if we're likely in a grid pattern
-                                // When dragging formulas across columns (Feb, Mar, Apr after Jan), grid batching
-                                // will handle it more efficiently using anchor + period activity
-                                // Check if there are multiple pending requests with different periods OR accounts (suggests grid)
-                                const pendingCount = pendingRequests.balance.size;
-                                let hasMultiplePeriods = false;
-                                let hasMultipleAccounts = false;
-                                let pendingPeriodCount = 0;
-                                let pendingAccountCount = 0;
-                                let hasAnchorPeriod = false;
-                                
-                                if (pendingCount >= 1) {
-                                    const pendingPeriods = new Set();
-                                    const pendingAccounts = new Set();
-                                    const allPeriods = [toPeriod]; // Include current request's period
-                                    
-                                    // Collect periods and accounts from pending requests
-                                    for (const [pendingKey, pendingReq] of pendingRequests.balance.entries()) {
-                                        const pendingToPeriod = pendingReq.params.toPeriod;
-                                        const pendingAccount = pendingReq.params.account;
-                                        if (pendingToPeriod) {
-                                            pendingPeriods.add(pendingToPeriod);
-                                            allPeriods.push(pendingToPeriod);
-                                        }
-                                        if (pendingAccount) {
-                                            pendingAccounts.add(pendingAccount);
-                                        }
-                                    }
-                                    
-                                    // Also include current request's period and account
-                                    if (toPeriod) {
-                                        pendingPeriods.add(toPeriod);
-                                    }
-                                    if (account) {
-                                        pendingAccounts.add(account);
-                                    }
-                                    
-                                    pendingPeriodCount = pendingPeriods.size;
-                                    pendingAccountCount = pendingAccounts.size;
-                                    hasMultiplePeriods = pendingPeriodCount >= 2;
-                                    hasMultipleAccounts = pendingAccountCount >= 2;
-                                    
-                                    // Check if we have an earlier period (anchor) already computed
-                                    // If current period is Feb/Mar/Apr and we have Jan in cache, we have an anchor
-                                    if (toPeriod && allPeriods.length > 0) {
-                                        const sortedPeriods = Array.from(pendingPeriods).sort();
-                                        if (sortedPeriods.length > 0) {
-                                            const earliestPendingPeriod = sortedPeriods[0];
-                                            // Check if we have cache for an earlier period (the anchor)
-                                            // This suggests we're building subsequent months from an anchor
-                                            const anchorCache = checkLocalStorageCache(account, '', earliestPendingPeriod, subsidiary, filtersHash);
-                                            hasAnchorPeriod = anchorCache !== null;
-                                            
-                                            // Also check if earliest period is before current period (suggests anchor exists)
-                                            if (!hasAnchorPeriod && earliestPendingPeriod < toPeriod) {
-                                                // Even without cache, if we have an earlier period in the queue,
-                                                // grid batching will compute it and use it as anchor
-                                                hasAnchorPeriod = true;
-                                            }
-                                        }
-                                    }
+                            // FIX #4: Wait for preload with bounded timeout (120s max - increased from 90s)
+                            // BS preload can take 60-90s, so 120s gives buffer for network delays
+                            const maxWait = 120000; // 120 seconds - bounded wait (increased from 90s)
+                            console.log(`⏳ Waiting for preload to start/complete (max ${maxWait/1000}s)...`);
+                            const waited = await waitForPeriodCompletion(filtersHash, periodKey, maxWait);
+                            
+                            if (waited) {
+                                // Preload completed - re-check cache
+                                let retryCache = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
+                                if (retryCache !== null) {
+                                    console.log(`✅ Post-preload cache hit: ${account} for ${periodKey} = ${retryCache}`);
+                                    cacheStats.hits++;
+                                    cache.balance.set(cacheKey, retryCache);
+                                    return retryCache;
                                 }
                                 
-                                // If we have multiple periods OR multiple accounts OR anchor period,
-                                // skip preload wait - Grid batching will handle it more efficiently
-                                if (hasMultiplePeriods || hasMultipleAccounts || hasAnchorPeriod) {
-                                    let reason = '';
-                                    if (hasMultiplePeriods && hasMultipleAccounts) {
-                                        reason = `grid pattern (${pendingCount} requests, ${pendingPeriodCount} periods, ${pendingAccountCount} accounts)`;
-                                    } else if (hasMultiplePeriods) {
-                                        reason = `multiple periods (${pendingPeriodCount} periods)`;
-                                    } else if (hasMultipleAccounts) {
-                                        reason = `multiple accounts (${pendingAccountCount} accounts)`;
-                                    } else {
-                                        reason = `anchor period exists`;
-                                    }
-                                    console.log(`⚡ ${reason} - skipping preload wait, using grid batching`);
-                                    // Continue to API path below (grid batching will process these together)
-                                } else {
-                                    // FIX #4: Wait for preload with bounded timeout (120s max - increased from 90s)
-                                    // BS preload can take 60-90s, so 120s gives buffer for network delays
-                                    const maxWait = 120000; // 120 seconds - bounded wait (increased from 90s)
-                                    console.log(`⏳ Waiting for preload to start/complete (max ${maxWait/1000}s)...`);
-                                    const waited = await waitForPeriodCompletion(filtersHash, periodKey, maxWait);
+                                // Cache not found but status is "completed" - wait briefly for cache write
+                                // Use async waits with bounded timeout, yielding to event loop
+                                console.log(`⏳ Period ${periodKey} marked completed but cache not found - waiting for cache write...`);
+                                const cacheWaitStart = Date.now();
+                                const cacheWaitMax = 2000; // 2 seconds max (reduced from 3s)
+                                const checkInterval = 200; // Check every 200ms (yields to event loop)
                                 
-                                    if (waited) {
-                                        // Preload completed - re-check cache
-                                        let retryCache = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
-                                        if (retryCache !== null) {
-                                            console.log(`✅ Post-preload cache hit: ${account} for ${periodKey} = ${retryCache}`);
-                                            cacheStats.hits++;
-                                            cache.balance.set(cacheKey, retryCache);
-                                            return retryCache;
-                                        }
-                                        
-                                        // Cache not found but status is "completed" - wait briefly for cache write
-                                        // Use async waits with bounded timeout, yielding to event loop
-                                        console.log(`⏳ Period ${periodKey} marked completed but cache not found - waiting for cache write...`);
-                                        const cacheWaitStart = Date.now();
-                                        const cacheWaitMax = 2000; // 2 seconds max (reduced from 3s)
-                                        const checkInterval = 200; // Check every 200ms (yields to event loop)
-                                        
-                                        // Also check in-memory cache
-                                        if (cache.balance.has(cacheKey)) {
-                                            console.log(`✅ Post-preload cache hit (memory): ${account} for ${periodKey}`);
-                                            cacheStats.hits++;
-                                            return cache.balance.get(cacheKey);
-                                        }
-                                        
-                                        // Cache not found but status is "completed" - retry with bounded delays
-                                        // Use Promise-based retry that resolves to a number (preserves Excel auto-retry)
-                                        console.log(`⏳ Period ${periodKey} marked completed but cache not found - retrying cache lookup...`);
-                                        const retryResult = await retryCacheLookup(
-                                            account, fromPeriod, toPeriod, subsidiary, filtersHash, cacheKey, periodKey,
-                                            checkLocalStorageCache
-                                        );
-                                        if (retryResult !== null) {
-                                            return retryResult;
-                                        }
-                                        // Cache still not found after retries - proceed to API path (don't throw)
-                                        console.log(`⏳ Cache not found after retries - proceeding to API path for ${periodKey}`);
-                                    }
-                                    
-                                    // Still miss after wait - check if now running/retrying
-                                    const finalStatus = getPeriodStatus(filtersHash, periodKey);
-                                    if (finalStatus === "running" || finalStatus === "requested") {
-                                        // ✅ Still running - proceed to API path (transient state)
-                                        console.log(`⏳ Period ${periodKey} still ${finalStatus} - proceeding to API path`);
-                                        // Continue to API path below (don't throw)
-                                    }
-                                    // If preload failed or timed out, continue to API call below
+                                // Also check in-memory cache
+                                if (cache.balance.has(cacheKey)) {
+                                    console.log(`✅ Post-preload cache hit (memory): ${account} for ${periodKey}`);
+                                    cacheStats.hits++;
+                                    return cache.balance.get(cacheKey);
                                 }
+                                
+                            // Cache not found but status is "completed" - retry with bounded delays
+                            // Use Promise-based retry that resolves to a number (preserves Excel auto-retry)
+                            console.log(`⏳ Period ${periodKey} marked completed but cache not found - retrying cache lookup...`);
+                            const retryResult = await retryCacheLookup(
+                                account, fromPeriod, toPeriod, subsidiary, filtersHash, cacheKey, periodKey,
+                                checkLocalStorageCache
+                            );
+                            if (retryResult !== null) {
+                                return retryResult;
                             }
+                            // Cache still not found after retries - proceed to API path (don't throw)
+                            console.log(`⏳ Cache not found after retries - proceeding to API path for ${periodKey}`);
+                            }
+                            
+                            // Still miss after wait - check if now running/retrying
+                            const finalStatus = getPeriodStatus(filtersHash, periodKey);
+                            if (finalStatus === "running" || finalStatus === "requested") {
+                                // ✅ Still running - proceed to API path (transient state)
+                                console.log(`⏳ Period ${periodKey} still ${finalStatus} - proceeding to API path`);
+                                // Continue to API path below (don't throw)
+                            }
+                            // If preload failed or timed out, continue to API call below
                         }
                         // P&L accounts skip the wait entirely - proceed directly to API call
-                    }
                 }
             }
         }
@@ -6948,6 +5314,7 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                 console.log('   Full refresh mode - NOT starting timer');
             }
         });
+    }
     } catch (error) {
         console.error('BALANCE error:', error);
         // Re-throw if already an Error, otherwise wrap
@@ -6982,9 +5349,6 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
  * @requiresAddress
  */
 async function BALANCECURRENCY(account, fromPeriod, toPeriod, subsidiary, currency, department, location, classId, accountingBook) {
-    // CRITICAL: Force async boundary before any synchronous logic
-    await Promise.resolve();
-    
     try {
         // Removed excessive debug logging - only log on actual errors
         
@@ -7319,9 +5683,6 @@ async function BALANCECURRENCY(account, fromPeriod, toPeriod, subsidiary, curren
  * @requiresAddress
  */
 async function BALANCECHANGE(account, fromPeriod, toPeriod, subsidiary, department, location, classId, accountingBook) {
-    // CRITICAL: Force async boundary before any synchronous logic
-    await Promise.resolve();
-    
     try {
         // Normalize account number
         account = normalizeAccountNumber(account);
@@ -7437,9 +5798,6 @@ async function BALANCECHANGE(account, fromPeriod, toPeriod, subsidiary, departme
  * @requiresAddress
  */
 async function BUDGET(account, fromPeriod, toPeriod, subsidiary, department, location, classId, accountingBook, budgetCategory) {
-    // CRITICAL: Force async boundary before any synchronous logic
-    await Promise.resolve();
-    
     try {
         // Normalize inputs
         account = normalizeAccountNumber(account);
@@ -7889,58 +6247,17 @@ async function processBatchQueue() {
     const requests = Array.from(pendingRequests.balance.entries());
     pendingRequests.balance.clear();
     
-    console.log(`🔍 DEBUG: Extracted ${requests.length} requests from queue`);
-    
     // ================================================================
-    // CRITICAL: ACCOUNT TYPE GATE - Hard execution split
-    // Income Statement requests (marked with accountType: 'income_statement')
-    // MUST be routed to regularRequests immediately - skip all BS logic
-    // ================================================================
-    const incomeStatementRequests = [];
-    const balanceSheetRequests = [];
-    
-    // DEBUG: Check first few requests to verify accountType is preserved
-    let debugCount = 0;
-    for (const [cacheKey, request] of requests) {
-        // Check if request is marked as Income Statement (from early gate in BALANCE function)
-        if (debugCount < 5) {
-            console.log(`   🔍 Request ${debugCount}: accountType=${request.accountType || '(undefined)'}, account=${request.params?.account || 'N/A'}`);
-            debugCount++;
-        }
-        
-        if (request.accountType === 'income_statement') {
-            // Income Statement request - route immediately to regularRequests
-            // SKIP: grid detection, anchor inference, BS batching logic
-            incomeStatementRequests.push([cacheKey, request]);
-        } else {
-            // Balance Sheet request (or unknown) - route to BS processing
-            balanceSheetRequests.push([cacheKey, request]);
-        }
-    }
-    
-    // ================================================================
-    // INCOME STATEMENT REQUESTS: Route directly to regularRequests
-    // No BS logic, no grid detection, no anchor inference
-    // ================================================================
-    const regularRequests = [];
-    for (const [cacheKey, request] of incomeStatementRequests) {
-        regularRequests.push([cacheKey, request]);
-    }
-    
-    console.log(`📊 Routing summary: ${incomeStatementRequests.length} Income Statement, ${balanceSheetRequests.length} Balance Sheet`);
-    console.log(`   → ${regularRequests.length} Income Statement requests routed to regularRequests`);
-    console.error(`🔍🔍🔍 CRITICAL DEBUG: About to process BS requests. cumulativeRequests will be built from ${balanceSheetRequests.length} BS requests`);
-    
-    // ================================================================
-    // BALANCE SHEET REQUESTS: Route by parameter shape
+    // ROUTE REQUESTS BY TYPE:
     // 1. CUMULATIVE BS QUERIES: empty fromPeriod with toPeriod → direct /balance API calls
-    // 2. PERIOD ACTIVITY QUERIES: both fromPeriod and toPeriod → BS grid batching (if pattern detected)
-    // 3. OTHER: fallback to regularRequests
+    // 2. PERIOD ACTIVITY QUERIES: both fromPeriod and toPeriod → direct /balance API calls (not batch endpoint)
+    // 3. REGULAR REQUESTS: P&L period ranges → batch endpoint
     // ================================================================
     const cumulativeRequests = [];
-    const periodActivityRequests = [];  // BS period activity queries (for grid batching)
+    const periodActivityRequests = [];  // BS period activity queries (both fromPeriod and toPeriod)
+    const regularRequests = [];
     
-    for (const [cacheKey, request] of balanceSheetRequests) {
+    for (const [cacheKey, request] of requests) {
         const { fromPeriod, toPeriod } = request.params;
         const isCumulative = (!fromPeriod || fromPeriod === '') && toPeriod && toPeriod !== '';
         const isPeriodActivity = fromPeriod && toPeriod && fromPeriod !== toPeriod;
@@ -7949,567 +6266,352 @@ async function processBatchQueue() {
             // Cumulative = empty fromPeriod with a toPeriod
             cumulativeRequests.push([cacheKey, request]);
         } else if (isPeriodActivity) {
-            // Period activity query (both fromPeriod and toPeriod)
-            // BS accounts only - can use grid batching
+            // Period activity query (both fromPeriod and toPeriod) - route to individual /balance calls
+            // The batch endpoint expands period ranges, which is wrong for period activity queries
             periodActivityRequests.push([cacheKey, request]);
         } else {
-            // Other BS requests - use regular batch endpoint
+            // Regular P&L period range requests - can use batch endpoint
             regularRequests.push([cacheKey, request]);
         }
     }
     
-    // ================================================================
-    // CUMULATIVE BS QUERIES: Check for grid batching BEFORE individual processing
-    // CRITICAL: This is the most common CPA workflow (BALANCE(account, , toPeriod))
-    // Grid batching can dramatically improve performance for large grids
-    // ================================================================
-    console.error(`🔍🔍🔍 CRITICAL DEBUG: Checking cumulativeRequests.length: ${cumulativeRequests.length}`);
     if (cumulativeRequests.length > 0) {
+        console.log(`📊 Processing ${cumulativeRequests.length} CUMULATIVE (BS) requests separately...`);
+        
+        let cacheHits = 0;
+        let apiCalls = 0;
+        let deduplicated = 0;
+        let slowQueryCount = 0;
+        let totalApiTime = 0;
+        const bsPeriodsInBatch = new Set(); // Track unique periods for smart suggestion
+        
         // ================================================================
-        // SINGLE-ROW DRAG OPTIMIZATION (NEW - Check before multi-account grid)
+        // DEDUPLICATION: Group identical requests by cache key
+        // INVARIANT: Identical formulas must collapse into a single API call
         // ================================================================
-        // For the common case of dragging BALANCE(account,, Period) across columns,
-        // detect single-row, contiguous period pattern and optimize execution.
-        // 
-        // CRITICAL: Handles out-of-order evaluation safely
-        // - Excel may evaluate Mar before Jan
-        // - Detection must find full contiguous series (or expand to find earliest period)
-        // - Anchor is always the earliest period, regardless of evaluation order
-        // ================================================================
-        try {
-            // Try single-row pattern detection first (more specific)
-            const singleRowPattern = await detectSingleRowDragPattern(cumulativeRequests);
+        const uniqueRequests = new Map(); // cacheKey -> { params, requests: [] }
+        for (const [cacheKey, request] of cumulativeRequests) {
+            // Track periods seen for smart multi-period suggestion
+            if (request.params.toPeriod) {
+                bsPeriodsInBatch.add(request.params.toPeriod);
+                trackBSPeriod(request.params.toPeriod);
+            }
             
-            if (singleRowPattern) {
-                console.log(`🔍 Single-row drag pattern detected: ${singleRowPattern.account} × ${singleRowPattern.periods.length} periods`);
-                console.log(`   Periods: ${singleRowPattern.periods.join(', ')}`);
-                console.log(`   Anchor: ${singleRowPattern.anchorPeriod} (earliest period, determined by period order)`);
+            if (!uniqueRequests.has(cacheKey)) {
+                uniqueRequests.set(cacheKey, { params: request.params, requests: [request] });
+            } else {
+                uniqueRequests.get(cacheKey).requests.push(request);
+                deduplicated++;
+            }
+        }
+        
+        if (deduplicated > 0) {
+            console.log(`   🔄 DEDUPLICATED: ${cumulativeRequests.length} requests → ${uniqueRequests.size} unique (saved ${deduplicated} API calls)`);
+        }
+        
+        // ================================================================
+        // BS BUILD WARNING: Warn user if multiple BS formulas detected
+        // This helps them understand why things are slow and offers preload
+        // ================================================================
+        const uniqueBSCount = uniqueRequests.size;
+        if (uniqueBSCount >= BS_MULTI_FORMULA_THRESHOLD && !bsBuildModeWarningShown) {
+            const bsAccounts = new Set();
+            for (const [_, data] of uniqueRequests) {
+                bsAccounts.add(data.params.account);
+            }
+            showBSBuildModeWarning(uniqueBSCount, Array.from(bsPeriodsInBatch));
+            console.log(`   ⚠️ BS BUILD WARNING: ${uniqueBSCount} unique BS formulas, ${bsAccounts.size} accounts, ${bsPeriodsInBatch.size} periods`);
+        }
+        
+        // Log multi-period detection
+        if (bsPeriodsInBatch.size > 1) {
+            console.log(`   📅 MULTI-PERIOD DETECTED: ${Array.from(bsPeriodsInBatch).join(', ')} - consider preloading both!`);
+        }
+        
+        // Rate limiting to avoid NetSuite 429 CONCURRENCY_LIMIT_EXCEEDED errors
+        const RATE_LIMIT_DELAY_BATCH = 150; // ms between API calls
+        const rateLimitSleepBatch = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+        
+        // Process each UNIQUE cumulative request once
+        for (const [cacheKey, { params, requests }] of uniqueRequests) {
+            const { account, fromPeriod, toPeriod, subsidiary, department, location, classId, accountingBook, currency } = params;
+            
+            // Get endpoint from first request (all requests in group should have same endpoint)
+            const endpoint = requests[0]?.endpoint || '/balance';
+            const isBalanceCurrency = endpoint === '/balancecurrency';
+            
+            // ================================================================
+            // CHECK LOCALSTORAGE PRELOAD CACHE FIRST (Issue 2B Fix)
+            // CRITICAL: Check preload cache before making API calls
+            // This ensures batch mode uses preloaded data instead of making redundant API calls
+            // ================================================================
+            if (!subsidiary) {  // Skip for subsidiary-filtered queries (localStorage not subsidiary-aware)
+                const localStorageValue = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary);
+                if (localStorageValue !== null) {
+                    console.log(`   ✅ Preload cache hit (batch mode): ${account} for ${fromPeriod || '(cumulative)'} → ${toPeriod} = ${localStorageValue}`);
+                    cache.balance.set(cacheKey, localStorageValue);
+                    // Resolve ALL requests waiting for this result
+                    requests.forEach(r => r.resolve(localStorageValue));
+                    cacheHits++;
+                    continue; // Skip API call
+                }
+            }
+            
+            // ================================================================
+            // TRY WILDCARD CACHE RESOLUTION
+            // If account has *, try to sum matching accounts from cache
+            // CRITICAL: Skip for BALANCECURRENCY - wildcard cache doesn't support currency
+            // ================================================================
+            if (account.includes('*') && !isBalanceCurrency) {
+                const wildcardResult = resolveWildcardFromCache(account, fromPeriod, toPeriod, subsidiary);
+                if (wildcardResult !== null) {
+                    console.log(`   🎯 Wildcard cache hit: ${account} = ${wildcardResult.total.toLocaleString()} (${wildcardResult.matchCount} accounts)`);
+                    cache.balance.set(cacheKey, wildcardResult.total);
+                    // Resolve ALL requests waiting for this result
+                    requests.forEach(r => r.resolve(wildcardResult.total));
+                    cacheHits++;
+                    continue; // Skip API call
+                }
+            }
+            
+            // ================================================================
+            // CACHE MISS - Call API (ONCE for all identical requests)
+            // For wildcards, request breakdown so we can cache individual accounts
+            // ================================================================
+            try {
+                const isWildcard = account.includes('*');
+                const apiParams = new URLSearchParams({
+                    account: account,
+                    from_period: '',  // Empty = cumulative from inception
+                    to_period: toPeriod,
+                    subsidiary: subsidiary || '',
+                    department: department || '',
+                    location: location || '',
+                    class: classId || '',
+                    accountingbook: accountingBook || ''
+                });
                 
-                // Verify account is Balance Sheet (CRITICAL SAFETY CHECK)
-                try {
-                    const accountTypeData = await getAccountType(singleRowPattern.account);
-                    // Handle both string and object responses (backend may return object with type property)
-                    const accountType = typeof accountTypeData === 'string' ? accountTypeData : 
-                                      (accountTypeData && typeof accountTypeData === 'object' ? accountTypeData.type : accountTypeData);
-                    
-                    if (!accountType || !isBalanceSheetType(accountType)) {
-                        console.log(`   ⚠️ Account ${singleRowPattern.account} is not BS (type: ${accountType}) - skipping single-row optimization`);
-                        // Continue to multi-account grid detection below
+                // Add currency parameter for BALANCECURRENCY
+                if (isBalanceCurrency) {
+                    if (currency) {
+                        apiParams.append('currency', currency);
+                        console.log(`   💱 BALANCECURRENCY: Adding currency parameter to API: "${currency}"`);
                     } else {
-                        // Account is BS - execute single-row optimization
-                        // CRITICAL: This works regardless of Excel's evaluation order
-                        // Anchor is already determined by period order, not evaluation order
-                        try {
-                            // Filter requests to only those matching the pattern (same account, periods in pattern)
-                            const patternRequests = [];
-                            const processedPeriods = new Set(singleRowPattern.periods);
-                            for (const [cacheKey, request] of cumulativeRequests) {
-                                if (request.params.account === singleRowPattern.account &&
-                                    processedPeriods.has(request.params.toPeriod)) {
-                                    patternRequests.push([cacheKey, request]);
-                                }
-                            }
-                            
-                            if (patternRequests.length > 0) {
-                                await processSingleRowDragOptimization(singleRowPattern, patternRequests);
-                                
-                                // Remove processed requests from cumulativeRequests
-                                const processedCacheKeys = new Set(patternRequests.map(([key]) => key));
-                                const remainingRequests = [];
-                                for (const [cacheKey, request] of cumulativeRequests) {
-                                    if (!processedCacheKeys.has(cacheKey)) {
-                                        remainingRequests.push([cacheKey, request]);
-                                    }
-                                }
-                                cumulativeRequests.length = 0;
-                                cumulativeRequests.push(...remainingRequests);
-                                console.log(`   ✅ Single-row optimization complete: ${patternRequests.length} requests resolved, ${remainingRequests.length} remaining`);
-                            }
-                        } catch (error) {
-                            console.error(`   ❌ Single-row optimization error: ${error.message}`);
-                            console.log(`   ⚠️ Falling back to multi-account grid detection...`);
-                            // Continue to multi-account grid detection below (don't throw)
-                        }
-                    }
-                } catch (error) {
-                    console.warn(`   ⚠️ Could not verify account type - skipping single-row optimization`);
-                    // Continue to multi-account grid detection below
-                }
-            }
-        } catch (error) {
-            // Any error in single-row detection - fall back to multi-account grid
-            console.warn(`   ⚠️ Error in single-row pattern detection: ${error.message} - falling back`);
-            // Continue to multi-account grid detection below
-        }
-        
-        // Step 1: Attempt BS Grid Batching (conservative - only if pattern detected)
-        // CRITICAL: Safety limits are enforced INSIDE detectBsGridPattern() before:
-        // - Anchor computation (inferAnchorDate)
-        // - Batch query construction
-        // - Any NetSuite API calls
-        const cumulativeGridInfo = detectBsGridPattern(cumulativeRequests);
-        
-        if (cumulativeGridInfo && cumulativeGridInfo.queryType === 'cumulative' && 
-            cumulativeGridInfo.accounts.size >= 2 && cumulativeGridInfo.periods.size >= 2) {
-            // Potential grid detected - verify accounts are BS accounts
-            console.log(`🔍 BS Grid pattern detected (CUMULATIVE): ${cumulativeGridInfo.accounts.size} accounts × ${cumulativeGridInfo.periods.size} periods`);
-            console.log(`   Accounts: ${Array.from(cumulativeGridInfo.accounts).slice(0, 5).join(', ')}${cumulativeGridInfo.accounts.size > 5 ? '...' : ''}`);
-            console.log(`   Periods: ${Array.from(cumulativeGridInfo.periods).slice(0, 5).join(', ')}${cumulativeGridInfo.periods.size > 5 ? '...' : ''}`);
-            
-            // Verify accounts are BS accounts (sample check - if any fail, fall back)
-            let allBsAccounts = true;
-            
-            // Sample check: verify first few accounts are BS (conservative)
-            const sampleAccounts = Array.from(cumulativeGridInfo.accounts).slice(0, Math.min(10, cumulativeGridInfo.accounts.size));
-            for (const account of sampleAccounts) {
-                try {
-                    const accountTypeData = await getAccountType(account);
-                    // Handle both string and object responses (backend may return object with type property)
-                    const accountType = typeof accountTypeData === 'string' ? accountTypeData : 
-                                      (accountTypeData && typeof accountTypeData === 'object' ? accountTypeData.type : accountTypeData);
-                    
-                    if (!accountType || !isBalanceSheetType(accountType)) {
-                        console.log(`   ⚠️ Account ${account} is not BS (type: ${accountType}) - falling back to individual processing`);
-                        allBsAccounts = false;
-                        break;
-                    }
-                } catch (error) {
-                    console.warn(`   ⚠️ Could not verify account type for ${account} - falling back to individual processing`);
-                    allBsAccounts = false;
-                    break;
-                }
-            }
-            
-            if (allBsAccounts) {
-                // All sampled accounts are BS - proceed with grid batching
-                console.log(`✅ BS Grid confirmed (CUMULATIVE) - using batched endpoints`);
-                
-                try {
-                    // Use the same grid batching logic as period activity queries
-                    // (will be handled in the period activity section below)
-                    // For now, mark these as processed and add to periodActivityRequests for unified handling
-                    // Actually, we need separate handling - let's process cumulative grids here
-                    await processBsGridBatching(cumulativeGridInfo, cumulativeRequests);
-                    // Mark as processed
-                    cumulativeRequests.length = 0;
-                } catch (error) {
-                    console.error(`   ❌ BS Grid batching (cumulative) error: ${error.message}`);
-                    console.log(`   ⚠️ Falling back to individual processing...`);
-                    // Continue to individual processing below
-                }
-            }
-        }
-        
-        // Step 2: Process remaining cumulative requests individually (fallback or non-grid)
-        if (cumulativeRequests.length > 0) {
-            console.log(`📊 Processing ${cumulativeRequests.length} CUMULATIVE (BS) requests separately...`);
-            
-            let cacheHits = 0;
-            let apiCalls = 0;
-            let deduplicated = 0;
-            let slowQueryCount = 0;
-            let totalApiTime = 0;
-            const bsPeriodsInBatch = new Set(); // Track unique periods for smart suggestion
-            
-            // ================================================================
-            // DEDUPLICATION: Group identical requests by cache key
-            // INVARIANT: Identical formulas must collapse into a single API call
-            // ================================================================
-            const uniqueRequests = new Map(); // cacheKey -> { params, requests: [] }
-            for (const [cacheKey, request] of cumulativeRequests) {
-                // Track periods seen for smart multi-period suggestion
-                if (request.params.toPeriod) {
-                    bsPeriodsInBatch.add(request.params.toPeriod);
-                    trackBSPeriod(request.params.toPeriod);
-                }
-                
-                if (!uniqueRequests.has(cacheKey)) {
-                    uniqueRequests.set(cacheKey, { params: request.params, requests: [request] });
-                } else {
-                    uniqueRequests.get(cacheKey).requests.push(request);
-                    deduplicated++;
-                }
-            }
-            
-            if (deduplicated > 0) {
-                console.log(`   🔄 DEDUPLICATED: ${cumulativeRequests.length} requests → ${uniqueRequests.size} unique (saved ${deduplicated} API calls)`);
-            }
-            
-            // ================================================================
-            // BS BUILD WARNING: Warn user if multiple BS formulas detected
-            // This helps them understand why things are slow and offers preload
-            // ================================================================
-            const uniqueBSCount = uniqueRequests.size;
-            if (uniqueBSCount >= BS_MULTI_FORMULA_THRESHOLD && !bsBuildModeWarningShown) {
-                const bsAccounts = new Set();
-                for (const [_, data] of uniqueRequests) {
-                    bsAccounts.add(data.params.account);
-                }
-                showBSBuildModeWarning(uniqueBSCount, Array.from(bsPeriodsInBatch));
-                console.log(`   ⚠️ BS BUILD WARNING: ${uniqueBSCount} unique BS formulas, ${bsAccounts.size} accounts, ${bsPeriodsInBatch.size} periods`);
-            }
-            
-            // Log multi-period detection
-            if (bsPeriodsInBatch.size > 1) {
-                console.log(`   📅 MULTI-PERIOD DETECTED: ${Array.from(bsPeriodsInBatch).join(', ')} - consider preloading both!`);
-            }
-            
-            // Rate limiting to avoid NetSuite 429 CONCURRENCY_LIMIT_EXCEEDED errors
-            const RATE_LIMIT_DELAY_BATCH = 150; // ms between API calls
-            const rateLimitSleepBatch = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-            
-            // Process each UNIQUE cumulative request once
-            for (const [cacheKey, { params, requests }] of uniqueRequests) {
-                const { account, fromPeriod, toPeriod, subsidiary, department, location, classId, accountingBook, currency } = params;
-                
-                // Get endpoint from first request (all requests in group should have same endpoint)
-                const endpoint = requests[0]?.endpoint || '/balance';
-                const isBalanceCurrency = endpoint === '/balancecurrency';
-                
-                // ================================================================
-                // CHECK LOCALSTORAGE PRELOAD CACHE FIRST (Issue 2B Fix)
-                // CRITICAL: Check preload cache before making API calls
-                // This ensures batch mode uses preloaded data instead of making redundant API calls
-                // ================================================================
-                if (!subsidiary) {  // Skip for subsidiary-filtered queries (localStorage not subsidiary-aware)
-                    const localStorageValue = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary);
-                    if (localStorageValue !== null) {
-                        console.log(`   ✅ Preload cache hit (batch mode): ${account} for ${fromPeriod || '(cumulative)'} → ${toPeriod} = ${localStorageValue}`);
-                        cache.balance.set(cacheKey, localStorageValue);
-                        // Resolve ALL requests waiting for this result
-                        requests.forEach(r => r.resolve(localStorageValue));
-                        cacheHits++;
-                        continue; // Skip API call
+                        console.warn(`   ⚠️ BALANCECURRENCY: Currency parameter is missing or empty! This may cause incorrect results.`);
+                        console.warn(`      Params object:`, JSON.stringify(params, null, 2));
                     }
                 }
                 
-                // ================================================================
-                // TRY WILDCARD CACHE RESOLUTION
-                // If account has *, try to sum matching accounts from cache
-                // CRITICAL: Skip for BALANCECURRENCY - wildcard cache doesn't support currency
-                // ================================================================
-                if (account.includes('*') && !isBalanceCurrency) {
-                    const wildcardResult = resolveWildcardFromCache(account, fromPeriod, toPeriod, subsidiary);
-                    if (wildcardResult !== null) {
-                        console.log(`   🎯 Wildcard cache hit: ${account} = ${wildcardResult.total.toLocaleString()} (${wildcardResult.matchCount} accounts)`);
-                        cache.balance.set(cacheKey, wildcardResult.total);
-                        // Resolve ALL requests waiting for this result
-                        requests.forEach(r => r.resolve(wildcardResult.total));
-                        cacheHits++;
-                        continue; // Skip API call
-                    }
+                // Request breakdown for wildcards so we can cache individual accounts
+                if (isWildcard) {
+                    apiParams.append('include_breakdown', 'true');
                 }
                 
-                // ================================================================
-                // CACHE MISS - Call API (ONCE for all identical requests)
-                // For wildcards, request breakdown so we can cache individual accounts
-                // ================================================================
-                try {
-                    const isWildcard = account.includes('*');
-                    const apiParams = new URLSearchParams({
-                        account: account,
-                        from_period: '',  // Empty = cumulative from inception
-                        to_period: toPeriod,
-                        subsidiary: subsidiary || '',
-                        department: department || '',
-                        location: location || '',
-                        class: classId || '',
-                        accountingbook: accountingBook || ''
-                    });
-                    
-                    // Add currency parameter for BALANCECURRENCY
-                    if (isBalanceCurrency) {
-                        if (currency) {
-                            apiParams.append('currency', currency);
-                            console.log(`   💱 BALANCECURRENCY: Adding currency parameter to API: "${currency}"`);
-                        } else {
-                            console.warn(`   ⚠️ BALANCECURRENCY: Currency parameter is missing or empty! This may cause incorrect results.`);
-                            console.warn(`      Params object:`, JSON.stringify(params, null, 2));
-                        }
-                    }
-                    
-                    // Request breakdown for wildcards so we can cache individual accounts
-                    if (isWildcard) {
-                        apiParams.append('include_breakdown', 'true');
-                    }
-                    
-                    const waitingCount = requests.length > 1 ? ` (${requests.length} formulas waiting)` : '';
-                    const currencyInfo = isBalanceCurrency && currency ? ` (currency: ${currency})` : '';
-                    console.log(`   📤 Cumulative API: ${account} through ${toPeriod}${isWildcard ? ' (with breakdown)' : ''}${currencyInfo}${waitingCount}`);
-                    
-                    // Rate limit: wait before making request if we've already made calls
-                    // Prevents NetSuite 429 CONCURRENCY_LIMIT_EXCEEDED errors
-                    if (apiCalls > 0) {
-                        await rateLimitSleepBatch(RATE_LIMIT_DELAY_BATCH);
-                    }
-                    apiCalls++;
-                    
-                    // Track query timing for slow query detection
-                    const queryStartTime = Date.now();
-                    const response = await fetch(`${SERVER_URL}${endpoint}?${apiParams.toString()}`);
-                    
-                    if (response.ok) {
-                        const contentType = response.headers.get('content-type') || '';
-                        
-                        if (isWildcard && contentType.includes('application/json')) {
-                            // Parse JSON response with breakdown
-                            const data = await response.json();
-                            const total = data.total || 0;
-                            const accounts = data.accounts || {};
-                            const period = data.period || toPeriod;
-                            
-                            console.log(`   ✅ Wildcard result: ${account} = ${total.toLocaleString()} (${Object.keys(accounts).length} accounts)`);
-                            
-                            // Cache the total for this wildcard pattern
-                            cache.balance.set(cacheKey, total);
-                            
-                            // CRITICAL: Cache individual accounts for future wildcard resolution!
-                            cacheIndividualAccounts(accounts, period, subsidiary);
-                            
-                            // Resolve ALL requests waiting for this result
-                            requests.forEach(r => r.resolve(total));
-                        } else {
-                            // Parse JSON response for balance and error
-                            let value = 0;
-                            let errorCode = null;
-                            
-                            try {
-                                const data = await response.json();
-                                // DEBUG: Log raw response to catch parsing issues
-                                console.log(`   📋 Raw JSON response:`, JSON.stringify(data).substring(0, 200));
-                                
-                                // Handle balance - could be number or null
-                                if (typeof data.balance === 'number') {
-                                    value = data.balance;
-                                } else if (data.balance !== null && data.balance !== undefined) {
-                                    value = parseFloat(data.balance) || 0;
-                                }
-                                errorCode = data.error || null;
-                                
-                                // CRITICAL: For BALANCECURRENCY, if balance is null and no explicit error code,
-                                // check if currency was requested. If so, this likely means BUILTIN.CONSOLIDATE
-                                // returned NULL for all transactions (invalid currency conversion path).
-                                // Return INV_SUB_CUR instead of 0 to prevent misleading data.
-                                if (isBalanceCurrency && data.balance === null && !errorCode && currency) {
-                                    console.warn(`   ⚠️ BALANCECURRENCY: Balance is null for currency ${currency} - likely invalid conversion path`);
-                                    errorCode = 'INV_SUB_CUR';
-                                }
-                            } catch (parseError) {
-                                // JSON parsing failed
-                                console.error(`   ❌ JSON parse failed: ${parseError.message}`);
-                                value = 0;
-                            }
-                            
-                            // Track query time for slow query detection
-                            const queryTimeMs = Date.now() - queryStartTime;
-                            totalApiTime += queryTimeMs;
-                            if (queryTimeMs > BS_SLOW_THRESHOLD_MS) {
-                                slowQueryCount++;
-                                console.log(`   ⏱️ SLOW BS QUERY: ${account} took ${(queryTimeMs / 1000).toFixed(1)}s`);
-                            }
-                            
-                            if (errorCode) {
-                                // Reject with error code - Excel will display #ERROR!
-                                // CRITICAL: Do NOT cache error codes - they should be re-evaluated
-                                console.log(`   ⚠️ Cumulative result: ${account} = ${errorCode}`);
-                                requests.forEach(r => r.reject(new Error(errorCode)));
-                            } else {
-                                console.log(`   ✅ Cumulative result: ${account} = ${value.toLocaleString()} (${(queryTimeMs / 1000).toFixed(1)}s)`);
-                                // Only cache valid numeric values, not errors or null
-                                cache.balance.set(cacheKey, value);
-                                // Resolve ALL requests waiting for this result
-                                requests.forEach(r => r.resolve(value));
-                            }
-                        }
-                    } else {
-                        // HTTP error - reject with informative error code
-                        // 522/523/524 are Cloudflare timeout errors
-                        const errorCode = [408, 504, 522, 523, 524].includes(response.status) ? 'TIMEOUT' :
-                                         response.status === 429 ? 'RATELIMIT' :
-                                         response.status === 401 || response.status === 403 ? 'AUTHERR' :
-                                         response.status >= 500 ? 'SERVERR' :
-                                         'APIERR';
-                        console.error(`   ❌ Cumulative API error: ${response.status} → ${errorCode}`);
-                        requests.forEach(r => r.reject(new Error(errorCode)));
-                    }
-                } catch (error) {
-                    // Network error - reject with informative error code
-                    const errorCode = error.name === 'AbortError' ? 'TIMEOUT' : 'NETFAIL';
-                    console.error(`   ❌ Cumulative fetch error: ${error.message} → ${errorCode}`);
-                    requests.forEach(r => r.reject(new Error(errorCode)));
+                const waitingCount = requests.length > 1 ? ` (${requests.length} formulas waiting)` : '';
+                const currencyInfo = isBalanceCurrency && currency ? ` (currency: ${currency})` : '';
+                console.log(`   📤 Cumulative API: ${account} through ${toPeriod}${isWildcard ? ' (with breakdown)' : ''}${currencyInfo}${waitingCount}`);
+                
+                // Rate limit: wait before making request if we've already made calls
+                // Prevents NetSuite 429 CONCURRENCY_LIMIT_EXCEEDED errors
+                if (apiCalls > 0) {
+                    await rateLimitSleepBatch(RATE_LIMIT_DELAY_BATCH);
                 }
-            }
-            
-            // ================================================================
-            // AUTO-SUGGEST BS PRELOAD after slow queries
-            // If we had slow BS queries and more than 1 period, suggest preload
-            // ================================================================
-            if (slowQueryCount > 0 && apiCalls > 0) {
-                console.log(`   ⏱️ SLOW QUERY SUMMARY: ${slowQueryCount}/${apiCalls} queries were slow (>${BS_SLOW_THRESHOLD_MS/1000}s)`);
+                apiCalls++;
                 
-                // Get all BS periods seen (both in this batch and historically)
-                const allSeenPeriods = getSeenBSPeriods();
-                const periodsToSuggest = allSeenPeriods.length > 0 ? allSeenPeriods : Array.from(bsPeriodsInBatch);
+                // Track query timing for slow query detection
+                const queryStartTime = Date.now();
+                const response = await fetch(`${SERVER_URL}${endpoint}?${apiParams.toString()}`);
                 
-                // Only suggest if we haven't suggested recently
-                suggestBSPreload(periodsToSuggest, totalApiTime);
-            }
-            
-            if (cacheHits > 0 || apiCalls > 0 || deduplicated > 0) {
-                console.log(`   📊 Cumulative summary: ${cacheHits} cache hits, ${apiCalls} API calls, ${deduplicated} deduplicated`);
-            }
-        }
-    } // Close the if (cumulativeRequests.length > 0) block from line 7967
-    
-    console.error(`🔍🔍🔍 CRITICAL DEBUG: After cumulativeRequests block. About to check periodActivityRequests.`);
-    
-    // ================================================================
-    // PERIOD ACTIVITY QUERIES: Handle separately (both fromPeriod and toPeriod)
-    // CRITICAL: Check for BS Grid Batching pattern BEFORE individual processing
-    // Only applies to Balance Sheet accounts with both fromDate and toDate
-    // 
-    // SAFETY LIMITS: Enforced in detectBsGridPattern() BEFORE any NetSuite work:
-    // - Max accounts: 200 (BS_GRID_MAX_ACCOUNTS)
-    // - Max periods: 36 (BS_GRID_MAX_PERIODS)
-    // If limits exceeded, detectBsGridPattern() returns null → falls back to individual processing
-    // ================================================================
-    console.error(`🔍🔍🔍 CRITICAL DEBUG: Checking periodActivityRequests.length: ${periodActivityRequests.length}`);
-    if (periodActivityRequests.length > 0) {
-        // Step 1: Attempt BS Grid Batching (conservative - only if pattern detected)
-        // CRITICAL: Safety limits are enforced INSIDE detectBsGridPattern() before:
-        // - Anchor computation (inferAnchorDate)
-        // - Batch query construction
-        // - Any NetSuite API calls
-        const gridInfo = detectBsGridPattern(periodActivityRequests);
-        
-        if (gridInfo && gridInfo.accounts.size >= 2 && gridInfo.periods.size >= 2) {
-            // Potential grid detected - verify accounts are BS accounts
-            console.log(`🔍 BS Grid pattern detected: ${gridInfo.accounts.size} accounts × ${gridInfo.periods.size} periods`);
-            console.log(`   Accounts: ${Array.from(gridInfo.accounts).slice(0, 5).join(', ')}${gridInfo.accounts.size > 5 ? '...' : ''}`);
-            console.log(`   Periods: ${Array.from(gridInfo.periods).slice(0, 5).join(', ')}${gridInfo.periods.size > 5 ? '...' : ''}`);
-            
-            // Verify accounts are BS accounts (sample check - if any fail, fall back)
-            let allBsAccounts = true;
-            
-            // Sample check: verify first few accounts are BS (conservative)
-            const sampleAccounts = Array.from(gridInfo.accounts).slice(0, Math.min(10, gridInfo.accounts.size));
-            for (const account of sampleAccounts) {
-                try {
-                    const accountTypeData = await getAccountType(account);
-                    // Handle both string and object responses (backend may return object with type property)
-                    const accountType = typeof accountTypeData === 'string' ? accountTypeData : 
-                                      (accountTypeData && typeof accountTypeData === 'object' ? accountTypeData.type : accountTypeData);
+                if (response.ok) {
+                    const contentType = response.headers.get('content-type') || '';
                     
-                    if (!accountType || !isBalanceSheetType(accountType)) {
-                        console.log(`   ⚠️ Account ${account} is not BS (type: ${accountType}) - falling back to individual processing`);
-                        allBsAccounts = false;
-                        break;
-                    }
-                } catch (error) {
-                    console.warn(`   ⚠️ Could not verify account type for ${account} - falling back to individual processing`);
-                    allBsAccounts = false;
-                    break;
-                }
-            }
-            
-            if (allBsAccounts) {
-                // All sampled accounts are BS - proceed with grid batching
-                console.log(`✅ BS Grid confirmed (PERIOD ACTIVITY) - using batched endpoints`);
-                
-                try {
-                    // Use unified grid batching function
-                    await processBsGridBatching(gridInfo, periodActivityRequests);
-                    // Mark as processed
-                    periodActivityRequests.length = 0;
-                } catch (error) {
-                    console.error(`   ❌ BS Grid batching (period activity) error: ${error.message}`);
-                    console.log(`   ⚠️ Falling back to individual processing...`);
-                    // Continue to individual processing below
-                }
-            }
-        }
-        
-        // Step 2: Process remaining period activity requests individually (fallback or non-grid)
-        if (periodActivityRequests.length > 0) {
-            console.log(`📊 Processing ${periodActivityRequests.length} PERIOD ACTIVITY requests separately...`);
-            
-            let activityCacheHits = 0;
-            let activityApiCalls = 0;
-            
-            // Process each period activity request individually
-            for (const [cacheKey, request] of periodActivityRequests) {
-                const { account, fromPeriod, toPeriod, subsidiary, department, location, classId, accountingBook } = request.params;
-                
-                // Check in-memory cache first
-                if (cache.balance.has(cacheKey)) {
-                    const cachedValue = cache.balance.get(cacheKey);
-                    console.log(`   ✅ Period activity cache hit: ${account} (${fromPeriod} → ${toPeriod}) = ${cachedValue}`);
-                    cache.balance.set(cacheKey, cachedValue);
-                    request.resolve(cachedValue);
-                    activityCacheHits++;
-                    continue;
-                }
-                
-                // Cache miss - make individual API call
-                try {
-                    const apiParams = new URLSearchParams({
-                        account: account,
-                        from_period: fromPeriod,
-                        to_period: toPeriod,
-                        subsidiary: subsidiary || '',
-                        department: department || '',
-                        location: location || '',
-                        class: classId || '',
-                        accountingbook: accountingBook || ''
-                    });
-                    
-                    console.log(`   📤 Period activity API: ${account} (${fromPeriod} → ${toPeriod})`);
-                    activityApiCalls++;
-                    
-                    const response = await fetch(`${SERVER_URL}/balance?${apiParams.toString()}`);
-                    
-                    if (response.ok) {
+                    if (isWildcard && contentType.includes('application/json')) {
+                        // Parse JSON response with breakdown
                         const data = await response.json();
-                        const value = data.balance ?? 0;
-                        const errorCode = data.error;
+                        const total = data.total || 0;
+                        const accounts = data.accounts || {};
+                        const period = data.period || toPeriod;
+                        
+                        console.log(`   ✅ Wildcard result: ${account} = ${total.toLocaleString()} (${Object.keys(accounts).length} accounts)`);
+                        
+                        // Cache the total for this wildcard pattern
+                        cache.balance.set(cacheKey, total);
+                        
+                        // CRITICAL: Cache individual accounts for future wildcard resolution!
+                        cacheIndividualAccounts(accounts, period, subsidiary);
+                        
+                        // Resolve ALL requests waiting for this result
+                        requests.forEach(r => r.resolve(total));
+                    } else {
+                        // Parse JSON response for balance and error
+                        let value = 0;
+                        let errorCode = null;
+                        
+                        try {
+                            const data = await response.json();
+                            // DEBUG: Log raw response to catch parsing issues
+                            console.log(`   📋 Raw JSON response:`, JSON.stringify(data).substring(0, 200));
+                            
+                            // Handle balance - could be number or null
+                            if (typeof data.balance === 'number') {
+                                value = data.balance;
+                            } else if (data.balance !== null && data.balance !== undefined) {
+                                value = parseFloat(data.balance) || 0;
+                            }
+                            errorCode = data.error || null;
+                            
+                            // CRITICAL: For BALANCECURRENCY, if balance is null and no explicit error code,
+                            // check if currency was requested. If so, this likely means BUILTIN.CONSOLIDATE
+                            // returned NULL for all transactions (invalid currency conversion path).
+                            // Return INV_SUB_CUR instead of 0 to prevent misleading data.
+                            if (isBalanceCurrency && data.balance === null && !errorCode && currency) {
+                                console.warn(`   ⚠️ BALANCECURRENCY: Balance is null for currency ${currency} - likely invalid conversion path`);
+                                errorCode = 'INV_SUB_CUR';
+                            }
+                        } catch (parseError) {
+                            // JSON parsing failed
+                            console.error(`   ❌ JSON parse failed: ${parseError.message}`);
+                            value = 0;
+                        }
+                        
+                        // Track query time for slow query detection
+                        const queryTimeMs = Date.now() - queryStartTime;
+                        totalApiTime += queryTimeMs;
+                        if (queryTimeMs > BS_SLOW_THRESHOLD_MS) {
+                            slowQueryCount++;
+                            console.log(`   ⏱️ SLOW BS QUERY: ${account} took ${(queryTimeMs / 1000).toFixed(1)}s`);
+                        }
                         
                         if (errorCode) {
-                            console.log(`   ⚠️ Period activity result: ${account} = ${errorCode}`);
-                            request.reject(new Error(errorCode));
+                            // Reject with error code - Excel will display #ERROR!
+                            // CRITICAL: Do NOT cache error codes - they should be re-evaluated
+                            console.log(`   ⚠️ Cumulative result: ${account} = ${errorCode}`);
+                            requests.forEach(r => r.reject(new Error(errorCode)));
                         } else {
-                            console.log(`   ✅ Period activity result: ${account} = ${value.toLocaleString()}`);
+                            console.log(`   ✅ Cumulative result: ${account} = ${value.toLocaleString()} (${(queryTimeMs / 1000).toFixed(1)}s)`);
+                            // Only cache valid numeric values, not errors or null
                             cache.balance.set(cacheKey, value);
-                            request.resolve(value);
+                            // Resolve ALL requests waiting for this result
+                            requests.forEach(r => r.resolve(value));
                         }
-                    } else {
-                        const errorCode = response.status === 408 || response.status === 504 ? 'TIMEOUT' : 'APIERR';
-                        console.error(`   ❌ Period activity API error: ${response.status} → ${errorCode}`);
-                        request.reject(new Error(errorCode));
                     }
-                } catch (error) {
-                    const errorCode = error.name === 'AbortError' ? 'TIMEOUT' : 'NETFAIL';
-                    console.error(`   ❌ Period activity fetch error: ${error.message} → ${errorCode}`);
-                    request.reject(new Error(errorCode));
+                } else {
+                    // HTTP error - reject with informative error code
+                    // 522/523/524 are Cloudflare timeout errors
+                    const errorCode = [408, 504, 522, 523, 524].includes(response.status) ? 'TIMEOUT' :
+                                     response.status === 429 ? 'RATELIMIT' :
+                                     response.status === 401 || response.status === 403 ? 'AUTHERR' :
+                                     response.status >= 500 ? 'SERVERR' :
+                                     'APIERR';
+                    console.error(`   ❌ Cumulative API error: ${response.status} → ${errorCode}`);
+                    requests.forEach(r => r.reject(new Error(errorCode)));
                 }
+            } catch (error) {
+                // Network error - reject with informative error code
+                const errorCode = error.name === 'AbortError' ? 'TIMEOUT' : 'NETFAIL';
+                console.error(`   ❌ Cumulative fetch error: ${error.message} → ${errorCode}`);
+                requests.forEach(r => r.reject(new Error(errorCode)));
             }
+        }
+        
+        // ================================================================
+        // AUTO-SUGGEST BS PRELOAD after slow queries
+        // If we had slow BS queries and more than 1 period, suggest preload
+        // ================================================================
+        if (slowQueryCount > 0 && apiCalls > 0) {
+            console.log(`   ⏱️ SLOW QUERY SUMMARY: ${slowQueryCount}/${apiCalls} queries were slow (>${BS_SLOW_THRESHOLD_MS/1000}s)`);
             
-            if (activityCacheHits > 0 || activityApiCalls > 0) {
-                console.log(`   📊 Period activity summary: ${activityCacheHits} cache hits, ${activityApiCalls} API calls`);
-            }
+            // Get all BS periods seen (both in this batch and historically)
+            const allSeenPeriods = getSeenBSPeriods();
+            const periodsToSuggest = allSeenPeriods.length > 0 ? allSeenPeriods : Array.from(bsPeriodsInBatch);
+            
+            // Only suggest if we haven't suggested recently
+            suggestBSPreload(periodsToSuggest, totalApiTime);
+        }
+        
+        if (cacheHits > 0 || apiCalls > 0 || deduplicated > 0) {
+            console.log(`   📊 Cumulative summary: ${cacheHits} cache hits, ${apiCalls} API calls, ${deduplicated} deduplicated`);
         }
     }
     
-    console.error(`🔍🔍🔍 CRITICAL DEBUG: After periodActivityRequests block. About to start regularRequests processing.`);
-    console.error(`🔍🔍🔍 CRITICAL DEBUG: regularRequests.length=${regularRequests.length}, cumulativeRequests.length=${cumulativeRequests.length}, periodActivityRequests.length=${periodActivityRequests.length}`);
+    // ================================================================
+    // PERIOD ACTIVITY QUERIES: Handle separately (both fromPeriod and toPeriod)
+    // These need direct /balance API calls, not batch endpoint
+    // The batch endpoint expands period ranges, which is wrong for period activity
+    // ================================================================
+    if (periodActivityRequests.length > 0) {
+        console.log(`📊 Processing ${periodActivityRequests.length} PERIOD ACTIVITY requests separately...`);
+        
+        let activityCacheHits = 0;
+        let activityApiCalls = 0;
+        
+        // Process each period activity request individually
+        for (const [cacheKey, request] of periodActivityRequests) {
+            const { account, fromPeriod, toPeriod, subsidiary, department, location, classId, accountingBook } = request.params;
+            
+            // Check in-memory cache first
+            if (cache.balance.has(cacheKey)) {
+                const cachedValue = cache.balance.get(cacheKey);
+                console.log(`   ✅ Period activity cache hit: ${account} (${fromPeriod} → ${toPeriod}) = ${cachedValue}`);
+                cache.balance.set(cacheKey, cachedValue);
+                request.resolve(cachedValue);
+                activityCacheHits++;
+                continue;
+            }
+            
+            // Cache miss - make individual API call
+            try {
+                const apiParams = new URLSearchParams({
+                    account: account,
+                    from_period: fromPeriod,
+                    to_period: toPeriod,
+                    subsidiary: subsidiary || '',
+                    department: department || '',
+                    location: location || '',
+                    class: classId || '',
+                    accountingbook: accountingBook || ''
+                });
+                
+                console.log(`   📤 Period activity API: ${account} (${fromPeriod} → ${toPeriod})`);
+                activityApiCalls++;
+                
+                const response = await fetch(`${SERVER_URL}/balance?${apiParams.toString()}`);
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    const value = data.balance ?? 0;
+                    const errorCode = data.error;
+                    
+                    if (errorCode) {
+                        console.log(`   ⚠️ Period activity result: ${account} = ${errorCode}`);
+                        request.reject(new Error(errorCode));
+                    } else {
+                        console.log(`   ✅ Period activity result: ${account} = ${value.toLocaleString()}`);
+                        cache.balance.set(cacheKey, value);
+                        request.resolve(value);
+                    }
+                } else {
+                    const errorCode = response.status === 408 || response.status === 504 ? 'TIMEOUT' : 'APIERR';
+                    console.error(`   ❌ Period activity API error: ${response.status} → ${errorCode}`);
+                    request.reject(new Error(errorCode));
+                }
+            } catch (error) {
+                const errorCode = error.name === 'AbortError' ? 'TIMEOUT' : 'NETFAIL';
+                console.error(`   ❌ Period activity fetch error: ${error.message} → ${errorCode}`);
+                request.reject(new Error(errorCode));
+            }
+        }
+        
+        if (activityCacheHits > 0 || activityApiCalls > 0) {
+            console.log(`   📊 Period activity summary: ${activityCacheHits} cache hits, ${activityApiCalls} API calls`);
+        }
+    }
     
     // ================================================================
     // CHECK LOCALSTORAGE PRELOAD CACHE FOR EACH REGULAR REQUEST (Issue 2B Fix)
     // CRITICAL: Check preload cache before batching - filter out cache hits
     // This ensures batch mode uses preloaded data instead of making redundant API calls
     // ================================================================
-    console.error(`🔍🔍🔍 CRITICAL DEBUG: About to process regularRequests. Length: ${regularRequests.length}, cumulativeRequests: ${cumulativeRequests.length}, periodActivityRequests: ${periodActivityRequests.length}`);
-    console.log(`📦 Processing regularRequests: ${regularRequests.length} requests (Income Statement + other BS)`);
-    
     const regularRequestsToProcess = [];
     let regularCacheHits = 0;
     
@@ -8933,9 +7035,6 @@ async function processBatchQueue() {
                 console.log(`  📤 Chunk ${chunkIndex}/${totalChunks}: ${accountChunk.length} accounts × ${periodChunk.length} periods (fetching...)`);
             
                 try {
-                    // CRITICAL DEBUG: Log before making batch API call
-                    console.error(`🔍🔍🔍 CRITICAL DEBUG: About to call /batch/balance with ${accountChunk.length} accounts × ${periodChunk.length} periods`);
-                    
                     // Make batch API call
                     const response = await fetch(`${SERVER_URL}/batch/balance`, {
                         method: 'POST',
@@ -8952,9 +7051,6 @@ async function processBatchQueue() {
                         // BALANCECURRENCY requests are handled separately above
                     })
                     });
-                    
-                    // CRITICAL DEBUG: Log response status
-                    console.error(`🔍🔍🔍 CRITICAL DEBUG: /batch/balance response status: ${response.status}`);
                 
                     if (!response.ok) {
                         console.error(`  ❌ API error: ${response.status}`);
@@ -9071,7 +7167,6 @@ async function processBatchQueue() {
     const totalBatchTime = ((Date.now() - batchStartTime) / 1000).toFixed(1);
     console.log('========================================');
     console.log(`✅ BATCH PROCESSING COMPLETE in ${totalBatchTime}s`);
-    console.error(`🔍🔍🔍 CRITICAL DEBUG: Final state - regularRequests.length: ${regularRequests.length}, cumulativeRequests.length: ${cumulativeRequests.length}, periodActivityRequests.length: ${periodActivityRequests.length}`);
     console.log('========================================\n');
 }
 
@@ -9209,6 +7304,9 @@ async function fetchBatchBalances(accounts, periods, filters, allRequests, retry
     }
 }
 
+// expandPeriodRangeFromTo is defined at the top of this file
+*/
+
 // (Old streaming functions removed - not needed for Phase 3 non-streaming async)
 
 // ============================================================================
@@ -9230,9 +7328,6 @@ async function fetchBatchBalances(accounts, periods, filters, allRequests, retry
  * @returns {Promise<number>} Retained earnings value
  */
 async function RETAINEDEARNINGS(period, subsidiary, accountingBook, classId, department, location) {
-    // CRITICAL: Force async boundary before any synchronous logic
-    await Promise.resolve();
-    
     try {
         // RETAINEDEARNINGS is a point-in-time balance - use end of year for year-only values
         // This ensures "2025" calculates RE as of Dec 31, 2025
@@ -9438,9 +7533,6 @@ async function RETAINEDEARNINGS(period, subsidiary, accountingBook, classId, dep
  * @returns {Promise<number>} Net income value
  */
 async function NETINCOME(fromPeriod, toPeriod, subsidiary, accountingBook, classId, department, location) {
-    // CRITICAL: Force async boundary before any synchronous logic
-    await Promise.resolve();
-    
     try {
         console.log(`📊 NETINCOME called with: fromPeriod=${fromPeriod} (type: ${typeof fromPeriod}), toPeriod=${toPeriod} (type: ${typeof toPeriod}), subsidiary=${subsidiary}`);
         
@@ -9676,8 +7768,6 @@ async function NETINCOME(fromPeriod, toPeriod, subsidiary, accountingBook, class
  * @returns {Promise<number>} Total balance for all accounts of the specified type
  */
 async function TYPEBALANCE(accountType, fromPeriod, toPeriod, subsidiary, department, location, classId, accountingBook, useSpecialAccount) {
-    // CRITICAL: Force async boundary before any synchronous logic
-    await Promise.resolve();
     
     // Cross-context cache invalidation - taskpane signals via localStorage
     // This is CRITICAL for subsidiary changes - must clear in-memory cache to read fresh localStorage data
@@ -10022,9 +8112,6 @@ async function TYPEBALANCE(accountType, fromPeriod, toPeriod, subsidiary, depart
  * @returns {Promise<number>} CTA value
  */
 async function CTA(period, subsidiary, accountingBook) {
-    // CRITICAL: Force async boundary before any synchronous logic
-    await Promise.resolve();
-    
     try {
         // CTA is a point-in-time balance - use end of year for year-only values
         // This ensures "2025" calculates CTA as of Dec 31, 2025
@@ -10356,21 +8443,10 @@ function CLEARCACHE(itemsJson) {
 // This ensures Office.js is fully initialized before registration
 // ============================================================================
 
-// CRITICAL: Registration must happen immediately when functions.js loads
-// Don't wait for Office.onReady - it may have already fired or may not fire in shared runtime
-console.log('🔧 Starting function registration process...');
-console.log('   typeof Office:', typeof Office);
-console.log('   typeof CustomFunctions:', typeof CustomFunctions);
-console.log('   Office.onReady available:', typeof Office !== 'undefined' && typeof Office.onReady !== 'undefined');
-
 (function registerCustomFunctions() {
-    console.log('🔧 registerCustomFunctions() IIFE executing...');
-    
     function doRegistration() {
-        console.log('🔧 doRegistration() called');
         if (typeof CustomFunctions !== 'undefined' && CustomFunctions.associate) {
             try {
-                console.log('🔧 Attempting to register custom functions...');
                 CustomFunctions.associate('NAME', NAME);
                 CustomFunctions.associate('TYPE', TYPE);
                 CustomFunctions.associate('PARENT', PARENT);
@@ -10387,37 +8463,17 @@ console.log('   Office.onReady available:', typeof Office !== 'undefined' && typ
                 return true;
             } catch (error) {
                 console.error('❌ Error registering custom functions:', error);
-                console.error('   Error stack:', error.stack);
                 return false;
             }
         } else {
             console.warn('⚠️ CustomFunctions not available yet');
-            console.warn('   typeof CustomFunctions:', typeof CustomFunctions);
-            console.warn('   CustomFunctions.associate:', typeof CustomFunctions !== 'undefined' ? typeof CustomFunctions.associate : 'N/A');
             return false;
         }
-    }
-    
-    // CRITICAL: Try immediate registration FIRST (don't wait for Office.onReady)
-    // In shared runtime, Office.onReady may have already fired or may not fire at all
-    if (typeof CustomFunctions !== 'undefined' && CustomFunctions.associate) {
-        console.log('🔧 CustomFunctions already available - attempting immediate registration');
-        if (doRegistration()) {
-            if (typeof window !== 'undefined') {
-                window.xaviFunctionsRegistered = true;
-            }
-            console.log('✅ Registration complete (immediate path)');
-            return; // Success, exit early
-        }
-    } else {
-        console.warn('⚠️ CustomFunctions not available for immediate registration');
-        console.warn('   Will try Office.onReady() path or polling fallback');
     }
     
     // MICROSOFT BEST PRACTICE: Wait for Office.onReady() before registering
     // This is critical for SharedRuntime mode on Mac
     if (typeof Office !== 'undefined' && Office.onReady) {
-        console.log('🔧 Office.onReady available - setting up callback');
         Office.onReady(function(info) {
             console.log('📋 Office.onReady() fired - registering custom functions');
             console.log('   Platform:', info.platform);
@@ -10432,47 +8488,25 @@ console.log('   Office.onReady available:', typeof Office !== 'undefined' && typ
         });
     } else {
         // Fallback: Office.js not loaded yet, wait for it
-        // CRITICAL: Use longer interval (200ms) to prevent event loop starvation
-        // Short intervals (50ms) can crash Excel during intellisense inspection
-        console.log('🔧 Office.onReady not available - setting up polling fallback');
         if (typeof window !== 'undefined') {
-            var checkOffice = null;
-            var registrationAttempted = false;
-            
-            // Use longer interval to prevent event loop starvation
-            checkOffice = setInterval(function() {
+            var checkOffice = setInterval(function() {
                 if (typeof Office !== 'undefined' && Office.onReady) {
                     clearInterval(checkOffice);
-                    checkOffice = null;
-                    if (!registrationAttempted) {
-                        registrationAttempted = true;
-                        console.log('🔧 Office.onReady now available via polling - setting up callback');
-                        Office.onReady(function(info) {
-                            console.log('📋 Office.onReady() fired (delayed) - registering custom functions');
-                            console.log('   Platform:', info.platform);
-                            console.log('   Host:', info.host);
-                            doRegistration();
-                        });
-                    }
+                    Office.onReady(function(info) {
+                        console.log('📋 Office.onReady() fired (delayed) - registering custom functions');
+                        doRegistration();
+                    });
                 }
-            }, 200); // Increased from 50ms to 200ms to prevent event loop starvation
+            }, 50);
             
             // Timeout after 5 seconds
             setTimeout(function() {
-                if (checkOffice) {
-                    clearInterval(checkOffice);
-                    checkOffice = null;
-                }
-                if (!registrationAttempted && typeof CustomFunctions !== 'undefined') {
-                    registrationAttempted = true;
+                clearInterval(checkOffice);
+                if (typeof CustomFunctions !== 'undefined') {
                     console.warn('⚠️ Office.onReady() timeout - attempting registration anyway');
                     doRegistration();
-                } else if (!registrationAttempted) {
-                    console.error('❌ Registration failed: Office.onReady() timeout and CustomFunctions still not available');
                 }
             }, 5000);
-        } else {
-            console.error('❌ window is undefined - cannot set up registration fallback');
         }
     }
 })();
