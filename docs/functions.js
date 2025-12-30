@@ -495,9 +495,16 @@ function checkBatchEligibilitySynchronous(account, fromPeriod, toPeriod, filters
     const allRequests = [...queuedRequests, ...evaluatingRequests];
     console.log(`🔍 BATCH CHECK: ${account}/${toPeriod} - checking ${queuedRequests.length} queued + ${evaluatingRequests.length} evaluating = ${allRequests.length} total requests`);
     const bsCumulativeRequests = allRequests.filter(r => {
-        const rParams = r.params;
+        // Handle both queued requests (have .params) and evaluating requests (have direct properties)
+        const rParams = r.params || r;
+        
+        // Safety check: ensure rParams exists and is an object
+        if (!rParams || typeof rParams !== 'object') {
+            return false;
+        }
+        
         // Must be cumulative (no fromPeriod)
-        if (rParams.fromPeriod && rParams.fromPeriod !== '') {
+        if (rParams.fromPeriod !== undefined && rParams.fromPeriod !== null && rParams.fromPeriod !== '') {
             return false;
         }
         // Must have toPeriod
@@ -509,12 +516,14 @@ function checkBatchEligibilitySynchronous(account, fromPeriod, toPeriod, filters
             return false;
         }
         // Must have same filters
+        // For evaluating requests, filters are in rParams.filters; for queued requests, filters are in rParams directly
+        const rFilters = rParams.filters || rParams;
         const rFilterKey = JSON.stringify({
-            subsidiary: rParams.subsidiary || '',
-            department: rParams.department || '',
-            location: rParams.location || '',
-            classId: rParams.classId || '',
-            accountingBook: rParams.accountingBook || ''
+            subsidiary: rFilters.subsidiary || '',
+            department: rFilters.department || '',
+            location: rFilters.location || '',
+            classId: rFilters.classId || '',
+            accountingBook: rFilters.accountingBook || ''
         });
         const filterKey = JSON.stringify({
             subsidiary: filters.subsidiary || '',
