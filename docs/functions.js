@@ -406,6 +406,23 @@ function isCumulativeRequest(fromPeriod) {
 }
 
 // ============================================================================
+// COLUMN-BASED BALANCE SHEET BATCHING - Feature Flag
+// ============================================================================
+
+/**
+ * Feature flag for column-based balance sheet batching.
+ * When false, behavior must be byte-for-byte identical to current production.
+ * When true, column-based batching is enabled (Phase 2+).
+ */
+const USE_COLUMN_BASED_BS_BATCHING = false;
+
+/**
+ * Debug flag for column-based batching detection logging.
+ * Only logs when true - no behavior changes.
+ */
+const DEBUG_COLUMN_BASED_BS_BATCHING = true;
+
+// ============================================================================
 // BALANCE SHEET GRID BATCHING - Helper Functions
 // ============================================================================
 
@@ -460,6 +477,219 @@ function inferAnchorDate(periods) {
     const day = String(anchorDate.getDate()).padStart(2, '0');
     
     return `${year}-${month}-${day}`;
+}
+
+// ============================================================================
+// COLUMN-BASED BALANCE SHEET BATCHING - Filter Normalization
+// ============================================================================
+
+/**
+ * Normalize filters for column-based batching.
+ * 
+ * CRITICAL: This is a duplicate utility (not refactored from existing getFilterKey)
+ * to ensure zero impact on CFO Flash and Income Statement code paths.
+ * 
+ * Normalization rules:
+ * - Sort keys alphabetically
+ * - Normalize null vs empty string (both become empty string)
+ * - Include accounting book, subsidiary, and all filter fields
+ * - Return consistent JSON string for comparison
+ * 
+ * @param {Object} filters - Filter object (subsidiary, department, location, classId, accountingBook)
+ * @returns {string} - Normalized filter key for grouping and caching
+ */
+function normalizeFiltersForColumnBatching(filters) {
+    if (!filters || typeof filters !== 'object') {
+        filters = {};
+    }
+    
+    // Normalize: null/undefined/empty all become empty string
+    const normalized = {
+        subsidiary: String(filters.subsidiary || '').trim(),
+        department: String(filters.department || '').trim(),
+        location: String(filters.location || '').trim(),
+        classId: String(filters.classId || '').trim(),
+        accountingBook: String(filters.accountingBook || '').trim()
+    };
+    
+    // Sort keys alphabetically for consistent JSON stringification
+    const sorted = {};
+    Object.keys(normalized).sort().forEach(key => {
+        sorted[key] = normalized[key];
+    });
+    
+    return JSON.stringify(sorted);
+}
+
+// ============================================================================
+// COLUMN-BASED BALANCE SHEET BATCHING - Grid Detection (Phase 1: Detection Only)
+// ============================================================================
+
+/**
+ * Detect column-based balance sheet grid pattern.
+ * 
+ * PHASE 1: Detection and logging only - no behavior changes.
+ * This function is called but results are ignored when feature flag is false.
+ * 
+ * Detection modes:
+ * - Primary: Multiple accounts + multiple periods (columns)
+ * - Secondary: Single period + multiple accounts (Excel recalc safety)
+ * 
+ * CRITICAL SAFETY CONSTRAINTS:
+ * - Side-effect-free (read-only, no mutations)
+ * - Synchronous (no await, no promises)
+ * - Conservative (requires multiple accounts AND multiple periods for primary mode)
+ * - Fallback-friendly (returns {eligible: false} on any ambiguity)
+ * 
+ * @param {Array} evaluatingRequests - Array of requests currently being evaluated
+ * @returns {Object} - { eligible: boolean, columns?: Array, allAccounts?: Set, filters?: Object }
+ */
+function detectColumnBasedBSGrid(evaluatingRequests) {
+    // Safety limits (fail-fast before any processing)
+    const MAX_ACCOUNTS_PER_BATCH = 100;
+    const MAX_PERIODS_PER_BATCH = 24;
+    
+    if (!evaluatingRequests || !Array.isArray(evaluatingRequests) || evaluatingRequests.length === 0) {
+        if (DEBUG_COLUMN_BASED_BS_BATCHING) {
+            console.log(`🔍 COLUMN-BASED BS DETECT: No requests - not eligible`);
+        }
+        return { eligible: false };
+    }
+    
+    // Step 1: Filter to cumulative Balance Sheet requests only
+    // Must be cumulative (no fromPeriod), must have toPeriod
+    const bsCumulativeRequests = evaluatingRequests.filter(r => {
+        const rParams = r.params || r;
+        
+        // Safety check
+        if (!rParams || typeof rParams !== 'object') {
+            return false;
+        }
+        
+        // Must be cumulative (no fromPeriod)
+        if (rParams.fromPeriod !== undefined && rParams.fromPeriod !== null && rParams.fromPeriod !== '') {
+            return false;
+        }
+        
+        // Must have toPeriod
+        if (!rParams.toPeriod || rParams.toPeriod === '') {
+            return false;
+        }
+        
+        // Must not be BALANCECURRENCY (skip currency requests)
+        const endpoint = r.endpoint || '/balance';
+        if (endpoint === '/balancecurrency') {
+            return false;
+        }
+        
+        return true;
+    });
+    
+    if (bsCumulativeRequests.length === 0) {
+        if (DEBUG_COLUMN_BASED_BS_BATCHING) {
+            console.log(`🔍 COLUMN-BASED BS DETECT: No cumulative BS requests - not eligible`);
+        }
+        return { eligible: false };
+    }
+    
+    // Step 2: Group by column (toPeriod + normalized filters)
+    const byColumn = new Map(); // Map<columnKey, {period, filters, accounts: Set}>
+    const allAccounts = new Set();
+    
+    for (const request of bsCumulativeRequests) {
+        const rParams = request.params || request;
+        const rFilters = rParams.filters || rParams;
+        
+        // Normalize filters for grouping
+        const normalizedFilterKey = normalizeFiltersForColumnBatching(rFilters);
+        const columnKey = `${rParams.toPeriod}::${normalizedFilterKey}`;
+        
+        if (!byColumn.has(columnKey)) {
+            byColumn.set(columnKey, {
+                period: rParams.toPeriod,
+                filters: rFilters,
+                accounts: new Set()
+            });
+        }
+        
+        const column = byColumn.get(columnKey);
+        column.accounts.add(rParams.account);
+        allAccounts.add(rParams.account);
+    }
+    
+    // Step 3: Safety limit check
+    if (allAccounts.size > MAX_ACCOUNTS_PER_BATCH) {
+        if (DEBUG_COLUMN_BASED_BS_BATCHING) {
+            console.log(`🔍 COLUMN-BASED BS DETECT: Too many accounts (${allAccounts.size} > ${MAX_ACCOUNTS_PER_BATCH}) - not eligible`);
+        }
+        return { eligible: false };
+    }
+    
+    if (byColumn.size > MAX_PERIODS_PER_BATCH) {
+        if (DEBUG_COLUMN_BASED_BS_BATCHING) {
+            console.log(`🔍 COLUMN-BASED BS DETECT: Too many periods (${byColumn.size} > ${MAX_PERIODS_PER_BATCH}) - not eligible`);
+        }
+        return { eligible: false };
+    }
+    
+    // Step 4: Primary mode - Multiple accounts + Multiple periods
+    if (allAccounts.size >= 2 && byColumn.size >= 2) {
+        // Verify all columns have same filters (required for batching)
+        const firstColumn = Array.from(byColumn.values())[0];
+        const firstFilterKey = normalizeFiltersForColumnBatching(firstColumn.filters);
+        let allFiltersMatch = true;
+        
+        for (const column of byColumn.values()) {
+            const columnFilterKey = normalizeFiltersForColumnBatching(column.filters);
+            if (columnFilterKey !== firstFilterKey) {
+                allFiltersMatch = false;
+                break;
+            }
+        }
+        
+        if (!allFiltersMatch) {
+            if (DEBUG_COLUMN_BASED_BS_BATCHING) {
+                console.log(`🔍 COLUMN-BASED BS DETECT: Filters differ across columns - not eligible`);
+            }
+            return { eligible: false };
+        }
+        
+        if (DEBUG_COLUMN_BASED_BS_BATCHING) {
+            console.log(`🔍 COLUMN-BASED BS DETECT: ✅ PRIMARY MODE - ${allAccounts.size} accounts, ${byColumn.size} periods`);
+        }
+        
+        return {
+            eligible: true,
+            mode: 'primary',
+            columns: Array.from(byColumn.values()),
+            allAccounts: allAccounts,
+            filters: firstColumn.filters
+        };
+    }
+    
+    // Step 5: Secondary mode - Single period + Multiple accounts
+    if (byColumn.size === 1 && allAccounts.size >= 2) {
+        const column = Array.from(byColumn.values())[0];
+        
+        if (DEBUG_COLUMN_BASED_BS_BATCHING) {
+            console.log(`🔍 COLUMN-BASED BS DETECT: ✅ SECONDARY MODE - ${allAccounts.size} accounts, 1 period (${column.period})`);
+        }
+        
+        return {
+            eligible: true,
+            mode: 'secondary',
+            columns: [column],
+            allAccounts: allAccounts,
+            filters: column.filters
+        };
+    }
+    
+    // Step 6: Not eligible (single account, or single period with single account)
+    if (DEBUG_COLUMN_BASED_BS_BATCHING) {
+        console.log(`🔍 COLUMN-BASED BS DETECT: Not eligible - ${allAccounts.size} account(s), ${byColumn.size} period(s)`);
+    }
+    
+    return { eligible: false };
 }
 
 /**
@@ -5309,6 +5539,17 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         const evalKey = `${account}::${fromPeriod || ''}::${toPeriod}::${JSON.stringify(filters)}`;
         pendingEvaluation.balance.set(evalKey, { account, fromPeriod, toPeriod, filters });
         
+        // PHASE 1: Column-based detection (logging only, no behavior change)
+        // This runs regardless of feature flag to validate detection logic
+        if (DEBUG_COLUMN_BASED_BS_BATCHING) {
+            const evaluatingRequests = Array.from(pendingEvaluation.balance.values());
+            const columnBasedDetection = detectColumnBasedBSGrid(evaluatingRequests);
+            if (columnBasedDetection.eligible) {
+                console.log(`🔍 COLUMN-BASED BS DETECT: Eligible (${columnBasedDetection.mode}) - ${columnBasedDetection.allAccounts.size} accounts, ${columnBasedDetection.columns.length} columns`);
+            }
+        }
+        
+        // Existing row-based eligibility check (unchanged)
         const batchEligibility = checkBatchEligibilitySynchronous(account, fromPeriod, toPeriod, filters);
         console.log(`🔍 BATCH ELIGIBILITY RESULT: ${account}/${toPeriod} - eligible=${batchEligibility.eligible}`);
         
