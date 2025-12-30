@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.1.5';  // DEBUG: Add extensive logging to diagnose function registration issues
+const FUNCTIONS_VERSION = '4.0.1.6';  // FIX: Make registration more robust - try immediate registration first
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -10330,11 +10330,15 @@ function CLEARCACHE(itemsJson) {
 // This ensures Office.js is fully initialized before registration
 // ============================================================================
 
+// CRITICAL: Registration must happen immediately when functions.js loads
+// Don't wait for Office.onReady - it may have already fired or may not fire in shared runtime
+console.log('🔧 Starting function registration process...');
+console.log('   typeof Office:', typeof Office);
+console.log('   typeof CustomFunctions:', typeof CustomFunctions);
+console.log('   Office.onReady available:', typeof Office !== 'undefined' && typeof Office.onReady !== 'undefined');
+
 (function registerCustomFunctions() {
     console.log('🔧 registerCustomFunctions() IIFE executing...');
-    console.log('   typeof Office:', typeof Office);
-    console.log('   typeof CustomFunctions:', typeof CustomFunctions);
-    console.log('   Office.onReady available:', typeof Office !== 'undefined' && typeof Office.onReady !== 'undefined');
     
     function doRegistration() {
         console.log('🔧 doRegistration() called');
@@ -10368,15 +10372,20 @@ function CLEARCACHE(itemsJson) {
         }
     }
     
-    // Try immediate registration if Office and CustomFunctions are already available
-    if (typeof Office !== 'undefined' && typeof CustomFunctions !== 'undefined' && CustomFunctions.associate) {
-        console.log('🔧 Office and CustomFunctions already available - attempting immediate registration');
+    // CRITICAL: Try immediate registration FIRST (don't wait for Office.onReady)
+    // In shared runtime, Office.onReady may have already fired or may not fire at all
+    if (typeof CustomFunctions !== 'undefined' && CustomFunctions.associate) {
+        console.log('🔧 CustomFunctions already available - attempting immediate registration');
         if (doRegistration()) {
             if (typeof window !== 'undefined') {
                 window.xaviFunctionsRegistered = true;
             }
+            console.log('✅ Registration complete (immediate path)');
             return; // Success, exit early
         }
+    } else {
+        console.warn('⚠️ CustomFunctions not available for immediate registration');
+        console.warn('   Will try Office.onReady() path or polling fallback');
     }
     
     // MICROSOFT BEST PRACTICE: Wait for Office.onReady() before registering
