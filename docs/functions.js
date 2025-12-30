@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.3.1';  // Add debug logging to batch eligibility check
+const FUNCTIONS_VERSION = '4.0.3.2';  // Fix: Check pendingEvaluation for requests currently being evaluated
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -487,11 +487,14 @@ function checkBatchEligibilitySynchronous(account, fromPeriod, toPeriod, filters
         return { eligible: false };
     }
     
-    // Step 3: Check if there are other queued requests that form a grid pattern
+    // Step 3: Check if there are other requests (queued OR currently being evaluated) that form a grid pattern
     // SYNCHRONOUS read - no await, no promises, no blocking
+    // Check BOTH: pendingRequests (already queued) AND pendingEvaluation (currently being evaluated)
     const queuedRequests = Array.from(pendingRequests.balance.values());
-    console.log(`🔍 BATCH CHECK: ${account}/${toPeriod} - checking ${queuedRequests.length} queued requests`);
-    const bsCumulativeRequests = queuedRequests.filter(r => {
+    const evaluatingRequests = Array.from(pendingEvaluation.balance.values());
+    const allRequests = [...queuedRequests, ...evaluatingRequests];
+    console.log(`🔍 BATCH CHECK: ${account}/${toPeriod} - checking ${queuedRequests.length} queued + ${evaluatingRequests.length} evaluating = ${allRequests.length} total requests`);
+    const bsCumulativeRequests = allRequests.filter(r => {
         const rParams = r.params;
         // Must be cumulative (no fromPeriod)
         if (rParams.fromPeriod && rParams.fromPeriod !== '') {
@@ -4024,6 +4027,12 @@ const pendingRequests = {
     title: new Map()       // Map<account, {resolve, reject}> - for NAME/title batching
 };
 
+// Track requests currently being evaluated (for synchronous batch detection)
+// This allows us to detect grid patterns even before requests are queued
+const pendingEvaluation = {
+    balance: new Map()  // Map<cacheKey, {account, fromPeriod, toPeriod, filters}>
+};
+
 let batchTimer = null;  // Timer reference for BALANCE batching
 let typeBatchTimer = null;  // Timer reference for TYPE batching
 let budgetBatchTimer = null;  // Timer reference for BUDGET batching
@@ -5207,6 +5216,8 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                         // Cache and return immediately (same call stack)
                         cache.balance.set(cacheKey, balance);
                         console.log(`✅ BS BATCH RESULT: ${account} for ${toPeriod} = ${balance}`);
+                        // Remove from pendingEvaluation (batch executed, no need to queue)
+                        pendingEvaluation.balance.delete(evalKey);
                         return balance; // Returns immediately, no deferral
                     } else {
                         // Period not in results - fall back to existing path
