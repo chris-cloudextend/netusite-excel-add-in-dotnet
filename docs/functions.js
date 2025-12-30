@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.1.10';  // FIX: Remove extra closing brace causing #VALUE errors - file now ends with })(); matching restore point
+const FUNCTIONS_VERSION = '4.0.1.11';  // FIX: Correct brace structure for cumulativeRequests block - fix runtime syntax error
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
