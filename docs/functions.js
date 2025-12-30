@@ -1799,7 +1799,17 @@ async function fetchPeriodActivityBatch(account, fromPeriod, toPeriod, filters, 
         const contentType = response.headers.get('content-type') || '';
         if (contentType.includes('application/json')) {
             const data = await response.json();
-            return data.period_activity || {}; // {period: activity}
+            
+            // Backend returns BalanceResponse with period_activity property for single-account queries
+            // period_activity is {period: activity} dictionary
+            if (data.period_activity && typeof data.period_activity === 'object') {
+                // Single-account response: {period_activity: {period: activity}}
+                return data.period_activity;
+            }
+            
+            // Fallback: empty object if period_activity is missing
+            console.warn(`⚠️ Missing period_activity in response for ${account}:`, data);
+            return {}; // {period: activity}
         } else {
             // Fallback: single value (shouldn't happen with batch_mode)
             throw new Error('Expected JSON response with period breakdown');
