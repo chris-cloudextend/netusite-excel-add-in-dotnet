@@ -1006,7 +1006,10 @@ async function fetchOpeningBalance(account, anchorDate, filters, retryCount = 0)
  * Fetch period activity for account across period range.
  * Uses existing /balance endpoint with batch parameters.
  */
-async function fetchPeriodActivityBatch(account, fromPeriod, toPeriod, filters) {
+async function fetchPeriodActivityBatch(account, fromPeriod, toPeriod, filters, retryCount = 0) {
+    const MAX_RETRIES = 2;
+    const RETRY_DELAY = 5000; // 5 seconds
+    
     const params = new URLSearchParams();
     params.append('account', account);
     params.append('from_period', fromPeriod);
@@ -1021,23 +1024,44 @@ async function fetchPeriodActivityBatch(account, fromPeriod, toPeriod, filters) 
     if (filters.accountingBook) params.append('accountingbook', filters.accountingBook);
     
     const url = `${SERVER_URL}/balance?${params.toString()}`;
-    console.log(`🔍 Period activity URL: ${url}`);
+    console.log(`🔍 Period activity URL: ${url}${retryCount > 0 ? ` (retry ${retryCount}/${MAX_RETRIES})` : ''}`);
     
-    const response = await fetch(url);
-    if (!response.ok) {
-        const errorText = await response.text();
-        console.error(`❌ Period activity failed (${response.status}): ${errorText}`);
-        throw new Error(`Period activity query failed: ${response.status} - ${errorText}`);
-    }
-    
-    // Backend should return JSON with period breakdown when batch_mode=true
-    const contentType = response.headers.get('content-type') || '';
-    if (contentType.includes('application/json')) {
-        const data = await response.json();
-        return data.period_activity || {}; // {period: activity}
-    } else {
-        // Fallback: single value (shouldn't happen with batch_mode)
-        throw new Error('Expected JSON response with period breakdown');
+    try {
+        const response = await fetch(url);
+        if (!response.ok) {
+            const errorText = await response.text();
+            
+            // Retry on 524 timeout (slot is NOT held during retry - retry is just the fetch, not the batch query)
+            if (response.status === 524 && retryCount < MAX_RETRIES) {
+                console.log(`⏳ 524 timeout for ${account} - retrying in ${RETRY_DELAY/1000}s (${retryCount + 1}/${MAX_RETRIES})...`);
+                // NOTE: Slot is NOT released here - it's released in executeBalanceSheetBatchQueryImmediate finally block
+                // This retry is just the fetch, not the entire batch query
+                await new Promise(r => setTimeout(r, RETRY_DELAY));
+                return fetchPeriodActivityBatch(account, fromPeriod, toPeriod, filters, retryCount + 1);
+            }
+            
+            console.error(`❌ Period activity failed (${response.status}): ${errorText}`);
+            throw new Error(`Period activity query failed: ${response.status} - ${errorText}`);
+        }
+        
+        // Backend should return JSON with period breakdown when batch_mode=true
+        const contentType = response.headers.get('content-type') || '';
+        if (contentType.includes('application/json')) {
+            const data = await response.json();
+            return data.period_activity || {}; // {period: activity}
+        } else {
+            // Fallback: single value (shouldn't happen with batch_mode)
+            throw new Error('Expected JSON response with period breakdown');
+        }
+    } catch (error) {
+        // Retry on network errors (which might be 524)
+        if (retryCount < MAX_RETRIES && (error.message.includes('524') || error.message.includes('timeout'))) {
+            console.log(`⏳ Network error for ${account} - retrying in ${RETRY_DELAY/1000}s (${retryCount + 1}/${MAX_RETRIES})...`);
+            // NOTE: Slot is NOT released here - it's released in executeBalanceSheetBatchQueryImmediate finally block
+            await new Promise(r => setTimeout(r, RETRY_DELAY));
+            return fetchPeriodActivityBatch(account, fromPeriod, toPeriod, filters, retryCount + 1);
+        }
+        throw error;
     }
 }
 
