@@ -1923,9 +1923,9 @@ public class BalanceService : IBalanceService
         }
         
         var balance = 0m;
-        if (queryResult.Results != null && queryResult.Results.Any())
+        if (queryResult.Items != null && queryResult.Items.Any())
         {
-            var row = queryResult.Results.First();
+            var row = queryResult.Items.First();
             balance = ParseBalance(row.TryGetProperty("balance", out var balProp) ? balProp : default);
         }
         
@@ -2098,9 +2098,9 @@ public class BalanceService : IBalanceService
         var periodActivity = new Dictionary<string, decimal>();
         var total = 0m;
         
-        if (queryResult.Results != null)
+        if (queryResult.Items != null)
         {
-            foreach (var row in queryResult.Results)
+            foreach (var row in queryResult.Items)
             {
                 var periodName = row.TryGetProperty("period_name", out var pnProp) 
                     ? pnProp.GetString() ?? "" 
@@ -2172,9 +2172,9 @@ public class BalanceService : IBalanceService
         
         var queryResult = await _netSuiteService.QueryRawWithErrorAsync(query, 30);
         
-        if (queryResult.Success && queryResult.Results != null)
+        if (queryResult.Success && queryResult.Items != null)
         {
-            foreach (var row in queryResult.Results)
+            foreach (var row in queryResult.Items)
             {
                 var periodName = row.TryGetProperty("periodname", out var pnProp) 
                     ? pnProp.GetString() 
