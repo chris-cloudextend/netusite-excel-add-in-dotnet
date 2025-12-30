@@ -701,6 +701,226 @@ function detectColumnBasedBSGrid(evaluatingRequests) {
 }
 
 /**
+ * PHASE 4: Validation tracking for column-based batch validation.
+ * Lightweight in-memory counters scoped to session.
+ * No persistence, no telemetry.
+ */
+const validationStats = {
+    totalAttempted: 0,
+    totalMatches: 0,
+    totalMismatches: 0,
+    totalFailures: 0,
+    consecutiveMatches: 0 // PHASE 5: Track consecutive matches for trust model
+};
+
+/**
+ * PHASE 5: Session-scoped trust flag for column-based batching.
+ * Set to true only after N consecutive successful validations with zero mismatches.
+ * Reset to false immediately on any mismatch or failure.
+ * Must reset on workbook reload (no persistence).
+ */
+let columnBatchingTrustedForSession = false;
+
+/**
+ * PHASE 5: Minimum consecutive validations required before enabling execution.
+ * Conservative threshold to ensure reliability.
+ */
+const MIN_CONSECUTIVE_VALIDATIONS_FOR_TRUST = 50;
+
+/**
+ * PHASE 5: Check if column-based batch execution is allowed.
+ * Pure, synchronous function - no side effects.
+ * 
+ * Execution is allowed only if ALL conditions are met:
+ * 1. USE_COLUMN_BASED_BS_BATCHING === true
+ * 2. Account type === Balance Sheet
+ * 3. Grid detection returns eligible
+ * 4. VALIDATE_COLUMN_BASED_BS_BATCHING === true
+ * 5. No validation mismatches in current session (trust earned)
+ * 6. Grid size within safety limits
+ * 
+ * @param {string} accountType - Account type
+ * @param {Object} gridDetection - Grid detection result from detectColumnBasedBSGrid()
+ * @returns {Object} - { allowed: boolean, reason?: string }
+ */
+function isColumnBatchExecutionAllowed(accountType, gridDetection) {
+    // Condition 1: Execution flag must be enabled
+    if (!USE_COLUMN_BASED_BS_BATCHING) {
+        return { allowed: false, reason: 'USE_COLUMN_BASED_BS_BATCHING disabled' };
+    }
+    
+    // Condition 2: Must be Balance Sheet account
+    if (accountType !== 'Balance Sheet') {
+        return { allowed: false, reason: `Account type is ${accountType}, not Balance Sheet` };
+    }
+    
+    // Condition 3: Grid detection must be eligible
+    if (!gridDetection || !gridDetection.eligible) {
+        return { allowed: false, reason: 'Grid detection not eligible' };
+    }
+    
+    // Condition 4: Validation flag must be enabled
+    if (!VALIDATE_COLUMN_BASED_BS_BATCHING) {
+        return { allowed: false, reason: 'VALIDATE_COLUMN_BASED_BS_BATCHING disabled (validation required)' };
+    }
+    
+    // Condition 5: Trust must be earned (no mismatches in session)
+    if (!columnBatchingTrustedForSession) {
+        return { 
+            allowed: false, 
+            reason: `Trust not earned (${validationStats.consecutiveMatches}/${MIN_CONSECUTIVE_VALIDATIONS_FOR_TRUST} consecutive matches)` 
+        };
+    }
+    
+    // Condition 6: Grid size within safety limits
+    const accountCount = gridDetection.allAccounts?.size || 0;
+    const periodCount = gridDetection.columns?.length || 0;
+    const MAX_ACCOUNTS_PER_BATCH = 100;
+    const MAX_PERIODS_PER_BATCH = 24;
+    
+    if (accountCount > MAX_ACCOUNTS_PER_BATCH) {
+        return { allowed: false, reason: `Too many accounts: ${accountCount} > ${MAX_ACCOUNTS_PER_BATCH}` };
+    }
+    
+    if (periodCount > MAX_PERIODS_PER_BATCH) {
+        return { allowed: false, reason: `Too many periods: ${periodCount} > ${MAX_PERIODS_PER_BATCH}` };
+    }
+    
+    // All conditions met - execution allowed
+    return { allowed: true };
+}
+
+/**
+ * PHASE 4: Validate column-based batch results against per-cell results.
+ * Fire-and-forget async validation - never blocks, never throws.
+ * 
+ * PHASE 5: Updates trust model based on validation results.
+ * 
+ * @param {string} account - Account number
+ * @param {string} toPeriod - Period
+ * @param {Object} filters - Filter object
+ * @param {number} perCellValue - Value from per-cell execution
+ * @param {Object} grid - Grid detection result
+ */
+async function validateColumnBasedBSBatch(account, toPeriod, filters, perCellValue, grid) {
+    // Safety: Never throw - wrap everything in try-catch
+    try {
+        validationStats.totalAttempted++;
+        
+        if (DEBUG_COLUMN_BASED_BS_BATCHING) {
+            console.log(`🔬 VALIDATION: Starting async validation for ${account}/${toPeriod}`);
+        }
+        
+        // Execute column-based batch query (async, non-blocking)
+        const batchResults = await executeColumnBasedBSBatch(grid);
+        
+        // Get column-based result for this account/period
+        const columnBasedValue = batchResults[account]?.[toPeriod];
+        
+        // Validate result exists
+        if (columnBasedValue === undefined || columnBasedValue === null) {
+            validationStats.totalFailures++;
+            // PHASE 5: Reset trust on failure
+            columnBatchingTrustedForSession = false;
+            validationStats.consecutiveMatches = 0;
+            if (DEBUG_COLUMN_BASED_BS_BATCHING) {
+                console.error(`❌ VALIDATION FAILURE: Missing result for ${account}/${toPeriod} - trust reset`);
+            }
+            return;
+        }
+        
+        // Validate result is a number
+        if (typeof columnBasedValue !== 'number' || isNaN(columnBasedValue)) {
+            validationStats.totalFailures++;
+            // PHASE 5: Reset trust on failure
+            columnBatchingTrustedForSession = false;
+            validationStats.consecutiveMatches = 0;
+            if (DEBUG_COLUMN_BASED_BS_BATCHING) {
+                console.error(`❌ VALIDATION FAILURE: Invalid result type for ${account}/${toPeriod}: ${typeof columnBasedValue} - trust reset`);
+            }
+            return;
+        }
+        
+        // Compare values (exact numeric comparison, no rounding)
+        const diff = Math.abs(perCellValue - columnBasedValue);
+        const match = diff < 0.0001; // Allow tiny floating-point differences
+        
+        if (match) {
+            validationStats.totalMatches++;
+            // PHASE 5: Increment consecutive matches and check trust threshold
+            validationStats.consecutiveMatches++;
+            if (validationStats.consecutiveMatches >= MIN_CONSECUTIVE_VALIDATIONS_FOR_TRUST) {
+                if (!columnBatchingTrustedForSession) {
+                    columnBatchingTrustedForSession = true;
+                    if (DEBUG_COLUMN_BASED_BS_BATCHING) {
+                        console.log(`✅ VALIDATION TRUST EARNED: ${validationStats.consecutiveMatches} consecutive matches - column-based execution now allowed`);
+                    }
+                }
+            }
+            if (DEBUG_COLUMN_BASED_BS_BATCHING) {
+                console.log(`✅ VALIDATION MATCH: ${account}/${toPeriod} = ${perCellValue} (both methods agree, ${validationStats.consecutiveMatches} consecutive)`);
+            }
+        } else {
+            validationStats.totalMismatches++;
+            // PHASE 5: Reset trust immediately on mismatch
+            columnBatchingTrustedForSession = false;
+            validationStats.consecutiveMatches = 0;
+            
+            // Log structured mismatch with full context
+            const periods = grid.columns.map(col => col.period).sort((a, b) => {
+                const aDate = parsePeriodToDate(a);
+                const bDate = parsePeriodToDate(b);
+                if (!aDate || !bDate) return 0;
+                return aDate.getTime() - bDate.getTime();
+            });
+            const anchorPeriod = inferAnchorPeriod(periods);
+            const normalizedFilters = normalizeFiltersForColumnBatching(filters);
+            
+            console.error(`❌ VALIDATION MISMATCH (TRUST RESET):
+Account: ${account}
+Period: ${toPeriod}
+Filters: ${normalizedFilters}
+Per-cell value: ${perCellValue}
+Column-based value: ${columnBasedValue}
+Absolute difference: ${diff}
+Anchor period: ${anchorPeriod || 'N/A'}
+Periods: ${periods.join(' → ')}
+Total accounts: ${grid.allAccounts.size}
+Total periods: ${grid.columns.length}`);
+        }
+    } catch (error) {
+        // Never throw - log and continue
+        validationStats.totalFailures++;
+        // PHASE 5: Reset trust on error
+        columnBatchingTrustedForSession = false;
+        validationStats.consecutiveMatches = 0;
+        if (DEBUG_COLUMN_BASED_BS_BATCHING) {
+            console.error(`❌ VALIDATION ERROR: ${account}/${toPeriod} - ${error.message} - trust reset`, error);
+        }
+    }
+}
+
+/**
+ * PHASE 4: Get validation statistics summary.
+ * Exposed for debug logging on demand.
+ * 
+ * @returns {Object} Validation statistics
+ */
+function getValidationStats() {
+    return {
+        totalAttempted: validationStats.totalAttempted,
+        totalMatches: validationStats.totalMatches,
+        totalMismatches: validationStats.totalMismatches,
+        totalFailures: validationStats.totalFailures,
+        consecutiveMatches: validationStats.consecutiveMatches,
+        trustEarned: columnBatchingTrustedForSession,
+        matchRate: validationStats.totalAttempted > 0 
+            ? (validationStats.totalMatches / validationStats.totalAttempted * 100).toFixed(2) + '%'
+            : 'N/A'
+    };
+}
+
+/**
  * Check if periods are contiguous (consecutive months).
  * Used to determine if single multi-period query is possible.
  * 
