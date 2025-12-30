@@ -68,9 +68,14 @@ public class BalanceController : ControllerBase
         if (string.IsNullOrEmpty(account))
             return BadRequest(new { error = "Account number is required" });
 
-        // If anchor_date is provided, from_period and to_period can both be empty
+        // If anchor_date is provided, from_period and to_period can both be empty/omitted
         // Otherwise, need at least one period for any query
-        if (string.IsNullOrEmpty(anchor_date) && string.IsNullOrEmpty(from_period) && string.IsNullOrEmpty(to_period))
+        // Note: Empty strings from URL are treated as null by [FromQuery], so we check both null and empty
+        bool hasAnchorDate = !string.IsNullOrEmpty(anchor_date);
+        bool hasFromPeriod = !string.IsNullOrEmpty(from_period);
+        bool hasToPeriod = !string.IsNullOrEmpty(to_period);
+        
+        if (!hasAnchorDate && !hasFromPeriod && !hasToPeriod)
             return BadRequest(new { error = "At least one period (from_period or to_period) is required, or provide anchor_date" });
 
         try

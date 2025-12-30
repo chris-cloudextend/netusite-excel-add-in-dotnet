@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.2.2';  // Balance sheet grid batching: queue-based pattern detection and batched queries
+const FUNCTIONS_VERSION = '4.0.2.3';  // Balance sheet grid batching: queue-based pattern detection and batched queries
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -674,21 +674,27 @@ async function executeBalanceSheetBatchQuery(gridPattern) {
  * Uses existing /balance endpoint with anchor_date parameter.
  */
 async function fetchOpeningBalance(account, anchorDate, filters) {
-    const params = new URLSearchParams({
-        account: account,
-        from_period: '',  // Empty = cumulative from inception
-        to_period: '',    // Empty with anchor_date = opening balance as of anchor
-        anchor_date: anchorDate,  // NEW PARAMETER: anchor date
-        subsidiary: filters.subsidiary || '',
-        department: filters.department || '',
-        location: filters.location || '',
-        class: filters.classId || '',
-        accountingbook: filters.accountingBook || ''
-    });
+    // Build params - only include non-empty values to avoid issues with empty string handling
+    const params = new URLSearchParams();
+    params.append('account', account);
+    params.append('anchor_date', anchorDate);  // Required parameter
+    // from_period and to_period are intentionally omitted (not empty strings)
+    // Backend validation: if anchor_date is provided, periods can be omitted
     
-    const response = await fetch(`${SERVER_URL}/balance?${params.toString()}`);
+    if (filters.subsidiary) params.append('subsidiary', filters.subsidiary);
+    if (filters.department) params.append('department', filters.department);
+    if (filters.location) params.append('location', filters.location);
+    if (filters.classId) params.append('class', filters.classId);
+    if (filters.accountingBook) params.append('accountingbook', filters.accountingBook);
+    
+    const url = `${SERVER_URL}/balance?${params.toString()}`;
+    console.log(`🔍 Opening balance URL: ${url}`);
+    
+    const response = await fetch(url);
     if (!response.ok) {
-        throw new Error(`Opening balance query failed: ${response.status}`);
+        const errorText = await response.text();
+        console.error(`❌ Opening balance failed (${response.status}): ${errorText}`);
+        throw new Error(`Opening balance query failed: ${response.status} - ${errorText}`);
     }
     
     const value = parseFloat(await response.text());
@@ -700,22 +706,27 @@ async function fetchOpeningBalance(account, anchorDate, filters) {
  * Uses existing /balance endpoint with batch parameters.
  */
 async function fetchPeriodActivityBatch(account, fromPeriod, toPeriod, filters) {
-    const params = new URLSearchParams({
-        account: account,
-        from_period: fromPeriod,
-        to_period: toPeriod,
-        batch_mode: 'true',  // NEW PARAMETER: enable batch mode
-        include_period_breakdown: 'true',  // NEW PARAMETER: return per-period activity
-        subsidiary: filters.subsidiary || '',
-        department: filters.department || '',
-        location: filters.location || '',
-        class: filters.classId || '',
-        accountingbook: filters.accountingBook || ''
-    });
+    const params = new URLSearchParams();
+    params.append('account', account);
+    params.append('from_period', fromPeriod);
+    params.append('to_period', toPeriod);
+    params.append('batch_mode', 'true');  // Enable batch mode
+    params.append('include_period_breakdown', 'true');  // Return per-period activity
     
-    const response = await fetch(`${SERVER_URL}/balance?${params.toString()}`);
+    if (filters.subsidiary) params.append('subsidiary', filters.subsidiary);
+    if (filters.department) params.append('department', filters.department);
+    if (filters.location) params.append('location', filters.location);
+    if (filters.classId) params.append('class', filters.classId);
+    if (filters.accountingBook) params.append('accountingbook', filters.accountingBook);
+    
+    const url = `${SERVER_URL}/balance?${params.toString()}`;
+    console.log(`🔍 Period activity URL: ${url}`);
+    
+    const response = await fetch(url);
     if (!response.ok) {
-        throw new Error(`Period activity query failed: ${response.status}`);
+        const errorText = await response.text();
+        console.error(`❌ Period activity failed (${response.status}): ${errorText}`);
+        throw new Error(`Period activity query failed: ${response.status} - ${errorText}`);
     }
     
     // Backend should return JSON with period breakdown when batch_mode=true
