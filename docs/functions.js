@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.1.4';  // FIX: Remove extra closing brace preventing function registration
+const FUNCTIONS_VERSION = '4.0.1.5';  // DEBUG: Add extensive logging to diagnose function registration issues
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -10331,9 +10331,16 @@ function CLEARCACHE(itemsJson) {
 // ============================================================================
 
 (function registerCustomFunctions() {
+    console.log('🔧 registerCustomFunctions() IIFE executing...');
+    console.log('   typeof Office:', typeof Office);
+    console.log('   typeof CustomFunctions:', typeof CustomFunctions);
+    console.log('   Office.onReady available:', typeof Office !== 'undefined' && typeof Office.onReady !== 'undefined');
+    
     function doRegistration() {
+        console.log('🔧 doRegistration() called');
         if (typeof CustomFunctions !== 'undefined' && CustomFunctions.associate) {
             try {
+                console.log('🔧 Attempting to register custom functions...');
                 CustomFunctions.associate('NAME', NAME);
                 CustomFunctions.associate('TYPE', TYPE);
                 CustomFunctions.associate('PARENT', PARENT);
@@ -10350,17 +10357,32 @@ function CLEARCACHE(itemsJson) {
                 return true;
             } catch (error) {
                 console.error('❌ Error registering custom functions:', error);
+                console.error('   Error stack:', error.stack);
                 return false;
             }
         } else {
             console.warn('⚠️ CustomFunctions not available yet');
+            console.warn('   typeof CustomFunctions:', typeof CustomFunctions);
+            console.warn('   CustomFunctions.associate:', typeof CustomFunctions !== 'undefined' ? typeof CustomFunctions.associate : 'N/A');
             return false;
+        }
+    }
+    
+    // Try immediate registration if Office and CustomFunctions are already available
+    if (typeof Office !== 'undefined' && typeof CustomFunctions !== 'undefined' && CustomFunctions.associate) {
+        console.log('🔧 Office and CustomFunctions already available - attempting immediate registration');
+        if (doRegistration()) {
+            if (typeof window !== 'undefined') {
+                window.xaviFunctionsRegistered = true;
+            }
+            return; // Success, exit early
         }
     }
     
     // MICROSOFT BEST PRACTICE: Wait for Office.onReady() before registering
     // This is critical for SharedRuntime mode on Mac
     if (typeof Office !== 'undefined' && Office.onReady) {
+        console.log('🔧 Office.onReady available - setting up callback');
         Office.onReady(function(info) {
             console.log('📋 Office.onReady() fired - registering custom functions');
             console.log('   Platform:', info.platform);
@@ -10377,6 +10399,7 @@ function CLEARCACHE(itemsJson) {
         // Fallback: Office.js not loaded yet, wait for it
         // CRITICAL: Use longer interval (200ms) to prevent event loop starvation
         // Short intervals (50ms) can crash Excel during intellisense inspection
+        console.log('🔧 Office.onReady not available - setting up polling fallback');
         if (typeof window !== 'undefined') {
             var checkOffice = null;
             var registrationAttempted = false;
@@ -10388,8 +10411,11 @@ function CLEARCACHE(itemsJson) {
                     checkOffice = null;
                     if (!registrationAttempted) {
                         registrationAttempted = true;
+                        console.log('🔧 Office.onReady now available via polling - setting up callback');
                         Office.onReady(function(info) {
                             console.log('📋 Office.onReady() fired (delayed) - registering custom functions');
+                            console.log('   Platform:', info.platform);
+                            console.log('   Host:', info.host);
                             doRegistration();
                         });
                     }
@@ -10406,8 +10432,12 @@ function CLEARCACHE(itemsJson) {
                     registrationAttempted = true;
                     console.warn('⚠️ Office.onReady() timeout - attempting registration anyway');
                     doRegistration();
+                } else if (!registrationAttempted) {
+                    console.error('❌ Registration failed: Office.onReady() timeout and CustomFunctions still not available');
                 }
             }, 5000);
+        } else {
+            console.error('❌ window is undefined - cannot set up registration fallback');
         }
     }
 })();
