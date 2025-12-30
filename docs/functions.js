@@ -728,6 +728,38 @@ function detectBalanceSheetGridPattern(cumulativeRequests) {
 // Allows different accounts to batch in parallel, while same-account requests share the same query
 const bsBatchQueryInFlight = new Map(); // Map<string, Promise<Object>>
 
+// Limit concurrent batch queries to prevent Cloudflare tunnel overload (524 timeouts)
+// GLOBAL semaphore (not scoped per account/worksheet/evaluation wave)
+const MAX_CONCURRENT_BS_BATCH_QUERIES = 2; // Start conservative, tune later if safe
+let activeBSBatchQueries = 0; // Track active queries globally
+const bsBatchQueryQueue = []; // Queue for waiting queries
+
+// Helper function to wait for slot availability (GLOBAL semaphore)
+async function waitForBatchQuerySlot() {
+    if (activeBSBatchQueries < MAX_CONCURRENT_BS_BATCH_QUERIES) {
+        activeBSBatchQueries++;
+        console.log(`🎫 Acquired batch query slot (${activeBSBatchQueries}/${MAX_CONCURRENT_BS_BATCH_QUERIES} active)`);
+        return; // Slot available
+    }
+    
+    // No slot available - wait in queue
+    console.log(`⏸️ Batch query slot unavailable (${activeBSBatchQueries}/${MAX_CONCURRENT_BS_BATCH_QUERIES} active) - queuing...`);
+    return new Promise((resolve) => {
+        bsBatchQueryQueue.push(resolve);
+    });
+}
+
+// Helper function to release slot (GLOBAL semaphore)
+function releaseBatchQuerySlot() {
+    activeBSBatchQueries--;
+    if (bsBatchQueryQueue.length > 0) {
+        const next = bsBatchQueryQueue.shift();
+        activeBSBatchQueries++;
+        console.log(`🎫 Waking up queued batch query (${activeBSBatchQueries}/${MAX_CONCURRENT_BS_BATCH_QUERIES} active)`);
+        next(); // Wake up next waiting query
+    }
+}
+
 async function executeBalanceSheetBatchQuery(gridPattern) {
     // This function is used by queue-based pattern detection (processBatchQueue)
     // It should use the same account-specific lock as executeBalanceSheetBatchQueryImmediate
@@ -843,6 +875,9 @@ async function executeBalanceSheetBatchQueryImmediate(account, periods, filters)
         return results; // Return the shared results
     }
     
+    // NEW: Wait for available slot before starting new query (GLOBAL semaphore)
+    await waitForBatchQuerySlot();
+    
     // Start new batch query for this account
     const queryPromise = (async () => {
         try {
@@ -897,7 +932,9 @@ async function executeBalanceSheetBatchQueryImmediate(account, periods, filters)
             // Re-throw the error so waiting requests also see the failure
             throw error;
         } finally {
-            // Remove from lock after completion (success or failure)
+            // NEW: Release slot when done (success or failure) - GLOBAL semaphore
+            releaseBatchQuerySlot();
+            // Remove from account-specific lock after completion
             bsBatchQueryInFlight.delete(account);
         }
     })();
@@ -913,7 +950,10 @@ async function executeBalanceSheetBatchQueryImmediate(account, periods, filters)
  * Fetch opening balance for account as of anchor date.
  * Uses existing /balance endpoint with anchor_date parameter.
  */
-async function fetchOpeningBalance(account, anchorDate, filters) {
+async function fetchOpeningBalance(account, anchorDate, filters, retryCount = 0) {
+    const MAX_RETRIES = 2;
+    const RETRY_DELAY = 5000; // 5 seconds
+    
     // Build params - only include non-empty values to avoid issues with empty string handling
     const params = new URLSearchParams();
     params.append('account', account);
@@ -928,17 +968,38 @@ async function fetchOpeningBalance(account, anchorDate, filters) {
     if (filters.accountingBook) params.append('accountingbook', filters.accountingBook);
     
     const url = `${SERVER_URL}/balance?${params.toString()}`;
-    console.log(`🔍 Opening balance URL: ${url}`);
+    console.log(`🔍 Opening balance URL: ${url}${retryCount > 0 ? ` (retry ${retryCount}/${MAX_RETRIES})` : ''}`);
     
-    const response = await fetch(url);
-    if (!response.ok) {
-        const errorText = await response.text();
-        console.error(`❌ Opening balance failed (${response.status}): ${errorText}`);
-        throw new Error(`Opening balance query failed: ${response.status} - ${errorText}`);
+    try {
+        const response = await fetch(url);
+        if (!response.ok) {
+            const errorText = await response.text();
+            
+            // Retry on 524 timeout (slot is NOT held during retry - retry is just the fetch, not the batch query)
+            if (response.status === 524 && retryCount < MAX_RETRIES) {
+                console.log(`⏳ 524 timeout for ${account} - retrying in ${RETRY_DELAY/1000}s (${retryCount + 1}/${MAX_RETRIES})...`);
+                // NOTE: Slot is NOT released here - it's released in executeBalanceSheetBatchQueryImmediate finally block
+                // This retry is just the fetch, not the entire batch query
+                await new Promise(r => setTimeout(r, RETRY_DELAY));
+                return fetchOpeningBalance(account, anchorDate, filters, retryCount + 1);
+            }
+            
+            console.error(`❌ Opening balance failed (${response.status}): ${errorText}`);
+            throw new Error(`Opening balance query failed: ${response.status} - ${errorText}`);
+        }
+        
+        const value = parseFloat(await response.text());
+        return isNaN(value) ? 0 : value;
+    } catch (error) {
+        // Retry on network errors (which might be 524)
+        if (retryCount < MAX_RETRIES && (error.message.includes('524') || error.message.includes('timeout'))) {
+            console.log(`⏳ Network error for ${account} - retrying in ${RETRY_DELAY/1000}s (${retryCount + 1}/${MAX_RETRIES})...`);
+            // NOTE: Slot is NOT released here - it's released in executeBalanceSheetBatchQueryImmediate finally block
+            await new Promise(r => setTimeout(r, RETRY_DELAY));
+            return fetchOpeningBalance(account, anchorDate, filters, retryCount + 1);
+        }
+        throw error;
     }
-    
-    const value = parseFloat(await response.text());
-    return isNaN(value) ? 0 : value;
 }
 
 /**
