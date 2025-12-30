@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.1.1';  // FIX: Correct brace structure in BALANCE function preload wait logic
+const FUNCTIONS_VERSION = '4.0.1.2';  // FEATURE: Use cached anchor periods (e.g., January) for BS grid batching
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -1959,6 +1959,66 @@ function detectBsGridPattern(requests) {
     }
     
     // ============================================================================
+    // OPTIMIZATION: Check for earlier cached period to use as anchor
+    // If January is already computed and February/March/April are pending,
+    // use January as the anchor instead of calculating from February
+    // ============================================================================
+    if (queryType === 'cumulative') {
+        // Get filters from first request (all requests should have same filters)
+        const firstRequest = selectedRequests[0];
+        const { subsidiary, department, location, classId, accountingBook } = firstRequest.params;
+        const filtersHash = getFilterKey({ subsidiary, department, location, classId, accountingBook });
+        
+        // Check if there's a cached period earlier than earliestPeriod for any account
+        // If we find one, use it as the anchor period
+        let foundEarlierPeriod = null;
+        const sortedPeriods = Array.from(periods).sort();
+        
+        // Try to find an earlier period by checking cache for a sample of accounts
+        // We'll check a few months before the earliest pending period
+        const sampleAccounts = Array.from(accounts).slice(0, Math.min(5, accounts.size));
+        const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+        
+        if (sortedPeriods.length > 0 && earliestPeriod) {
+            const earliestParsed = parsePeriod(earliestPeriod);
+            if (earliestParsed) {
+                // Check up to 3 months before the earliest pending period
+                for (let monthsBack = 1; monthsBack <= 3; monthsBack++) {
+                    let checkMonth = earliestParsed.month - monthsBack;
+                    let checkYear = earliestParsed.year;
+                    if (checkMonth < 0) {
+                        checkMonth += 12;
+                        checkYear--;
+                    }
+                    const checkPeriod = `${monthNames[checkMonth]} ${checkYear}`;
+                    
+                    // Check if this period is cached for at least one account
+                    let foundInCache = false;
+                    for (const account of sampleAccounts) {
+                        const cacheValue = checkLocalStorageCache(account, '', checkPeriod, subsidiary, filtersHash);
+                        if (cacheValue !== null) {
+                            foundInCache = true;
+                            console.log(`   ✅ Found earlier cached period: ${checkPeriod} for account ${account} - will use as anchor`);
+                            break;
+                        }
+                    }
+                    
+                    if (foundInCache) {
+                        foundEarlierPeriod = checkPeriod;
+                        break; // Use the most recent earlier period found
+                    }
+                }
+            }
+        }
+        
+        // If we found an earlier period, update earliestPeriod to use it as anchor
+        if (foundEarlierPeriod) {
+            console.log(`   🔒 Using earlier cached period ${foundEarlierPeriod} as anchor (instead of ${earliestPeriod})`);
+            // Note: We don't change earliestPeriod in the gridInfo, but we'll handle this in processBsGridBatching
+            // by checking for cached anchor periods
+        }
+    
+    // ============================================================================
     // CRITICAL CHECK 4: For cumulative queries, verify grid-like structure
     // ============================================================================
     // We can't verify actual cell positions, but we can verify that:
@@ -2112,6 +2172,8 @@ function detectBsGridPattern(requests) {
  */
 async function inferAnchorDate(earliestPeriod) {
     try {
+        console.log(`   🔍 Inferring anchor date for earliest period: ${earliestPeriod}`);
+        
         // Parse period to get month and year
         const parsed = parsePeriod(earliestPeriod);
         if (!parsed) {
@@ -2119,13 +2181,16 @@ async function inferAnchorDate(earliestPeriod) {
             return null;
         }
         
+        console.log(`   📅 Parsed period: month=${parsed.month} (${MONTH_NAMES[parsed.month]}), year=${parsed.year}`);
+        
         // Get period data from backend to find start date
         // Use the period lookup endpoint that returns period details
         const response = await fetch(`${SERVER_URL}/lookups/periods?period=${encodeURIComponent(earliestPeriod)}`);
         if (!response.ok) {
-            console.warn(`⚠️ Could not fetch period data for ${earliestPeriod}`);
+            console.warn(`⚠️ Could not fetch period data for ${earliestPeriod} (${response.status}) - using fallback calculation`);
             // Fallback: calculate anchor date from period name
             // Assume period starts on the 1st of the month
+            // CRITICAL: parsed.month is 0-indexed (0=Jan, 1=Feb, etc.), which matches JavaScript Date constructor
             const month = parsed.month;
             const year = parsed.year;
             const startDate = new Date(year, month, 1);
@@ -2134,7 +2199,9 @@ async function inferAnchorDate(earliestPeriod) {
             const anchorYear = startDate.getFullYear();
             const anchorMonth = String(startDate.getMonth() + 1).padStart(2, '0');
             const anchorDay = String(startDate.getDate()).padStart(2, '0');
-            return `${anchorYear}-${anchorMonth}-${anchorDay}`;
+            const anchorDate = `${anchorYear}-${anchorMonth}-${anchorDay}`;
+            console.log(`   ✅ Fallback anchor date: ${anchorDate} (day before ${MONTH_NAMES[month]} ${year})`);
+            return anchorDate;
         }
         
         const data = await response.json();
@@ -2149,21 +2216,25 @@ async function inferAnchorDate(earliestPeriod) {
             const anchorYear = startDate.getFullYear();
             const anchorMonth = String(startDate.getMonth() + 1).padStart(2, '0');
             const anchorDay = String(startDate.getDate()).padStart(2, '0');
-            return `${anchorYear}-${anchorMonth}-${anchorDay}`;
+            const anchorDate = `${anchorYear}-${anchorMonth}-${anchorDay}`;
+            console.log(`   ✅ Fallback anchor date: ${anchorDate} (day before ${MONTH_NAMES[month]} ${year})`);
+            return anchorDate;
         }
         
         // Parse start date and subtract 1 day
         const startDate = new Date(data.startDate);
+        console.log(`   📅 Period start date from backend: ${data.startDate}`);
         startDate.setDate(startDate.getDate() - 1);
         
         // Format as YYYY-MM-DD
         const year = startDate.getFullYear();
         const month = String(startDate.getMonth() + 1).padStart(2, '0');
         const day = String(startDate.getDate()).padStart(2, '0');
-        
-        return `${year}-${month}-${day}`;
+        const anchorDate = `${year}-${month}-${day}`;
+        console.log(`   ✅ Anchor date from backend: ${anchorDate} (day before period start)`);
+        return anchorDate;
     } catch (error) {
-        console.error(`❌ Error inferring anchor date:`, error);
+        console.error(`❌ Error inferring anchor date for ${earliestPeriod}:`, error);
         return null;
     }
 }
@@ -2639,11 +2710,99 @@ async function processBsGridBatching(gridInfo, requests) {
     
     const { queryType, accounts, earliestPeriod, latestPeriod, filtersHash } = gridInfo;
     
-    // Infer anchor date based on query type
-    const anchorDate = await inferAnchorDate(earliestPeriod);
+    console.log(`   🔍 Grid batching: earliestPeriod=${earliestPeriod}, latestPeriod=${latestPeriod}, accounts=${accounts.size}`);
+    
+    // ============================================================================
+    // CRITICAL: Check for earlier cached period to use as anchor
+    // If January is already computed and February/March/April are pending,
+    // use January as the anchor instead of calculating from February
+    // ============================================================================
+    let anchorPeriod = earliestPeriod;
+    let anchorFromCache = false;
+    
+    if (queryType === 'cumulative') {
+        const firstRequest = requests[0][1];
+        const { subsidiary, department, location, classId, accountingBook } = firstRequest.params;
+        
+        // Check if there's a cached period earlier than earliestPeriod
+        // Try up to 3 months before the earliest pending period
+        const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+        const earliestParsed = parsePeriod(earliestPeriod);
+        
+        if (earliestParsed) {
+            // Check a few months before the earliest pending period
+            for (let monthsBack = 1; monthsBack <= 3; monthsBack++) {
+                let checkMonth = earliestParsed.month - monthsBack;
+                let checkYear = earliestParsed.year;
+                if (checkMonth < 0) {
+                    checkMonth += 12;
+                    checkYear--;
+                }
+                const checkPeriod = `${monthNames[checkMonth]} ${checkYear}`;
+                
+                // Check if this period is cached for at least 50% of accounts (suggests it's the anchor column)
+                let cachedCount = 0;
+                const sampleSize = Math.min(10, accounts.size); // Sample first 10 accounts
+                const sampleAccounts = Array.from(accounts).slice(0, sampleSize);
+                
+                for (const account of sampleAccounts) {
+                    const cacheValue = checkLocalStorageCache(account, '', checkPeriod, subsidiary, filtersHash);
+                    if (cacheValue !== null) {
+                        cachedCount++;
+                    }
+                }
+                
+                // If at least 50% of sampled accounts have this period cached, use it as anchor
+                if (cachedCount >= Math.ceil(sampleSize * 0.5)) {
+                    anchorPeriod = checkPeriod;
+                    anchorFromCache = true;
+                    console.log(`   🔒 Found earlier cached period: ${checkPeriod} (${cachedCount}/${sampleSize} accounts cached) - using as anchor`);
+                    break; // Use the most recent earlier period found
+                }
+            }
+        }
+    }
+    
+    // Infer anchor date from the anchor period (either earliestPeriod or earlier cached period)
+    // CRITICAL: If anchor is from cache (e.g., January), we need January's END DATE, not the day before January
+    // because we're using January's ending balance as the opening balance for subsequent periods
+    let anchorDate;
+    if (anchorFromCache && anchorPeriod) {
+        // Get the anchor period's end date (this is the balance date for the cached period)
+        const anchorPeriodData = await getPeriodData(anchorPeriod);
+        if (anchorPeriodData && anchorPeriodData.endDate) {
+            anchorDate = anchorPeriodData.endDate; // Use end date directly (YYYY-MM-DD format)
+            console.log(`   ✅ Using cached anchor period ${anchorPeriod} end date: ${anchorDate}`);
+        } else {
+            // Fallback: calculate end date from period name
+            const parsed = parsePeriod(anchorPeriod);
+            if (parsed) {
+                // Calculate last day of the month
+                const lastDay = new Date(parsed.year, parsed.month + 1, 0); // Day 0 of next month = last day of current month
+                const year = lastDay.getFullYear();
+                const month = String(lastDay.getMonth() + 1).padStart(2, '0');
+                const day = String(lastDay.getDate()).padStart(2, '0');
+                anchorDate = `${year}-${month}-${day}`;
+                console.log(`   ✅ Calculated cached anchor period ${anchorPeriod} end date: ${anchorDate}`);
+            } else {
+                console.warn(`   ⚠️ Could not parse cached anchor period ${anchorPeriod} - falling back to inferAnchorDate`);
+                anchorDate = await inferAnchorDate(anchorPeriod);
+            }
+        }
+    } else {
+        // No cached anchor - use day before earliest period starts
+        anchorDate = await inferAnchorDate(anchorPeriod);
+    }
+    
     if (!anchorDate) {
-        console.warn(`   ⚠️ Could not infer anchor date - falling back to individual processing`);
-        throw new Error('Could not infer anchor date');
+        console.warn(`   ⚠️ Could not determine anchor date for ${anchorPeriod} - falling back to individual processing`);
+        throw new Error('Could not determine anchor date');
+    }
+    
+    if (anchorFromCache) {
+        console.log(`   ✅ Using cached anchor period ${anchorPeriod} (end date: ${anchorDate}) instead of ${earliestPeriod}`);
+    } else {
+        console.log(`   ✅ Anchor date calculated: ${anchorDate} (day before ${earliestPeriod} starts)`);
     }
     
     const firstRequest = requests[0][1];
@@ -2724,45 +2883,96 @@ async function processBsGridBatching(gridInfo, requests) {
     const lockPromise = (async () => {
         try {
             // Step 1: Get opening balances
-            console.log(`   📊 Step 1: Fetching opening balances at anchor date ${anchorDate}...`);
-            const openingResponse = await fetch(`${SERVER_URL}/batch/balance/bs-grid-opening`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    accounts: Array.from(accounts),
-                    anchorDate: anchorDate,
-                    fromPeriod: earliestPeriod,  // For cumulative, this is earliest toPeriod; for period activity, this is earliest fromPeriod
-                    subsidiary: firstRequest.params.subsidiary,
-                    department: firstRequest.params.department,
-                    location: firstRequest.params.location,
-                    class: firstRequest.params.classId,
-                    book: firstRequest.params.accountingBook
-                })
-            });
+            // If anchor is from cache (e.g., January), use cached balances instead of querying
+            let openingBalances = {};
             
-            if (!openingResponse.ok) {
-                throw new Error(`Opening balances query failed: ${openingResponse.status}`);
+            if (anchorFromCache && anchorPeriod) {
+                console.log(`   📊 Step 1: Using cached balances from anchor period ${anchorPeriod}...`);
+                const { subsidiary, department, location, classId, accountingBook } = firstRequest.params;
+                
+                // Load cached balances for all accounts from the anchor period
+                for (const account of accounts) {
+                    const cachedBalance = checkLocalStorageCache(account, '', anchorPeriod, subsidiary, filtersHash);
+                    if (cachedBalance !== null) {
+                        openingBalances[account] = cachedBalance;
+                    }
+                }
+                
+                console.log(`   ✅ Loaded ${Object.keys(openingBalances).length} cached balances from ${anchorPeriod}`);
+                
+                // If some accounts don't have cached balances, we still need to query for them
+                const missingAccounts = Array.from(accounts).filter(acc => !(acc in openingBalances));
+                if (missingAccounts.length > 0) {
+                    console.log(`   ⚠️ ${missingAccounts.length} accounts missing from cache - querying opening balances for them...`);
+                    // Query opening balances for missing accounts
+                    const openingResponse = await fetch(`${SERVER_URL}/batch/balance/bs-grid-opening`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            accounts: missingAccounts,
+                            anchorDate: anchorDate,
+                            fromPeriod: anchorPeriod,  // Use anchor period for missing accounts
+                            subsidiary: firstRequest.params.subsidiary,
+                            department: firstRequest.params.department,
+                            location: firstRequest.params.location,
+                            class: firstRequest.params.classId,
+                            book: firstRequest.params.accountingBook
+                        })
+                    });
+                    
+                    if (openingResponse.ok) {
+                        const openingData = await openingResponse.json();
+                        if (openingData.Success) {
+                            Object.assign(openingBalances, openingData.OpeningBalances || {});
+                            console.log(`   ✅ Queried ${missingAccounts.length} missing accounts`);
+                        }
+                    }
+                }
+            } else {
+                // No cached anchor - query opening balances normally
+                console.log(`   📊 Step 1: Fetching opening balances at anchor date ${anchorDate}...`);
+                const openingResponse = await fetch(`${SERVER_URL}/batch/balance/bs-grid-opening`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        accounts: Array.from(accounts),
+                        anchorDate: anchorDate,
+                        fromPeriod: earliestPeriod,  // For cumulative, this is earliest toPeriod; for period activity, this is earliest fromPeriod
+                        subsidiary: firstRequest.params.subsidiary,
+                        department: firstRequest.params.department,
+                        location: firstRequest.params.location,
+                        class: firstRequest.params.classId,
+                        book: firstRequest.params.accountingBook
+                    })
+                });
+                
+                if (!openingResponse.ok) {
+                    throw new Error(`Opening balances query failed: ${openingResponse.status}`);
+                }
+                
+                const openingData = await openingResponse.json();
+                if (!openingData.Success) {
+                    throw new Error(openingData.Error || 'Opening balances query failed');
+                }
+                
+                openingBalances = openingData.OpeningBalances || {};
+                console.log(`   ✅ Opening balances: ${Object.keys(openingBalances).length} accounts`);
             }
-            
-            const openingData = await openingResponse.json();
-            if (!openingData.Success) {
-                throw new Error(openingData.Error || 'Opening balances query failed');
-            }
-            
-            const openingBalances = openingData.OpeningBalances || {};
-            console.log(`   ✅ Opening balances: ${Object.keys(openingBalances).length} accounts`);
             
             // Step 2: Get period activity
-            // For cumulative queries: fetch activity from anchor to latest toPeriod
-            // For period activity queries: fetch activity from earliest fromPeriod to latest toPeriod
-            console.log(`   📊 Step 2: Fetching period activity...`);
+            // For cumulative queries: fetch activity from anchor period to latest toPeriod
+            // If anchor is from cache (e.g., January), fetch activity from anchor period (Jan) to latest period (Apr)
+            // This gives us activity for all periods including anchor, but we'll use anchor balance and add subsequent activity
+            // If anchor is not from cache, fetch from earliestPeriod (first pending period) to latestPeriod
+            const activityFromPeriod = anchorFromCache ? anchorPeriod : earliestPeriod;
+            console.log(`   📊 Step 2: Fetching period activity from ${activityFromPeriod} to ${latestPeriod}...`);
             const activityResponse = await fetch(`${SERVER_URL}/batch/balance/bs-grid-activity`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     accounts: Array.from(accounts),
                     anchorDate: anchorDate,
-                    fromPeriod: earliestPeriod,  // For cumulative, this is earliest toPeriod; for period activity, this is earliest fromPeriod
+                    fromPeriod: activityFromPeriod,  // Use anchor period if from cache, otherwise earliestPeriod
                     toPeriod: latestPeriod,      // Latest period in grid
                     subsidiary: firstRequest.params.subsidiary,
                     department: firstRequest.params.department,
@@ -2792,6 +3002,8 @@ async function processBsGridBatching(gridInfo, requests) {
             });
             
             // Step 4: Compute ending balances and resolve all requests
+            // CRITICAL: If anchor is from cache (e.g., January), exclude anchor period's activity
+            // from the roll-forward since the cached balance already includes that period's activity
             let resolvedCount = 0;
             for (const [cacheKey, request] of requests) {
                 const { account, toPeriod, fromPeriod } = request.params;
@@ -2801,7 +3013,8 @@ async function processBsGridBatching(gridInfo, requests) {
                     openingBalances,
                     activity,
                     queryType,
-                    fromPeriod
+                    fromPeriod,
+                    anchorFromCache ? anchorPeriod : null  // Exclude anchor period activity if anchor is from cache
                 );
                 
                 cache.balance.set(cacheKey, endingBalance);
@@ -2874,7 +3087,7 @@ async function processBsGridBatching(gridInfo, requests) {
  * @param {string} fromPeriod - Optional: fromPeriod for period activity queries
  * @returns {number} Ending balance for the account at target period
  */
-function computeEndingBalance(account, targetPeriod, openingBalances, activity, queryType = 'cumulative', fromPeriod = null) {
+function computeEndingBalance(account, targetPeriod, openingBalances, activity, queryType = 'cumulative', fromPeriod = null, excludeAnchorPeriod = null) {
     if (queryType === 'periodActivity' && fromPeriod) {
         // CASE 2: Period activity query - return activity for the specific period range
         // For period activity, we need to sum activity from fromPeriod to toPeriod
@@ -2909,9 +3122,15 @@ function computeEndingBalance(account, targetPeriod, openingBalances, activity, 
         const allPeriods = Object.keys(accountActivity).sort();
         
         // Sum activity for all periods <= targetPeriod
+        // CRITICAL: If excludeAnchorPeriod is provided (anchor is from cache), exclude that period's activity
+        // because the cached balance already includes that period's activity
         let cumulativeActivity = 0;
         for (const period of allPeriods) {
             if (period <= targetPeriod) {
+                // Exclude anchor period if specified (anchor is from cache)
+                if (excludeAnchorPeriod && period === excludeAnchorPeriod) {
+                    continue; // Skip anchor period's activity - already included in cached balance
+                }
                 cumulativeActivity += accountActivity[period] || 0;
             }
         }
