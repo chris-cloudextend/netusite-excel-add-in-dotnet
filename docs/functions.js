@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.1.6';  // FIX: Make registration more robust - try immediate registration first
+const FUNCTIONS_VERSION = '4.0.1.7';  // FIX: Remove orphaned JSDoc closing tag that was breaking function registration
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -9190,9 +9190,6 @@ async function fetchBatchBalances(accounts, periods, filters, allRequests, retry
         }
     }
 }
-
-// expandPeriodRangeFromTo is defined at the top of this file
-*/
 
 // (Old streaming functions removed - not needed for Phase 3 non-streaming async)
 
