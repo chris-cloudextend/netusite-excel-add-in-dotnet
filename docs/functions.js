@@ -6124,9 +6124,17 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                 
                 // After preload completes, check caches
                 if (cache.balance.has(cacheKey)) {
+                    const cachedValue = cache.balance.get(cacheKey);
                     console.log(`✅ Post-preload cache hit (memory): ${account}`);
                     cacheStats.hits++;
-                    return cache.balance.get(cacheKey);
+                    
+                    // PHASE 4: Trigger async validation if eligible (fire-and-forget)
+                    if (columnBasedDetectionForValidation) {
+                        validateColumnBasedBSBatch(account, toPeriod, filters, cachedValue, columnBasedDetectionForValidation)
+                            .catch(() => {});
+                    }
+                    
+                    return cachedValue;
                 }
                 
                 const localStorageValue = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary);
@@ -6134,6 +6142,13 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                     console.log(`✅ Post-preload cache hit (localStorage): ${account}`);
                     cacheStats.hits++;
                     cache.balance.set(cacheKey, localStorageValue);
+                    
+                    // PHASE 4: Trigger async validation if eligible (fire-and-forget)
+                    if (columnBasedDetectionForValidation) {
+                        validateColumnBasedBSBatch(account, toPeriod, filters, localStorageValue, columnBasedDetectionForValidation)
+                            .catch(() => {});
+                    }
+                    
                     return localStorageValue;
                 }
                 
@@ -6592,6 +6607,14 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         if (fullYearValue !== null) {
             cacheStats.hits++;
             cache.balance.set(cacheKey, fullYearValue);
+            
+            // PHASE 4: Trigger async validation if eligible (fire-and-forget)
+            if (columnBasedDetectionForValidation) {
+                // Fire-and-forget: don't await, don't block
+                validateColumnBasedBSBatch(account, toPeriod, filters, fullYearValue, columnBasedDetectionForValidation)
+                    .catch(() => {}); // Swallow any errors - validation never throws
+            }
+            
             return fullYearValue;
         }
         
