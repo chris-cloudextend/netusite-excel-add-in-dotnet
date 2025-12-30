@@ -38,6 +38,9 @@ EXCEL_CONTAINER_DIRS=(
     "$HOME/Library/Containers/com.microsoft.Excel"
 )
 
+# Store WEF folder path before clearing
+WEF_FOLDER="$HOME/Library/Containers/com.microsoft.Excel/Data/Documents/wef"
+
 for container_dir in "${EXCEL_CONTAINER_DIRS[@]}"; do
     if [ -d "$container_dir" ]; then
         echo "   Removing: $container_dir"
@@ -50,6 +53,19 @@ for container_dir in "${EXCEL_CONTAINER_DIRS[@]}"; do
         }
     fi
 done
+
+# Recreate WEF folder for sideloaded add-ins
+echo ""
+echo "📁 Recreating WEF folder for sideloaded add-ins..."
+if [ ! -d "$WEF_FOLDER" ]; then
+    mkdir -p "$WEF_FOLDER" 2>/dev/null && {
+        echo "   ✅ Created: $WEF_FOLDER"
+    } || {
+        echo "   ⚠️  Could not create WEF folder (may need to restart Excel first)"
+    }
+else
+    echo "   ℹ️  WEF folder already exists: $WEF_FOLDER"
+fi
 
 # Excel Saved Application State
 echo ""
@@ -106,6 +122,6 @@ echo ""
 echo "Next steps:"
 echo "  1. Restart Excel (if it was running, close and reopen)"
 echo "  2. Re-add your Excel add-in from the manifest"
-echo "  3. Test the new version (4.0.2.2)"
+echo "  3. Test the new version (4.0.2.3)"
 echo ""
 
