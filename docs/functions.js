@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.2.4';  // Fix: BS batch query readonly property error - changed cumulativeRequests to let
+const FUNCTIONS_VERSION = '4.0.2.5';  // Fix: Skip preload wait when grid scenario detected (multiple BS requests queued)
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -5507,13 +5507,25 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                         // P&L accounts should NEVER wait for BS preload (they use different cache)
                         // Period activity queries should NOT wait for preload (they use different query path)
                         if (isBSAccount && !isPeriodActivity) {
-                            // FIX #4: Wait for preload with bounded timeout (120s max - increased from 90s)
-                            // BS preload can take 60-90s, so 120s gives buffer for network delays
-                            const maxWait = 120000; // 120 seconds - bounded wait (increased from 90s)
-                            console.log(`⏳ Waiting for preload to start/complete (max ${maxWait/1000}s)...`);
-                            const waited = await waitForPeriodCompletion(filtersHash, periodKey, maxWait);
+                            // GRID DETECTION: If multiple BS requests are already queued, skip preload wait
+                            // This allows batch detection to run quickly and handle grid scenarios
+                            const pendingBSRequests = Array.from(pendingRequests.balance.values())
+                                .filter(r => isCumulativeRequest(r.params.fromPeriod));
                             
-                            if (waited) {
+                            if (pendingBSRequests.length >= 2) {
+                                // Multiple BS requests queued - likely a grid scenario
+                                // Skip preload wait, let batch detection handle it
+                                console.log(`🎯 Grid scenario detected (${pendingBSRequests.length} BS requests queued) - skipping preload wait, using batch path`);
+                                // Proceed directly to queue (don't wait for preload)
+                            } else {
+                                // Single request or no other requests - use normal preload path
+                                // FIX #4: Wait for preload with bounded timeout (120s max - increased from 90s)
+                                // BS preload can take 60-90s, so 120s gives buffer for network delays
+                                const maxWait = 120000; // 120 seconds - bounded wait (increased from 90s)
+                                console.log(`⏳ Waiting for preload to start/complete (max ${maxWait/1000}s)...`);
+                                const waited = await waitForPeriodCompletion(filtersHash, periodKey, maxWait);
+                                
+                                if (waited) {
                                 // Preload completed - re-check cache
                                 let retryCache = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
                                 if (retryCache !== null) {
@@ -5547,18 +5559,19 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                             if (retryResult !== null) {
                                 return retryResult;
                             }
-                            // Cache still not found after retries - proceed to API path (don't throw)
-                            console.log(`⏳ Cache not found after retries - proceeding to API path for ${periodKey}`);
+                                // Cache still not found after retries - proceed to API path (don't throw)
+                                console.log(`⏳ Cache not found after retries - proceeding to API path for ${periodKey}`);
+                                }
+                                
+                                // Still miss after wait - check if now running/retrying
+                                const finalStatus = getPeriodStatus(filtersHash, periodKey);
+                                if (finalStatus === "running" || finalStatus === "requested") {
+                                    // ✅ Still running - proceed to API path (transient state)
+                                    console.log(`⏳ Period ${periodKey} still ${finalStatus} - proceeding to API path`);
+                                    // Continue to API path below (don't throw)
+                                }
+                                // If preload failed or timed out, continue to API call below
                             }
-                            
-                            // Still miss after wait - check if now running/retrying
-                            const finalStatus = getPeriodStatus(filtersHash, periodKey);
-                            if (finalStatus === "running" || finalStatus === "requested") {
-                                // ✅ Still running - proceed to API path (transient state)
-                                console.log(`⏳ Period ${periodKey} still ${finalStatus} - proceeding to API path`);
-                                // Continue to API path below (don't throw)
-                            }
-                            // If preload failed or timed out, continue to API call below
                         }
                         // P&L accounts skip the wait entirely - proceed directly to API call
                 }
