@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.1.2';  // FEATURE: Use cached anchor periods (e.g., January) for BS grid batching
+const FUNCTIONS_VERSION = '4.0.1.3';  // FIX: Syntax error - missing closing brace
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
