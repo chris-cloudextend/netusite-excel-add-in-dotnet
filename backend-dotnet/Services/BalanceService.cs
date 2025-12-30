@@ -92,6 +92,30 @@ public class BalanceService : IBalanceService
     public async Task<BalanceResponse> GetBalanceAsync(BalanceRequest request)
     {
         // ========================================================================
+        // ANCHOR DATE HANDLING: Opening balance as of anchor date
+        // When anchor_date is provided with empty from_period and to_period,
+        // return opening balance (cumulative from inception through anchor date)
+        // ========================================================================
+        if (!string.IsNullOrEmpty(request.AnchorDate) && 
+            string.IsNullOrEmpty(request.FromPeriod) && 
+            string.IsNullOrEmpty(request.ToPeriod))
+        {
+            return await GetOpeningBalanceAsync(request);
+        }
+        
+        // ========================================================================
+        // BATCH MODE HANDLING: Period activity breakdown
+        // When batch_mode=true and include_period_breakdown=true,
+        // return per-period activity breakdown instead of single total
+        // ========================================================================
+        if (request.BatchMode && request.IncludePeriodBreakdown && 
+            !string.IsNullOrEmpty(request.FromPeriod) && 
+            !string.IsNullOrEmpty(request.ToPeriod))
+        {
+            return await GetPeriodActivityBreakdownAsync(request);
+        }
+        
+        // ========================================================================
         // VALIDATE PARAMETER SHAPE FIRST (before any defaults)
         // ========================================================================
         bool hasFromPeriod = !string.IsNullOrEmpty(request.FromPeriod);
@@ -1784,6 +1808,414 @@ public class BalanceService : IBalanceService
         }
 
         return accounts;
+    }
+    
+    /// <summary>
+    /// Get opening balance as of anchor date (for balance sheet grid batching).
+    /// Returns cumulative balance from inception through anchor date.
+    /// </summary>
+    private async Task<BalanceResponse> GetOpeningBalanceAsync(BalanceRequest request)
+    {
+        _logger.LogInformation("Opening balance query: account={Account}, anchor_date={AnchorDate}", 
+            request.Account, request.AnchorDate);
+        
+        // Validate anchor_date format (YYYY-MM-DD)
+        if (!DateTime.TryParseExact(request.AnchorDate, "yyyy-MM-dd", null, 
+            System.Globalization.DateTimeStyles.None, out var anchorDate))
+        {
+            return new BalanceResponse
+            {
+                Account = request.Account,
+                Balance = 0,
+                Error = $"Invalid anchor_date format: {request.AnchorDate}. Expected YYYY-MM-DD."
+            };
+        }
+        
+        // Resolve subsidiary and get hierarchy
+        var subsidiaryId = await _lookupService.ResolveSubsidiaryIdAsync(request.Subsidiary);
+        var targetSub = subsidiaryId ?? "1";
+        var hierarchySubs = await _lookupService.GetSubsidiaryHierarchyAsync(targetSub);
+        var subFilter = string.Join(", ", hierarchySubs);
+        
+        // Resolve dimension filters
+        var departmentId = await _lookupService.ResolveDimensionIdAsync("department", request.Department);
+        var classId = await _lookupService.ResolveDimensionIdAsync("class", request.Class);
+        var locationId = await _lookupService.ResolveDimensionIdAsync("location", request.Location);
+        
+        var needsTransactionLineJoin = !string.IsNullOrEmpty(departmentId) || 
+                                        !string.IsNullOrEmpty(classId) || 
+                                        !string.IsNullOrEmpty(locationId) ||
+                                        targetSub != "1";
+        
+        var segmentFilters = new List<string>();
+        if (needsTransactionLineJoin)
+        {
+            segmentFilters.Add($"tl.subsidiary IN ({subFilter})");
+            if (!string.IsNullOrEmpty(departmentId))
+                segmentFilters.Add($"tl.department = {departmentId}");
+            if (!string.IsNullOrEmpty(classId))
+                segmentFilters.Add($"tl.class = {classId}");
+            if (!string.IsNullOrEmpty(locationId))
+                segmentFilters.Add($"tl.location = {locationId}");
+        }
+        var segmentWhere = segmentFilters.Any() ? string.Join(" AND ", segmentFilters) : "1=1";
+        var whereSegment = needsTransactionLineJoin ? $"AND {segmentWhere}" : "";
+        
+        var accountingBook = request.Book ?? DefaultAccountingBook;
+        var anchorDateStr = anchorDate.ToString("yyyy-MM-dd");
+        
+        // Universal sign flip
+        var signFlip = $@"
+            CASE 
+                WHEN a.accttype IN ({AccountType.SignFlipTypesSql}) THEN -1
+                WHEN a.accttype IN ({AccountType.IncomeTypesSql}) THEN -1
+                ELSE 1 
+            END";
+        
+        var tlJoin = needsTransactionLineJoin 
+            ? "JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id" 
+            : "";
+        
+        // Query cumulative balance up to anchor date
+        // Use anchor date's period ID for currency conversion (if available)
+        // For now, use postingperiod as fallback
+        var query = $@"
+            SELECT SUM(x.cons_amt) AS balance
+            FROM (
+                SELECT
+                    TO_NUMBER(
+                        BUILTIN.CONSOLIDATE(
+                            tal.amount,
+                            'LEDGER',
+                            'DEFAULT',
+                            'DEFAULT',
+                            {targetSub},
+                            t.postingperiod,
+                            'DEFAULT'
+                        )
+                    ) * {signFlip} AS cons_amt
+                FROM transactionaccountingline tal
+                JOIN transaction t ON t.id = tal.transaction
+                JOIN account a ON a.id = tal.account
+                {tlJoin}
+                WHERE t.posting = 'T'
+                  AND tal.posting = 'T'
+                  AND {NetSuiteService.BuildAccountFilter(new[] { request.Account })}
+                  AND t.trandate <= TO_DATE('{anchorDateStr}', 'YYYY-MM-DD')
+                  AND tal.accountingbook = {accountingBook}
+                  {whereSegment}
+            ) x";
+        
+        _logger.LogDebug("Opening balance query: anchor_date={AnchorDate}, account={Account}", 
+            anchorDateStr, request.Account);
+        
+        var queryResult = await _netSuiteService.QueryRawWithErrorAsync(query, 180);
+        
+        if (!queryResult.Success)
+        {
+            _logger.LogError("Opening balance query failed: {Error}", queryResult.ErrorDetails);
+            return new BalanceResponse
+            {
+                Account = request.Account,
+                Balance = 0,
+                Error = queryResult.ErrorCode ?? "NETFAIL"
+            };
+        }
+        
+        var balance = 0m;
+        if (queryResult.Results != null && queryResult.Results.Any())
+        {
+            var row = queryResult.Results.First();
+            balance = ParseBalance(row.TryGetProperty("balance", out var balProp) ? balProp : default);
+        }
+        
+        return new BalanceResponse
+        {
+            Account = request.Account,
+            Balance = balance,
+            Total = balance
+        };
+    }
+    
+    /// <summary>
+    /// Get period activity breakdown for batch mode (for balance sheet grid batching).
+    /// Returns per-period activity for each month in the range.
+    /// </summary>
+    private async Task<BalanceResponse> GetPeriodActivityBreakdownAsync(BalanceRequest request)
+    {
+        _logger.LogInformation("Period activity breakdown: account={Account}, from_period={FromPeriod}, to_period={ToPeriod}", 
+            request.Account, request.FromPeriod, request.ToPeriod);
+        
+        // Get period dates
+        var fromPeriodData = await _netSuiteService.GetPeriodAsync(request.FromPeriod);
+        var toPeriodData = await _netSuiteService.GetPeriodAsync(request.ToPeriod);
+        
+        if (fromPeriodData?.StartDate == null || toPeriodData?.EndDate == null)
+        {
+            return new BalanceResponse
+            {
+                Account = request.Account,
+                FromPeriod = request.FromPeriod,
+                ToPeriod = request.ToPeriod,
+                Balance = 0,
+                Error = "Could not find period dates"
+            };
+        }
+        
+        // Get all periods between fromPeriod and toPeriod
+        var periods = await GetPeriodsInRangeAsync(request.FromPeriod, request.ToPeriod);
+        if (!periods.Any())
+        {
+            return new BalanceResponse
+            {
+                Account = request.Account,
+                FromPeriod = request.FromPeriod,
+                ToPeriod = request.ToPeriod,
+                Balance = 0,
+                Error = "Could not find periods in range"
+            };
+        }
+        
+        // Resolve subsidiary and get hierarchy
+        var subsidiaryId = await _lookupService.ResolveSubsidiaryIdAsync(request.Subsidiary);
+        var targetSub = subsidiaryId ?? "1";
+        var hierarchySubs = await _lookupService.GetSubsidiaryHierarchyAsync(targetSub);
+        var subFilter = string.Join(", ", hierarchySubs);
+        
+        // Resolve dimension filters
+        var departmentId = await _lookupService.ResolveDimensionIdAsync("department", request.Department);
+        var classId = await _lookupService.ResolveDimensionIdAsync("class", request.Class);
+        var locationId = await _lookupService.ResolveDimensionIdAsync("location", request.Location);
+        
+        var needsTransactionLineJoin = !string.IsNullOrEmpty(departmentId) || 
+                                        !string.IsNullOrEmpty(classId) || 
+                                        !string.IsNullOrEmpty(locationId) ||
+                                        targetSub != "1";
+        
+        var segmentFilters = new List<string>();
+        if (needsTransactionLineJoin)
+        {
+            segmentFilters.Add($"tl.subsidiary IN ({subFilter})");
+            if (!string.IsNullOrEmpty(departmentId))
+                segmentFilters.Add($"tl.department = {departmentId}");
+            if (!string.IsNullOrEmpty(classId))
+                segmentFilters.Add($"tl.class = {classId}");
+            if (!string.IsNullOrEmpty(locationId))
+                segmentFilters.Add($"tl.location = {locationId}");
+        }
+        var segmentWhere = segmentFilters.Any() ? string.Join(" AND ", segmentFilters) : "1=1";
+        var whereSegment = needsTransactionLineJoin ? $"AND {segmentWhere}" : "";
+        
+        var accountingBook = request.Book ?? DefaultAccountingBook;
+        
+        // Universal sign flip
+        var signFlip = $@"
+            CASE 
+                WHEN a.accttype IN ({AccountType.SignFlipTypesSql}) THEN -1
+                WHEN a.accttype IN ({AccountType.IncomeTypesSql}) THEN -1
+                ELSE 1 
+            END";
+        
+        var tlJoin = needsTransactionLineJoin 
+            ? "JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id" 
+            : "";
+        
+        // Get period IDs for the range
+        var periodIds = new List<string>();
+        var periodNames = new List<string>();
+        foreach (var period in periods)
+        {
+            var periodData = await _netSuiteService.GetPeriodAsync(period);
+            if (periodData?.Id != null)
+            {
+                periodIds.Add(periodData.Id);
+                periodNames.Add(period);
+            }
+        }
+        
+        if (!periodIds.Any())
+        {
+            return new BalanceResponse
+            {
+                Account = request.Account,
+                FromPeriod = request.FromPeriod,
+                ToPeriod = request.ToPeriod,
+                Balance = 0,
+                Error = "Could not resolve period IDs"
+            };
+        }
+        
+        // Query per-period activity
+        var periodIdList = string.Join(",", periodIds);
+        var query = $@"
+            SELECT 
+                ap.periodname AS period_name,
+                SUM(
+                    TO_NUMBER(
+                        BUILTIN.CONSOLIDATE(
+                            tal.amount,
+                            'LEDGER',
+                            'DEFAULT',
+                            'DEFAULT',
+                            {targetSub},
+                            ap.id,
+                            'DEFAULT'
+                        )
+                    ) * {signFlip}
+                ) AS period_activity
+            FROM transactionaccountingline tal
+            JOIN transaction t ON t.id = tal.transaction
+            JOIN account a ON a.id = tal.account
+            JOIN accountingperiod ap ON ap.id = t.postingperiod
+            {tlJoin}
+            WHERE t.posting = 'T'
+              AND tal.posting = 'T'
+              AND {NetSuiteService.BuildAccountFilter(new[] { request.Account })}
+              AND ap.id IN ({periodIdList})
+              AND tal.accountingbook = {accountingBook}
+              {whereSegment}
+            GROUP BY ap.periodname
+            ORDER BY ap.startdate";
+        
+        _logger.LogDebug("Period activity breakdown query: {PeriodCount} periods", periodIds.Count);
+        
+        var queryResult = await _netSuiteService.QueryRawWithErrorAsync(query, 300);
+        
+        if (!queryResult.Success)
+        {
+            _logger.LogError("Period activity breakdown query failed: {Error}", queryResult.ErrorDetails);
+            return new BalanceResponse
+            {
+                Account = request.Account,
+                FromPeriod = request.FromPeriod,
+                ToPeriod = request.ToPeriod,
+                Balance = 0,
+                Error = queryResult.ErrorCode ?? "NETFAIL"
+            };
+        }
+        
+        // Build period activity dictionary
+        var periodActivity = new Dictionary<string, decimal>();
+        var total = 0m;
+        
+        if (queryResult.Results != null)
+        {
+            foreach (var row in queryResult.Results)
+            {
+                var periodName = row.TryGetProperty("period_name", out var pnProp) 
+                    ? pnProp.GetString() ?? "" 
+                    : "";
+                var activity = ParseBalance(row.TryGetProperty("period_activity", out var actProp) 
+                    ? actProp 
+                    : default);
+                
+                if (!string.IsNullOrEmpty(periodName))
+                {
+                    periodActivity[periodName] = activity;
+                    total += activity;
+                }
+            }
+        }
+        
+        // Ensure all periods in range are included (even if zero activity)
+        foreach (var periodName in periodNames)
+        {
+            if (!periodActivity.ContainsKey(periodName))
+            {
+                periodActivity[periodName] = 0m;
+            }
+        }
+        
+        return new BalanceResponse
+        {
+            Account = request.Account,
+            FromPeriod = request.FromPeriod,
+            ToPeriod = request.ToPeriod,
+            Balance = total,
+            Total = total,
+            PeriodActivity = periodActivity
+        };
+    }
+    
+    /// <summary>
+    /// Get all period names between fromPeriod and toPeriod (inclusive).
+    /// </summary>
+    private async Task<List<string>> GetPeriodsInRangeAsync(string fromPeriod, string toPeriod)
+    {
+        var periods = new List<string>();
+        
+        // Get period data
+        var fromPeriodData = await _netSuiteService.GetPeriodAsync(fromPeriod);
+        var toPeriodData = await _netSuiteService.GetPeriodAsync(toPeriod);
+        
+        if (fromPeriodData?.StartDate == null || toPeriodData?.StartDate == null)
+            return periods;
+        
+        // Parse dates
+        var fromDate = ParseDate(fromPeriodData.StartDate);
+        var toDate = ParseDate(toPeriodData.StartDate);
+        
+        if (fromDate == null || toDate == null)
+            return periods;
+        
+        // Query all periods in the range
+        var fromDateStr = fromDate.Value.ToString("yyyy-MM-dd");
+        var toDateStr = toDate.Value.ToString("yyyy-MM-dd");
+        
+        var query = $@"
+            SELECT periodname
+            FROM accountingperiod
+            WHERE startdate >= TO_DATE('{fromDateStr}', 'YYYY-MM-DD')
+              AND startdate <= TO_DATE('{toDateStr}', 'YYYY-MM-DD')
+              AND isposting = 'T'
+            ORDER BY startdate";
+        
+        var queryResult = await _netSuiteService.QueryRawWithErrorAsync(query, 30);
+        
+        if (queryResult.Success && queryResult.Results != null)
+        {
+            foreach (var row in queryResult.Results)
+            {
+                var periodName = row.TryGetProperty("periodname", out var pnProp) 
+                    ? pnProp.GetString() 
+                    : null;
+                if (!string.IsNullOrEmpty(periodName))
+                {
+                    periods.Add(periodName);
+                }
+            }
+        }
+        
+        return periods;
+    }
+    
+    /// <summary>
+    /// Parse date string (handles MM/DD/YYYY and YYYY-MM-DD formats).
+    /// </summary>
+    private DateTime? ParseDate(string dateStr)
+    {
+        if (string.IsNullOrEmpty(dateStr))
+            return null;
+        
+        // Try MM/DD/YYYY format
+        if (DateTime.TryParseExact(dateStr, "M/d/yyyy", null, 
+            System.Globalization.DateTimeStyles.None, out var date1))
+            return date1;
+        
+        if (DateTime.TryParseExact(dateStr, "MM/dd/yyyy", null, 
+            System.Globalization.DateTimeStyles.None, out var date2))
+            return date2;
+        
+        // Try YYYY-MM-DD format
+        if (DateTime.TryParseExact(dateStr, "yyyy-MM-dd", null, 
+            System.Globalization.DateTimeStyles.None, out var date3))
+            return date3;
+        
+        // Try general parsing
+        if (DateTime.TryParse(dateStr, out var date4))
+            return date4;
+        
+        return null;
     }
     
     /// <summary>

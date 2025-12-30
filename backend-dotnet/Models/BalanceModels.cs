@@ -39,6 +39,30 @@ public class BalanceRequest
     [JsonPropertyName("book")]
     [JsonConverter(typeof(FlexibleIntConverter))]
     public int? Book { get; set; }
+    
+    /// <summary>
+    /// Anchor date for opening balance queries (YYYY-MM-DD format).
+    /// When provided with empty from_period and to_period, returns opening balance as of this date.
+    /// Used for balance sheet grid batching.
+    /// </summary>
+    [JsonPropertyName("anchor_date")]
+    public string? AnchorDate { get; set; }
+    
+    /// <summary>
+    /// Enable batch mode for period activity breakdown.
+    /// When true with include_period_breakdown=true, returns per-period activity breakdown.
+    /// Used for balance sheet grid batching.
+    /// </summary>
+    [JsonPropertyName("batch_mode")]
+    public bool BatchMode { get; set; } = false;
+    
+    /// <summary>
+    /// Include per-period activity breakdown in response.
+    /// Only used when batch_mode=true.
+    /// Used for balance sheet grid batching.
+    /// </summary>
+    [JsonPropertyName("include_period_breakdown")]
+    public bool IncludePeriodBreakdown { get; set; } = false;
 }
 
 /// <summary>Request for BALANCEBETA with explicit currency control</summary>
@@ -149,6 +173,22 @@ public class BalanceResponse
     
     [JsonPropertyName("debug_query")]
     public string? DebugQuery { get; set; }
+    
+    /// <summary>
+    /// Total balance (same as balance field, included for batch mode compatibility).
+    /// </summary>
+    [JsonPropertyName("total")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public decimal? Total { get; set; }
+    
+    /// <summary>
+    /// Per-period activity breakdown (only when batch_mode=true and include_period_breakdown=true).
+    /// Dictionary key: period name (e.g., "Jan 2025"), value: activity amount for that period.
+    /// Used for balance sheet grid batching.
+    /// </summary>
+    [JsonPropertyName("period_activity")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public Dictionary<string, decimal>? PeriodActivity { get; set; }
     
     /// <summary>
     /// One-word error code if query failed (e.g., TIMEOUT, RATELIMIT, NETFAIL).

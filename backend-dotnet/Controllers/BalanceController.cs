@@ -60,14 +60,18 @@ public class BalanceController : ControllerBase
         [FromQuery] string? department = null,
         [FromQuery(Name = "class")] string? classFilter = null,
         [FromQuery] string? location = null,
-        [FromQuery] int? book = null)
+        [FromQuery] int? book = null,
+        [FromQuery] string? anchor_date = null,
+        [FromQuery] bool batch_mode = false,
+        [FromQuery] bool include_period_breakdown = false)
     {
         if (string.IsNullOrEmpty(account))
             return BadRequest(new { error = "Account number is required" });
 
-        // Need at least one period for any query
-        if (string.IsNullOrEmpty(from_period) && string.IsNullOrEmpty(to_period))
-            return BadRequest(new { error = "At least one period (from_period or to_period) is required" });
+        // If anchor_date is provided, from_period and to_period can both be empty
+        // Otherwise, need at least one period for any query
+        if (string.IsNullOrEmpty(anchor_date) && string.IsNullOrEmpty(from_period) && string.IsNullOrEmpty(to_period))
+            return BadRequest(new { error = "At least one period (from_period or to_period) is required, or provide anchor_date" });
 
         try
         {
@@ -82,7 +86,10 @@ public class BalanceController : ControllerBase
                 Department = department,
                 Class = classFilter,
                 Location = location,
-                Book = book
+                Book = book,
+                AnchorDate = anchor_date,
+                BatchMode = batch_mode,
+                IncludePeriodBreakdown = include_period_breakdown
             };
 
             var result = await _balanceService.GetBalanceAsync(request);
