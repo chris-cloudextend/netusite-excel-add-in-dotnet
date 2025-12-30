@@ -422,7 +422,7 @@ const USE_COLUMN_BASED_BS_BATCHING = false;
  * Independent of USE_COLUMN_BASED_BS_BATCHING - can be enabled while execution flag is false.
  * Defaults to false - no validation overhead in production.
  */
-const VALIDATE_COLUMN_BASED_BS_BATCHING = false;
+const VALIDATE_COLUMN_BASED_BS_BATCHING = true;
 
 /**
  * Debug flag for column-based batching detection logging.
