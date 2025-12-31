@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.5';  // Fix: Parse JSON response from opening balance query
+const FUNCTIONS_VERSION = '4.0.6.6';  // Fix: Parse JSON response from opening balance query
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -1691,6 +1691,7 @@ async function executeBalanceSheetBatchQueryImmediate(account, periods, filters)
     })();
     
     // Store the promise in the lock BEFORE awaiting (so other requests can join)
+    // CRITICAL: This must happen synchronously after promise creation to prevent race conditions
     bsBatchQueryInFlight.set(account, queryPromise);
     
     // Await and return the results
@@ -1888,6 +1889,11 @@ function computeRunningBalances(periods, openingBalance, periodActivity) {
                 console.log(`🧮   ${period}: ${runningBalance - activity} + ${activity} = ${runningBalance}`);
             }
         }
+    }
+    
+    // CRITICAL: Log final results for debugging mismatches
+    if (DEBUG_COLUMN_BASED_BS_BATCHING) {
+        console.log(`🧮 computeRunningBalances FINAL RESULTS:`, JSON.stringify(results, null, 2));
     }
     
     return results; // {period: balance}
