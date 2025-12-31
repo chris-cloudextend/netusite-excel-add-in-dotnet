@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.1';  // Fix: Handle period_activity response correctly in old row-based path
+const FUNCTIONS_VERSION = '4.0.6.2';  // Fix: Treat same-period queries as period activity (not cumulative) and add batch_mode params
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -7945,14 +7945,17 @@ async function processBatchQueue() {
     for (const [cacheKey, request] of requests) {
         const { fromPeriod, toPeriod } = request.params;
         const isCumulative = (!fromPeriod || fromPeriod === '') && toPeriod && toPeriod !== '';
-        const isPeriodActivity = fromPeriod && toPeriod && fromPeriod !== toPeriod;
+        // Period activity: both fromPeriod and toPeriod present (same or different periods)
+        // When same period, we want period activity for that single period, not cumulative
+        const isPeriodActivity = fromPeriod && toPeriod && fromPeriod !== '';
         
         if (isCumulative) {
             // Cumulative = empty fromPeriod with a toPeriod
             cumulativeRequests.push([cacheKey, request]);
         } else if (isPeriodActivity) {
-            // Period activity query (both fromPeriod and toPeriod) - route to individual /balance calls
+            // Period activity query (both fromPeriod and toPeriod, same or different) - route to individual /balance calls
             // The batch endpoint expands period ranges, which is wrong for period activity queries
+            // For same period (e.g., "Feb 2025" to "Feb 2025"), we want period activity, not cumulative
             periodActivityRequests.push([cacheKey, request]);
         } else {
             // Regular P&L period range requests - can use batch endpoint
@@ -8309,6 +8312,8 @@ async function processBatchQueue() {
                     account: account,
                     from_period: fromPeriod,
                     to_period: toPeriod,
+                    batch_mode: 'true',  // Enable batch mode for period activity breakdown
+                    include_period_breakdown: 'true',  // Request per-period activity, not cumulative
                     subsidiary: subsidiary || '',
                     department: department || '',
                     location: location || '',
@@ -8316,23 +8321,38 @@ async function processBatchQueue() {
                     accountingbook: accountingBook || ''
                 });
                 
-                console.log(`   📤 Period activity API: ${account} (${fromPeriod} → ${toPeriod})`);
+                console.log(`   📤 Period activity API: ${account} (${fromPeriod} → ${toPeriod}) [batch_mode=true]`);
                 activityApiCalls++;
                 
                 const response = await fetch(`${SERVER_URL}/balance?${apiParams.toString()}`);
                 
                 if (response.ok) {
                     const data = await response.json();
-                    const value = data.balance ?? 0;
-                    const errorCode = data.error;
                     
-                    if (errorCode) {
-                        console.log(`   ⚠️ Period activity result: ${account} = ${errorCode}`);
-                        request.reject(new Error(errorCode));
+                    // Handle period activity breakdown response
+                    if (data.period_activity && typeof data.period_activity === 'object') {
+                        // Backend returns period_activity dictionary: {period: activity}
+                        // For single period queries, extract the activity for that period
+                        const periodActivity = data.period_activity;
+                        const targetPeriod = fromPeriod === toPeriod ? fromPeriod : toPeriod;
+                        const activity = periodActivity[targetPeriod] ?? 0;
+                        
+                        console.log(`   ✅ Period activity result: ${account} (${fromPeriod} → ${toPeriod}) = ${activity.toLocaleString()}`);
+                        cache.balance.set(cacheKey, activity);
+                        request.resolve(activity);
                     } else {
-                        console.log(`   ✅ Period activity result: ${account} = ${value.toLocaleString()}`);
-                        cache.balance.set(cacheKey, value);
-                        request.resolve(value);
+                        // Fallback to balance field if period_activity not present
+                        const value = data.balance ?? 0;
+                        const errorCode = data.error;
+                        
+                        if (errorCode) {
+                            console.log(`   ⚠️ Period activity result: ${account} = ${errorCode}`);
+                            request.reject(new Error(errorCode));
+                        } else {
+                            console.log(`   ✅ Period activity result (fallback): ${account} = ${value.toLocaleString()}`);
+                            cache.balance.set(cacheKey, value);
+                            request.resolve(value);
+                        }
                     }
                 } else {
                     const errorCode = response.status === 408 || response.status === 504 ? 'TIMEOUT' : 'APIERR';
