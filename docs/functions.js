@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.12';  // Fix: Remove orphaned code causing syntax errors
+const FUNCTIONS_VERSION = '4.0.6.13';  // Fix: Route income statement accounts to queue for proper batching
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -6078,15 +6078,52 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
             accountType = await getAccountType(account);
         }
         
-        // INCOME STATEMENT PATH (Hard Return - No BS Logic, No Queuing)
-        // Income/Expense accounts continue with existing manifest/preload/API logic
-        // They will NOT enter the queue, so pattern detection will never see them
+        // INCOME STATEMENT PATH: Route to queue for batching (skip manifest/preload)
+        // Income/Expense accounts should be batched together for efficient year queries
+        // They skip all manifest/preload logic and go directly to the queue
         if (accountType && (accountType === 'Income' || accountType === 'COGS' || accountType === 'Expense' || 
             accountType === 'OthIncome' || accountType === 'OthExpense')) {
-            // Route to existing income statement logic
-            // Continue with existing code path below (manifest/preload/API)
-            // DO NOT enter queue or batching logic
-            // (The existing code will handle IS accounts correctly)
+            // Check cache first (before queuing)
+            if (cache.balance.has(cacheKey)) {
+                cacheStats.hits++;
+                return cache.balance.get(cacheKey);
+            }
+            
+            // Check if period is resolved (required for queuing)
+            if (!toPeriod || toPeriod === '') {
+                console.log(`⏳ Income Statement: Period not yet resolved for ${account} - proceeding to API path`);
+                // Continue to API path below (don't throw - Excel will re-evaluate when period resolves)
+            } else {
+                // Route to queue for batching (skip all manifest/preload logic)
+                cacheStats.misses++;
+                console.log(`📥 QUEUED [Income Statement]: ${account} for ${fromPeriod || '(cumulative)'} → ${toPeriod}`);
+                
+                return new Promise((resolve, reject) => {
+                    pendingRequests.balance.set(cacheKey, {
+                        params,
+                        resolve,
+                        reject,
+                        timestamp: Date.now()
+                    });
+                    
+                    // Start batch timer if not already running
+                    if (!isFullRefreshMode) {
+                        if (batchTimer) {
+                            clearTimeout(batchTimer);
+                            batchTimer = null;
+                        }
+                        console.log(`⏱️ STARTING batch timer (${BATCH_DELAY}ms) for Income Statement`);
+                        batchTimer = setTimeout(() => {
+                            console.log('⏱️ Batch timer FIRED!');
+                            batchTimer = null;
+                            processBatchQueue().catch(err => {
+                                console.error('❌ Batch processing error:', err);
+                            });
+                        }, BATCH_DELAY);
+                    }
+                });
+            }
+            // If period not resolved, fall through to API path below
         }
         // BALANCE SHEET PATH (Continue with existing BS logic + potential batching)
         // Only reaches here if account is Balance Sheet (or unknown - treated as BS)
@@ -8321,10 +8358,21 @@ async function processBatchQueue() {
                     accountType === 'Expense' || accountType === 'OthIncome' || accountType === 'OthExpense');
             });
             
-            const useYearEndpoint = allAccountsAreIncomeStatement && isFullYearRequest && yearForOptimization && periodsArray.length === 12;
+            // CRITICAL FIX: For income statement accounts, use year endpoint if:
+            // 1. All accounts are income statement (already checked)
+            // 2. Requesting full year (Jan to Dec) OR all 12 months are present
+            // 3. All requests are for the same year
+            // This enables single query for entire year instead of 12 separate queries
+            const useYearEndpoint = allAccountsAreIncomeStatement && 
+                ((isFullYearRequest && yearForOptimization && periodsArray.length === 12) ||
+                 (periodsArray.length === 12 && yearForOptimization));
             
             if (useYearEndpoint) {
                 console.log(`  🗓️ YEAR OPTIMIZATION: Using /batch/balance/year for FY ${yearForOptimization} (Income Statement accounts)`);
+                console.log(`     Accounts: ${accounts.length}, Periods: ${periodsArray.length}, Full Year: ${isFullYearRequest}`);
+            } else if (allAccountsAreIncomeStatement) {
+                console.log(`  ⚠️ Income Statement accounts detected but year optimization not used:`);
+                console.log(`     isFullYearRequest: ${isFullYearRequest}, yearForOptimization: ${yearForOptimization}, periodsArray.length: ${periodsArray.length}`);
             }
             
             console.log(`  Batch: ${accounts.length} accounts × ${periodsArray.length} period(s)`);
