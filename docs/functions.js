@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.14';  // Add: Comprehensive logging to prove single year query for income statements
+const FUNCTIONS_VERSION = '4.0.6.15';  // Fix: Batch fetch account types before classification to ensure Income Statement accounts route correctly
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -7913,14 +7913,33 @@ async function processBatchQueue() {
     const regularRequests = [];  // P&L accounts with both fromPeriod and toPeriod - should be batched
     
     // First pass: Detect account types for proper routing
+    // CRITICAL: Batch fetch missing account types to ensure correct classification
     const accountTypeCache = new Map();
+    const accountsNeedingType = new Set();
+    
+    // Collect all unique accounts and check cache
     for (const [cacheKey, request] of requests) {
         const { account } = request.params;
         if (!accountTypeCache.has(account)) {
             const typeCacheKey = getCacheKey('type', { account });
             const accountType = cache.type.has(typeCacheKey) ? cache.type.get(typeCacheKey) : null;
-            accountTypeCache.set(account, accountType);
+            if (accountType) {
+                accountTypeCache.set(account, accountType);
+            } else {
+                accountsNeedingType.add(account);
+            }
         }
+    }
+    
+    // Batch fetch missing account types BEFORE classification
+    // This ensures Income Statement accounts are correctly identified
+    if (accountsNeedingType.size > 0) {
+        console.log(`🔍 Fetching account types for ${accountsNeedingType.size} accounts to ensure correct routing...`);
+        const fetchedTypes = await batchGetAccountTypes(Array.from(accountsNeedingType));
+        for (const [account, accountType] of Object.entries(fetchedTypes)) {
+            accountTypeCache.set(account, accountType || null);
+        }
+        console.log(`✅ Account types fetched: ${Object.keys(fetchedTypes).length} accounts`);
     }
     
     for (const [cacheKey, request] of requests) {
@@ -7942,10 +7961,20 @@ async function processBatchQueue() {
             // Period activity query for BS accounts only (both fromPeriod and toPeriod) - route to individual /balance calls
             // The batch endpoint expands period ranges, which is wrong for period activity queries
             // For same period (e.g., "Feb 2025" to "Feb 2025"), we want period activity, not cumulative
-            periodActivityRequests.push([cacheKey, request]);
+            // CRITICAL: Only route to periodActivityRequests if we're CERTAIN it's a BS account
+            // If account type is unknown (null), default to regularRequests to allow batching
+            if (accountType !== null) {
+                // We know it's BS, route to period activity
+                periodActivityRequests.push([cacheKey, request]);
+            } else {
+                // Unknown type - default to regularRequests to allow batching (safer for Income Statement)
+                console.log(`   ⚠️ Unknown account type for ${account} - routing to regularRequests for batching`);
+                regularRequests.push([cacheKey, request]);
+            }
         } else {
             // Regular P&L period range requests (with both fromPeriod and toPeriod) - should use batch endpoint
             // OR any request that doesn't match the above patterns
+            // This includes Income Statement accounts (isIncomeStatement === true)
             regularRequests.push([cacheKey, request]);
         }
     }
