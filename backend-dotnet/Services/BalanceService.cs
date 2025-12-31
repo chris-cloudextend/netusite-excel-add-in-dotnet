@@ -2008,13 +2008,8 @@ public class BalanceService : IBalanceService
         
         var accountingBook = request.Book ?? DefaultAccountingBook;
         
-        // Universal sign flip
-        var signFlip = $@"
-            CASE 
-                WHEN a.accttype IN ({AccountType.SignFlipTypesSql}) THEN -1
-                WHEN a.accttype IN ({AccountType.IncomeTypesSql}) THEN -1
-                ELSE 1 
-            END";
+        // Universal sign flip (single line to avoid SQL syntax issues in NetSuite)
+        var signFlip = $"CASE WHEN a.accttype IN ({AccountType.SignFlipTypesSql}) THEN -1 WHEN a.accttype IN ({AccountType.IncomeTypesSql}) THEN -1 ELSE 1 END";
         
         var tlJoin = needsTransactionLineJoin 
             ? "JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id" 
@@ -2046,10 +2041,17 @@ public class BalanceService : IBalanceService
         }
         
         // Query per-period activity
+        // CRITICAL FIX: For single-period queries, use the period ID directly instead of ap.id
+        // For multi-period queries, use the LAST period ID (target period) for all transactions
+        // NetSuite's BUILTIN.CONSOLIDATE does not accept column references (ap.id) as the period parameter
         var periodIdList = string.Join(",", periodIds);
+        // Use the last period ID (target period) for currency conversion - this ensures consistent exchange rates
+        var targetPeriodIdForConsolidate = periodIds.Count > 0 ? periodIds[periodIds.Count - 1] : "NULL";
+        
         var query = $@"
             SELECT 
                 ap.periodname AS period_name,
+                ap.startdate AS period_startdate,
                 SUM(
                     TO_NUMBER(
                         BUILTIN.CONSOLIDATE(
@@ -2058,7 +2060,7 @@ public class BalanceService : IBalanceService
                             'DEFAULT',
                             'DEFAULT',
                             {targetSub},
-                            ap.id,
+                            {targetPeriodIdForConsolidate},
                             'DEFAULT'
                         )
                     ) * {signFlip}
@@ -2074,10 +2076,13 @@ public class BalanceService : IBalanceService
               AND ap.id IN ({periodIdList})
               AND tal.accountingbook = {accountingBook}
               {whereSegment}
-            GROUP BY ap.periodname
+            GROUP BY ap.periodname, ap.startdate
             ORDER BY ap.startdate";
         
         _logger.LogDebug("Period activity breakdown query: {PeriodCount} periods", periodIds.Count);
+        
+        // CRITICAL DEBUG: Log full query for troubleshooting
+        _logger.LogDebug("Full period activity query:\n{Query}", query);
         
         var queryResult = await _netSuiteService.QueryRawWithErrorAsync(query, 300);
         

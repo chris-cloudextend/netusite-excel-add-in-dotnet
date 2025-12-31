@@ -33,7 +33,7 @@ export default {
     // ⚠️ UPDATE THIS when .NET backend tunnel URL changes
     // To get the URL, run: cloudflared tunnel --url http://localhost:5002
     // Copy the https://xxxxx.trycloudflare.com URL and paste it here
-    const TUNNEL_URL = 'https://tobago-induced-postcards-women.trycloudflare.com';
+    const TUNNEL_URL = 'https://keys-graduate-gardening-richard.trycloudflare.com';
 
     // Handle CORS preflight requests
     if (request.method === 'OPTIONS') {
@@ -97,3 +97,4 @@ export default {
     }
   }
 };
+manifest.xml

@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.2';  // Fix: Treat same-period queries as period activity (not cumulative) and add batch_mode params
+const FUNCTIONS_VERSION = '4.0.6.3';  // Fix: Add debug logging for cumulative balance calculation
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -1833,10 +1833,18 @@ function computeRunningBalances(periods, openingBalance, periodActivity) {
     const results = {};
     let runningBalance = openingBalance || 0;
     
+    if (DEBUG_COLUMN_BASED_BS_BATCHING) {
+        console.log(`🧮 computeRunningBalances: opening=${openingBalance}, periods=${periods.join(',')}, activity=`, periodActivity);
+    }
+    
     for (const period of periods) {
         const activity = periodActivity[period] || 0;
         runningBalance += activity;
         results[period] = runningBalance;
+        
+        if (DEBUG_COLUMN_BASED_BS_BATCHING) {
+            console.log(`🧮   ${period}: ${runningBalance - activity} + ${activity} = ${runningBalance}`);
+        }
     }
     
     return results; // {period: balance}
