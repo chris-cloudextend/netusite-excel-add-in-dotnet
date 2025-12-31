@@ -2432,8 +2432,11 @@ For licensing inquiries, contact: legal@celigo.com
            DRILLDOWN STATUS - BRANDED
            ============================================ */
         .drilldown-status.success {
-            background: var(--color-success-bg);
+            background: linear-gradient(135deg, rgba(10, 226, 193, 0.25) 0%, rgba(10, 226, 193, 0.15) 100%);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(10, 226, 193, 0.4);
             border-left: 4px solid var(--color-success);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(10, 226, 193, 0.2) inset;
         }
         
         .drilldown-status.error {
@@ -2467,7 +2470,10 @@ For licensing inquiries, contact: legal@celigo.com
             flex: 1;
         }
         
-        .drilldown-status.success .drilldown-status-title { color: var(--color-success-text); }
+        .drilldown-status.success .drilldown-status-title { 
+            color: #ffffff;
+            text-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+        }
         .drilldown-status.error .drilldown-status-title { color: var(--color-error-text); }
         .drilldown-status.warning .drilldown-status-title { color: var(--color-warning-text); }
         .drilldown-status.info .drilldown-status-title { color: var(--color-info-text); }
@@ -2489,11 +2495,23 @@ For licensing inquiries, contact: legal@celigo.com
             font-size: 14px;
             font-weight: 500;
             margin-bottom: 4px;
+            text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+        }
+        
+        .drilldown-status.success .drilldown-status-message {
+            color: rgba(255, 255, 255, 0.98);
+            text-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
         }
         
         .drilldown-status-detail {
-            color: rgba(255,255,255,0.7);
+            color: rgba(255,255,255,0.85);
             font-size: 12px;
+            text-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+        }
+        
+        .drilldown-status.success .drilldown-status-detail {
+            color: rgba(255, 255, 255, 0.9);
+            text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
         }
         
         .drilldown-status-spinner {
@@ -4114,7 +4132,10 @@ For licensing inquiries, contact: legal@celigo.com
         }
         .toast.success { 
             border-left-color: var(--color-success);
-            background: var(--color-success-bg);
+            background: linear-gradient(135deg, rgba(10, 226, 193, 0.25) 0%, rgba(10, 226, 193, 0.15) 100%);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(10, 226, 193, 0.4);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(10, 226, 193, 0.2) inset;
         }
         .toast.warning { 
             border-left-color: var(--color-warning);
@@ -4151,13 +4172,25 @@ For licensing inquiries, contact: legal@celigo.com
             font-size: 13px;
             color: white;
             margin-bottom: 4px;
+            text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
         }
 
         .toast-message {
             font-size: 11px;
-            color: var(--chrome);
+            color: rgba(255, 255, 255, 0.95);
             line-height: 1.4;
             word-break: break-word;
+            text-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+        }
+        
+        .toast.success .toast-title {
+            color: #ffffff;
+            text-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+        }
+        
+        .toast.success .toast-message {
+            color: rgba(255, 255, 255, 0.98);
+            text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
         }
 
         .toast-message code {
@@ -5817,7 +5850,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.9"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.10"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
