@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.10';  // Fix: Improve notification overlay contrast and readability
+const FUNCTIONS_VERSION = '4.0.6.11';  // Fix: Income statement batching - route P&L accounts to regularRequests for proper batching
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -7865,30 +7865,47 @@ async function processBatchQueue() {
     // ================================================================
     // ROUTE REQUESTS BY TYPE:
     // 1. CUMULATIVE BS QUERIES: empty fromPeriod with toPeriod → direct /balance API calls
-    // 2. PERIOD ACTIVITY QUERIES: both fromPeriod and toPeriod → direct /balance API calls (not batch endpoint)
-    // 3. REGULAR REQUESTS: P&L period ranges → batch endpoint
+    // 2. PERIOD ACTIVITY QUERIES: both fromPeriod and toPeriod (BS accounts only) → direct /balance API calls
+    // 3. REGULAR REQUESTS: P&L period ranges (with both fromPeriod and toPeriod) → batch endpoint
     // ================================================================
     let cumulativeRequests = [];  // Changed to 'let' to allow reassignment after batch filtering
-    const periodActivityRequests = [];  // BS period activity queries (both fromPeriod and toPeriod)
-    const regularRequests = [];
+    const periodActivityRequests = [];  // BS period activity queries (both fromPeriod and toPeriod, BS accounts only)
+    const regularRequests = [];  // P&L accounts with both fromPeriod and toPeriod - should be batched
+    
+    // First pass: Detect account types for proper routing
+    const accountTypeCache = new Map();
+    for (const [cacheKey, request] of requests) {
+        const { account } = request.params;
+        if (!accountTypeCache.has(account)) {
+            const typeCacheKey = getCacheKey('type', { account });
+            const accountType = cache.type.has(typeCacheKey) ? cache.type.get(typeCacheKey) : null;
+            accountTypeCache.set(account, accountType);
+        }
+    }
     
     for (const [cacheKey, request] of requests) {
-        const { fromPeriod, toPeriod } = request.params;
+        const { fromPeriod, toPeriod, account } = request.params;
         const isCumulative = (!fromPeriod || fromPeriod === '') && toPeriod && toPeriod !== '';
         // Period activity: both fromPeriod and toPeriod present (same or different periods)
         // When same period, we want period activity for that single period, not cumulative
         const isPeriodActivity = fromPeriod && toPeriod && fromPeriod !== '';
         
+        // Get account type to determine routing
+        const accountType = accountTypeCache.get(account);
+        const isIncomeStatement = accountType && (accountType === 'Income' || accountType === 'COGS' || 
+            accountType === 'Expense' || accountType === 'OthIncome' || accountType === 'OthExpense');
+        
         if (isCumulative) {
-            // Cumulative = empty fromPeriod with a toPeriod
+            // Cumulative = empty fromPeriod with a toPeriod (always BS)
             cumulativeRequests.push([cacheKey, request]);
-        } else if (isPeriodActivity) {
-            // Period activity query (both fromPeriod and toPeriod, same or different) - route to individual /balance calls
+        } else if (isPeriodActivity && !isIncomeStatement) {
+            // Period activity query for BS accounts only (both fromPeriod and toPeriod) - route to individual /balance calls
             // The batch endpoint expands period ranges, which is wrong for period activity queries
             // For same period (e.g., "Feb 2025" to "Feb 2025"), we want period activity, not cumulative
             periodActivityRequests.push([cacheKey, request]);
         } else {
-            // Regular P&L period range requests - can use batch endpoint
+            // Regular P&L period range requests (with both fromPeriod and toPeriod) - should use batch endpoint
+            // OR any request that doesn't match the above patterns
             regularRequests.push([cacheKey, request]);
         }
     }
@@ -8212,12 +8229,321 @@ async function processBatchQueue() {
     }
     
     // ================================================================
-    // PERIOD ACTIVITY QUERIES: Handle separately (both fromPeriod and toPeriod)
+    // REGULAR REQUESTS (P&L accounts with both fromPeriod and toPeriod): Batch processing
+    // These should use the batch endpoint for efficient year queries
+    // ================================================================
+    if (regularRequests.length > 0) {
+        console.log(`📊 Processing ${regularRequests.length} REGULAR (P&L) requests with batching...`);
+        
+        // Group by filters (not periods) - this allows smart batching
+        const groups = new Map();
+        for (const [cacheKey, request] of regularRequests) {
+            const {params} = request;
+            const filterKey = JSON.stringify({
+                subsidiary: params.subsidiary || '',
+                department: params.department || '',
+                location: params.location || '',
+                class: params.classId || '',
+                accountingBook: params.accountingBook || ''
+            });
+            
+            if (!groups.has(filterKey)) {
+                groups.set(filterKey, []);
+            }
+            groups.get(filterKey).push({ cacheKey, request });
+        }
+        
+        console.log(`📦 Grouped into ${groups.size} batch(es) by filters`);
+        
+        // Process each group
+        for (const [filterKey, groupRequests] of groups.entries()) {
+            const filters = JSON.parse(filterKey);
+            const accounts = [...new Set(groupRequests.map(r => r.request.params.account))];
+            
+            // Collect ALL unique periods from ALL requests in this group
+            // EXPAND date ranges (e.g., "Jan 2025" to "Dec 2025" → all 12 months)
+            const periods = new Set();
+            let isFullYearRequest = true;
+            let yearForOptimization = null;
+            
+            for (const r of groupRequests) {
+                const { fromPeriod, toPeriod } = r.request.params;
+                if (fromPeriod && toPeriod && fromPeriod !== toPeriod) {
+                    // Check if this is a full year request (Jan to Dec of same year)
+                    const fromMatch = fromPeriod.match(/^Jan\s+(\d{4})$/);
+                    const toMatch = toPeriod.match(/^Dec\s+(\d{4})$/);
+                    if (fromMatch && toMatch && fromMatch[1] === toMatch[1]) {
+                        const year = fromMatch[1];
+                        if (yearForOptimization === null) {
+                            yearForOptimization = year;
+                        } else if (yearForOptimization !== year) {
+                            isFullYearRequest = false;
+                        }
+                    } else {
+                        isFullYearRequest = false;
+                    }
+                    
+                    // Expand the range to all months
+                    const expanded = expandPeriodRangeFromTo(fromPeriod, toPeriod);
+                    console.log(`  📅 Expanding ${fromPeriod} to ${toPeriod} → ${expanded.length} months`);
+                    expanded.forEach(p => periods.add(p));
+                } else if (fromPeriod) {
+                    isFullYearRequest = false;
+                    // Check for year-only format and expand if needed
+                    if (/^\d{4}$/.test(fromPeriod)) {
+                        const expanded = expandPeriodRangeFromTo(fromPeriod, fromPeriod);
+                        console.log(`  📅 Year-only expansion: ${fromPeriod} → ${expanded.length} months`);
+                        expanded.forEach(p => periods.add(p));
+                    } else {
+                        periods.add(fromPeriod);
+                    }
+                } else if (toPeriod) {
+                    isFullYearRequest = false;
+                    // Check for year-only format and expand if needed
+                    if (/^\d{4}$/.test(toPeriod)) {
+                        const expanded = expandPeriodRangeFromTo(toPeriod, toPeriod);
+                        console.log(`  📅 Year-only expansion: ${toPeriod} → ${expanded.length} months`);
+                        expanded.forEach(p => periods.add(p));
+                    } else {
+                        periods.add(toPeriod);
+                    }
+                }
+            }
+            const periodsArray = [...periods];
+            
+            // OPTIMIZATION: Year endpoint returns P&L activity totals, which is correct for Income Statement accounts.
+            // Only use year endpoint for Income Statement accounts (P&L) - Balance Sheet accounts need cumulative logic.
+            // Check if all accounts in this group are Income Statement accounts
+            const allAccountsAreIncomeStatement = accounts.every(account => {
+                const typeCacheKey = getCacheKey('type', { account });
+                const accountType = cache.type.has(typeCacheKey) ? cache.type.get(typeCacheKey) : null;
+                return accountType && (accountType === 'Income' || accountType === 'COGS' || 
+                    accountType === 'Expense' || accountType === 'OthIncome' || accountType === 'OthExpense');
+            });
+            
+            const useYearEndpoint = allAccountsAreIncomeStatement && isFullYearRequest && yearForOptimization && periodsArray.length === 12;
+            
+            if (useYearEndpoint) {
+                console.log(`  🗓️ YEAR OPTIMIZATION: Using /batch/balance/year for FY ${yearForOptimization} (Income Statement accounts)`);
+            }
+            
+            console.log(`  Batch: ${accounts.length} accounts × ${periodsArray.length} period(s)`);
+            
+            // Split into chunks to avoid overwhelming NetSuite
+            const accountChunks = [];
+            for (let i = 0; i < accounts.length; i += CHUNK_SIZE) {
+                accountChunks.push(accounts.slice(i, i + CHUNK_SIZE));
+            }
+            
+            const periodChunks = [];
+            for (let i = 0; i < periodsArray.length; i += MAX_PERIODS_PER_BATCH) {
+                periodChunks.push(periodsArray.slice(i, i + MAX_PERIODS_PER_BATCH));
+            }
+            
+            console.log(`  Split into ${accountChunks.length} account chunk(s) × ${periodChunks.length} period chunk(s) = ${accountChunks.length * periodChunks.length} total batches`);
+            
+            // Track which requests have been resolved
+            const resolvedRequests = new Set();
+            
+            // For each request, track which period chunks need to be processed
+            const requestAccumulators = new Map();
+            for (const {cacheKey, request} of groupRequests) {
+                const { fromPeriod, toPeriod } = request.params;
+                let periodsNeeded;
+                if (fromPeriod && toPeriod && fromPeriod !== toPeriod) {
+                    // Full range - need all months
+                    periodsNeeded = new Set(expandPeriodRangeFromTo(fromPeriod, toPeriod));
+                } else {
+                    periodsNeeded = new Set([fromPeriod, toPeriod].filter(p => p));
+                }
+                requestAccumulators.set(cacheKey, {
+                    total: 0,
+                    periodsNeeded,
+                    periodsProcessed: new Set()
+                });
+            }
+            
+            // YEAR OPTIMIZATION: If requesting full year for Income Statement accounts, use optimized year endpoint
+            if (useYearEndpoint) {
+                const yearStartTime = Date.now();
+                console.log(`  📤 Year request: ${accounts.length} accounts for FY ${yearForOptimization}`);
+                
+                try {
+                    const response = await fetch(`${SERVER_URL}/batch/balance/year`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            accounts: accounts,
+                            year: parseInt(yearForOptimization),
+                            subsidiary: filters.subsidiary || '',
+                            accountingbook: filters.accountingBook || ''
+                        })
+                    });
+                    
+                    if (response.ok) {
+                        const data = await response.json();
+                        const balances = data.balances || {};
+                        const yearTime = ((Date.now() - yearStartTime) / 1000).toFixed(1);
+                        const periodName = data.period || `FY ${yearForOptimization}`;
+                        
+                        console.log(`  ✅ Year endpoint returned ${Object.keys(balances).length} accounts in ${yearTime}s`);
+                        
+                        // Resolve all requests with year totals
+                        for (const {cacheKey, request} of groupRequests) {
+                            const account = request.params.account;
+                            const accountData = balances[account] || {};
+                            const total = accountData[periodName] || 0;
+                            
+                            console.log(`    🎯 RESOLVING (year): ${account} = ${total}`);
+                            
+                            cache.balance.set(cacheKey, total);
+                            request.resolve(total);
+                            resolvedRequests.add(cacheKey);
+                        }
+                        
+                        continue; // Skip to next filter group
+                    } else {
+                        console.warn(`  ⚠️ Year endpoint failed (${response.status}), falling back to monthly`);
+                    }
+                } catch (yearError) {
+                    console.warn(`  ⚠️ Year endpoint error, falling back to monthly:`, yearError);
+                }
+            }
+            
+            // Process chunks sequentially (both accounts AND periods)
+            let chunkIndex = 0;
+            const totalChunks = accountChunks.length * periodChunks.length;
+            
+            for (let ai = 0; ai < accountChunks.length; ai++) {
+                for (let pi = 0; pi < periodChunks.length; pi++) {
+                    chunkIndex++;
+                    const accountChunk = accountChunks[ai];
+                    const periodChunk = periodChunks[pi];
+                    const chunkStartTime = Date.now();
+                    console.log(`  📤 Chunk ${chunkIndex}/${totalChunks}: ${accountChunk.length} accounts × ${periodChunk.length} periods (fetching...)`);
+                
+                    try {
+                        // Make batch API call
+                        const response = await fetch(`${SERVER_URL}/batch/balance`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                accounts: accountChunk,
+                                periods: periodChunk,
+                                subsidiary: filters.subsidiary || '',
+                                department: filters.department || '',
+                                location: filters.location || '',
+                                class: filters.class || '',
+                                accountingbook: filters.accountingBook || ''
+                            })
+                        });
+                    
+                        if (!response.ok) {
+                            console.error(`  ❌ API error: ${response.status}`);
+                            // Reject all promises in this chunk
+                            for (const {cacheKey, request} of groupRequests) {
+                                if (accountChunk.includes(request.params.account) && !resolvedRequests.has(cacheKey)) {
+                                    request.reject(new Error(`API error: ${response.status}`));
+                                    resolvedRequests.add(cacheKey);
+                                }
+                            }
+                            continue;
+                        }
+                    
+                        const data = await response.json();
+                        const balances = data.balances || {};
+                        const chunkTime = ((Date.now() - chunkStartTime) / 1000).toFixed(1);
+                        
+                        console.log(`  ✅ Received data for ${Object.keys(balances).length} accounts in ${chunkTime}s`);
+                        
+                        // Distribute results to waiting Promises
+                        for (const {cacheKey, request} of groupRequests) {
+                            // Skip if already resolved
+                            if (resolvedRequests.has(cacheKey)) {
+                                continue;
+                            }
+                            
+                            const account = request.params.account;
+                            
+                            // Only process accounts in this chunk
+                            if (!accountChunk.includes(account)) {
+                                continue;
+                            }
+                            
+                            const fromPeriod = request.params.fromPeriod;
+                            const toPeriod = request.params.toPeriod;
+                            const accountBalances = balances[account] || {};
+                            const accum = requestAccumulators.get(cacheKey);
+                            
+                            // Process each period in this chunk that this request needs
+                            for (const period of periodChunk) {
+                                // Check if this request needs this period
+                                if (accum.periodsNeeded.has(period) && !accum.periodsProcessed.has(period)) {
+                                    accum.total += accountBalances[period] || 0;
+                                    accum.periodsProcessed.add(period);
+                                }
+                            }
+                            
+                            // Cache the accumulated result
+                            cache.balance.set(cacheKey, accum.total);
+                            
+                            // Check if all needed periods are now processed
+                            const allPeriodsProcessed = [...accum.periodsNeeded].every(p => accum.periodsProcessed.has(p));
+                            
+                            if (allPeriodsProcessed) {
+                                console.log(`    🎯 RESOLVING: ${account} = ${accum.total}`);
+                                try {
+                                    request.resolve(accum.total);
+                                    console.log(`    ✅ RESOLVED: ${account}`);
+                                } catch (resolveErr) {
+                                    console.error(`    ❌ RESOLVE ERROR for ${account}:`, resolveErr);
+                                }
+                                resolvedRequests.add(cacheKey);
+                            }
+                        }
+                    
+                    } catch (error) {
+                        console.error(`  ❌ Fetch error:`, error);
+                        // Reject all promises in this chunk
+                        for (const {cacheKey, request} of groupRequests) {
+                            if (accountChunk.includes(request.params.account) && !resolvedRequests.has(cacheKey)) {
+                                request.reject(error);
+                                resolvedRequests.add(cacheKey);
+                            }
+                        }
+                    }
+                    
+                    // Delay between chunks to avoid rate limiting
+                    if (chunkIndex < totalChunks) {
+                        console.log(`  ⏱️  Waiting ${CHUNK_DELAY}ms before next chunk...`);
+                        await new Promise(resolve => setTimeout(resolve, CHUNK_DELAY));
+                    }
+                }
+            }
+            
+            // Resolve any remaining unresolved requests
+            for (const {cacheKey, request} of groupRequests) {
+                if (!resolvedRequests.has(cacheKey)) {
+                    const accum = requestAccumulators.get(cacheKey);
+                    console.log(`  ⚠️ FORCE-RESOLVING: ${request.params.account} = ${accum.total}`);
+                    try {
+                        request.resolve(accum.total);
+                    } catch (err) {
+                        console.error(`  ❌ Force-resolve FAILED:`, err);
+                    }
+                    resolvedRequests.add(cacheKey);
+                }
+            }
+        }
+    }
+    
+    // ================================================================
+    // PERIOD ACTIVITY QUERIES: Handle separately (both fromPeriod and toPeriod, BS accounts only)
     // These need direct /balance API calls, not batch endpoint
-    // The batch endpoint expands period ranges, which is wrong for period activity
+    // The batch endpoint expands period ranges, which is wrong for period activity queries
     // ================================================================
     if (periodActivityRequests.length > 0) {
-        console.log(`📊 Processing ${periodActivityRequests.length} PERIOD ACTIVITY requests separately...`);
+        console.log(`📊 Processing ${periodActivityRequests.length} PERIOD ACTIVITY (BS) requests separately...`);
         
         let activityCacheHits = 0;
         let activityApiCalls = 0;
@@ -8301,54 +8627,11 @@ async function processBatchQueue() {
         }
     }
     
-    // ================================================================
-    // CHECK LOCALSTORAGE PRELOAD CACHE FOR EACH REGULAR REQUEST (Issue 2B Fix)
-    // CRITICAL: Check preload cache before batching - filter out cache hits
-    // This ensures batch mode uses preloaded data instead of making redundant API calls
-    // ================================================================
-    const regularRequestsToProcess = [];
-    let regularCacheHits = 0;
-    
-    for (const [cacheKey, request] of regularRequests) {
-        const { account, fromPeriod, toPeriod, subsidiary } = request.params;
-        
-        // CRITICAL: Do NOT use checkLocalStorageCache for period activity queries (regularRequests)
-        // checkLocalStorageCache only looks up cumulative balances (single period), not period activity
-        // Period activity queries must use in-memory cache (with proper cache key) or go to API
-        // Only check in-memory cache for period activity queries
-        if (cache.balance.has(cacheKey)) {
-            const cachedValue = cache.balance.get(cacheKey);
-            console.log(`   ✅ Period activity cache hit (regular batch): ${account} (${fromPeriod} → ${toPeriod}) = ${cachedValue}`);
-            cache.balance.set(cacheKey, cachedValue);
-            request.resolve(cachedValue);
-            regularCacheHits++;
-            continue; // Skip this request - already resolved from cache
-        }
-        
-        // Cache miss - add to batch processing
-        regularRequestsToProcess.push([cacheKey, request]);
-    }
-    
-    if (regularCacheHits > 0) {
-        console.log(`   📊 Regular requests: ${regularCacheHits} cache hits, ${regularRequestsToProcess.length} need API calls`);
-    }
-    
-    // Continue with regular batch processing for period-based requests
-    if (regularRequestsToProcess.length === 0) {
-        const elapsed = ((Date.now() - batchStartTime) / 1000).toFixed(2);
-        console.log(`\n✅ BATCH COMPLETE in ${elapsed}s (all requests resolved from cache)`);
-        return;
-    }
-    
-    console.log(`📦 Processing ${regularRequestsToProcess.length} regular (period-based) requests...`);
-    
-    // Group by filters AND currency (not periods) - this allows smart batching
-    // CRITICAL: Must group by currency for BALANCECURRENCY requests to prevent mixing currencies
-    // Example: 1 account × 12 months = 1 batch (not 12 batches)
-    // Example: 100 accounts × 1 month = 2 batches (chunked by accounts)
-    // Example: 100 accounts × 12 months = 2 batches (all periods together)
-    const groups = new Map();
-    for (const [cacheKey, request] of regularRequestsToProcess) {
+    const totalBatchTime = ((Date.now() - batchStartTime) / 1000).toFixed(1);
+    console.log('========================================');
+    console.log(`✅ BATCH PROCESSING COMPLETE in ${totalBatchTime}s`);
+    console.log('========================================\n');
+}
         const {params} = request;
         // Check if this is a BALANCECURRENCY request
         const isBalanceCurrency = cacheKey.includes('"type":"balancecurrency"');
@@ -8620,11 +8903,17 @@ async function processBatchQueue() {
         }
         const periodsArray = [...periods];
         
-        // OPTIMIZATION: Disabled for now - year endpoint returns P&L activity totals,
-        // which is WRONG for Balance Sheet accounts that need cumulative balances.
-        // The regular /balance endpoint correctly detects BS accounts and uses cumulative logic.
-        // TODO: Re-enable when we can detect account types on frontend and route accordingly.
-        const useYearEndpoint = false;  // Was: isFullYearRequest && yearForOptimization && periodsArray.length === 12;
+        // OPTIMIZATION: Year endpoint returns P&L activity totals, which is correct for Income Statement accounts.
+        // Only use year endpoint for Income Statement accounts (P&L) - Balance Sheet accounts need cumulative logic.
+        // Check if all accounts in this group are Income Statement accounts
+        const allAccountsAreIncomeStatement = accounts.every(account => {
+            const typeCacheKey = getCacheKey('type', { account });
+            const accountType = cache.type.has(typeCacheKey) ? cache.type.get(typeCacheKey) : null;
+            return accountType && (accountType === 'Income' || accountType === 'COGS' || 
+                accountType === 'Expense' || accountType === 'OthIncome' || accountType === 'OthExpense');
+        });
+        
+        const useYearEndpoint = allAccountsAreIncomeStatement && isFullYearRequest && yearForOptimization && periodsArray.length === 12;
         
         if (useYearEndpoint) {
             console.log(`  🗓️ YEAR OPTIMIZATION: Using /batch/balance/year for FY ${yearForOptimization}`);
