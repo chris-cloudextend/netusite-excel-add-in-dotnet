@@ -962,7 +962,26 @@ public class BalanceService : IBalanceService
                 ) x";
         }
 
+        // DETAILED LOGGING: Single-account query timing
+        var queryStartTime = DateTime.UtcNow;
+        _logger.LogInformation("═══════════════════════════════════════════════════════");
+        _logger.LogInformation("📊 SINGLE-ACCOUNT BALANCE QUERY");
+        _logger.LogInformation("   Account: {Account}", request.Account);
+        _logger.LogInformation("   Period: {ToPeriod} (end date: {ToEndDate})", request.ToPeriod, toEndDate);
+        _logger.LogInformation("   Account Type: {AccountType}", isBsAccount ? "Balance Sheet" : "P&L");
+        _logger.LogInformation("   Start Time: {StartTime:yyyy-MM-dd HH:mm:ss.fff} UTC", queryStartTime);
+        _logger.LogInformation("   Date Scope: ALL transactions from inception through {ToEndDate} (t.trandate <= TO_DATE('{ToEndDate}', 'YYYY-MM-DD'))", toEndDate, toEndDate);
+        _logger.LogInformation("   No lower bound on date - includes all historical transactions");
+        _logger.LogInformation("   Target Period ID: {TargetPeriodId}", targetPeriodId);
+        _logger.LogInformation("═══════════════════════════════════════════════════════");
+        
         var queryResult = await _netSuiteService.QueryRawWithErrorAsync(query, queryTimeout);
+        var queryElapsed = (DateTime.UtcNow - queryStartTime).TotalSeconds;
+        
+        _logger.LogInformation("⏱️ SINGLE-ACCOUNT QUERY TIMING");
+        _logger.LogInformation("   Query Duration: {Elapsed:F2}s", queryElapsed);
+        _logger.LogInformation("   End Time: {EndTime:yyyy-MM-dd HH:mm:ss.fff} UTC", DateTime.UtcNow);
+        _logger.LogInformation("═══════════════════════════════════════════════════════");
         
         if (!queryResult.Success)
         {

@@ -1313,9 +1313,27 @@ public class BalanceController : ControllerBase
                     GROUP BY a.acctnumber, a.accttype
                     ORDER BY a.acctnumber";
                 
-                _logger.LogDebug("Targeted BS Preload [{Period}] for {Count} accounts", periodName, request.Accounts.Count);
+                // DETAILED LOGGING: Query structure and timing
+                _logger.LogInformation("═══════════════════════════════════════════════════════");
+                _logger.LogInformation("📊 TARGETED BS PRELOAD QUERY - Period: {Period}", periodName);
+                _logger.LogInformation("   Start Time: {StartTime:yyyy-MM-dd HH:mm:ss.fff} UTC", periodStartTime);
+                _logger.LogInformation("   Accounts: {AccountCount} ({Accounts})", request.Accounts.Count, string.Join(", ", request.Accounts.Take(10)) + (request.Accounts.Count > 10 ? "..." : ""));
+                _logger.LogInformation("   Period End Date: {EndDate}", endDate);
+                _logger.LogInformation("   Period ID: {PeriodId}", periodId);
+                _logger.LogInformation("   Target Subsidiary: {TargetSub} (hierarchy: {SubFilter})", targetSub, subFilter);
+                _logger.LogInformation("   Accounting Book: {Book}", accountingBook);
+                _logger.LogInformation("   Date Scope: ALL transactions from inception through {EndDate} (t.trandate <= TO_DATE('{EndDate}', 'YYYY-MM-DD'))", endDate, endDate);
+                _logger.LogInformation("   No lower bound on date - includes all historical transactions");
+                _logger.LogInformation("   Query Type: Cumulative Balance Sheet (translated ending balance)");
+                _logger.LogInformation("   FX Translation: All transactions use period {Period} exchange rate (periodId={PeriodId})", periodName, periodId);
+                _logger.LogInformation("═══════════════════════════════════════════════════════");
+                _logger.LogInformation("EXACT QUERY (placeholders expanded):");
+                _logger.LogInformation("{Query}", query);
+                _logger.LogInformation("═══════════════════════════════════════════════════════");
                 
+                var queryStartTime = DateTime.UtcNow;
                 var queryResult = await _netSuiteService.QueryRawWithErrorAsync(query, 120);
+                var queryElapsed = (DateTime.UtcNow - queryStartTime).TotalSeconds;
                 
                 if (!queryResult.Success)
                 {
@@ -1324,8 +1342,19 @@ public class BalanceController : ControllerBase
                 }
                 
                 var periodElapsed = (DateTime.UtcNow - periodStartTime).TotalSeconds;
-                _logger.LogDebug("Targeted BS Preload [{Period}] time: {Elapsed:F2}s, {Count} accounts", 
-                    periodName, periodElapsed, queryResult.Items.Count);
+                var endTime = DateTime.UtcNow;
+                
+                // DETAILED TIMING LOGS
+                _logger.LogInformation("═══════════════════════════════════════════════════════");
+                _logger.LogInformation("⏱️ TARGETED BS PRELOAD QUERY TIMING - Period: {Period}", periodName);
+                _logger.LogInformation("   Start Time: {StartTime:yyyy-MM-dd HH:mm:ss.fff} UTC", periodStartTime);
+                _logger.LogInformation("   Query Start: {QueryStart:yyyy-MM-dd HH:mm:ss.fff} UTC", queryStartTime);
+                _logger.LogInformation("   End Time: {EndTime:yyyy-MM-dd HH:mm:ss.fff} UTC", endTime);
+                _logger.LogInformation("   Query Duration: {QueryElapsed:F2}s (NetSuite query execution)", queryElapsed);
+                _logger.LogInformation("   Total Duration: {PeriodElapsed:F2}s (including period lookup + processing)", periodElapsed);
+                _logger.LogInformation("   Rows Returned: {RowCount} (accounts with balances)", queryResult.Items?.Count ?? 0);
+                _logger.LogInformation("   Accounts Requested: {AccountCount}", request.Accounts.Count);
+                _logger.LogInformation("═══════════════════════════════════════════════════════");
                 
                 foreach (var item in queryResult.Items)
                 {
