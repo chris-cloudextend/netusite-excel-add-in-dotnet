@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.4';  // Fix: Parse JSON response from opening balance query
+const FUNCTIONS_VERSION = '4.0.6.5';  // Fix: Parse JSON response from opening balance query
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -1839,22 +1839,54 @@ async function fetchPeriodActivityBatch(account, fromPeriod, toPeriod, filters, 
 
 /**
  * Compute running balances from opening balance and period activity.
+ * 
+ * CRITICAL: Processes ALL periods in periodActivity, not just the requested periods.
+ * This ensures intermediate periods (e.g., Feb when only Jan and Mar were requested)
+ * are included in the cumulative calculation.
  */
 function computeRunningBalances(periods, openingBalance, periodActivity) {
     const results = {};
     let runningBalance = openingBalance || 0;
     
     if (DEBUG_COLUMN_BASED_BS_BATCHING) {
-        console.log(`🧮 computeRunningBalances: opening=${openingBalance}, periods=${periods.join(',')}, activity=`, periodActivity);
+        console.log(`🧮 computeRunningBalances: opening=${openingBalance}, requested periods=${periods.join(',')}, activity=`, periodActivity);
     }
     
-    for (const period of periods) {
-        const activity = periodActivity[period] || 0;
-        runningBalance += activity;
-        results[period] = runningBalance;
+    // CRITICAL FIX: Process ALL periods in periodActivity, not just requested periods
+    // This ensures intermediate periods (e.g., Feb between Jan and Mar) are included
+    const allPeriodsInActivity = Object.keys(periodActivity);
+    if (allPeriodsInActivity.length > 0) {
+        // Sort periods chronologically
+        const sortedPeriods = allPeriodsInActivity
+            .map(p => ({ period: p, date: parsePeriodToDate(p) }))
+            .filter(p => p.date !== null)
+            .sort((a, b) => a.date.getTime() - b.date.getTime())
+            .map(p => p.period);
         
-        if (DEBUG_COLUMN_BASED_BS_BATCHING) {
-            console.log(`🧮   ${period}: ${runningBalance - activity} + ${activity} = ${runningBalance}`);
+        if (DEBUG_COLUMN_BASED_BS_BATCHING && sortedPeriods.length !== periods.length) {
+            console.log(`🧮   Processing ${sortedPeriods.length} periods from activity (requested ${periods.length}): ${sortedPeriods.join(', ')}`);
+        }
+        
+        // Process all periods in chronological order
+        for (const period of sortedPeriods) {
+            const activity = periodActivity[period] || 0;
+            runningBalance += activity;
+            results[period] = runningBalance;
+            
+            if (DEBUG_COLUMN_BASED_BS_BATCHING) {
+                console.log(`🧮   ${period}: ${runningBalance - activity} + ${activity} = ${runningBalance}`);
+            }
+        }
+    } else {
+        // Fallback: if periodActivity is empty, process requested periods only
+        for (const period of periods) {
+            const activity = periodActivity[period] || 0;
+            runningBalance += activity;
+            results[period] = runningBalance;
+            
+            if (DEBUG_COLUMN_BASED_BS_BATCHING) {
+                console.log(`🧮   ${period}: ${runningBalance - activity} + ${activity} = ${runningBalance}`);
+            }
         }
     }
     
