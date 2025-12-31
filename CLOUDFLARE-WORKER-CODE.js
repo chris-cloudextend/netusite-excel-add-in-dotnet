@@ -20,11 +20,11 @@
 // 4. Replace ALL code with this file
 // 5. Click: Save and Deploy
 //
-// CURRENT TUNNEL URL: https://tobago-induced-postcards-women.trycloudflare.com
+// CURRENT TUNNEL URL: https://championships-wal-dawn-jets.trycloudflare.com
 // CURRENT ACCOUNT: 589861 (Production)
 // BACKEND: .NET Core (backend-dotnet/) - PRIMARY/TARGET
 // NOTE: Python backend (backend/server.py) is legacy and being replaced
-// Last Updated: Dec 30, 2025 (Tunnel: tobago-induced-postcards-women))
+// Last Updated: Dec 31, 2025 (Tunnel: championships-wal-dawn-jets)))
 // ════════════════════════════════════════════════════════════════════
 
 export default {
@@ -33,7 +33,7 @@ export default {
     // ⚠️ UPDATE THIS when .NET backend tunnel URL changes
     // To get the URL, run: cloudflared tunnel --url http://localhost:5002
     // Copy the https://xxxxx.trycloudflare.com URL and paste it here
-    const TUNNEL_URL = 'https://keys-graduate-gardening-richard.trycloudflare.com';
+    const TUNNEL_URL = 'https://championships-wal-dawn-jets.trycloudflare.com';
 
     // Handle CORS preflight requests
     if (request.method === 'OPTIONS') {
@@ -97,4 +97,3 @@ export default {
     }
   }
 };
-manifest.xml
