@@ -7912,69 +7912,34 @@ async function processBatchQueue() {
     const periodActivityRequests = [];  // BS period activity queries (both fromPeriod and toPeriod, BS accounts only)
     const regularRequests = [];  // P&L accounts with both fromPeriod and toPeriod - should be batched
     
-    // First pass: Detect account types for proper routing
-    // CRITICAL: Batch fetch missing account types to ensure correct classification
-    const accountTypeCache = new Map();
-    const accountsNeedingType = new Set();
-    
-    // Collect all unique accounts and check cache
+    // ================================================================
+    // ROUTING: Parameter-based (like restore point balance-sheet-before-anchor-batching)
+    // This ensures Income Statement accounts route correctly without account type dependency
+    // Account types are only used for optimizations (year endpoint, grid detection)
+    // ================================================================
     for (const [cacheKey, request] of requests) {
-        const { account } = request.params;
-        if (!accountTypeCache.has(account)) {
-            const typeCacheKey = getCacheKey('type', { account });
-            const accountType = cache.type.has(typeCacheKey) ? cache.type.get(typeCacheKey) : null;
-            if (accountType) {
-                accountTypeCache.set(account, accountType);
-            } else {
-                accountsNeedingType.add(account);
-            }
-        }
-    }
-    
-    // Batch fetch missing account types BEFORE classification
-    // This ensures Income Statement accounts are correctly identified
-    if (accountsNeedingType.size > 0) {
-        console.log(`🔍 Fetching account types for ${accountsNeedingType.size} accounts to ensure correct routing...`);
-        const fetchedTypes = await batchGetAccountTypes(Array.from(accountsNeedingType));
-        for (const [account, accountType] of Object.entries(fetchedTypes)) {
-            accountTypeCache.set(account, accountType || null);
-        }
-        console.log(`✅ Account types fetched: ${Object.keys(fetchedTypes).length} accounts`);
-    }
-    
-    for (const [cacheKey, request] of requests) {
-        const { fromPeriod, toPeriod, account } = request.params;
+        const { fromPeriod, toPeriod } = request.params;
         const isCumulative = (!fromPeriod || fromPeriod === '') && toPeriod && toPeriod !== '';
-        // Period activity: both fromPeriod and toPeriod present (same or different periods)
-        // When same period, we want period activity for that single period, not cumulative
-        const isPeriodActivity = fromPeriod && toPeriod && fromPeriod !== '';
-        
-        // Get account type to determine routing
-        const accountType = accountTypeCache.get(account);
-        const isIncomeStatement = accountType && (accountType === 'Income' || accountType === 'COGS' || 
-            accountType === 'Expense' || accountType === 'OthIncome' || accountType === 'OthExpense');
+        // Period activity: both fromPeriod and toPeriod present AND different periods
+        // CRITICAL FIX: Changed from "fromPeriod !== ''" to "fromPeriod !== toPeriod"
+        // This ensures same-period queries (e.g., "Jan 2025" to "Jan 2025") go to regularRequests
+        const isPeriodActivity = fromPeriod && toPeriod && fromPeriod !== toPeriod;
         
         if (isCumulative) {
             // Cumulative = empty fromPeriod with a toPeriod (always BS)
             cumulativeRequests.push([cacheKey, request]);
-        } else if (isPeriodActivity && !isIncomeStatement) {
-            // Period activity query for BS accounts only (both fromPeriod and toPeriod) - route to individual /balance calls
+        } else if (isPeriodActivity) {
+            // Period activity query (both fromPeriod and toPeriod, different periods) - route to individual /balance calls
             // The batch endpoint expands period ranges, which is wrong for period activity queries
-            // For same period (e.g., "Feb 2025" to "Feb 2025"), we want period activity, not cumulative
-            // CRITICAL: Only route to periodActivityRequests if we're CERTAIN it's a BS account
-            // If account type is unknown (null), default to regularRequests to allow batching
-            if (accountType !== null) {
-                // We know it's BS, route to period activity
-                periodActivityRequests.push([cacheKey, request]);
-            } else {
-                // Unknown type - default to regularRequests to allow batching (safer for Income Statement)
-                console.log(`   ⚠️ Unknown account type for ${account} - routing to regularRequests for batching`);
-                regularRequests.push([cacheKey, request]);
-            }
+            // This will catch BS period activity queries (e.g., "Jan 2025" to "Mar 2025")
+            // Income Statements with same period won't match (isPeriodActivity = false) and will go to regularRequests
+            periodActivityRequests.push([cacheKey, request]);
         } else {
-            // Regular P&L period range requests (with both fromPeriod and toPeriod) - should use batch endpoint
-            // OR any request that doesn't match the above patterns
-            // This includes Income Statement accounts (isIncomeStatement === true)
+            // Regular P&L period range requests - can use batch endpoint
+            // This includes:
+            // - Income Statement single-period queries (fromPeriod === toPeriod, e.g., "Jan 2025" to "Jan 2025")
+            // - Income Statement full-year queries (fromPeriod !== toPeriod but not caught by isPeriodActivity due to year endpoint handling)
+            // - Any other requests that don't match cumulative or period activity patterns
             regularRequests.push([cacheKey, request]);
         }
     }
