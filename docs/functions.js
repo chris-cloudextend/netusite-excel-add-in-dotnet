@@ -1739,8 +1739,19 @@ async function fetchOpeningBalance(account, anchorDate, filters, retryCount = 0)
             throw new Error(`Opening balance query failed: ${response.status} - ${errorText}`);
         }
         
-        const value = parseFloat(await response.text());
-        return isNaN(value) ? 0 : value;
+        // Backend returns JSON with balance field
+        const contentType = response.headers.get('content-type') || '';
+        if (contentType.includes('application/json')) {
+            const data = await response.json();
+            const value = data.balance ?? 0;
+            console.log(`📊 Opening balance result: ${value}`);
+            return typeof value === 'number' ? value : parseFloat(value) || 0;
+        } else {
+            // Fallback: try to parse as text (legacy format)
+            const value = parseFloat(await response.text());
+            console.log(`📊 Opening balance result (text): ${value}`);
+            return isNaN(value) ? 0 : value;
+        }
     } catch (error) {
         // Retry on network errors (which might be 524)
         if (retryCount < MAX_RETRIES && (error.message.includes('524') || error.message.includes('timeout'))) {
