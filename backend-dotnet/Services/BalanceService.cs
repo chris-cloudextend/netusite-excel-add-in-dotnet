@@ -2596,6 +2596,11 @@ public class BalanceService : IBalanceService
         var periodActivity = new Dictionary<string, Dictionary<string, decimal>>();
         var errors = new List<string>();
         
+        // CRITICAL FX FIX: Use target period's exchange rate for all periods (matching single-account query and NetSuite Balance Sheet reports)
+        // This ensures all period activities are converted at the same rate, making cumulative balances consistent
+        // Using each period's own rate (ap.id) would create "mixed rate" balances that don't match NetSuite
+        var targetPeriodIdForConsolidate = periodIds.Count > 0 ? periodIds[periodIds.Count - 1] : "NULL";
+        
         foreach (var account in accounts)
         {
             try
@@ -2613,7 +2618,7 @@ public class BalanceService : IBalanceService
                                     'DEFAULT',
                                     'DEFAULT',
                                     {targetSub},
-                                    ap.id,
+                                    {targetPeriodIdForConsolidate},
                                     'DEFAULT'
                                 )
                             ) * {signFlip}
