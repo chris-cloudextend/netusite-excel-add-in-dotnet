@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.8';  // Remove old row-based batching - column-based is ONLY path for BS grids
+const FUNCTIONS_VERSION = '4.0.6.9';  // Fix: Remove columnBasedDetectionForValidation references (validation disabled)
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -6346,12 +6346,6 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                     console.log(`✅ Post-preload cache hit (memory): ${account}`);
                     cacheStats.hits++;
                     
-                    // PHASE 4: Trigger async validation if eligible (fire-and-forget)
-                    if (columnBasedDetectionForValidation) {
-                        validateColumnBasedBSBatch(account, toPeriod, filters, cachedValue, columnBasedDetectionForValidation)
-                            .catch(() => {});
-                    }
-                    
                     return cachedValue;
                 }
                 
@@ -6360,12 +6354,6 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                     console.log(`✅ Post-preload cache hit (localStorage): ${account}`);
                     cacheStats.hits++;
                     cache.balance.set(cacheKey, localStorageValue);
-                    
-                    // PHASE 4: Trigger async validation if eligible (fire-and-forget)
-                    if (columnBasedDetectionForValidation) {
-                        validateColumnBasedBSBatch(account, toPeriod, filters, localStorageValue, columnBasedDetectionForValidation)
-                            .catch(() => {});
-                    }
                     
                     return localStorageValue;
                 }
@@ -6447,13 +6435,6 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
             cacheStats.hits++;
             // Also save to in-memory cache for next time
             cache.balance.set(cacheKey, localStorageValue);
-            
-            // PHASE 4: Trigger async validation if eligible (fire-and-forget)
-            if (columnBasedDetectionForValidation) {
-                // Fire-and-forget: don't await, don't block
-                validateColumnBasedBSBatch(account, toPeriod, filters, localStorageValue, columnBasedDetectionForValidation)
-                    .catch(() => {}); // Swallow any errors - validation never throws
-            }
             
             return localStorageValue;
         } else {
@@ -6825,13 +6806,6 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         if (fullYearValue !== null) {
             cacheStats.hits++;
             cache.balance.set(cacheKey, fullYearValue);
-            
-            // PHASE 4: Trigger async validation if eligible (fire-and-forget)
-            if (columnBasedDetectionForValidation) {
-                // Fire-and-forget: don't await, don't block
-                validateColumnBasedBSBatch(account, toPeriod, filters, fullYearValue, columnBasedDetectionForValidation)
-                    .catch(() => {}); // Swallow any errors - validation never throws
-            }
             
             return fullYearValue;
         }
