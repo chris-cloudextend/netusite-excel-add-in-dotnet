@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.7';  // Enable column-based BS batching with translated ending balances
+const FUNCTIONS_VERSION = '4.0.6.8';  // Remove old row-based batching - column-based is ONLY path for BS grids
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -6103,28 +6103,26 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         const evalKey = `${account}::${fromPeriod || ''}::${toPeriod}::${JSON.stringify(filters)}`;
         pendingEvaluation.balance.set(evalKey, { account, fromPeriod, toPeriod, filters });
         
-        // PHASE 5: Column-based batch execution (controlled enablement)
-        // Execution allowed only when all conditions are met (including trust earned)
+        // ================================================================
+        // COLUMN-BASED BATCHING: Primary execution path for Balance Sheet grids
+        // One query per period (column), returns translated ending balances
+        // No anchor math, no activity reconstruction
+        // ================================================================
         if (USE_COLUMN_BASED_BS_BATCHING && accountType === 'Balance Sheet') {
             const evaluatingRequests = Array.from(pendingEvaluation.balance.values());
             const columnBasedDetection = detectColumnBasedBSGrid(evaluatingRequests);
             
             if (columnBasedDetection.eligible) {
-                // PHASE 5: Check execution eligibility (includes trust check)
+                // Check execution eligibility (no validation/trust requirements)
                 const executionCheck = isColumnBatchExecutionAllowed(accountType, columnBasedDetection);
                 
                 if (executionCheck.allowed) {
-                    // PHASE 5: Execution allowed - use column-based batch
+                    // Execute column-based batch query (one query per period, all accounts)
                     if (DEBUG_COLUMN_BASED_BS_BATCHING) {
                         const accountCount = columnBasedDetection.allAccounts.size;
                         const periodCount = columnBasedDetection.columns.length;
-                        const periods = columnBasedDetection.columns.map(col => col.period);
-                        const anchorPeriod = inferAnchorPeriod(periods);
-                        console.log(`🚀 COLUMN-BASED BS EXECUTION ENABLED:
-Grid: ${accountCount} accounts × ${periodCount} periods
-Anchor: ${anchorPeriod || 'N/A'}
-Mode: ${columnBasedDetection.mode}
-Trust: ${columnBatchingTrustedForSession ? 'EARNED' : 'PROVISIONAL'}`);
+                        console.log(`🚀 COLUMN-BASED BS BATCH: ${accountCount} accounts × ${periodCount} periods`);
+                        console.log(`📊 Querying translated ending balances (one NetSuite query per period)`);
                     }
                     
                     try {
@@ -6135,7 +6133,7 @@ Trust: ${columnBatchingTrustedForSession ? 'EARNED' : 'PROVISIONAL'}`);
                         const balance = batchResults[account]?.[toPeriod];
                         
                         if (balance !== undefined && balance !== null && typeof balance === 'number') {
-                            // Cache result (local scope only - no global cache mutation)
+                            // Cache result
                             cache.balance.set(cacheKey, balance);
                             
                             if (DEBUG_COLUMN_BASED_BS_BATCHING) {
@@ -6146,118 +6144,43 @@ Trust: ${columnBatchingTrustedForSession ? 'EARNED' : 'PROVISIONAL'}`);
                             pendingEvaluation.balance.delete(evalKey);
                             return balance;
                         } else {
-                            // Missing result - reset trust and fall back to per-cell logic
-                            columnBatchingTrustedForSession = false;
-                            validationStats.consecutiveMatches = 0;
+                            // Missing result - fall back to per-cell logic
                             if (DEBUG_COLUMN_BASED_BS_BATCHING) {
-                                console.log(`⚠️ COLUMN-BASED BS: Missing result for ${account}/${toPeriod} - trust reset, falling back to per-cell`);
+                                console.log(`⚠️ COLUMN-BASED BS: Missing result for ${account}/${toPeriod} - falling back to per-cell`);
                             }
                             // Fall through to per-cell logic below
                         }
                     } catch (error) {
-                        // Reset trust on error and fall back to per-cell logic
-                        columnBatchingTrustedForSession = false;
-                        validationStats.consecutiveMatches = 0;
-                        // Never throw from batch execution into Excel
+                        // Error in batch execution - fall back to per-cell logic
                         if (DEBUG_COLUMN_BASED_BS_BATCHING) {
-                            console.error(`❌ COLUMN-BASED BS BATCH ERROR: ${error.message} - trust reset, falling back to per-cell`);
+                            console.error(`❌ COLUMN-BASED BS BATCH ERROR: ${error.message} - falling back to per-cell`);
                         }
                         // Fall through to per-cell logic below
                     }
                 } else {
-                    // PHASE 5: Execution not allowed - log reason and fall back
+                    // Execution not allowed - log reason and fall back to per-cell
                     if (DEBUG_COLUMN_BASED_BS_BATCHING) {
                         console.log(`⏸️ COLUMN-BASED BS EXECUTION BLOCKED: ${executionCheck.reason}`);
                     }
                     // Fall through to per-cell logic below
                 }
+            } else {
+                // Grid not eligible for column-based batching - fall back to per-cell
+                if (DEBUG_COLUMN_BASED_BS_BATCHING) {
+                    console.log(`⏸️ COLUMN-BASED BS: Grid not eligible - falling back to per-cell`);
+                }
+                // Fall through to per-cell logic below
             }
         }
         
-        // PHASE 4: Validation detection (independent of execution flag)
-        // Check eligibility for validation (Balance Sheet + eligible grid)
-        let columnBasedDetectionForValidation = null;
-        if (VALIDATE_COLUMN_BASED_BS_BATCHING && accountType === 'Balance Sheet') {
-            const evaluatingRequests = Array.from(pendingEvaluation.balance.values());
-            columnBasedDetectionForValidation = detectColumnBasedBSGrid(evaluatingRequests);
-            
-            if (!columnBasedDetectionForValidation.eligible) {
-                columnBasedDetectionForValidation = null; // Clear if not eligible
-            } else if (DEBUG_COLUMN_BASED_BS_BATCHING) {
-                console.log(`🔬 VALIDATION: Eligible for validation (${columnBasedDetectionForValidation.mode}) - ${columnBasedDetectionForValidation.allAccounts.size} accounts, ${columnBasedDetectionForValidation.columns.length} columns`);
-            }
-        } else {
-            // PHASE 1: Column-based detection (logging only, no behavior change)
-            // This runs regardless of feature flag to validate detection logic
-            if (DEBUG_COLUMN_BASED_BS_BATCHING) {
-                const evaluatingRequests = Array.from(pendingEvaluation.balance.values());
-                const columnBasedDetection = detectColumnBasedBSGrid(evaluatingRequests);
-                if (columnBasedDetection.eligible) {
-                    console.log(`🔍 COLUMN-BASED BS DETECT: Eligible (${columnBasedDetection.mode}) - ${columnBasedDetection.allAccounts.size} accounts, ${columnBasedDetection.columns.length} columns`);
-                }
-            }
-        }
+        // ================================================================
+        // PER-CELL LOGIC: Fallback when column-based batching is not used
+        // This is the original per-cell execution path (manifest/preload/API)
+        // ================================================================
+        // NOTE: Old row-based batching (executeBalanceSheetBatchQueryImmediate) is REMOVED
+        // Column-based batching is the ONLY batching path for Balance Sheet grids
         
-        // Existing row-based eligibility check (unchanged)
-        const batchEligibility = checkBatchEligibilitySynchronous(account, fromPeriod, toPeriod, filters);
-        console.log(`🔍 BATCH ELIGIBILITY RESULT: ${account}/${toPeriod} - eligible=${batchEligibility.eligible}`);
-        
-        if (batchEligibility.eligible) {
-            // PATH B: Eligible for batching - execute immediately, bypass preload entirely
-            // ⚠️ CONFIRMATION #1: "Immediate" means:
-            // - Same call stack (await happens here, not deferred)
-            // - No setTimeout, no microtask tricks, no "schedule and return"
-            // - Query executes NOW in this execution context
-            console.log(`🎯 BS BATCH ELIGIBLE: ${account}, ${batchEligibility.periods.length} periods`);
-            
-            try {
-                // Execute batch query immediately (await here, SAME CALL STACK)
-                // This is NOT deferred - it executes in the current execution context
-                // CRITICAL: Once eligible, we MUST get results or throw error (no fallback)
-                const batchResults = await executeBalanceSheetBatchQueryImmediate(
-                    account,
-                    batchEligibility.periods,
-                    filters
-                );
-                
-                // CRITICAL: If we awaited and got here, batchResults must exist
-                // If the promise rejected, we'd be in the catch block
-                if (!batchResults || typeof batchResults !== 'object') {
-                    throw new Error(`Batch query returned invalid result for ${account}`);
-                }
-                
-                // Get result for this specific period
-                const balance = batchResults[toPeriod];
-                
-                // CRITICAL: Period must exist in results
-                if (balance === undefined || balance === null) {
-                    throw new Error(`Period ${toPeriod} not in batch results for ${account}`);
-                }
-                
-                // CRITICAL: Must be a number
-                if (typeof balance !== 'number' || isNaN(balance)) {
-                    throw new Error(`Invalid balance value for ${account}/${toPeriod}: ${balance}`);
-                }
-                
-                // Cache and return immediately (same call stack)
-                cache.balance.set(cacheKey, balance);
-                console.log(`✅ BS BATCH RESULT: ${account} for ${toPeriod} = ${balance}`);
-                // Remove from pendingEvaluation (batch executed, no need to queue)
-                pendingEvaluation.balance.delete(evalKey);
-                return balance; // Returns immediately, no deferral - guaranteed numeric result
-                
-            } catch (error) {
-                // CRITICAL: Once we've committed to batching, we cannot fall back to preload path
-                // We must throw an error (Excel will show #VALUE) - this is explicit failure, not silent
-                console.error(`❌ BS batch query failed for ${account}/${toPeriod} after eligibility:`, error);
-                // Remove from pendingEvaluation (batch failed, will fall through to queue if needed)
-                pendingEvaluation.balance.delete(evalKey);
-                // Throw error - Excel shows #VALUE (explicit failure, not undefined/null)
-                throw new Error(`Balance sheet batch query failed: ${error.message}`);
-            }
-        }
-        
-        // PATH A: Not eligible for batching OR batch failed - use existing path
+        // PATH A: Not eligible for column-based batching OR batch failed - use per-cell path
         // ⚠️ CONFIRMATION #2: This code (manifest/preload) only runs if:
         // - Eligibility check returned false, OR
         // - Batch query failed/returned null
