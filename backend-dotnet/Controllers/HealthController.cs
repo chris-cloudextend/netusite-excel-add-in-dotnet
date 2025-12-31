@@ -164,6 +164,171 @@ public class HealthController : ControllerBase
     }
     
     /// <summary>
+    /// Check NetSuite permissions and features.
+    /// Returns account info, feature availability, and table permissions.
+    /// </summary>
+    [HttpGet("/check-permissions")]
+    public async Task<IActionResult> CheckPermissions([FromServices] Services.INetSuiteService netSuiteService)
+    {
+        try
+        {
+            var checks = new List<object>();
+            var subsidiaries = new List<object>();
+            
+            // Test basic connection
+            try
+            {
+                await netSuiteService.QueryAsync<dynamic>("SELECT 1 as test FROM DUAL");
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    status = "error",
+                    message = $"NetSuite connection failed: {ex.Message}",
+                    account_id = _config.AccountId
+                });
+            }
+            
+            // Check Budgets table
+            try
+            {
+                var budgetQuery = "SELECT COUNT(*) as count FROM budget WHERE isinactive = 'F'";
+                var budgetResults = await netSuiteService.QueryAsync<dynamic>(budgetQuery);
+                var budgetCount = budgetResults?.FirstOrDefault()?.count ?? 0;
+                
+                checks.Add(new
+                {
+                    table = "Budgets",
+                    name = "Budgets",
+                    enabled = budgetCount > 0,
+                    accessible = true,
+                    query_result = new { count = budgetCount }
+                });
+            }
+            catch (Exception ex)
+            {
+                checks.Add(new
+                {
+                    table = "Budgets",
+                    name = "Budgets",
+                    enabled = false,
+                    accessible = false,
+                    error = ex.Message
+                });
+            }
+            
+            // Check Subsidiary table and get list
+            try
+            {
+                var subQuery = "SELECT id, name, iselimination FROM subsidiary WHERE isinactive = 'F' ORDER BY name";
+                var subResults = await netSuiteService.QueryAsync<dynamic>(subQuery);
+                
+                foreach (var sub in subResults ?? Enumerable.Empty<dynamic>())
+                {
+                    subsidiaries.Add(new
+                    {
+                        id = sub.id,
+                        name = sub.name,
+                        isElimination = sub.iselimination == "T"
+                    });
+                }
+                
+                checks.Add(new
+                {
+                    table = "Subsidiary",
+                    name = "OneWorld Subsidiaries",
+                    enabled = subsidiaries.Count > 0,
+                    accessible = true,
+                    query_result = subsidiaries
+                });
+            }
+            catch (Exception ex)
+            {
+                checks.Add(new
+                {
+                    table = "Subsidiary",
+                    name = "OneWorld Subsidiaries",
+                    enabled = false,
+                    accessible = false,
+                    error = ex.Message
+                });
+            }
+            
+            // Check other required tables
+            var requiredTables = new[]
+            {
+                new { Table = "Account", Name = "Accounts", Required = true },
+                new { Table = "Transaction", Name = "Transactions", Required = true },
+                new { Table = "TransactionLine", Name = "Transaction Lines", Required = true },
+                new { Table = "AccountingPeriod", Name = "Accounting Periods", Required = true },
+                new { Table = "Department", Name = "Departments", Required = false },
+                new { Table = "Location", Name = "Locations", Required = false },
+                new { Table = "Class", Name = "Classes", Required = false }
+            };
+            
+            foreach (var tableInfo in requiredTables)
+            {
+                try
+                {
+                    // Test table access with a simple query
+                    var testQuery = $"SELECT id FROM {tableInfo.Table} FETCH FIRST 1 ROWS ONLY";
+                    await netSuiteService.QueryAsync<dynamic>(testQuery);
+                    
+                    checks.Add(new
+                    {
+                        table = tableInfo.Table,
+                        name = tableInfo.Name,
+                        enabled = true,
+                        accessible = true,
+                        required = tableInfo.Required
+                    });
+                }
+                catch (Exception ex)
+                {
+                    checks.Add(new
+                    {
+                        table = tableInfo.Table,
+                        name = tableInfo.Name,
+                        enabled = false,
+                        accessible = false,
+                        required = tableInfo.Required,
+                        error = ex.Message
+                    });
+                }
+            }
+            
+            // Determine overall status
+            var allRequiredAccessible = checks
+                .Where(c => ((dynamic)c).required == true)
+                .All(c => ((dynamic)c).accessible == true);
+            
+            var status = allRequiredAccessible ? "success" : "warning";
+            var message = allRequiredAccessible 
+                ? "NetSuite connection successful. All required permissions verified."
+                : "NetSuite connection successful, but some permissions may be limited.";
+            
+            return Ok(new
+            {
+                status = status,
+                message = message,
+                account_id = _config.AccountId,
+                checks = checks,
+                subsidiaries = subsidiaries
+            });
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(500, new
+            {
+                status = "error",
+                message = ex.Message,
+                account_id = _config.AccountId
+            });
+        }
+    }
+    
+    /// <summary>
     /// Debug endpoint to run raw SuiteQL queries with full response details.
     /// This version does NOT use the typed HttpClient - it creates a fresh one.
     /// </summary>
