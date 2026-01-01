@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.24';  // Period range optimization - fixed missing closing brace
+const FUNCTIONS_VERSION = '4.0.6.25';  // Period range optimization - fixed fetch indentation and added error handling
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -8720,13 +8720,19 @@ async function processBatchQueue() {
                         
                         try {
                             // Make batch API call with period range
+                            // Ensure commonFromPeriod and commonToPeriod are defined
+                            if (!commonFromPeriod || !commonToPeriod) {
+                                console.error(`  ❌ PERIOD RANGE ERROR: commonFromPeriod or commonToPeriod is undefined`);
+                                throw new Error('Period range optimization variables not set');
+                            }
+                            
                             const response = await fetch(`${SERVER_URL}/batch/balance`, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                accounts: accountChunk,
-                                from_period: commonFromPeriod,
-                                to_period: commonToPeriod,
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                    accounts: accountChunk,
+                                    from_period: commonFromPeriod,
+                                    to_period: commonToPeriod,
                                 periods: [], // Empty periods array indicates range mode
                                 subsidiary: filters.subsidiary || '',
                                 department: filters.department || '',
