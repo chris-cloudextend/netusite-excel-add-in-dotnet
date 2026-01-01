@@ -2575,11 +2575,12 @@ public class BalanceService : IBalanceService
     }
     
     /// <summary>
-    /// Get full year balances for all accounts using the optimized full_year_refresh query pattern.
+    /// Get full year balances for ALL accounts using the optimized full_year_refresh query pattern.
     /// Returns: { account: { period: balance } } for all 12 months of the year.
+    /// This queries ALL P&L accounts × ALL 12 months in ONE query (like quick start).
     /// </summary>
     private async Task<Dictionary<string, Dictionary<string, decimal>>?> GetFullYearBalancesAsync(
-        int year, List<string> accounts, string targetSub, int accountingBook, string segmentWhere)
+        int year, List<string> requestedAccounts, string targetSub, int accountingBook, string segmentWhere)
     {
         try
         {
@@ -2599,13 +2600,15 @@ public class BalanceService : IBalanceService
                 return null;
             }
             
-            // Build account filter
-            var plAccountFilter = NetSuiteService.BuildAccountFilter(accounts);
+            // Build account filter (filter by requested accounts if provided)
+            var accountFilter = requestedAccounts.Any() 
+                ? NetSuiteService.BuildAccountFilter(requestedAccounts) 
+                : "1=1"; // No filter = get all accounts (like quick start)
+            
             var incomeTypesSql = "'Income', 'OthIncome'";
             
             // Build month columns dynamically (same pattern as full_year_refresh)
             var monthCases = new List<string>();
-            var periodMapping = new Dictionary<string, string>(); // periodId -> periodName
             
             foreach (var period in periods)
             {
@@ -2614,8 +2617,6 @@ public class BalanceService : IBalanceService
                 
                 if (string.IsNullOrEmpty(periodId) || string.IsNullOrEmpty(periodName))
                     continue;
-                
-                periodMapping[periodId] = periodName;
                 
                 var monthAbbr = periodName.Split(' ').FirstOrDefault()?.ToLower() ?? "";
                 if (string.IsNullOrEmpty(monthAbbr))
@@ -2645,7 +2646,7 @@ public class BalanceService : IBalanceService
             // P&L account types only
             var plTypesSql = "'Income', 'COGS', 'Expense', 'OthIncome', 'OthExpense'";
             
-            // Build the main query - one row per account (same as full_year_refresh)
+            // Build the main query - ONE query gets ALL accounts × ALL 12 months (like quick start)
             var query = $@"
                 SELECT 
                     a.acctnumber AS account_number,
@@ -2657,12 +2658,14 @@ public class BalanceService : IBalanceService
                 WHERE t.posting = 'T'
                   AND tal.posting = 'T'
                   AND a.accttype IN ({plTypesSql})
-                  AND {plAccountFilter}
+                  AND ({accountFilter})
                   AND t.postingperiod IN ({periodFilter})
                   AND tal.accountingbook = {accountingBook}
                   AND {segmentWhere}
                 GROUP BY a.acctnumber
                 ORDER BY a.acctnumber";
+            
+            _logger.LogDebug("Executing full year query for year {Year}: ALL accounts × 12 months in ONE query", year);
             
             var rows = await _netSuiteService.QueryRawAsync(query, 60);
             
@@ -2711,6 +2714,8 @@ public class BalanceService : IBalanceService
                     balances[accountNumber][periodName] = amount;
                 }
             }
+            
+            _logger.LogDebug("Full year query returned {Count} accounts × 12 months", balances.Count);
             
             return balances;
         }
