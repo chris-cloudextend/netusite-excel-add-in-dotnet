@@ -126,6 +126,40 @@ else
 // Middleware Pipeline
 // =============================================================================
 
+// Global exception handler - catch unhandled exceptions and log them
+app.UseExceptionHandler(appBuilder =>
+{
+    appBuilder.Run(async context =>
+    {
+        var exceptionHandlerPathFeature = context.Features.Get<Microsoft.AspNetCore.Diagnostics.IExceptionHandlerPathFeature>();
+        var exception = exceptionHandlerPathFeature?.Error;
+        
+        if (exception != null)
+        {
+            var logger = context.RequestServices.GetRequiredService<ILogger<Program>>();
+            logger.LogError(exception, 
+                "❌ Unhandled exception: {Message} | Path: {Path} | Method: {Method}",
+                exception.Message, 
+                context.Request.Path,
+                context.Request.Method);
+            
+            context.Response.StatusCode = 500;
+            context.Response.ContentType = "application/json";
+            
+            var errorResponse = new
+            {
+                error = "Internal server error",
+                message = exception.Message,
+                path = context.Request.Path.Value,
+                method = context.Request.Method,
+                timestamp = DateTime.UtcNow.ToString("o")
+            };
+            
+            await context.Response.WriteAsJsonAsync(errorResponse);
+        }
+    });
+});
+
 // Enable Swagger in development
 if (app.Environment.IsDevelopment())
 {

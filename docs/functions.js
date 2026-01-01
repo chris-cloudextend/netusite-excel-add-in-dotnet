@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.16';  // Fix: Revert to parameter-based routing (like restore point) to fix Income Statement routing
+const FUNCTIONS_VERSION = '4.0.6.17';  // Added BS debugging timestamps to track data ready vs written timing
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -432,7 +432,7 @@ const VALIDATE_COLUMN_BASED_BS_BATCHING = false;
  * Debug flag for column-based batching detection logging.
  * Only logs when true - no behavior changes.
  */
-const DEBUG_COLUMN_BASED_BS_BATCHING = true;
+const DEBUG_COLUMN_BASED_BS_BATCHING = false; // Disabled: verbose debug logging
 
 // ============================================================================
 // BALANCE SHEET GRID BATCHING - Helper Functions
@@ -1014,7 +1014,6 @@ async function executeColumnBasedBSBatch(grid) {
     
     if (DEBUG_COLUMN_BASED_BS_BATCHING) {
         console.log(`🚀 COLUMN-BASED BS BATCH: ${accounts.length} accounts, ${periods.length} periods`);
-        console.log(`📊 Querying translated ending balances directly from NetSuite (one query per period)`);
     }
     
     // Query translated ending balances for all accounts across all periods
@@ -1032,8 +1031,6 @@ async function executeColumnBasedBSBatch(grid) {
     const url = `${SERVER_URL}/batch/bs_preload_targeted`;
     
     if (DEBUG_COLUMN_BASED_BS_BATCHING) {
-        console.log(`🔍 Translated ending balances URL: ${url}`);
-        console.log(`🔍 Request: ${accounts.length} accounts × ${periods.length} periods`);
     }
     
     const response = await fetch(url, {
@@ -1076,7 +1073,6 @@ async function executeColumnBasedBSBatch(grid) {
     }
     
     if (DEBUG_COLUMN_BASED_BS_BATCHING) {
-        console.log(`✅ COLUMN-BASED BS BATCH COMPLETE: ${accounts.length} accounts × ${periods.length} periods`);
         console.log(`✅ Using translated ending balances (NetSuite Balance Sheet semantics)`);
     }
     
@@ -1160,7 +1156,6 @@ async function fetchPeriodActivityBatch(accounts, fromPeriod, toPeriod, filters)
     const url = `${SERVER_URL}/balance?${params.toString()}`;
     
     if (DEBUG_COLUMN_BASED_BS_BATCHING) {
-        console.log(`🔍 Period activity URL: ${url}`);
     }
     
     const response = await fetch(url);
@@ -1220,7 +1215,6 @@ function checkBatchEligibilitySynchronous(account, fromPeriod, toPeriod, filters
     const queuedRequests = Array.from(pendingRequests.balance.values());
     const evaluatingRequests = Array.from(pendingEvaluation.balance.values());
     const allRequests = [...queuedRequests, ...evaluatingRequests];
-    console.log(`🔍 BATCH CHECK: ${account}/${toPeriod} - checking ${queuedRequests.length} queued + ${evaluatingRequests.length} evaluating = ${allRequests.length} total requests`);
     const bsCumulativeRequests = allRequests.filter(r => {
         // Handle both queued requests (have .params) and evaluating requests (have direct properties)
         const rParams = r.params || r;
@@ -1560,7 +1554,6 @@ async function executeBalanceSheetBatchQuery(gridPattern) {
                 periodActivity
             );
             
-            console.log(`✅ BS BATCH QUERY COMPLETE: ${Object.keys(results).length} period results`);
             
             return results; // {period: balance}
             
@@ -1650,7 +1643,6 @@ async function executeBalanceSheetBatchQueryImmediate(account, periods, filters)
                 periodActivity
             );
             
-            console.log(`✅ BS BATCH QUERY COMPLETE: ${Object.keys(results).length} period results`);
             
             return results; // {period: balance}
             
@@ -1696,7 +1688,6 @@ async function fetchOpeningBalance(account, anchorDate, filters, retryCount = 0)
     if (filters.accountingBook) params.append('accountingbook', filters.accountingBook);
     
     const url = `${SERVER_URL}/balance?${params.toString()}`;
-    console.log(`🔍 Opening balance URL: ${url}${retryCount > 0 ? ` (retry ${retryCount}/${MAX_RETRIES})` : ''}`);
     
     try {
         const response = await fetch(url);
@@ -1763,7 +1754,6 @@ async function fetchPeriodActivityBatch(account, fromPeriod, toPeriod, filters, 
     if (filters.accountingBook) params.append('accountingbook', filters.accountingBook);
     
     const url = `${SERVER_URL}/balance?${params.toString()}`;
-    console.log(`🔍 Period activity URL: ${url}${retryCount > 0 ? ` (retry ${retryCount}/${MAX_RETRIES})` : ''}`);
     
     try {
         const response = await fetch(url);
@@ -3088,7 +3078,6 @@ function enterBuildMode() {
             });
         }
         if (pendingRequests.balance.size > 0) {
-            console.log(`   📦 Moved ${pendingRequests.balance.size} pending requests to build mode`);
             pendingRequests.balance.clear();
         }
     }
@@ -3642,14 +3631,18 @@ async function runBuildModeBatch() {
     }
     
     // If no regular items, we're done
+    // All cumulative items have been processed and resolved (they're awaited in the loop above)
     if (regularItems.length === 0) {
-        const elapsed = ((Date.now() - batchStartTime) / 1000).toFixed(2);
-        console.log(`✅ BUILD MODE COMPLETE in ${elapsed}s (${cumulativeItems.length} cumulative only)`);
-        broadcastStatus(`Complete!`, 100, 'success');
+        const elapsed = ((Date.now() - batchStartTime) / 1000).toFixed(1);
+        const totalProcessed = cumulativeItems.length + balanceCurrencyItems.length;
+        if (totalProcessed > 0) {
+            // Broadcast status AFTER all cumulative items are processed and resolved
+            broadcastStatus(`✅ Updated ${totalProcessed} cell${totalProcessed > 1 ? 's' : ''} (${elapsed}s)`, 100, 'success');
+            setTimeout(clearStatus, 10000);
+        }
         return;
     }
     
-    console.log(`📦 BUILD MODE: Processing ${regularItems.length} regular (period-based) requests...`);
     
     // Group pending formulas by their filter combination
     const filterGroups = new Map();
@@ -3941,7 +3934,6 @@ async function runBuildModeBatch() {
                                 bsCached++;
                             }
                         }
-                        console.log(`   💾 Cached ${bsCached} BS values with filters: sub="${filters.subsidiary}"`);
                     } else {
                         console.error(`   ❌ BS multi-period error: ${response.status}`);
                         hasError = true;
@@ -3999,7 +3991,6 @@ async function runBuildModeBatch() {
                 try {
                     for (const year of yearsArray) {
                         const yearStartTime = Date.now();
-                        console.log(`   📡 Fetching P&L year ${year}...`);
                         
                         const response = await fetch(`${SERVER_URL}/batch/full_year_refresh`, {
                             method: 'POST',
@@ -4040,7 +4031,6 @@ async function runBuildModeBatch() {
                                     plCached++;
                                 }
                             }
-                            console.log(`   💾 Cached ${plCached} P&L values`);
                         } else {
                             console.error(`   ❌ P&L Year ${year} error: ${response.status}`);
                             hasError = true;
@@ -4053,7 +4043,6 @@ async function runBuildModeBatch() {
             } else {
                 // SMART PERIOD EXPANSION: Same as BS, include adjacent months
                 const expandedPLPeriods = expandPeriodRange(periodsArray, 1, 1);
-                console.log(`   📦 P&L: Using batch/balance for ${plAccounts.length} accounts (${expandedPLPeriods.length} periods, expanded from ${periodsArray.length})`);
                 broadcastStatus(`Fetching P&L data...`, 60, 'info');
                 
                 try {
@@ -4150,7 +4139,6 @@ async function runBuildModeBatch() {
             }
         }
         if (zeroCached > 0) {
-            console.log(`   💾 Cached ${zeroCached} zero-balance BS values`);
         }
         
         console.log(`   📊 Total accounts with data: ${Object.keys(allBalances).join(', ') || 'none'}`);
@@ -4217,7 +4205,6 @@ async function runBuildModeBatch() {
             }
             
             if (isWildcard && foundAny) {
-                console.log(`   🔍 Wildcard ${account} for ${fromPeriod}: summed ${accountsToSum.length} accounts = ${value.toFixed(2)}`);
             }
             
             if (foundAny) {
@@ -4837,7 +4824,6 @@ function cacheIndividualAccounts(accounts, period, subsidiary = '') {
         fullYearCache[acct][period] = value;
     }
     
-    console.log(`   ✅ Cached to fullYearCache`);
 }
 
 // Save balances to localStorage (called by taskpane via window function)
@@ -4889,7 +4875,6 @@ window.populateFrontendCache = function(balances, filters = {}) {
     // Also save to localStorage for cross-context access
     window.saveBalancesToLocalStorage(balances);
     
-    console.log(`✅ Cached ${cacheCount} values in frontend`);
     
     // Resolve pending promises
     console.log(`\n🔄 Checking ${pendingRequests.balance.size} pending requests...`);
@@ -5285,7 +5270,6 @@ async function processTitleBatchQueue() {
         return;
     }
     
-    console.log(`📦 Processing TITLE batch: ${pending.size} accounts`);
     
     const accounts = [...pending.keys()];
     
@@ -5307,7 +5291,6 @@ async function processTitleBatchQueue() {
         
         const titles = await response.json();
         
-        console.log(`📦 TITLE batch response: ${Object.keys(titles).length} titles returned`);
         
         // Also update localStorage cache for persistence
         let localStorageCache = {};
@@ -5337,7 +5320,6 @@ async function processTitleBatchQueue() {
             localStorage.setItem('netsuite_name_cache', JSON.stringify(localStorageCache));
         } catch (e) { /* ignore quota errors */ }
         
-        console.log(`📦 TITLE batch complete: ${pending.size} resolved`);
         
     } catch (error) {
         console.error('TITLE batch fetch error:', error);
@@ -5414,7 +5396,6 @@ async function NAME(accountNumber, invocation) {
     }
     
     cacheStats.misses++;
-    console.log(`📥 CACHE MISS [title]: ${account} → queuing for batch`);
     
     // Add to batch queue
     return new Promise((resolve, reject) => {
@@ -5453,7 +5434,6 @@ async function processTypeBatchQueue() {
         return;
     }
     
-    console.log(`📦 Processing TYPE batch: ${pending.size} accounts`);
     
     const accounts = [...pending.keys()];
     
@@ -5477,7 +5457,6 @@ async function processTypeBatchQueue() {
         // Backend returns 'account_types' not 'types'
         const types = data.account_types || data.types || {};
         
-        console.log(`📦 TYPE batch response: ${Object.keys(types).length} types returned`);
         
         // Resolve each pending request
         for (const [account, { resolve }] of pending) {
@@ -5571,7 +5550,6 @@ async function TYPE(accountNumber, invocation) {
     }
     
     cacheStats.misses++;
-    console.log(`📥 CACHE MISS [type]: ${account} - adding to batch queue`);
     
     // Add to batch queue
     return new Promise((resolve, reject) => {
@@ -5635,7 +5613,6 @@ async function PARENT(accountNumber, invocation) {
     }
     
     cacheStats.misses++;
-    console.log(`📥 CACHE MISS [parent]: ${account}`);
     
     // Single request - make immediately
     try {
@@ -5669,7 +5646,6 @@ async function PARENT(accountNumber, invocation) {
         const parentValue = parent.trim();
         console.log(`✅ PARENT API: Account "${account}" → Parent "${parentValue || '(no parent)'}"`);
         cache.parent.set(cacheKey, parentValue);
-        console.log(`💾 Cached parent: ${account} → "${parentValue || '(no parent)'}"`);
         return parentValue;
         
     } catch (error) {
@@ -6924,7 +6900,6 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         // In full refresh mode, queue silently (task pane will trigger processFullRefresh)
         // REDUCED LOGGING: Only log first few cache misses to prevent console flooding
         if (!isFullRefreshMode && cacheStats.misses < 10) {
-            console.log(`📥 CACHE MISS [balance]: ${account} (${fromPeriod || '(cumulative)'} to ${toPeriod}) → queuing${isBSRequest ? ' [BS]' : ''}`);
         }
         
         // Return a Promise that will be resolved by the batch processor
@@ -8076,10 +8051,32 @@ async function processBatchQueue() {
             if (!subsidiary) {  // Skip for subsidiary-filtered queries (localStorage not subsidiary-aware)
                 const localStorageValue = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary);
                 if (localStorageValue !== null) {
+                    // DEBUG: Track when data is ready vs when it's written (Balance Sheet only)
+                    const isBS = isCumulativeRequest(fromPeriod);
+                    const dataReadyTime = new Date().toISOString();
+                    
                     console.log(`   ✅ Preload cache hit (batch mode): ${account} for ${fromPeriod || '(cumulative)'} → ${toPeriod} = ${localStorageValue}`);
+                    if (isBS) {
+                        console.log(`   🕐 [BS DEBUG] DATA READY at ${dataReadyTime} (from cache)`);
+                    }
+                    
                     cache.balance.set(cacheKey, localStorageValue);
+                    
                     // Resolve ALL requests waiting for this result
-                    requests.forEach(r => r.resolve(localStorageValue));
+                    const writeStartTime = Date.now();
+                    requests.forEach(r => {
+                        if (isBS) {
+                            const writeTime = new Date().toISOString();
+                            console.log(`   🕐 [BS DEBUG] DATA WRITTEN (promise resolved) at ${writeTime} - delay: ${((Date.now() - writeStartTime) / 1000).toFixed(3)}s`);
+                        }
+                        r.resolve(localStorageValue);
+                    });
+                    
+                    if (isBS) {
+                        const totalDelay = ((Date.now() - writeStartTime) / 1000).toFixed(3);
+                        console.log(`   🕐 [BS DEBUG] All ${requests.length} promise(s) resolved - total write delay: ${totalDelay}s`);
+                    }
+                    
                     cacheHits++;
                     continue; // Skip API call
                 }
@@ -8093,10 +8090,32 @@ async function processBatchQueue() {
             if (account.includes('*') && !isBalanceCurrency) {
                 const wildcardResult = resolveWildcardFromCache(account, fromPeriod, toPeriod, subsidiary);
                 if (wildcardResult !== null) {
+                    // DEBUG: Track when data is ready vs when it's written (Balance Sheet only)
+                    const isBS = isCumulativeRequest(fromPeriod);
+                    const dataReadyTime = new Date().toISOString();
+                    
                     console.log(`   🎯 Wildcard cache hit: ${account} = ${wildcardResult.total.toLocaleString()} (${wildcardResult.matchCount} accounts)`);
+                    if (isBS) {
+                        console.log(`   🕐 [BS DEBUG] DATA READY at ${dataReadyTime} (from wildcard cache)`);
+                    }
+                    
                     cache.balance.set(cacheKey, wildcardResult.total);
+                    
                     // Resolve ALL requests waiting for this result
-                    requests.forEach(r => r.resolve(wildcardResult.total));
+                    const writeStartTime = Date.now();
+                    requests.forEach(r => {
+                        if (isBS) {
+                            const writeTime = new Date().toISOString();
+                            console.log(`   🕐 [BS DEBUG] DATA WRITTEN (promise resolved) at ${writeTime} - delay: ${((Date.now() - writeStartTime) / 1000).toFixed(3)}s`);
+                        }
+                        r.resolve(wildcardResult.total);
+                    });
+                    
+                    if (isBS) {
+                        const totalDelay = ((Date.now() - writeStartTime) / 1000).toFixed(3);
+                        console.log(`   🕐 [BS DEBUG] All ${requests.length} promise(s) resolved - total write delay: ${totalDelay}s`);
+                    }
+                    
                     cacheHits++;
                     continue; // Skip API call
                 }
@@ -8160,7 +8179,15 @@ async function processBatchQueue() {
                         const accounts = data.accounts || {};
                         const period = data.period || toPeriod;
                         
+                        // DEBUG: Track when data is ready vs when it's written (Balance Sheet only)
+                        const isBS = isCumulativeRequest(fromPeriod);
+                        const dataReadyTime = new Date().toISOString();
+                        const queryTimeMs = Date.now() - queryStartTime;
+                        
                         console.log(`   ✅ Wildcard result: ${account} = ${total.toLocaleString()} (${Object.keys(accounts).length} accounts)`);
+                        if (isBS) {
+                            console.log(`   🕐 [BS DEBUG] DATA READY at ${dataReadyTime} (from API wildcard, query took ${(queryTimeMs / 1000).toFixed(1)}s)`);
+                        }
                         
                         // Cache the total for this wildcard pattern
                         cache.balance.set(cacheKey, total);
@@ -8169,7 +8196,19 @@ async function processBatchQueue() {
                         cacheIndividualAccounts(accounts, period, subsidiary);
                         
                         // Resolve ALL requests waiting for this result
-                        requests.forEach(r => r.resolve(total));
+                        const writeStartTime = Date.now();
+                        requests.forEach(r => {
+                            if (isBS) {
+                                const writeTime = new Date().toISOString();
+                                console.log(`   🕐 [BS DEBUG] DATA WRITTEN (promise resolved) at ${writeTime} - delay: ${((Date.now() - writeStartTime) / 1000).toFixed(3)}s`);
+                            }
+                            r.resolve(total);
+                        });
+                        
+                        if (isBS) {
+                            const totalDelay = ((Date.now() - writeStartTime) / 1000).toFixed(3);
+                            console.log(`   🕐 [BS DEBUG] All ${requests.length} promise(s) resolved - total write delay: ${totalDelay}s`);
+                        }
                     } else {
                         // Parse JSON response for balance and error
                         let value = 0;
@@ -8216,11 +8255,32 @@ async function processBatchQueue() {
                             console.log(`   ⚠️ Cumulative result: ${account} = ${errorCode}`);
                             requests.forEach(r => r.reject(new Error(errorCode)));
                         } else {
+                            // DEBUG: Track when data is ready vs when it's written (Balance Sheet only)
+                            const isBS = isCumulativeRequest(fromPeriod);
+                            const dataReadyTime = new Date().toISOString();
+                            
                             console.log(`   ✅ Cumulative result: ${account} = ${value.toLocaleString()} (${(queryTimeMs / 1000).toFixed(1)}s)`);
+                            if (isBS) {
+                                console.log(`   🕐 [BS DEBUG] DATA READY at ${dataReadyTime} (from API, query took ${(queryTimeMs / 1000).toFixed(1)}s)`);
+                            }
+                            
                             // Only cache valid numeric values, not errors or null
                             cache.balance.set(cacheKey, value);
+                            
                             // Resolve ALL requests waiting for this result
-                            requests.forEach(r => r.resolve(value));
+                            const writeStartTime = Date.now();
+                            requests.forEach(r => {
+                                if (isBS) {
+                                    const writeTime = new Date().toISOString();
+                                    console.log(`   🕐 [BS DEBUG] DATA WRITTEN (promise resolved) at ${writeTime} - delay: ${((Date.now() - writeStartTime) / 1000).toFixed(3)}s`);
+                                }
+                                r.resolve(value);
+                            });
+                            
+                            if (isBS) {
+                                const totalDelay = ((Date.now() - writeStartTime) / 1000).toFixed(3);
+                                console.log(`   🕐 [BS DEBUG] All ${requests.length} promise(s) resolved - total write delay: ${totalDelay}s`);
+                            }
                         }
                     }
                 } else {
@@ -8289,7 +8349,6 @@ async function processBatchQueue() {
             groups.get(filterKey).push({ cacheKey, request });
         }
         
-        console.log(`📦 Grouped into ${groups.size} batch(es) by filters`);
         console.log(`   ✅ PROOF: Requests grouped for single batch query (not individual queries)`);
         
         // Process each group
@@ -8693,9 +8752,22 @@ async function processBatchQueue() {
     }
     
     const totalBatchTime = ((Date.now() - batchStartTime) / 1000).toFixed(1);
+    const batchCompleteTime = new Date().toISOString();
     console.log('========================================');
     console.log(`✅ BATCH PROCESSING COMPLETE in ${totalBatchTime}s`);
+    console.log(`🕐 [BS DEBUG] BATCH COMPLETE timestamp: ${batchCompleteTime}`);
     console.log('========================================\n');
+    
+    // NOTE: We do NOT broadcast status here because:
+    // 1. Promises resolve immediately (cache hits resolve in 0.1s), but Excel takes 30+ seconds to process them
+    // 2. We cannot detect when Excel has actually processed resolved promises and updated cells
+    // 3. Excel's custom function API doesn't provide a callback when a resolved promise is processed
+    // 4. Showing status before Excel updates would be misleading
+    // 
+    // Status should only come from:
+    // - Build mode (runBuildModeBatch) - handles status for multiple formulas (drag-fill scenarios)
+    // - Taskpane - handles status for preload operations
+    // - NOT from processBatchQueue() - which handles single/batch formula entries
 }
 
 // ============================================================================
@@ -8981,7 +9053,6 @@ async function RETAINEDEARNINGS(period, subsidiary, accountingBook, classId, dep
         // Check cache first
         if (cache.balance.has(cacheKey)) {
             cacheStats.hits++;
-            console.log(`📥 CACHE HIT [retained earnings]: ${period}`);
             return cache.balance.get(cacheKey);
         }
         
@@ -9179,7 +9250,6 @@ async function NETINCOME(fromPeriod, toPeriod, subsidiary, accountingBook, class
         
         // Convert fromPeriod - for year-only, use Jan (start of year)
         const convertedFromPeriod = normalizePeriodKey(fromPeriod, true) || fromPeriod;  // true = use Jan
-        console.log(`   📅 fromPeriod conversion: ${fromPeriod} → "${convertedFromPeriod}"`);
         
         // Convert toPeriod - if empty/skipped, default to fromPeriod; for year-only use Dec
         let convertedToPeriod;
@@ -9196,7 +9266,6 @@ async function NETINCOME(fromPeriod, toPeriod, subsidiary, accountingBook, class
             console.log(`   📅 toPeriod not specified, defaulting to ${convertedToPeriod}`);
         } else {
             convertedToPeriod = normalizePeriodKey(toPeriod, false) || toPeriod;  // false = use Dec for year-only
-            console.log(`   📅 toPeriod conversion: ${toPeriod} → "${convertedToPeriod}"`);
         }
         
         if (!convertedFromPeriod) {
@@ -9226,7 +9295,6 @@ async function NETINCOME(fromPeriod, toPeriod, subsidiary, accountingBook, class
         // Check cache first
         if (cache.balance.has(cacheKey)) {
             cacheStats.hits++;
-            console.log(`📥 CACHE HIT [net income]: ${convertedFromPeriod || 'FY'} → ${convertedToPeriod}`);
             return cache.balance.get(cacheKey);
         }
         
@@ -9762,7 +9830,6 @@ async function CTA(period, subsidiary, accountingBook) {
         // Check cache first
         if (cache.balance.has(cacheKey)) {
             cacheStats.hits++;
-            console.log(`📥 CACHE HIT [CTA]: ${period}`);
             return cache.balance.get(cacheKey);
         }
         

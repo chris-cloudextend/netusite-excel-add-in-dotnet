@@ -185,6 +185,8 @@ When running consolidated reports across subsidiaries:
 
 ## Architecture (Current)
 
+**Backend:** The system uses a **.NET Core (ASP.NET Core)** backend server. The Python Flask backend (`backend/server.py`) is legacy and kept for reference only.
+
 ```
 ┌─────────────────────┐     ┌─────────────────────┐     ┌─────────────────┐
 │   Excel Add-in      │────▶│   Cloudflare        │────▶│   .NET Backend  │
@@ -201,6 +203,10 @@ When running consolidated reports across subsidiaries:
 │   (taskpane.html)   │                              │    SuiteQL API  │
 └─────────────────────┘                              └─────────────────┘
 ```
+
+**Backend Technology Stack:**
+- **Active Backend:** .NET 8.0 (ASP.NET Core Web API) - `backend-dotnet/` directory
+- **Legacy Backend:** Python Flask - `backend/` directory - **NOT IN USE** (kept for reference only)
 
 ## File Structure
 

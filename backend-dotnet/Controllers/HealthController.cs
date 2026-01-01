@@ -178,7 +178,7 @@ public class HealthController : ControllerBase
             // Test basic connection
             try
             {
-                await netSuiteService.QueryAsync<dynamic>("SELECT 1 as test FROM DUAL");
+                await netSuiteService.QueryRawAsync("SELECT 1 as test FROM DUAL");
             }
             catch (Exception ex)
             {
@@ -194,8 +194,15 @@ public class HealthController : ControllerBase
             try
             {
                 var budgetQuery = "SELECT COUNT(*) as count FROM budget WHERE isinactive = 'F'";
-                var budgetResults = await netSuiteService.QueryAsync<dynamic>(budgetQuery);
-                var budgetCount = budgetResults?.FirstOrDefault()?.count ?? 0;
+                var budgetResults = await netSuiteService.QueryRawAsync(budgetQuery);
+                var budgetCount = 0;
+                if (budgetResults.Count > 0 && budgetResults[0].TryGetProperty("count", out var countProp))
+                {
+                    if (countProp.ValueKind == System.Text.Json.JsonValueKind.Number)
+                        budgetCount = countProp.GetInt32();
+                    else if (countProp.ValueKind == System.Text.Json.JsonValueKind.String)
+                        int.TryParse(countProp.GetString(), out budgetCount);
+                }
                 
                 checks.Add(new
                 {
@@ -203,6 +210,7 @@ public class HealthController : ControllerBase
                     name = "Budgets",
                     enabled = budgetCount > 0,
                     accessible = true,
+                    required = false,
                     query_result = new { count = budgetCount }
                 });
             }
@@ -214,6 +222,7 @@ public class HealthController : ControllerBase
                     name = "Budgets",
                     enabled = false,
                     accessible = false,
+                    required = false,
                     error = ex.Message
                 });
             }
@@ -222,16 +231,23 @@ public class HealthController : ControllerBase
             try
             {
                 var subQuery = "SELECT id, name, iselimination FROM subsidiary WHERE isinactive = 'F' ORDER BY name";
-                var subResults = await netSuiteService.QueryAsync<dynamic>(subQuery);
+                var subResults = await netSuiteService.QueryRawAsync(subQuery);
                 
-                foreach (var sub in subResults ?? Enumerable.Empty<dynamic>())
+                foreach (var sub in subResults)
                 {
-                    subsidiaries.Add(new
+                    var id = sub.TryGetProperty("id", out var idProp) ? idProp.ToString() : "";
+                    var name = sub.TryGetProperty("name", out var nameProp) ? nameProp.GetString() ?? "" : "";
+                    var isElim = sub.TryGetProperty("iselimination", out var elimProp) && elimProp.GetString() == "T";
+                    
+                    if (!string.IsNullOrEmpty(id))
                     {
-                        id = sub.id,
-                        name = sub.name,
-                        isElimination = sub.iselimination == "T"
-                    });
+                        subsidiaries.Add(new
+                        {
+                            id = id,
+                            name = name,
+                            isElimination = isElim
+                        });
+                    }
                 }
                 
                 checks.Add(new
@@ -240,6 +256,7 @@ public class HealthController : ControllerBase
                     name = "OneWorld Subsidiaries",
                     enabled = subsidiaries.Count > 0,
                     accessible = true,
+                    required = false,
                     query_result = subsidiaries
                 });
             }
@@ -251,6 +268,7 @@ public class HealthController : ControllerBase
                     name = "OneWorld Subsidiaries",
                     enabled = false,
                     accessible = false,
+                    required = false,
                     error = ex.Message
                 });
             }
@@ -273,8 +291,9 @@ public class HealthController : ControllerBase
                 {
                     // Test table access with a simple query
                     var testQuery = $"SELECT id FROM {tableInfo.Table} FETCH FIRST 1 ROWS ONLY";
-                    await netSuiteService.QueryAsync<dynamic>(testQuery);
+                    var testResults = await netSuiteService.QueryRawAsync(testQuery);
                     
+                    // If query succeeds (no exception), table is accessible
                     checks.Add(new
                     {
                         table = tableInfo.Table,

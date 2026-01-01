@@ -1,8 +1,11 @@
 # .NET Migration Plan for XAVI NetSuite Excel Add-in
 
+> **Status: ✅ MIGRATION COMPLETE**  
+> The migration from Python Flask to .NET backend has been completed. The .NET backend (`backend-dotnet/`) is now the active backend. The Python Flask backend (`backend/`) is kept for reference only.
+
 ## Overview
 
-This project is being converted from a **Python Flask backend** to a **.NET (C#) backend** while keeping the Excel Add-in frontend (JavaScript/HTML) unchanged.
+This project was converted from a **Python Flask backend** to a **.NET (C#) backend** while keeping the Excel Add-in frontend (JavaScript/HTML) unchanged. The migration is complete and the .NET backend is now in production use.
 
 ## Current Architecture
 
@@ -21,11 +24,11 @@ This project is being converted from a **Python Flask backend** to a **.NET (C#)
                               │ HTTP REST API calls
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
-│              Python Flask Backend (TO BE REPLACED)          │
+│              Python Flask Backend (LEGACY - NOT IN USE)     │
 │  - backend/server.py     → Flask routes & NetSuite API      │
 │  - backend/constants.py  → Account type mappings            │
 │                                                             │
-│  🔄 CONVERT THIS TO .NET                                    │
+│  ✅ MIGRATED TO .NET - See backend-dotnet/                 │
 └─────────────────────────────────────────────────────────────┘
                               │
                               │ OAuth 1.0 / REST API

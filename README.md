@@ -104,10 +104,18 @@ Users can drill down into any balance to see underlying transactions:
 
 ## Architecture
 
+**Backend:** The system uses a **.NET Core (ASP.NET Core)** backend server. The Python Flask backend (`backend/server.py`) is legacy and kept for reference only.
+
 ```
 Excel Add-in → GitHub Pages (static files) → Cloudflare Worker (proxy) 
-    → Cloudflare Tunnel → .NET Backend → NetSuite REST API
+    → Cloudflare Tunnel → .NET Backend (ASP.NET Core) → NetSuite REST API
 ```
+
+**Backend Technology Stack:**
+- **Active Backend:** .NET 8.0 (ASP.NET Core Web API)
+- **Location:** `backend-dotnet/` directory
+- **Port:** 5002 (default)
+- **Legacy Backend:** Python Flask (`backend/` directory) - **NOT IN USE**
 
 ### Shared Runtime Configuration
 The add-in uses Office's Shared Runtime for communication between:
