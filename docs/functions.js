@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.20';  // Fixed income statement period range routing + added query performance test results
+const FUNCTIONS_VERSION = '4.0.6.22';  // Period range optimization - fixed account type check
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -8411,52 +8411,160 @@ async function processBatchQueue() {
             const filters = JSON.parse(filterKey);
             const accounts = [...new Set(groupRequests.map(r => r.request.params.account))];
             
+            // ========================================================================
+            // PERIOD RANGE OPTIMIZATION: Detect if all requests have same period range
+            // Instead of expanding to individual periods, send range to backend
+            // ========================================================================
+            let allRequestsHaveSameRange = true;
+            let commonFromPeriod = null;
+            let commonToPeriod = null;
+            
+            // Check if all requests have the same fromPeriod and toPeriod
+            for (const r of groupRequests) {
+                const { fromPeriod, toPeriod } = r.request.params;
+                if (fromPeriod && toPeriod && fromPeriod !== toPeriod) {
+                    // This is a period range request
+                    if (commonFromPeriod === null) {
+                        commonFromPeriod = fromPeriod;
+                        commonToPeriod = toPeriod;
+                    } else if (commonFromPeriod !== fromPeriod || commonToPeriod !== toPeriod) {
+                        allRequestsHaveSameRange = false;
+                        break;
+                    }
+                } else {
+                    // Not a period range (single period or cumulative)
+                    allRequestsHaveSameRange = false;
+                    break;
+                }
+            }
+            
+            // Helper: Extract account type string from various formats
+            const extractAccountTypeString = (accountType) => {
+                if (!accountType) return null;
+                
+                if (typeof accountType === 'string') {
+                    // Try to parse as JSON first (in case it's a stringified object)
+                    try {
+                        const parsed = JSON.parse(accountType);
+                        return parsed.type || accountType;
+                    } catch (e) {
+                        // Not JSON, use as-is
+                        return accountType;
+                    }
+                } else if (typeof accountType === 'object') {
+                    // It's an object, extract the type property
+                    return accountType.type || accountType.toString();
+                } else {
+                    return String(accountType);
+                }
+            };
+            
+            // Helper: Check if account type is P&L (Income Statement)
+            const isPandLType = (accountType) => {
+                const typeStr = extractAccountTypeString(accountType);
+                if (!typeStr) return false;
+                return typeStr === 'Income' || typeStr === 'COGS' || 
+                       typeStr === 'Expense' || typeStr === 'OthIncome' || 
+                       typeStr === 'OthExpense';
+            };
+            
+            // Check if all accounts are Income Statement (P&L) accounts
+            // Period range optimization only works for P&L accounts
+            // NOTE: Account types might not be in cache yet, so we need to check what we have
+            const accountTypeChecks = accounts.map(account => {
+                const typeCacheKey = getCacheKey('type', { account });
+                const accountType = cache.type.has(typeCacheKey) ? cache.type.get(typeCacheKey) : null;
+                const typeStr = extractAccountTypeString(accountType);
+                const isPandL = isPandLType(accountType);
+                
+                return { account, accountType, typeStr, isPandL, inCache: cache.type.has(typeCacheKey) };
+            });
+            
+            const allAccountsAreIncomeStatement = accountTypeChecks.every(check => check.isPandL);
+            
+            // Debug logging
+            console.log(`  🔍 PERIOD RANGE OPTIMIZATION CHECK:`);
+            console.log(`     allRequestsHaveSameRange: ${allRequestsHaveSameRange}`);
+            console.log(`     commonFromPeriod: ${commonFromPeriod}, commonToPeriod: ${commonToPeriod}`);
+            console.log(`     Account type checks:`, accountTypeChecks);
+            console.log(`     allAccountsAreIncomeStatement: ${allAccountsAreIncomeStatement}`);
+            
+            // Use period range optimization if:
+            // 1. All requests have the same period range
+            // 2. All accounts are Income Statement (P&L) accounts
+            // 3. Range is not a single period (fromPeriod !== toPeriod, already checked above)
+            const usePeriodRangeOptimization = allRequestsHaveSameRange && 
+                                               allAccountsAreIncomeStatement && 
+                                               commonFromPeriod && 
+                                               commonToPeriod;
+            
+            console.log(`     usePeriodRangeOptimization: ${usePeriodRangeOptimization}`);
+            
+            if (usePeriodRangeOptimization) {
+                console.log(`  📅 PERIOD RANGE OPTIMIZATION: Using single query for ${commonFromPeriod} to ${commonToPeriod}`);
+                console.log(`     Accounts: ${accounts.length}, All P&L accounts: ${allAccountsAreIncomeStatement}`);
+                console.log(`     ✅ PROOF: Will send period range to backend (single query instead of chunking)`);
+                
+                // Calculate period count for logging (but don't expand)
+                const expandedForLogging = expandPeriodRangeFromTo(commonFromPeriod, commonToPeriod);
+                console.log(`     📊 Range spans ${expandedForLogging.length} periods - will be queried in single query`);
+                
+                // Skip period expansion and chunking - send range directly to backend
+                // This will be handled in the API call below
+            } else {
+                console.log(`  ⚠️ PERIOD RANGE OPTIMIZATION NOT USED - will use chunking instead`);
+            }
+            
             // Collect ALL unique periods from ALL requests in this group
             // EXPAND date ranges (e.g., "Jan 2025" to "Dec 2025" → all 12 months)
+            // BUT: Skip expansion if using period range optimization
             const periods = new Set();
             let isFullYearRequest = true;
             let yearForOptimization = null;
             
-            for (const r of groupRequests) {
-                const { fromPeriod, toPeriod } = r.request.params;
-                if (fromPeriod && toPeriod && fromPeriod !== toPeriod) {
-                    // Check if this is a full year request (Jan to Dec of same year)
-                    const fromMatch = fromPeriod.match(/^Jan\s+(\d{4})$/);
-                    const toMatch = toPeriod.match(/^Dec\s+(\d{4})$/);
-                    if (fromMatch && toMatch && fromMatch[1] === toMatch[1]) {
-                        const year = fromMatch[1];
-                        if (yearForOptimization === null) {
-                            yearForOptimization = year;
-                        } else if (yearForOptimization !== year) {
+            if (!usePeriodRangeOptimization) {
+                // Only expand periods if NOT using range optimization
+                for (const r of groupRequests) {
+                    const { fromPeriod, toPeriod } = r.request.params;
+                    if (fromPeriod && toPeriod && fromPeriod !== toPeriod) {
+                        // Check if this is a full year request (Jan to Dec of same year)
+                        const fromMatch = fromPeriod.match(/^Jan\s+(\d{4})$/);
+                        const toMatch = toPeriod.match(/^Dec\s+(\d{4})$/);
+                        if (fromMatch && toMatch && fromMatch[1] === toMatch[1]) {
+                            const year = fromMatch[1];
+                            if (yearForOptimization === null) {
+                                yearForOptimization = year;
+                            } else if (yearForOptimization !== year) {
+                                isFullYearRequest = false;
+                            }
+                        } else {
                             isFullYearRequest = false;
                         }
-                    } else {
+                        
+                        // Expand the range to all months
+                        const expanded = expandPeriodRangeFromTo(fromPeriod, toPeriod);
+                        console.log(`  📅 Expanding ${fromPeriod} to ${toPeriod} → ${expanded.length} months`);
+                        expanded.forEach(p => periods.add(p));
+                    } else if (fromPeriod) {
                         isFullYearRequest = false;
-                    }
-                    
-                    // Expand the range to all months
-                    const expanded = expandPeriodRangeFromTo(fromPeriod, toPeriod);
-                    console.log(`  📅 Expanding ${fromPeriod} to ${toPeriod} → ${expanded.length} months`);
-                    expanded.forEach(p => periods.add(p));
-                } else if (fromPeriod) {
-                    isFullYearRequest = false;
-                    // Check for year-only format and expand if needed
-                    if (/^\d{4}$/.test(fromPeriod)) {
-                        const expanded = expandPeriodRangeFromTo(fromPeriod, fromPeriod);
-                        console.log(`  📅 Year-only expansion: ${fromPeriod} → ${expanded.length} months`);
-                        expanded.forEach(p => periods.add(p));
-                    } else {
-                        periods.add(fromPeriod);
-                    }
-                } else if (toPeriod) {
-                    isFullYearRequest = false;
-                    // Check for year-only format and expand if needed
-                    if (/^\d{4}$/.test(toPeriod)) {
-                        const expanded = expandPeriodRangeFromTo(toPeriod, toPeriod);
-                        console.log(`  📅 Year-only expansion: ${toPeriod} → ${expanded.length} months`);
-                        expanded.forEach(p => periods.add(p));
-                    } else {
-                        periods.add(toPeriod);
+                        // Check for year-only format and expand if needed
+                        if (/^\d{4}$/.test(fromPeriod)) {
+                            const expanded = expandPeriodRangeFromTo(fromPeriod, fromPeriod);
+                            console.log(`  📅 Year-only expansion: ${fromPeriod} → ${expanded.length} months`);
+                            expanded.forEach(p => periods.add(p));
+                        } else {
+                            periods.add(fromPeriod);
+                        }
+                    } else if (toPeriod) {
+                        isFullYearRequest = false;
+                        // Check for year-only format and expand if needed
+                        if (/^\d{4}$/.test(toPeriod)) {
+                            const expanded = expandPeriodRangeFromTo(toPeriod, toPeriod);
+                            console.log(`  📅 Year-only expansion: ${toPeriod} → ${expanded.length} months`);
+                            expanded.forEach(p => periods.add(p));
+                        } else {
+                            periods.add(toPeriod);
+                        }
                     }
                 }
             }
@@ -8510,21 +8618,24 @@ async function processBatchQueue() {
             const resolvedRequests = new Set();
             
             // For each request, track which period chunks need to be processed
+            // Only needed for period list mode (not period range mode)
             const requestAccumulators = new Map();
-            for (const {cacheKey, request} of groupRequests) {
-                const { fromPeriod, toPeriod } = request.params;
-                let periodsNeeded;
-                if (fromPeriod && toPeriod && fromPeriod !== toPeriod) {
-                    // Full range - need all months
-                    periodsNeeded = new Set(expandPeriodRangeFromTo(fromPeriod, toPeriod));
-                } else {
-                    periodsNeeded = new Set([fromPeriod, toPeriod].filter(p => p));
+            if (!usePeriodRangeOptimization) {
+                for (const {cacheKey, request} of groupRequests) {
+                    const { fromPeriod, toPeriod } = request.params;
+                    let periodsNeeded;
+                    if (fromPeriod && toPeriod && fromPeriod !== toPeriod) {
+                        // Full range - need all months
+                        periodsNeeded = new Set(expandPeriodRangeFromTo(fromPeriod, toPeriod));
+                    } else {
+                        periodsNeeded = new Set([fromPeriod, toPeriod].filter(p => p));
+                    }
+                    requestAccumulators.set(cacheKey, {
+                        total: 0,
+                        periodsNeeded,
+                        periodsProcessed: new Set()
+                    });
                 }
-                requestAccumulators.set(cacheKey, {
-                    total: 0,
-                    periodsNeeded,
-                    periodsProcessed: new Set()
-                });
             }
             
             // YEAR OPTIMIZATION: If requesting full year for Income Statement accounts, use optimized year endpoint
@@ -8591,24 +8702,26 @@ async function processBatchQueue() {
             
             // Process chunks sequentially (both accounts AND periods)
             let chunkIndex = 0;
-            const totalChunks = accountChunks.length * periodChunks.length;
+            const totalChunks = usePeriodRangeOptimization ? accountChunks.length : accountChunks.length * periodChunks.length;
             
             for (let ai = 0; ai < accountChunks.length; ai++) {
-                for (let pi = 0; pi < periodChunks.length; pi++) {
+                if (usePeriodRangeOptimization) {
+                    // PERIOD RANGE MODE: Single query for entire range
                     chunkIndex++;
                     const accountChunk = accountChunks[ai];
-                    const periodChunk = periodChunks[pi];
                     const chunkStartTime = Date.now();
-                    console.log(`  📤 Chunk ${chunkIndex}/${totalChunks}: ${accountChunk.length} accounts × ${periodChunk.length} periods (fetching...)`);
-                
+                    console.log(`  📤 Chunk ${chunkIndex}/${totalChunks}: ${accountChunk.length} accounts × PERIOD RANGE (${commonFromPeriod} to ${commonToPeriod}) (fetching...)`);
+                    
                     try {
-                        // Make batch API call
+                        // Make batch API call with period range
                         const response = await fetch(`${SERVER_URL}/batch/balance`, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({
                                 accounts: accountChunk,
-                                periods: periodChunk,
+                                from_period: commonFromPeriod,
+                                to_period: commonToPeriod,
+                                periods: [], // Empty periods array indicates range mode
                                 subsidiary: filters.subsidiary || '',
                                 department: filters.department || '',
                                 location: filters.location || '',
@@ -8616,6 +8729,80 @@ async function processBatchQueue() {
                                 accountingbook: filters.accountingBook || ''
                             })
                         });
+                        
+                        if (!response.ok) {
+                            console.error(`  ❌ API error: ${response.status}`);
+                            // Reject all promises in this chunk
+                            for (const {cacheKey, request} of groupRequests) {
+                                if (accountChunk.includes(request.params.account) && !resolvedRequests.has(cacheKey)) {
+                                    request.reject(new Error(`API error: ${response.status}`));
+                                    resolvedRequests.add(cacheKey);
+                                }
+                            }
+                            continue;
+                        }
+                        
+                        const data = await response.json();
+                        const balances = data.balances || {};
+                        const chunkTime = ((Date.now() - chunkStartTime) / 1000).toFixed(1);
+                        console.log(`  ✅ Received data for ${accountChunk.length} accounts in ${chunkTime}s`);
+                        console.log(`     ✅ PROOF: Single query completed for entire period range`);
+                        
+                        // Process results - range query returns single total per account
+                        for (const {cacheKey, request} of groupRequests) {
+                            if (resolvedRequests.has(cacheKey)) continue;
+                            
+                            const account = request.params.account;
+                            if (!accountChunk.includes(account)) continue;
+                            
+                            // Range query returns balance under range key
+                            const rangeKey = `${commonFromPeriod} to ${commonToPeriod}`;
+                            const accountData = balances[account] || {};
+                            const total = accountData[rangeKey] || 0;
+                            
+                            // Cache the result
+                            cache.balance.set(cacheKey, total);
+                            
+                            // Resolve the promise
+                            request.resolve(total);
+                            resolvedRequests.add(cacheKey);
+                            
+                            console.log(`    🎯 RESOLVING (range): ${account} = ${total}`);
+                        }
+                    } catch (error) {
+                        console.error(`  ❌ Chunk error:`, error);
+                        // Reject all promises in this chunk
+                        for (const {cacheKey, request} of groupRequests) {
+                            if (accountChunk.includes(request.params.account) && !resolvedRequests.has(cacheKey)) {
+                                request.reject(error);
+                                resolvedRequests.add(cacheKey);
+                            }
+                        }
+                    }
+                } else {
+                    // PERIOD LIST MODE: Process each period chunk
+                    for (let pi = 0; pi < periodChunks.length; pi++) {
+                        chunkIndex++;
+                        const accountChunk = accountChunks[ai];
+                        const periodChunk = periodChunks[pi];
+                        const chunkStartTime = Date.now();
+                        console.log(`  📤 Chunk ${chunkIndex}/${totalChunks}: ${accountChunk.length} accounts × ${periodChunk.length} periods (fetching...)`);
+                    
+                        try {
+                            // Make batch API call
+                            const response = await fetch(`${SERVER_URL}/batch/balance`, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                    accounts: accountChunk,
+                                    periods: periodChunk,
+                                    subsidiary: filters.subsidiary || '',
+                                    department: filters.department || '',
+                                    location: filters.location || '',
+                                    class: filters.class || '',
+                                    accountingbook: filters.accountingBook || ''
+                                })
+                            });
                     
                         if (!response.ok) {
                             console.error(`  ❌ API error: ${response.status}`);

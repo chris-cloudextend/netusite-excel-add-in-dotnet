@@ -90,6 +90,22 @@ public class BatchBalanceRequest
     [JsonPropertyName("periods")]
     public List<string> Periods { get; set; } = new();
     
+    /// <summary>
+    /// Start period for period range queries (e.g., "Jan 2012").
+    /// When provided with to_period, queries all periods in range in a single query.
+    /// More efficient than expanding to individual periods and chunking.
+    /// </summary>
+    [JsonPropertyName("from_period")]
+    public string? FromPeriod { get; set; }
+    
+    /// <summary>
+    /// End period for period range queries (e.g., "Jan 2025").
+    /// When provided with from_period, queries all periods in range in a single query.
+    /// More efficient than expanding to individual periods and chunking.
+    /// </summary>
+    [JsonPropertyName("to_period")]
+    public string? ToPeriod { get; set; }
+    
     [JsonPropertyName("subsidiary")]
     public string? Subsidiary { get; set; }
     

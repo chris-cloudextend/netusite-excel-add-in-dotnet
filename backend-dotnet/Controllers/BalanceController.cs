@@ -543,8 +543,12 @@ public class BalanceController : ControllerBase
         if (request.Accounts == null || !request.Accounts.Any())
             return BadRequest(new { error = "At least one account is required" });
 
-        if (request.Periods == null || !request.Periods.Any())
-            return BadRequest(new { error = "At least one period is required" });
+        // Support both period list and period range
+        bool hasPeriodList = request.Periods != null && request.Periods.Any();
+        bool hasPeriodRange = !string.IsNullOrEmpty(request.FromPeriod) && !string.IsNullOrEmpty(request.ToPeriod);
+        
+        if (!hasPeriodList && !hasPeriodRange)
+            return BadRequest(new { error = "Either periods array or from_period+to_period is required" });
 
         // CRITICAL DEBUG: Log batch request details
         _logger.LogInformation("🔍🔍🔍 BATCH BALANCE REQUEST: {AccountCount} accounts × {PeriodCount} periods, Subsidiary: {Subsidiary}, Department: {Department}, Location: {Location}, Class: {Class}", 
