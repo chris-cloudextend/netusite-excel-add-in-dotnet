@@ -1332,58 +1332,68 @@ public class BalanceService : IBalanceService
                     }
                     else
                     {
-                        // Execute queries for each year and sum results
+                        // OPTIMIZATION: Use full_year_refresh query pattern for each year
+                        // This gets all 12 months in one query (like quick start), then extract specific months
+                        // Much faster than summing entire year ranges
                         var yearBalances = new Dictionary<string, decimal>();
                         
+                        // Extract years from ranges
+                        var years = new HashSet<int>();
                         foreach (var yearRange in yearRanges)
                         {
-                            var yearFrom = yearRange.FromPeriod;
-                            var yearTo = yearRange.ToPeriod;
+                            var fromParts = yearRange.FromPeriod.Split(' ');
+                            var toParts = yearRange.ToPeriod.Split(' ');
+                            if (fromParts.Length == 2 && int.TryParse(fromParts[1], out var fromYear))
+                                years.Add(fromYear);
+                            if (toParts.Length == 2 && int.TryParse(toParts[1], out var toYear))
+                                years.Add(toYear);
+                        }
+                        
+                        // Get all periods in the original range to determine which months to extract
+                        var allPeriodsInRange = await GetPeriodsInRangeAsync(fromPeriodForRange, toPeriodForRange);
+                        
+                        // For each year, use full_year_refresh pattern to get all 12 months
+                        foreach (var year in years.OrderBy(y => y))
+                        {
+                            _logger.LogDebug("   Querying full year {Year} (all 12 months) using optimized pattern", year);
                             
-                            var yearFromData = await _netSuiteService.GetPeriodAsync(yearFrom);
-                            var yearToData = await _netSuiteService.GetPeriodAsync(yearTo);
-                            
-                            if (yearFromData?.StartDate == null || yearToData?.EndDate == null)
-                            {
-                                _logger.LogWarning("Could not resolve period dates for year range: {From} to {To}", yearFrom, yearTo);
-                                continue;
-                            }
-                            
-                            var yearFromDate = ConvertToYYYYMMDD(yearFromData.StartDate);
-                            var yearToDate = ConvertToYYYYMMDD(yearToData.EndDate);
-                            
-                            var yearQuery = BuildPeriodRangeQuery(plAccountFilter, yearFromDate, yearToDate, targetSub, signFlip, accountingBook, segmentWhere);
-                            
-                            _logger.LogDebug("   Querying year: {From} to {To}", yearFrom, yearTo);
-                            
-                            var yearResult = await _netSuiteService.QueryRawWithErrorAsync(yearQuery, 30); // 30s timeout per year
+                            // Use the same query pattern as full_year_refresh
+                            var yearResult = await GetFullYearBalancesAsync(year, plAccounts, targetSub, accountingBook, segmentWhere);
                             queryCount++;
                             
-                            if (!yearResult.Success)
+                            if (yearResult == null)
                             {
-                                _logger.LogWarning("Year query failed for {From} to {To}: {Error}", yearFrom, yearTo, yearResult.ErrorCode);
+                                _logger.LogWarning("Year query failed for {Year}", year);
                                 continue;
                             }
                             
-                            // Sum balances for this year
-                            if (yearResult.Items != null)
+                            // Extract only the months that are in our period range for this year
+                            var yearPeriods = allPeriodsInRange.Where(p => 
                             {
-                                foreach (var row in yearResult.Items)
+                                var parts = p.Split(' ');
+                                return parts.Length == 2 && int.TryParse(parts[1], out var pYear) && pYear == year;
+                            }).ToList();
+                            
+                            // Sum balances for months in range
+                            foreach (var account in plAccounts)
+                            {
+                                if (!yearResult.ContainsKey(account))
+                                    continue;
+                                
+                                var accountYearBalances = yearResult[account];
+                                decimal yearTotal = 0;
+                                
+                                foreach (var period in yearPeriods)
                                 {
-                                    var acctnumber = row.TryGetProperty("acctnumber", out var numProp) ? numProp.GetString() ?? "" : "";
-                                    decimal balance = 0;
-                                    if (row.TryGetProperty("balance", out var balProp))
+                                    if (accountYearBalances.TryGetValue(period, out var periodBalance))
                                     {
-                                        balance = ParseBalance(balProp);
-                                    }
-                                    
-                                    if (!string.IsNullOrEmpty(acctnumber))
-                                    {
-                                        if (!yearBalances.ContainsKey(acctnumber))
-                                            yearBalances[acctnumber] = 0;
-                                        yearBalances[acctnumber] += balance;
+                                        yearTotal += periodBalance;
                                     }
                                 }
+                                
+                                if (!yearBalances.ContainsKey(account))
+                                    yearBalances[account] = 0;
+                                yearBalances[account] += yearTotal;
                             }
                         }
                         
@@ -1403,7 +1413,7 @@ public class BalanceService : IBalanceService
                         }
                         
                         _logger.LogInformation("✅ Year-split query complete: {Count} accounts, {YearCount} years, total balance calculated", 
-                            plAccounts.Count, yearRanges.Count());
+                            plAccounts.Count, years.Count);
                         
                         // Skip the single query execution below - set plQuery to empty to skip
                         plQuery = ""; // Empty string signals that year-split was used, skip single query
@@ -2562,6 +2572,153 @@ public class BalanceService : IBalanceService
         }
         
         return ranges;
+    }
+    
+    /// <summary>
+    /// Get full year balances for all accounts using the optimized full_year_refresh query pattern.
+    /// Returns: { account: { period: balance } } for all 12 months of the year.
+    /// </summary>
+    private async Task<Dictionary<string, Dictionary<string, decimal>>?> GetFullYearBalancesAsync(
+        int year, List<string> accounts, string targetSub, int accountingBook, string segmentWhere)
+    {
+        try
+        {
+            // Get fiscal year periods
+            var periodsQuery = $@"
+                SELECT id, periodname, startdate, enddate
+                FROM accountingperiod
+                WHERE isyear = 'F' AND isquarter = 'F'
+                  AND EXTRACT(YEAR FROM startdate) = {year}
+                  AND isadjust = 'F'
+                ORDER BY startdate";
+            
+            var periods = await _netSuiteService.QueryRawAsync(periodsQuery);
+            if (!periods.Any())
+            {
+                _logger.LogWarning("No periods found for year {Year}", year);
+                return null;
+            }
+            
+            // Build account filter
+            var plAccountFilter = NetSuiteService.BuildAccountFilter(accounts);
+            var incomeTypesSql = "'Income', 'OthIncome'";
+            
+            // Build month columns dynamically (same pattern as full_year_refresh)
+            var monthCases = new List<string>();
+            var periodMapping = new Dictionary<string, string>(); // periodId -> periodName
+            
+            foreach (var period in periods)
+            {
+                var periodId = period.TryGetProperty("id", out var idProp) ? idProp.ToString() : "";
+                var periodName = period.TryGetProperty("periodname", out var nameProp) ? nameProp.GetString() ?? "" : "";
+                
+                if (string.IsNullOrEmpty(periodId) || string.IsNullOrEmpty(periodName))
+                    continue;
+                
+                periodMapping[periodId] = periodName;
+                
+                var monthAbbr = periodName.Split(' ').FirstOrDefault()?.ToLower() ?? "";
+                if (string.IsNullOrEmpty(monthAbbr))
+                    continue;
+                
+                var colName = monthAbbr == "dec" ? "dec_month" : monthAbbr;
+                
+                monthCases.Add($@"
+                    SUM(CASE WHEN t.postingperiod = {periodId} THEN 
+                        TO_NUMBER(BUILTIN.CONSOLIDATE(tal.amount, 'LEDGER', 'DEFAULT', 'DEFAULT', {targetSub}, t.postingperiod, 'DEFAULT'))
+                        * CASE WHEN a.accttype IN ({incomeTypesSql}) THEN -1 ELSE 1 END
+                    ELSE 0 END) AS {colName}");
+            }
+            
+            if (!monthCases.Any())
+                return null;
+            
+            var monthColumns = string.Join(",\n", monthCases);
+            
+            // Get period IDs for filter
+            var periodIds = periods
+                .Select(p => p.TryGetProperty("id", out var idProp) ? idProp.ToString() : "")
+                .Where(id => !string.IsNullOrEmpty(id))
+                .ToList();
+            var periodFilter = string.Join(", ", periodIds);
+            
+            // P&L account types only
+            var plTypesSql = "'Income', 'COGS', 'Expense', 'OthIncome', 'OthExpense'";
+            
+            // Build the main query - one row per account (same as full_year_refresh)
+            var query = $@"
+                SELECT 
+                    a.acctnumber AS account_number,
+                    {monthColumns}
+                FROM transactionaccountingline tal
+                JOIN transaction t ON t.id = tal.transaction
+                JOIN account a ON a.id = tal.account
+                JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id
+                WHERE t.posting = 'T'
+                  AND tal.posting = 'T'
+                  AND a.accttype IN ({plTypesSql})
+                  AND {plAccountFilter}
+                  AND t.postingperiod IN ({periodFilter})
+                  AND tal.accountingbook = {accountingBook}
+                  AND {segmentWhere}
+                GROUP BY a.acctnumber
+                ORDER BY a.acctnumber";
+            
+            var rows = await _netSuiteService.QueryRawAsync(query, 60);
+            
+            // Month column mapping
+            var monthMapping = new Dictionary<string, string>();
+            foreach (var period in periods)
+            {
+                var periodName = period.TryGetProperty("periodname", out var nameProp) ? nameProp.GetString() ?? "" : "";
+                if (string.IsNullOrEmpty(periodName))
+                    continue;
+                
+                var monthAbbr = periodName.Split(' ').FirstOrDefault()?.ToLower() ?? "";
+                if (string.IsNullOrEmpty(monthAbbr))
+                    continue;
+                
+                var colName = monthAbbr == "dec" ? "dec_month" : monthAbbr;
+                monthMapping[colName] = periodName;
+            }
+            
+            // Transform results
+            var balances = new Dictionary<string, Dictionary<string, decimal>>();
+            
+            foreach (var row in rows)
+            {
+                var accountNumber = row.TryGetProperty("account_number", out var numProp) ? numProp.GetString() ?? "" : "";
+                if (string.IsNullOrEmpty(accountNumber))
+                    continue;
+                
+                balances[accountNumber] = new Dictionary<string, decimal>();
+                
+                foreach (var (colName, periodName) in monthMapping)
+                {
+                    decimal amount = 0;
+                    if (row.TryGetProperty(colName, out var amountProp) && amountProp.ValueKind != JsonValueKind.Null)
+                    {
+                        if (amountProp.ValueKind == JsonValueKind.String)
+                        {
+                            var strVal = amountProp.GetString();
+                            if (!string.IsNullOrEmpty(strVal) && double.TryParse(strVal, System.Globalization.NumberStyles.Float, 
+                                System.Globalization.CultureInfo.InvariantCulture, out var dblVal))
+                                amount = (decimal)dblVal;
+                        }
+                        else if (amountProp.ValueKind == JsonValueKind.Number)
+                            amount = amountProp.GetDecimal();
+                    }
+                    balances[accountNumber][periodName] = amount;
+                }
+            }
+            
+            return balances;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting full year balances for year {Year}", year);
+            return null;
+        }
     }
     
     /// <summary>
