@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.25';  // Period range optimization - fixed fetch indentation and added error handling
+const FUNCTIONS_VERSION = '4.0.6.26';  // Period range optimization - fixed book property name and logging
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -8498,7 +8498,7 @@ async function processBatchQueue() {
                                                commonFromPeriod && 
                                                commonToPeriod;
             
-            console.log(`     usePeriodRangeOptimization: ${usePeriodRangeOptimization}`);
+            console.log(`     usePeriodRangeOptimization: ${usePeriodRangeOptimization} (boolean: ${typeof usePeriodRangeOptimization === 'boolean' ? usePeriodRangeOptimization : 'ERROR - not boolean!'})`);
             
             if (usePeriodRangeOptimization) {
                 console.log(`  📅 PERIOD RANGE OPTIMIZATION: Using single query for ${commonFromPeriod} to ${commonToPeriod}`);
@@ -8738,7 +8738,7 @@ async function processBatchQueue() {
                                     department: filters.department || '',
                                     location: filters.location || '',
                                     class: filters.class || '',
-                                    accountingbook: filters.accountingBook || ''
+                                    book: filters.accountingBook || ''  // Backend expects 'book', not 'accountingbook'
                                 })
                             });
                         
