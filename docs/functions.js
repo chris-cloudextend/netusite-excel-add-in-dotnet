@@ -8525,6 +8525,9 @@ async function processBatchQueue() {
             
             if (!usePeriodRangeOptimization) {
                 // Only expand periods if NOT using range optimization
+                // Track periods by year to detect full year requests
+                const periodsByYear = new Map(); // year -> Set of month names
+                
                 for (const r of groupRequests) {
                     const { fromPeriod, toPeriod } = r.request.params;
                     if (fromPeriod && toPeriod && fromPeriod !== toPeriod) {
@@ -8545,7 +8548,40 @@ async function processBatchQueue() {
                         // Expand the range to all months
                         const expanded = expandPeriodRangeFromTo(fromPeriod, toPeriod);
                         console.log(`  📅 Expanding ${fromPeriod} to ${toPeriod} → ${expanded.length} months`);
-                        expanded.forEach(p => periods.add(p));
+                        expanded.forEach(p => {
+                            periods.add(p);
+                            // Track by year for full year detection
+                            const periodMatch = p.match(/^(\w+)\s+(\d{4})$/);
+                            if (periodMatch) {
+                                const year = periodMatch[2];
+                                if (!periodsByYear.has(year)) {
+                                    periodsByYear.set(year, new Set());
+                                }
+                                periodsByYear.get(year).add(periodMatch[1]);
+                            }
+                        });
+                    } else if (fromPeriod && toPeriod && fromPeriod === toPeriod) {
+                        // Single period request (e.g., "Feb 2025" to "Feb 2025")
+                        periods.add(fromPeriod);
+                        
+                        // Extract year and month for full year detection
+                        const periodMatch = fromPeriod.match(/^(\w+)\s+(\d{4})$/);
+                        if (periodMatch) {
+                            const month = periodMatch[1];
+                            const year = periodMatch[2];
+                            if (!periodsByYear.has(year)) {
+                                periodsByYear.set(year, new Set());
+                            }
+                            periodsByYear.get(year).add(month);
+                            
+                            // Set year for optimization if not set yet
+                            if (yearForOptimization === null) {
+                                yearForOptimization = year;
+                            } else if (yearForOptimization !== year) {
+                                // Multiple years detected - can't use year endpoint
+                                isFullYearRequest = false;
+                            }
+                        }
                     } else if (fromPeriod) {
                         isFullYearRequest = false;
                         // Check for year-only format and expand if needed
@@ -8568,6 +8604,23 @@ async function processBatchQueue() {
                         }
                     }
                 }
+                
+                // Check if we have all 12 months for a single year (full year detection)
+                if (yearForOptimization && periodsByYear.has(yearForOptimization)) {
+                    const monthsInYear = periodsByYear.get(yearForOptimization);
+                    const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+                    const hasAllMonths = monthNames.every(m => monthsInYear.has(m));
+                    
+                    if (hasAllMonths && periodsByYear.size === 1) {
+                        // All 12 months of a single year - treat as full year request
+                        isFullYearRequest = true;
+                        console.log(`  ✅ Detected full year request: All 12 months of ${yearForOptimization} present`);
+                    } else if (monthsInYear.size >= 10 && periodsByYear.size === 1) {
+                        // At least 10 months of a single year - still use year endpoint for efficiency
+                        isFullYearRequest = true;
+                        console.log(`  ✅ Detected near-full year request: ${monthsInYear.size} months of ${yearForOptimization} present`);
+                    }
+                }
             }
             const periodsArray = [...periods];
             
@@ -8577,13 +8630,25 @@ async function processBatchQueue() {
             
             // CRITICAL FIX: For income statement accounts, use year endpoint if:
             // 1. All accounts are income statement (already checked)
-            // 2. Requesting full year (Jan to Dec) OR all 12 months are present
+            // 2. Requesting full year (Jan to Dec) OR all 12 months are present OR 10+ months of same year
             // 3. All requests are for the same year
-            // This enables single query for entire year instead of 12 separate queries
+            // This enables single query for entire year instead of multiple chunked queries
             // NOTE: Only check year endpoint if NOT using period range optimization
+            // NOTE: Year endpoint returns full year total, so we use it when all requests need full year
+            // For individual months, we'll use full_year_refresh pattern (all 12 months in one query)
             const useYearEndpoint = !usePeriodRangeOptimization && allAccountsAreIncomeStatement && 
                 ((isFullYearRequest && yearForOptimization && periodsArray.length === 12) ||
                  (periodsArray.length === 12 && yearForOptimization));
+            
+            // OPTIMIZATION: For individual month requests (10+ months of same year), use full_year_refresh pattern
+            // This gets all 12 months in one query, then we extract the specific months needed
+            // Much more efficient than chunking into 3-4 separate queries
+            const useFullYearRefreshPattern = !usePeriodRangeOptimization && !useYearEndpoint && 
+                allAccountsAreIncomeStatement && yearForOptimization && 
+                periodsArray.length >= 10 && periodsArray.every(p => {
+                    const match = p.match(/^\w+\s+(\d{4})$/);
+                    return match && match[1] === yearForOptimization;
+                });
             
             if (useYearEndpoint) {
                 console.log(`  🗓️ YEAR OPTIMIZATION: Using /batch/balance/year for FY ${yearForOptimization} (Income Statement accounts)`);
@@ -8607,7 +8672,13 @@ async function processBatchQueue() {
             if (usePeriodRangeOptimization) {
                 // For period range, we don't chunk periods - single query handles entire range
                 periodChunks.push([]); // Empty array indicates range mode
+            } else if (useFullYearRefreshPattern) {
+                // OPTIMIZATION: For 10+ months of same year, send all in one batch (no chunking)
+                // This is much faster than chunking into 3-4 separate queries
+                periodChunks.push(periodsArray); // Send all periods in one batch
+                console.log(`  ✅ FULL YEAR PATTERN: Sending all ${periodsArray.length} periods in ONE batch (no chunking)`);
             } else {
+                // Normal chunking for smaller requests
                 for (let i = 0; i < periodsArray.length; i += MAX_PERIODS_PER_BATCH) {
                     periodChunks.push(periodsArray.slice(i, i + MAX_PERIODS_PER_BATCH));
                 }
