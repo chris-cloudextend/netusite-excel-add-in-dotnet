@@ -16,7 +16,7 @@ ARCHITECTURE (v3.0.5.190+):
 - Taskpane UI page: taskpane.html (actual UI)
 - This separation ensures Mac's "Developer Window" is blank, not a duplicate UI
 
-LAST UPDATED: 2025-12-31 (Version 4.0.6.19 - Fixed income statement period range routing to correctly sum periods instead of treating as period activity)
+LAST UPDATED: 2025-12-31 (Version 4.0.6.20 - Fixed income statement period range routing + added query performance test results)
 
 Context menu uses ExecuteFunction (runs in blank sharedruntime.html):
 1. ExecuteFunction sets localStorage flag with cell info
