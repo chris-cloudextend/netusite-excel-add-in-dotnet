@@ -1102,6 +1102,10 @@ public class BalanceService : IBalanceService
         string? fromStartDate = null;
         string? toEndDate = null;
         
+        // Store period data for later use in P&L query logic
+        AccountingPeriod? fromPeriodData = null;
+        AccountingPeriod? toPeriodData = null;
+        
         if (hasPeriodRange)
         {
             // Period range query - get date range for single query
@@ -1109,8 +1113,8 @@ public class BalanceService : IBalanceService
             fromPeriodForRange = request.FromPeriod;
             toPeriodForRange = request.ToPeriod;
             
-            var fromPeriodData = await _netSuiteService.GetPeriodAsync(fromPeriodForRange);
-            var toPeriodData = await _netSuiteService.GetPeriodAsync(toPeriodForRange);
+            fromPeriodData = await _netSuiteService.GetPeriodAsync(fromPeriodForRange);
+            toPeriodData = await _netSuiteService.GetPeriodAsync(toPeriodForRange);
             
             if (fromPeriodData?.StartDate == null || toPeriodData?.EndDate == null)
             {
@@ -1298,42 +1302,123 @@ public class BalanceService : IBalanceService
             
             if (isPeriodRange)
             {
-                // PERIOD RANGE QUERY: Single query summing all periods in range
-                // This is much faster than querying each period separately
-                isRangeQuery = true;
-                plQuery = $@"
-                    SELECT 
-                        a.acctnumber,
-                        SUM(
-                            TO_NUMBER(
-                                BUILTIN.CONSOLIDATE(
-                                    tal.amount,
-                                    'LEDGER',
-                                    'DEFAULT',
-                                    'DEFAULT',
-                                    {targetSub},
-                                    t.postingperiod,
-                                    'DEFAULT'
-                                )
-                            ) * {signFlip}
-                        ) as balance
-                    FROM transactionaccountingline tal
-                    JOIN transaction t ON t.id = tal.transaction
-                    JOIN account a ON a.id = tal.account
-                    JOIN accountingperiod ap ON ap.id = t.postingperiod
-                    JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id
-                    WHERE t.posting = 'T'
-                      AND tal.posting = 'T'
-                      AND {plAccountFilter}
-                      AND ap.startdate >= TO_DATE('{fromStartDate}', 'YYYY-MM-DD')
-                      AND ap.enddate <= TO_DATE('{toEndDate}', 'YYYY-MM-DD')
-                      AND a.accttype IN ({AccountType.PlTypesSql})
-                      AND tal.accountingbook = {accountingBook}
-                      AND {segmentWhere}
-                    GROUP BY a.acctnumber";
+                // OPTIMIZATION: For ranges >2 years, split into individual year queries
+                // This avoids NetSuite query execution plan threshold that causes 310x slowdown
+                var fromDate = ParseDate(fromPeriodData!.StartDate);
+                var toDate = ParseDate(toPeriodData!.EndDate);
+                var yearsDiff = 0.0;
                 
-                _logger.LogInformation("📅 P&L PERIOD RANGE QUERY: {Count} accounts, {From} to {To} ({PeriodCount} periods) - SINGLE QUERY", 
-                    plAccounts.Count, fromPeriodForRange, toPeriodForRange, expandedPeriods.Count);
+                if (fromDate.HasValue && toDate.HasValue)
+                {
+                    var totalDays = (toDate.Value - fromDate.Value).TotalDays;
+                    yearsDiff = totalDays / 365.25; // Account for leap years
+                }
+                
+                if (yearsDiff > 2.0)
+                {
+                    // Split into individual year queries for better performance
+                    _logger.LogInformation("📅 P&L PERIOD RANGE QUERY: {Count} accounts, {From} to {To} ({Years:F1} years) - SPLITTING INTO YEAR QUERIES", 
+                        plAccounts.Count, fromPeriodForRange, toPeriodForRange, yearsDiff);
+                    
+                    // Generate year ranges
+                    var yearRanges = await GenerateYearRangesAsync(fromPeriodForRange, toPeriodForRange);
+                    
+                    if (yearRanges.Count == 0)
+                    {
+                        _logger.LogWarning("Could not generate year ranges for {From} to {To}", fromPeriodForRange, toPeriodForRange);
+                        // Fall back to single query
+                        isRangeQuery = true;
+                        plQuery = BuildPeriodRangeQuery(plAccountFilter, fromStartDate!, toEndDate!, targetSub, signFlip, accountingBook, segmentWhere);
+                    }
+                    else
+                    {
+                        // Execute queries for each year and sum results
+                        var yearBalances = new Dictionary<string, decimal>();
+                        
+                        foreach (var yearRange in yearRanges)
+                        {
+                            var yearFrom = yearRange.FromPeriod;
+                            var yearTo = yearRange.ToPeriod;
+                            
+                            var yearFromData = await _netSuiteService.GetPeriodAsync(yearFrom);
+                            var yearToData = await _netSuiteService.GetPeriodAsync(yearTo);
+                            
+                            if (yearFromData?.StartDate == null || yearToData?.EndDate == null)
+                            {
+                                _logger.LogWarning("Could not resolve period dates for year range: {From} to {To}", yearFrom, yearTo);
+                                continue;
+                            }
+                            
+                            var yearFromDate = ConvertToYYYYMMDD(yearFromData.StartDate);
+                            var yearToDate = ConvertToYYYYMMDD(yearToData.EndDate);
+                            
+                            var yearQuery = BuildPeriodRangeQuery(plAccountFilter, yearFromDate, yearToDate, targetSub, signFlip, accountingBook, segmentWhere);
+                            
+                            _logger.LogDebug("   Querying year: {From} to {To}", yearFrom, yearTo);
+                            
+                            var yearResult = await _netSuiteService.QueryRawWithErrorAsync(yearQuery, 30); // 30s timeout per year
+                            queryCount++;
+                            
+                            if (!yearResult.Success)
+                            {
+                                _logger.LogWarning("Year query failed for {From} to {To}: {Error}", yearFrom, yearTo, yearResult.ErrorCode);
+                                continue;
+                            }
+                            
+                            // Sum balances for this year
+                            if (yearResult.Items != null)
+                            {
+                                foreach (var row in yearResult.Items)
+                                {
+                                    var acctnumber = row.TryGetProperty("acctnumber", out var numProp) ? numProp.GetString() ?? "" : "";
+                                    decimal balance = 0;
+                                    if (row.TryGetProperty("balance", out var balProp))
+                                    {
+                                        balance = ParseBalance(balProp);
+                                    }
+                                    
+                                    if (!string.IsNullOrEmpty(acctnumber))
+                                    {
+                                        if (!yearBalances.ContainsKey(acctnumber))
+                                            yearBalances[acctnumber] = 0;
+                                        yearBalances[acctnumber] += balance;
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // Store combined results
+                        foreach (var account in plAccounts)
+                        {
+                            if (!result.Balances.ContainsKey(account))
+                                result.Balances[account] = new Dictionary<string, decimal>();
+                            
+                            var totalBalance = yearBalances.GetValueOrDefault(account, 0);
+                            var rangeKey = $"{fromPeriodForRange} to {toPeriodForRange}";
+                            result.Balances[account][rangeKey] = totalBalance;
+                            
+                            // Cache the result
+                            var rangeCacheKey = $"balance:{account}:{fromPeriodForRange}:{toPeriodForRange}:{filtersHash}";
+                            _cache.Set(rangeCacheKey, totalBalance, TimeSpan.FromHours(24));
+                        }
+                        
+                        _logger.LogInformation("✅ Year-split query complete: {Count} accounts, {YearCount} years, total balance calculated", 
+                            plAccounts.Count, yearRanges.Count());
+                        
+                        // Skip the single query execution below - set plQuery to empty to skip
+                        plQuery = ""; // Empty string signals that year-split was used, skip single query
+                    }
+                }
+                else
+                {
+                    // PERIOD RANGE QUERY: Single query summing all periods in range (≤2 years)
+                    // This is faster for small ranges
+                    isRangeQuery = true;
+                    plQuery = BuildPeriodRangeQuery(plAccountFilter, fromStartDate!, toEndDate!, targetSub, signFlip, accountingBook, segmentWhere);
+                    
+                    _logger.LogInformation("📅 P&L PERIOD RANGE QUERY: {Count} accounts, {From} to {To} ({PeriodCount} periods, {Years:F1} years) - SINGLE QUERY", 
+                        plAccounts.Count, fromPeriodForRange, toPeriodForRange, expandedPeriods.Count, yearsDiff);
+                }
             }
             else
             {
@@ -1376,65 +1461,75 @@ public class BalanceService : IBalanceService
             // Use error-aware query method
             // For period range queries, use longer timeout (up to 5 minutes for large ranges)
             // Period list queries use default 30s timeout
-            int plQueryTimeout = isRangeQuery ? 300 : 30; // 5 minutes for range, 30s for list
-            if (isRangeQuery)
+            // Skip query execution if year-split was used (plQuery will be empty string)
+            if (!string.IsNullOrEmpty(plQuery))
             {
-                _logger.LogInformation("⏱️ Using extended timeout ({Timeout}s) for period range query", plQueryTimeout);
-            }
-            var plResult = await _netSuiteService.QueryRawWithErrorAsync(plQuery, plQueryTimeout);
-            queryCount++;
-            
-            // INVARIANT: Errors fail loudly - return error code to caller
-            if (!plResult.Success)
-            {
-                _logger.LogWarning("P&L batch query failed with {ErrorCode}: {Details}", 
-                    plResult.ErrorCode, plResult.ErrorDetails);
-                result.Error = plResult.ErrorCode;
-                return result; // Return partial results with error
-            }
-
-            if (isRangeQuery)
-            {
-                // Period range query returns single total per account
-                foreach (var row in plResult.Items)
+                int plQueryTimeout = isRangeQuery ? 300 : 30; // 5 minutes for range, 30s for list
+                if (isRangeQuery)
                 {
-                    var acctnumber = row.TryGetProperty("acctnumber", out var numProp) ? numProp.GetString() ?? "" : "";
-                    decimal balance = 0;
-                    if (row.TryGetProperty("balance", out var balProp))
-                    {
-                        balance = ParseBalance(balProp);
-                    }
-
-                    if (!result.Balances.ContainsKey(acctnumber))
-                        result.Balances[acctnumber] = new Dictionary<string, decimal>();
-
-                    // Store under range key for consistency
-                    var rangeKey = $"{fromPeriodForRange} to {toPeriodForRange}";
-                    result.Balances[acctnumber][rangeKey] = balance;
-                    
-                    // Also cache using range key
-                    var rangeCacheKey = $"balance:{acctnumber}:{fromPeriodForRange}:{toPeriodForRange}:{filtersHash}";
-                    _cache.Set(rangeCacheKey, balance, TimeSpan.FromHours(24));
+                    _logger.LogInformation("⏱️ Using extended timeout ({Timeout}s) for period range query", plQueryTimeout);
                 }
-            }
-            else
-            {
-                // Period list query returns per-period breakdown
-                foreach (var row in plResult.Items)
+                var plResult = await _netSuiteService.QueryRawWithErrorAsync(plQuery, plQueryTimeout);
+                queryCount++;
+            
+                // INVARIANT: Errors fail loudly - return error code to caller
+                if (!plResult.Success)
                 {
-                    var acctnumber = row.TryGetProperty("acctnumber", out var numProp) ? numProp.GetString() ?? "" : "";
-                    var periodname = row.TryGetProperty("periodname", out var periodProp) ? periodProp.GetString() ?? "" : "";
+                    _logger.LogWarning("P&L batch query failed with {ErrorCode}: {Details}", 
+                        plResult.ErrorCode, plResult.ErrorDetails);
+                    result.Error = plResult.ErrorCode;
+                    return result; // Return partial results with error
+                }
 
-                    decimal balance = 0;
-                    if (row.TryGetProperty("balance", out var balProp))
+                if (isRangeQuery)
+                {
+                    // Period range query returns single total per account
+                    if (plResult.Items != null)
                     {
-                        balance = ParseBalance(balProp);
+                        foreach (var row in plResult.Items)
+                        {
+                            var acctnumber = row.TryGetProperty("acctnumber", out var numProp) ? numProp.GetString() ?? "" : "";
+                            decimal balance = 0;
+                            if (row.TryGetProperty("balance", out var balProp))
+                            {
+                                balance = ParseBalance(balProp);
+                            }
+
+                            if (!result.Balances.ContainsKey(acctnumber))
+                                result.Balances[acctnumber] = new Dictionary<string, decimal>();
+
+                            // Store under range key for consistency
+                            var rangeKey = $"{fromPeriodForRange} to {toPeriodForRange}";
+                            result.Balances[acctnumber][rangeKey] = balance;
+                            
+                            // Also cache using range key
+                            var rangeCacheKey = $"balance:{acctnumber}:{fromPeriodForRange}:{toPeriodForRange}:{filtersHash}";
+                            _cache.Set(rangeCacheKey, balance, TimeSpan.FromHours(24));
+                        }
                     }
+                }
+                else
+                {
+                    // Period list query returns per-period breakdown
+                    if (plResult.Items != null)
+                    {
+                        foreach (var row in plResult.Items)
+                        {
+                            var acctnumber = row.TryGetProperty("acctnumber", out var numProp) ? numProp.GetString() ?? "" : "";
+                            var periodname = row.TryGetProperty("periodname", out var periodProp) ? periodProp.GetString() ?? "" : "";
 
-                    if (!result.Balances.ContainsKey(acctnumber))
-                        result.Balances[acctnumber] = new Dictionary<string, decimal>();
+                            decimal balance = 0;
+                            if (row.TryGetProperty("balance", out var balProp))
+                            {
+                                balance = ParseBalance(balProp);
+                            }
 
-                    result.Balances[acctnumber][periodname] = balance;
+                            if (!result.Balances.ContainsKey(acctnumber))
+                                result.Balances[acctnumber] = new Dictionary<string, decimal>();
+
+                            result.Balances[acctnumber][periodname] = balance;
+                        }
+                    }
                 }
             }
         }
@@ -2400,6 +2495,104 @@ public class BalanceService : IBalanceService
         }
         
         return periods;
+    }
+    
+    /// <summary>
+    /// Generate year ranges for a period range (e.g., "Jan 2023" to "Dec 2025" -> [("Jan 2023", "Dec 2023"), ("Jan 2024", "Dec 2024"), ("Jan 2025", "Dec 2025")]).
+    /// </summary>
+    private async Task<List<(string FromPeriod, string ToPeriod)>> GenerateYearRangesAsync(string fromPeriod, string toPeriod)
+    {
+        var ranges = new List<(string, string)>();
+        
+        var fromPeriodData = await _netSuiteService.GetPeriodAsync(fromPeriod);
+        var toPeriodData = await _netSuiteService.GetPeriodAsync(toPeriod);
+        
+        if (fromPeriodData?.StartDate == null || toPeriodData?.StartDate == null)
+            return ranges;
+        
+        var fromDate = ParseDate(fromPeriodData.StartDate);
+        var toDate = ParseDate(toPeriodData.StartDate);
+        
+        if (fromDate == null || toDate == null)
+            return ranges;
+        
+        // Get all periods in range to identify year boundaries
+        var allPeriods = await GetPeriodsInRangeAsync(fromPeriod, toPeriod);
+        
+        if (allPeriods.Count == 0)
+            return ranges;
+        
+        // Group periods by year
+        var periodsByYear = new Dictionary<int, List<string>>();
+        
+        foreach (var periodName in allPeriods)
+        {
+            var periodData = await _netSuiteService.GetPeriodAsync(periodName);
+            if (periodData?.StartDate == null)
+                continue;
+            
+            var periodDate = ParseDate(periodData.StartDate);
+            if (periodDate == null)
+                continue;
+            
+            var year = periodDate.Value.Year;
+            if (!periodsByYear.ContainsKey(year))
+                periodsByYear[year] = new List<string>();
+            periodsByYear[year].Add(periodName);
+        }
+        
+        // Generate ranges for each year
+        foreach (var year in periodsByYear.Keys.OrderBy(y => y))
+        {
+            var yearPeriods = periodsByYear[year].OrderBy(p => p).ToList();
+            if (yearPeriods.Count == 0)
+                continue;
+            
+            var yearFrom = yearPeriods.First();
+            var yearTo = yearPeriods.Last();
+            
+            ranges.Add((yearFrom, yearTo));
+        }
+        
+        return ranges;
+    }
+    
+    /// <summary>
+    /// Build a period range query for P&L accounts.
+    /// </summary>
+    private string BuildPeriodRangeQuery(string plAccountFilter, string fromStartDate, string toEndDate, 
+        string targetSub, string signFlip, int accountingBook, string segmentWhere)
+    {
+        return $@"
+            SELECT 
+                a.acctnumber,
+                SUM(
+                    TO_NUMBER(
+                        BUILTIN.CONSOLIDATE(
+                            tal.amount,
+                            'LEDGER',
+                            'DEFAULT',
+                            'DEFAULT',
+                            {targetSub},
+                            t.postingperiod,
+                            'DEFAULT'
+                        )
+                    ) * {signFlip}
+                ) as balance
+            FROM transactionaccountingline tal
+            JOIN transaction t ON t.id = tal.transaction
+            JOIN account a ON a.id = tal.account
+            JOIN accountingperiod ap ON ap.id = t.postingperiod
+            JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id
+            WHERE t.posting = 'T'
+              AND tal.posting = 'T'
+              AND {plAccountFilter}
+              AND ap.startdate >= TO_DATE('{fromStartDate}', 'YYYY-MM-DD')
+              AND ap.enddate <= TO_DATE('{toEndDate}', 'YYYY-MM-DD')
+              AND a.accttype IN ({AccountType.PlTypesSql})
+              AND tal.accountingbook = {accountingBook}
+              AND {segmentWhere}
+            GROUP BY a.acctnumber";
     }
     
     /// <summary>
