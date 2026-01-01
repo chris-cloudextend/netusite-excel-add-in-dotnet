@@ -8727,20 +8727,27 @@ async function processBatchQueue() {
                                 throw new Error('Period range optimization variables not set');
                             }
                             
+                            // Build request body - only include non-empty optional fields
+                            const requestBody = {
+                                accounts: accountChunk,
+                                from_period: commonFromPeriod,
+                                to_period: commonToPeriod,
+                                periods: [] // Empty periods array indicates range mode
+                            };
+                            
+                            // Only add optional fields if they have values (don't send empty strings)
+                            if (filters.subsidiary) requestBody.subsidiary = filters.subsidiary;
+                            if (filters.department) requestBody.department = filters.department;
+                            if (filters.location) requestBody.location = filters.location;
+                            if (filters.class) requestBody.class = filters.class;
+                            if (filters.accountingBook) requestBody.book = filters.accountingBook; // Backend expects 'book'
+                            
+                            console.log(`  📤 Sending period range request:`, JSON.stringify(requestBody, null, 2));
+                            
                             const response = await fetch(`${SERVER_URL}/batch/balance`, {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({
-                                    accounts: accountChunk,
-                                    from_period: commonFromPeriod,
-                                    to_period: commonToPeriod,
-                                    periods: [], // Empty periods array indicates range mode
-                                    subsidiary: filters.subsidiary || '',
-                                    department: filters.department || '',
-                                    location: filters.location || '',
-                                    class: filters.class || '',
-                                    book: filters.accountingBook || ''  // Backend expects 'book', not 'accountingbook'
-                                })
+                                body: JSON.stringify(requestBody)
                             });
                         
                             if (!response.ok) {
