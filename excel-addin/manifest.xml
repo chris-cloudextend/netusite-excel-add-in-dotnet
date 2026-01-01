@@ -16,7 +16,7 @@ ARCHITECTURE (v3.0.5.190+):
 - Taskpane UI page: taskpane.html (actual UI)
 - This separation ensures Mac's "Developer Window" is blank, not a duplicate UI
 
-LAST UPDATED: 2025-12-31 (Version 4.0.6.18 - Added debugging timestamps for status close and batch queue activity tracking)
+LAST UPDATED: 2025-12-31 (Version 4.0.6.19 - Fixed income statement period range routing to correctly sum periods instead of treating as period activity)
 
 Context menu uses ExecuteFunction (runs in blank sharedruntime.html):
 1. ExecuteFunction sets localStorage flag with cell info
@@ -31,7 +31,7 @@ Context menu uses ExecuteFunction (runs in blank sharedruntime.html):
   xsi:type="TaskPaneApp">
 
   <Id>c3d4e5f6-7890-12ab-cdef-345678901cde</Id>
-        <Version>4.0.6.18</Version>
+        <Version>4.0.6.19</Version>
   <ProviderName>CloudExtend</ProviderName>
   <DefaultLocale>en-US</DefaultLocale>
   <DisplayName DefaultValue="XAVI for NetSuite"/>

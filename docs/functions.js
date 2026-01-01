@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.18';  // Added debugging timestamps for status close and batch queue activity tracking
+const FUNCTIONS_VERSION = '4.0.6.19';  // Fixed income statement period range routing to correctly sum periods instead of treating as period activity
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -7922,27 +7922,53 @@ async function processBatchQueue() {
     // Account types are only used for optimizations (year endpoint, grid detection)
     // ================================================================
     for (const [cacheKey, request] of requests) {
-        const { fromPeriod, toPeriod } = request.params;
+        const { account, fromPeriod, toPeriod } = request.params;
         const isCumulative = (!fromPeriod || fromPeriod === '') && toPeriod && toPeriod !== '';
+        
         // Period activity: both fromPeriod and toPeriod present AND different periods
         // CRITICAL FIX: Changed from "fromPeriod !== ''" to "fromPeriod !== toPeriod"
         // This ensures same-period queries (e.g., "Jan 2025" to "Jan 2025") go to regularRequests
-        const isPeriodActivity = fromPeriod && toPeriod && fromPeriod !== toPeriod;
+        const hasPeriodRange = fromPeriod && toPeriod && fromPeriod !== toPeriod;
+        
+        // CRITICAL FIX: Period activity is ONLY for Balance Sheet accounts
+        // Income Statement accounts with period ranges need to SUM periods, not show activity
+        // Check account type to determine if this is period activity (BS) or period range (P&L)
+        let isPeriodActivity = false;
+        if (hasPeriodRange) {
+            // Check if account is Balance Sheet type
+            const typeCacheKey = getCacheKey('type', { account });
+            const accountType = cache.type.has(typeCacheKey) ? cache.type.get(typeCacheKey) : null;
+            
+            if (accountType && isBalanceSheetType(accountType)) {
+                // BS account with period range = period activity (shows activity between periods)
+                isPeriodActivity = true;
+                console.log(`   🔍 [ROUTING] Account ${account} is BS type "${accountType}" - routing to period activity (${fromPeriod} → ${toPeriod})`);
+            } else if (accountType) {
+                // P&L account with period range = needs to SUM periods (goes to regularRequests)
+                isPeriodActivity = false;
+                console.log(`   🔍 [ROUTING] Account ${account} is P&L type "${accountType}" - routing to regularRequests to SUM periods (${fromPeriod} → ${toPeriod})`);
+            } else {
+                // Account type unknown - default to regularRequests (sum periods)
+                // This is safer: if it's P&L, it's correct; if it's BS, backend will handle it
+                isPeriodActivity = false;
+                console.log(`   ⚠️ [ROUTING] Account ${account} type unknown - defaulting to regularRequests (sum periods) for ${fromPeriod} → ${toPeriod}`);
+            }
+        }
         
         if (isCumulative) {
             // Cumulative = empty fromPeriod with a toPeriod (always BS)
             cumulativeRequests.push([cacheKey, request]);
         } else if (isPeriodActivity) {
-            // Period activity query (both fromPeriod and toPeriod, different periods) - route to individual /balance calls
-            // The batch endpoint expands period ranges, which is wrong for period activity queries
-            // This will catch BS period activity queries (e.g., "Jan 2025" to "Mar 2025")
-            // Income Statements with same period won't match (isPeriodActivity = false) and will go to regularRequests
+            // Period activity query (BS account with both fromPeriod and toPeriod, different periods)
+            // Route to individual /balance calls with period_activity breakdown
+            // This shows activity between periods, not cumulative balance
             periodActivityRequests.push([cacheKey, request]);
         } else {
-            // Regular P&L period range requests - can use batch endpoint
+            // Regular P&L period range requests - can use batch endpoint that SUMS periods
             // This includes:
             // - Income Statement single-period queries (fromPeriod === toPeriod, e.g., "Jan 2025" to "Jan 2025")
-            // - Income Statement full-year queries (fromPeriod !== toPeriod but not caught by isPeriodActivity due to year endpoint handling)
+            // - Income Statement period range queries (fromPeriod !== toPeriod, e.g., "Jan 2012" to "Jan 2025")
+            //   These need to SUM all periods in the range
             // - Any other requests that don't match cumulative or period activity patterns
             regularRequests.push([cacheKey, request]);
         }
