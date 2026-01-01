@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.29';  // Full year pattern optimization - send all months in one batch instead of chunking
+const FUNCTIONS_VERSION = '4.0.6.30';  // Improved full-year detection with fallback and enhanced logging
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -8624,6 +8624,21 @@ async function processBatchQueue() {
             }
             const periodsArray = [...periods];
             
+            // FALLBACK: If yearForOptimization wasn't set but we have periods, try to detect it
+            if (!yearForOptimization && periodsArray.length > 0) {
+                const years = new Set();
+                for (const p of periodsArray) {
+                    const match = p.match(/^\w+\s+(\d{4})$/);
+                    if (match) {
+                        years.add(match[1]);
+                    }
+                }
+                if (years.size === 1) {
+                    yearForOptimization = Array.from(years)[0];
+                    console.log(`  🔍 Detected year from periods: ${yearForOptimization} (${periodsArray.length} periods)`);
+                }
+            }
+            
             // OPTIMIZATION: Year endpoint returns P&L activity totals, which is correct for Income Statement accounts.
             // NOTE: allAccountsAreIncomeStatement is already calculated above in the period range optimization check
             // Reuse that value instead of recalculating
@@ -8650,14 +8665,43 @@ async function processBatchQueue() {
                     return match && match[1] === yearForOptimization;
                 });
             
+            // Enhanced logging for full-year pattern detection
+            if (useFullYearRefreshPattern) {
+                console.log(`  ✅ FULL YEAR REFRESH PATTERN DETECTED:`);
+                console.log(`     Accounts: ${accounts.length} (all Income Statement: ${allAccountsAreIncomeStatement})`);
+                console.log(`     Periods: ${periodsArray.length} months of ${yearForOptimization}`);
+                console.log(`     ✅ Will send all ${periodsArray.length} periods in ONE batch (no chunking)`);
+            } else if (allAccountsAreIncomeStatement && !usePeriodRangeOptimization && periodsArray.length >= 10) {
+                // Log why full-year pattern wasn't used
+                console.log(`  ⚠️ FULL YEAR PATTERN NOT USED (but should be?):`);
+                console.log(`     allAccountsAreIncomeStatement: ${allAccountsAreIncomeStatement}`);
+                console.log(`     yearForOptimization: ${yearForOptimization}`);
+                console.log(`     periodsArray.length: ${periodsArray.length} (need >= 10)`);
+                console.log(`     usePeriodRangeOptimization: ${usePeriodRangeOptimization}`);
+                console.log(`     useYearEndpoint: ${useYearEndpoint}`);
+                if (yearForOptimization && periodsArray.length >= 10) {
+                    const allSameYear = periodsArray.every(p => {
+                        const match = p.match(/^\w+\s+(\d{4})$/);
+                        return match && match[1] === yearForOptimization;
+                    });
+                    console.log(`     allSameYear: ${allSameYear}`);
+                    if (!allSameYear) {
+                        const years = new Set(periodsArray.map(p => {
+                            const match = p.match(/^\w+\s+(\d{4})$/);
+                            return match ? match[1] : 'unknown';
+                        }));
+                        console.log(`     Years found: ${Array.from(years).join(', ')}`);
+                    }
+                }
+            }
+            
             if (useYearEndpoint) {
                 console.log(`  🗓️ YEAR OPTIMIZATION: Using /batch/balance/year for FY ${yearForOptimization} (Income Statement accounts)`);
                 console.log(`     Accounts: ${accounts.length}, Periods: ${periodsArray.length}, Full Year: ${isFullYearRequest}`);
                 console.log(`     ✅ PROOF: Year endpoint will be used (single query for entire year)`);
-            } else if (allAccountsAreIncomeStatement && !usePeriodRangeOptimization) {
+            } else if (allAccountsAreIncomeStatement && !usePeriodRangeOptimization && periodsArray.length < 10) {
                 console.log(`  ⚠️ Income Statement accounts detected but year optimization not used:`);
-                console.log(`     isFullYearRequest: ${isFullYearRequest}, yearForOptimization: ${yearForOptimization}, periodsArray.length: ${periodsArray.length}`);
-                // Note: periodChunks not defined yet, will be defined below
+                console.log(`     isFullYearRequest: ${isFullYearRequest}, yearForOptimization: ${yearForOptimization}, periodsArray.length: ${periodsArray.length} (< 10, need >= 10)`);
             }
             
             console.log(`  Batch: ${accounts.length} accounts × ${periodsArray.length} period(s)`);
