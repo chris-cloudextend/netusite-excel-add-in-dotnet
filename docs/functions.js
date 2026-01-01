@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.22';  // Period range optimization - fixed account type check
+const FUNCTIONS_VERSION = '4.0.6.23';  // Period range optimization - fixed duplicate variable declaration
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -8571,14 +8571,8 @@ async function processBatchQueue() {
             const periodsArray = [...periods];
             
             // OPTIMIZATION: Year endpoint returns P&L activity totals, which is correct for Income Statement accounts.
-            // Only use year endpoint for Income Statement accounts (P&L) - Balance Sheet accounts need cumulative logic.
-            // Check if all accounts in this group are Income Statement accounts
-            const allAccountsAreIncomeStatement = accounts.every(account => {
-                const typeCacheKey = getCacheKey('type', { account });
-                const accountType = cache.type.has(typeCacheKey) ? cache.type.get(typeCacheKey) : null;
-                return accountType && (accountType === 'Income' || accountType === 'COGS' || 
-                    accountType === 'Expense' || accountType === 'OthIncome' || accountType === 'OthExpense');
-            });
+            // NOTE: allAccountsAreIncomeStatement is already calculated above in the period range optimization check
+            // Reuse that value instead of recalculating
             
             // CRITICAL FIX: For income statement accounts, use year endpoint if:
             // 1. All accounts are income statement (already checked)
