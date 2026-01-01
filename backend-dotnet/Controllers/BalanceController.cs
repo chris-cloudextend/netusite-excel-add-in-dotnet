@@ -553,11 +553,15 @@ public class BalanceController : ControllerBase
         // CRITICAL DEBUG: Log batch request details
         _logger.LogInformation("🔍🔍🔍 BATCH BALANCE REQUEST: {AccountCount} accounts × {PeriodCount} periods, Subsidiary: {Subsidiary}, Department: {Department}, Location: {Location}, Class: {Class}", 
             request.Accounts.Count, 
-            request.Periods.Count,
+            request.Periods?.Count ?? 0,
             request.Subsidiary ?? "(empty)",
             request.Department ?? "(empty)",
             request.Location ?? "(empty)",
             request.Class ?? "(empty)");
+        _logger.LogInformation("   📅 PERIOD RANGE: FromPeriod={FromPeriod}, ToPeriod={ToPeriod}, HasPeriodRange={HasPeriodRange}", 
+            request.FromPeriod ?? "(null)", 
+            request.ToPeriod ?? "(null)",
+            hasPeriodRange);
         
         if (request.Accounts.Count <= 10)
         {
@@ -568,13 +572,24 @@ public class BalanceController : ControllerBase
             _logger.LogInformation("   Accounts (first 10): {Accounts}...", string.Join(", ", request.Accounts.Take(10)));
         }
         
-        if (request.Periods.Count <= 10)
+        if (hasPeriodRange)
         {
-            _logger.LogInformation("   Periods: {Periods}", string.Join(", ", request.Periods));
+            _logger.LogInformation("   Periods array: {Count} items (using period range instead)", request.Periods?.Count ?? 0);
+        }
+        else if (request.Periods != null && request.Periods.Count > 0)
+        {
+            if (request.Periods.Count <= 10)
+            {
+                _logger.LogInformation("   Periods: {Periods}", string.Join(", ", request.Periods));
+            }
+            else
+            {
+                _logger.LogInformation("   Periods (first 10): {Periods}...", string.Join(", ", request.Periods.Take(10)));
+            }
         }
         else
         {
-            _logger.LogInformation("   Periods (first 10): {Periods}...", string.Join(", ", request.Periods.Take(10)));
+            _logger.LogInformation("   Periods array: empty or null");
         }
 
         try

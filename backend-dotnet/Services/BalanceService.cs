@@ -1194,18 +1194,51 @@ public class BalanceService : IBalanceService
         _logger.LogDebug("Cache miss - querying NetSuite");
 
         // Get all period dates (with ID for BS CONSOLIDATE)
+        // For period range queries, we don't need to expand periods - we use date range directly
         var periodInfo = new Dictionary<string, (string? Start, string? End, string? Id)>();
-        foreach (var period in expandedPeriods)
+        
+        if (isPeriodRange)
         {
-            var pd = await _netSuiteService.GetPeriodAsync(period);
-            if (pd != null)
-                periodInfo[period] = (pd.StartDate, pd.EndDate, pd.Id);
+            // For period range queries, we only need the date range (fromStartDate, toEndDate)
+            // We don't need to expand periods for the query itself, but we do need them for cache keys
+            // If period expansion failed but we have dates, we can still proceed
+            if (expandedPeriods.Any())
+            {
+                // Get period info for cache purposes
+                foreach (var period in expandedPeriods)
+                {
+                    var pd = await _netSuiteService.GetPeriodAsync(period);
+                    if (pd != null)
+                        periodInfo[period] = (pd.StartDate, pd.EndDate, pd.Id);
+                }
+            }
+            
+            // For period range queries, validate that we have date range
+            if (string.IsNullOrEmpty(fromStartDate) || string.IsNullOrEmpty(toEndDate))
+            {
+                _logger.LogWarning("❌ Period range query missing date range - fromStartDate: {From}, toEndDate: {To}", 
+                    fromStartDate, toEndDate);
+                return result;
+            }
+            
+            _logger.LogInformation("✅ Period range query validated - using date range: {From} to {To}", 
+                fromStartDate, toEndDate);
         }
-
-        if (!periodInfo.Any())
+        else
         {
-            _logger.LogWarning("No valid periods found");
-            return result;
+            // For period list queries, we need expanded periods
+            foreach (var period in expandedPeriods)
+            {
+                var pd = await _netSuiteService.GetPeriodAsync(period);
+                if (pd != null)
+                    periodInfo[period] = (pd.StartDate, pd.EndDate, pd.Id);
+            }
+
+            if (!periodInfo.Any())
+            {
+                _logger.LogWarning("❌ No valid periods found in period list");
+                return result;
+            }
         }
 
         // Get subsidiary hierarchy for query (subsidiaryId and targetSub already resolved for cache check)
@@ -1410,7 +1443,16 @@ public class BalanceService : IBalanceService
             var bsAccountFilter = NetSuiteService.BuildAccountFilter(bsAccounts);
             // No sign flip for batch BS - Python doesn't flip either
 
-            foreach (var (period, info) in periodInfo)
+            // For period range queries, BS accounts are not supported (they need specific periods)
+            // Only P&L accounts support period range queries
+            if (isPeriodRange)
+            {
+                _logger.LogWarning("⚠️ Balance Sheet accounts with period range not supported - BS accounts need specific periods");
+                // Skip BS accounts for period range queries
+            }
+            else
+            {
+                foreach (var (period, info) in periodInfo)
             {
                 if (info.End == null) continue;
 
@@ -1476,6 +1518,7 @@ public class BalanceService : IBalanceService
 
                     result.Balances[acctnumber][period] = balance;
                 }
+            }
             }
         }
 
