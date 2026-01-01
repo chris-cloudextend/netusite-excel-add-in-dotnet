@@ -340,11 +340,41 @@ toEndDate = ConvertToYYYYMMDD(toPeriodData.EndDate);
    - If range > 2 years, split into multiple queries and combine results
    - This might avoid the execution plan threshold issue
 
+## Performance Optimization: Individual Years vs Single Range
+
+### Test Results: 2023 + 2024 + 2025
+
+**Individual Year Queries (Summed)**:
+- Jan 2023 - Dec 2023: ~14.56s
+- Jan 2024 - Dec 2024: ~17.87s  
+- Jan 2025 - Dec 2025: ~0.33s (cached)
+- **Total Time: ~32.76 seconds**
+
+**Single Range Query (2023-2025)**:
+- Jan 2023 - Dec 2025: **74.64 seconds**
+
+**Performance Gain**: Individual years are **2.28x faster** than single range query.
+
+### Recommendation
+
+For users querying multiple years, **summing individual year queries is significantly faster** than using a single period range query when the range exceeds 2 years.
+
+**Example**:
+- ❌ Slow: `=XAVI.BALANCE("4220", "Jan 2023", "Dec 2025")` → 74.64s
+- ✅ Fast: `=XAVI.BALANCE("4220", "Jan 2023", "Dec 2023") + XAVI.BALANCE("4220", "Jan 2024", "Dec 2024") + XAVI.BALANCE("4220", "Jan 2025", "Dec 2025")` → ~32.76s
+
+### Implementation Consideration
+
+The backend could automatically split large ranges (>2 years) into individual year queries and sum the results, providing better performance without requiring users to manually split their formulas.
+
 ## Conclusion
 
 The performance anomaly at 2023 suggests a **query execution plan threshold** or **data volume anomaly** rather than a linear scaling issue. The fact that adding more years doesn't proportionally increase query time, and sometimes makes it faster, strongly suggests NetSuite is using different execution strategies based on range size or data characteristics.
 
 **Most Likely Cause**: NetSuite's query optimizer switches execution plans when the date range exceeds a certain threshold (likely 2-3 years of data), and the new plan is significantly slower but more stable across larger ranges.
 
-**Recommended Next Step**: Execute EXPLAIN PLAN queries in NetSuite to compare execution plans between 2024-2025 and 2023-2025 ranges.
+**Recommended Solutions**:
+1. **Short-term**: Document that users should sum individual year queries for ranges >2 years
+2. **Long-term**: Implement automatic range splitting in the backend for ranges >2 years
+3. **Investigation**: Execute EXPLAIN PLAN queries in NetSuite to compare execution plans between 2024-2025 and 2023-2025 ranges
 
