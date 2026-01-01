@@ -344,28 +344,47 @@ toEndDate = ConvertToYYYYMMDD(toPeriodData.EndDate);
 
 ### Test Results: 2023 + 2024 + 2025
 
+#### Scenario 1: Cold Cache (First Query)
+
 **Individual Year Queries (Summed)**:
-- Jan 2023 - Dec 2023: ~14.56s
-- Jan 2024 - Dec 2024: ~17.87s  
-- Jan 2025 - Dec 2025: ~0.33s (cached)
+- Jan 2023 - Dec 2023: 14.56s
+- Jan 2024 - Dec 2024: 17.87s  
+- Jan 2025 - Dec 2025: 0.33s (cached)
 - **Total Time: ~32.76 seconds**
 
 **Single Range Query (2023-2025)**:
 - Jan 2023 - Dec 2025: **74.64 seconds**
 
-**Performance Gain**: Individual years are **2.28x faster** than single range query.
+**Performance Gain**: Individual years are **2.28x faster** when cache is cold.
+
+#### Scenario 2: Warm Cache (Subsequent Queries)
+
+**Individual Year Queries (Summed)**:
+- All years cached: ~0.70s total
+
+**Single Range Query (2023-2025)**:
+- Cached: **0.22s**
+
+**Performance**: Single range is **3.22x faster** when cache is warm.
 
 ### Recommendation
 
-For users querying multiple years, **summing individual year queries is significantly faster** than using a single period range query when the range exceeds 2 years.
+**For Cold Cache (First Query)**:
+- ✅ **Use individual year queries** for ranges >2 years
+- Example: `=XAVI.BALANCE("4220", "Jan 2023", "Dec 2023") + XAVI.BALANCE("4220", "Jan 2024", "Dec 2024") + XAVI.BALANCE("4220", "Jan 2025", "Dec 2025")` → ~32.76s
+- vs `=XAVI.BALANCE("4220", "Jan 2023", "Dec 2025")` → 74.64s
 
-**Example**:
-- ❌ Slow: `=XAVI.BALANCE("4220", "Jan 2023", "Dec 2025")` → 74.64s
-- ✅ Fast: `=XAVI.BALANCE("4220", "Jan 2023", "Dec 2023") + XAVI.BALANCE("4220", "Jan 2024", "Dec 2024") + XAVI.BALANCE("4220", "Jan 2025", "Dec 2025")` → ~32.76s
+**For Warm Cache (Subsequent Queries)**:
+- ✅ **Use single range query** (faster and simpler)
+- Example: `=XAVI.BALANCE("4220", "Jan 2023", "Dec 2025")` → 0.22s
 
 ### Implementation Consideration
 
-The backend could automatically split large ranges (>2 years) into individual year queries and sum the results, providing better performance without requiring users to manually split their formulas.
+The backend could implement **adaptive query strategy**:
+1. **First query (cold cache)**: Split ranges >2 years into individual year queries
+2. **Subsequent queries (warm cache)**: Use single range query (cache benefits)
+
+This would provide optimal performance in both scenarios without requiring users to manually split their formulas.
 
 ## Conclusion
 
