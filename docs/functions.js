@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.30';  // Improved full-year detection with fallback and enhanced logging
+const FUNCTIONS_VERSION = '4.0.6.31';  // Fix quick start income statement to use full_year_refresh for 10+ months
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -3837,6 +3837,20 @@ async function runBuildModeBatch() {
         }).filter(y => y && !isNaN(parseInt(y))));
         const yearsArray = Array.from(years);
         
+        // Track periods by year to detect full-year requests
+        const periodsByYear = new Map(); // year -> Set of month names
+        for (const p of periodsArray) {
+            if (!p) continue;
+            const periodMatch = p.match(/^(\w+)\s+(\d{4})$/);
+            if (periodMatch) {
+                const year = periodMatch[2];
+                if (!periodsByYear.has(year)) {
+                    periodsByYear.set(year, new Set());
+                }
+                periodsByYear.get(year).add(periodMatch[1]);
+            }
+        }
+        
         // Classify accounts
         const plAccounts = [];
         const bsAccounts = [];
@@ -3848,7 +3862,35 @@ async function runBuildModeBatch() {
             }
         }
         
-        const usePLFullYear = yearsArray.length > 0 && plAccounts.length >= 5;
+        // IMPROVED: Check if we have 10+ months of a single year for P&L accounts
+        // This detects the quick start income statement pattern (12 single-period requests for same year)
+        let usePLFullYear = false;
+        if (yearsArray.length > 0 && plAccounts.length >= 5) {
+            // Check each year to see if we have 10+ months
+            for (const year of yearsArray) {
+                if (periodsByYear.has(year)) {
+                    const monthsInYear = periodsByYear.get(year);
+                    if (monthsInYear.size >= 10) {
+                        usePLFullYear = true;
+                        console.log(`   ✅ BUILD MODE: Detected ${monthsInYear.size} months of ${year} for ${plAccounts.length} P&L accounts - using full_year_refresh`);
+                        break;
+                    }
+                }
+            }
+            // Fallback: If we have all 12 months of a single year, use full year refresh
+            if (!usePLFullYear && yearsArray.length === 1) {
+                const year = yearsArray[0];
+                if (periodsByYear.has(year)) {
+                    const monthsInYear = periodsByYear.get(year);
+                    const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+                    const hasAllMonths = monthNames.every(m => monthsInYear.has(m));
+                    if (hasAllMonths) {
+                        usePLFullYear = true;
+                        console.log(`   ✅ BUILD MODE: Detected all 12 months of ${year} for ${plAccounts.length} P&L accounts - using full_year_refresh`);
+                    }
+                }
+            }
+        }
         
         // STEP 4: Fetch Balance Sheet accounts for this filter group
         if (bsAccounts.length > 0 && periodsArray.length > 0) {
