@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.27';  // Period range optimization - fixed boolean conversion and empty string handling
+const FUNCTIONS_VERSION = '4.0.6.28';  // Period range optimization - fixed error handling for TIMEOUT
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -8774,6 +8774,20 @@ async function processBatchQueue() {
                             }
                             
                             const data = await response.json();
+                            
+                            // Check for backend errors (TIMEOUT, RATELIMIT, etc.)
+                            if (data.error) {
+                                console.error(`  ❌ Backend error: ${data.error}`);
+                                // Reject all promises in this chunk with the error
+                                for (const {cacheKey, request} of groupRequests) {
+                                    if (accountChunk.includes(request.params.account) && !resolvedRequests.has(cacheKey)) {
+                                        request.reject(new Error(data.error));
+                                        resolvedRequests.add(cacheKey);
+                                    }
+                                }
+                                continue;
+                            }
+                            
                             const balances = data.balances || {};
                             const chunkTime = ((Date.now() - chunkStartTime) / 1000).toFixed(1);
                             console.log(`  ✅ Received data for ${accountChunk.length} accounts in ${chunkTime}s`);
