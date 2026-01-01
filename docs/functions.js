@@ -8733,14 +8733,14 @@ async function processBatchQueue() {
                                     accounts: accountChunk,
                                     from_period: commonFromPeriod,
                                     to_period: commonToPeriod,
-                                periods: [], // Empty periods array indicates range mode
-                                subsidiary: filters.subsidiary || '',
-                                department: filters.department || '',
-                                location: filters.location || '',
-                                class: filters.class || '',
-                                accountingbook: filters.accountingBook || ''
-                            })
-                        });
+                                    periods: [], // Empty periods array indicates range mode
+                                    subsidiary: filters.subsidiary || '',
+                                    department: filters.department || '',
+                                    location: filters.location || '',
+                                    class: filters.class || '',
+                                    accountingbook: filters.accountingBook || ''
+                                })
+                            });
                         
                             if (!response.ok) {
                                 console.error(`  ❌ API error: ${response.status}`);
