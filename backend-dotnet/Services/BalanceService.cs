@@ -1374,7 +1374,14 @@ public class BalanceService : IBalanceService
             }
             
             // Use error-aware query method
-            var plResult = await _netSuiteService.QueryRawWithErrorAsync(plQuery);
+            // For period range queries, use longer timeout (up to 5 minutes for large ranges)
+            // Period list queries use default 30s timeout
+            int plQueryTimeout = isRangeQuery ? 300 : 30; // 5 minutes for range, 30s for list
+            if (isRangeQuery)
+            {
+                _logger.LogInformation("⏱️ Using extended timeout ({Timeout}s) for period range query", plQueryTimeout);
+            }
+            var plResult = await _netSuiteService.QueryRawWithErrorAsync(plQuery, plQueryTimeout);
             queryCount++;
             
             // INVARIANT: Errors fail loudly - return error code to caller
