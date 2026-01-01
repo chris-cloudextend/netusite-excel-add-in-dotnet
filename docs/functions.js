@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.33';  // Fix duplicate full_year_refresh calls - call once before chunking, not per chunk
+const FUNCTIONS_VERSION = '4.0.6.34';  // Fix duplicate requestAccumulators declaration causing SyntaxError
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -8955,120 +8955,6 @@ async function processBatchQueue() {
                     }
                 } catch (yearError) {
                     console.warn(`  ⚠️ Year endpoint error, falling back to monthly:`, yearError);
-                }
-            }
-            
-            // SPECIAL CASE: If using full_year_refresh, call it ONCE for all accounts
-            // (not per chunk, since it returns all accounts anyway)
-            // This must happen BEFORE chunking to avoid duplicate calls
-            if (useFullYearRefreshPatternFinal && yearForOptimization) {
-                console.log(`  📤 FULL YEAR REFRESH (SINGLE CALL): All ${accounts.length} accounts for year ${yearForOptimization} (fetching all 12 months...)`);
-                const fullYearStartTime = Date.now();
-                
-                try {
-                    const response = await fetch(`${SERVER_URL}/batch/full_year_refresh`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            year: parseInt(yearForOptimization),
-                            subsidiary: filters.subsidiary || '',
-                            department: filters.department || '',
-                            location: filters.location || '',
-                            class: filters.class || '',
-                            skip_bs: true,
-                            accountingbook: filters.accountingBook || ''
-                        })
-                    });
-                    
-                    if (!response.ok) {
-                        console.error(`  ❌ Full year refresh error: ${response.status}`);
-                        // Fall back to regular chunked processing
-                        console.log(`  ⚠️ Falling back to regular /batch/balance endpoint`);
-                    } else {
-                        const data = await response.json();
-                        const balances = data.balances || {};
-                        const fullYearTime = ((Date.now() - fullYearStartTime) / 1000).toFixed(1);
-                        
-                        console.log(`  ✅ Full year refresh returned ${Object.keys(balances).length} accounts in ${fullYearTime}s`);
-                        console.log(`     ✅ All 12 months retrieved in SINGLE query (not per chunk)`);
-                        
-                        // Track which requests have been resolved
-                        const resolvedRequests = new Set();
-                        
-                        // Distribute results - each request gets its specific month value
-                        for (const {cacheKey, request} of groupRequests) {
-                            if (resolvedRequests.has(cacheKey)) continue;
-                            
-                            const account = request.params.account;
-                            
-                            // For single-period requests (fromPeriod === toPeriod), extract the specific month
-                            const fromPeriod = request.params.fromPeriod;
-                            const toPeriod = request.params.toPeriod;
-                            
-                            // Get account data with all 12 months
-                            const accountBalances = balances[account] || {};
-                            
-                            // Determine which period value to use
-                            let periodValue = 0;
-                            if (fromPeriod && toPeriod && fromPeriod === toPeriod) {
-                                // Single period request - get that specific month
-                                periodValue = accountBalances[fromPeriod] || 0;
-                            } else if (fromPeriod && toPeriod && fromPeriod !== toPeriod) {
-                                // Range request - sum the months in range
-                                const expanded = expandPeriodRangeFromTo(fromPeriod, toPeriod);
-                                periodValue = expanded.reduce((sum, p) => sum + (accountBalances[p] || 0), 0);
-                            } else if (toPeriod) {
-                                // Single period (toPeriod only)
-                                periodValue = accountBalances[toPeriod] || 0;
-                            }
-                            
-                            // Cache and resolve
-                            cache.balance.set(cacheKey, periodValue);
-                            request.resolve(periodValue);
-                            resolvedRequests.add(cacheKey);
-                            
-                            console.log(`    🎯 RESOLVING (full_year_refresh): ${account} for ${toPeriod} = ${periodValue}`);
-                        }
-                        
-                        console.log(`  ✅ All ${groupRequests.length} requests resolved from single full_year_refresh call`);
-                        continue; // Skip chunked processing entirely - go to next filter group
-                    }
-                } catch (error) {
-                    console.error(`  ❌ Full year refresh error:`, error);
-                    console.log(`  ⚠️ Falling back to regular /batch/balance endpoint`);
-                    // Fall through to regular chunked processing
-                }
-            }
-            
-            // Track which requests have been resolved
-            const resolvedRequests = new Set();
-            
-            // For each request, track which period chunks need to be processed
-            // Only needed for period list mode (not period range mode)
-            const requestAccumulators = new Map();
-            
-            if (!usePeriodRangeOptimization) {
-                // Initialize accumulators for period list mode
-                for (const {cacheKey, request} of groupRequests) {
-                    const fromPeriod = request.params.fromPeriod;
-                    const toPeriod = request.params.toPeriod;
-                    
-                    // Determine which periods this request needs
-                    const periodsNeeded = new Set();
-                    if (fromPeriod && toPeriod && fromPeriod !== toPeriod) {
-                        // Range request - expand to individual periods
-                        const expanded = expandPeriodRangeFromTo(fromPeriod, toPeriod);
-                        expanded.forEach(p => periodsNeeded.add(p));
-                    } else if (toPeriod) {
-                        // Single period request
-                        periodsNeeded.add(toPeriod);
-                    }
-                    
-                    requestAccumulators.set(cacheKey, {
-                        total: 0,
-                        periodsNeeded,
-                        periodsProcessed: new Set()
-                    });
                 }
             }
             
