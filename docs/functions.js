@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.23';  // Period range optimization - fixed duplicate variable declaration
+const FUNCTIONS_VERSION = '4.0.6.24';  // Period range optimization - fixed missing closing brace
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -8579,7 +8579,8 @@ async function processBatchQueue() {
             // 2. Requesting full year (Jan to Dec) OR all 12 months are present
             // 3. All requests are for the same year
             // This enables single query for entire year instead of 12 separate queries
-            const useYearEndpoint = allAccountsAreIncomeStatement && 
+            // NOTE: Only check year endpoint if NOT using period range optimization
+            const useYearEndpoint = !usePeriodRangeOptimization && allAccountsAreIncomeStatement && 
                 ((isFullYearRequest && yearForOptimization && periodsArray.length === 12) ||
                  (periodsArray.length === 12 && yearForOptimization));
             
@@ -8587,10 +8588,10 @@ async function processBatchQueue() {
                 console.log(`  🗓️ YEAR OPTIMIZATION: Using /batch/balance/year for FY ${yearForOptimization} (Income Statement accounts)`);
                 console.log(`     Accounts: ${accounts.length}, Periods: ${periodsArray.length}, Full Year: ${isFullYearRequest}`);
                 console.log(`     ✅ PROOF: Year endpoint will be used (single query for entire year)`);
-            } else if (allAccountsAreIncomeStatement) {
+            } else if (allAccountsAreIncomeStatement && !usePeriodRangeOptimization) {
                 console.log(`  ⚠️ Income Statement accounts detected but year optimization not used:`);
                 console.log(`     isFullYearRequest: ${isFullYearRequest}, yearForOptimization: ${yearForOptimization}, periodsArray.length: ${periodsArray.length}`);
-                console.log(`     ⚠️ PROOF: Will use monthly batching instead (${periodChunks.length} period chunks)`);
+                // Note: periodChunks not defined yet, will be defined below
             }
             
             console.log(`  Batch: ${accounts.length} accounts × ${periodsArray.length} period(s)`);
@@ -8602,11 +8603,20 @@ async function processBatchQueue() {
             }
             
             const periodChunks = [];
-            for (let i = 0; i < periodsArray.length; i += MAX_PERIODS_PER_BATCH) {
-                periodChunks.push(periodsArray.slice(i, i + MAX_PERIODS_PER_BATCH));
+            if (usePeriodRangeOptimization) {
+                // For period range, we don't chunk periods - single query handles entire range
+                periodChunks.push([]); // Empty array indicates range mode
+            } else {
+                for (let i = 0; i < periodsArray.length; i += MAX_PERIODS_PER_BATCH) {
+                    periodChunks.push(periodsArray.slice(i, i + MAX_PERIODS_PER_BATCH));
+                }
             }
             
-            console.log(`  Split into ${accountChunks.length} account chunk(s) × ${periodChunks.length} period chunk(s) = ${accountChunks.length * periodChunks.length} total batches`);
+            if (usePeriodRangeOptimization) {
+                console.log(`  Split into ${accountChunks.length} account chunk(s) × 1 period range = ${accountChunks.length} total batches`);
+            } else {
+                console.log(`  Split into ${accountChunks.length} account chunk(s) × ${periodChunks.length} period chunk(s) = ${accountChunks.length * periodChunks.length} total batches`);
+            }
             
             // Track which requests have been resolved
             const resolvedRequests = new Set();
@@ -8695,20 +8705,22 @@ async function processBatchQueue() {
             }
             
             // Process chunks sequentially (both accounts AND periods)
-            let chunkIndex = 0;
-            const totalChunks = usePeriodRangeOptimization ? accountChunks.length : accountChunks.length * periodChunks.length;
-            
-            for (let ai = 0; ai < accountChunks.length; ai++) {
-                if (usePeriodRangeOptimization) {
-                    // PERIOD RANGE MODE: Single query for entire range
-                    chunkIndex++;
-                    const accountChunk = accountChunks[ai];
-                    const chunkStartTime = Date.now();
-                    console.log(`  📤 Chunk ${chunkIndex}/${totalChunks}: ${accountChunk.length} accounts × PERIOD RANGE (${commonFromPeriod} to ${commonToPeriod}) (fetching...)`);
-                    
-                    try {
-                        // Make batch API call with period range
-                        const response = await fetch(`${SERVER_URL}/batch/balance`, {
+            // Skip if year endpoint was used (already resolved all requests)
+            if (!useYearEndpoint || usePeriodRangeOptimization) {
+                let chunkIndex = 0;
+                const totalChunks = usePeriodRangeOptimization ? accountChunks.length : accountChunks.length * periodChunks.length;
+                
+                for (let ai = 0; ai < accountChunks.length; ai++) {
+                    if (usePeriodRangeOptimization) {
+                        // PERIOD RANGE MODE: Single query for entire range
+                        chunkIndex++;
+                        const accountChunk = accountChunks[ai];
+                        const chunkStartTime = Date.now();
+                        console.log(`  📤 Chunk ${chunkIndex}/${totalChunks}: ${accountChunk.length} accounts × PERIOD RANGE (${commonFromPeriod} to ${commonToPeriod}) (fetching...)`);
+                        
+                        try {
+                            // Make batch API call with period range
+                            const response = await fetch(`${SERVER_URL}/batch/balance`, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({
@@ -8724,177 +8736,184 @@ async function processBatchQueue() {
                             })
                         });
                         
-                        if (!response.ok) {
-                            console.error(`  ❌ API error: ${response.status}`);
+                            if (!response.ok) {
+                                console.error(`  ❌ API error: ${response.status}`);
+                                // Reject all promises in this chunk
+                                for (const {cacheKey, request} of groupRequests) {
+                                    if (accountChunk.includes(request.params.account) && !resolvedRequests.has(cacheKey)) {
+                                        request.reject(new Error(`API error: ${response.status}`));
+                                        resolvedRequests.add(cacheKey);
+                                    }
+                                }
+                                continue;
+                            }
+                            
+                            const data = await response.json();
+                            const balances = data.balances || {};
+                            const chunkTime = ((Date.now() - chunkStartTime) / 1000).toFixed(1);
+                            console.log(`  ✅ Received data for ${accountChunk.length} accounts in ${chunkTime}s`);
+                            console.log(`     ✅ PROOF: Single query completed for entire period range`);
+                            
+                            // Process results - range query returns single total per account
+                            for (const {cacheKey, request} of groupRequests) {
+                                if (resolvedRequests.has(cacheKey)) continue;
+                                
+                                const account = request.params.account;
+                                if (!accountChunk.includes(account)) continue;
+                                
+                                // Range query returns balance under range key
+                                const rangeKey = `${commonFromPeriod} to ${commonToPeriod}`;
+                                const accountData = balances[account] || {};
+                                const total = accountData[rangeKey] || 0;
+                                
+                                // Cache the result
+                                cache.balance.set(cacheKey, total);
+                                
+                                // Resolve the promise
+                                request.resolve(total);
+                                resolvedRequests.add(cacheKey);
+                                
+                                console.log(`    🎯 RESOLVING (range): ${account} = ${total}`);
+                            }
+                        } catch (error) {
+                            console.error(`  ❌ Chunk error:`, error);
                             // Reject all promises in this chunk
                             for (const {cacheKey, request} of groupRequests) {
                                 if (accountChunk.includes(request.params.account) && !resolvedRequests.has(cacheKey)) {
-                                    request.reject(new Error(`API error: ${response.status}`));
+                                    request.reject(error);
                                     resolvedRequests.add(cacheKey);
                                 }
                             }
-                            continue;
                         }
+                    } else {
+                        // PERIOD LIST MODE: Process each period chunk
+                        for (let pi = 0; pi < periodChunks.length; pi++) {
+                            chunkIndex++;
+                            const accountChunk = accountChunks[ai];
+                            const periodChunk = periodChunks[pi];
+                            const chunkStartTime = Date.now();
+                            console.log(`  📤 Chunk ${chunkIndex}/${totalChunks}: ${accountChunk.length} accounts × ${periodChunk.length} periods (fetching...)`);
                         
-                        const data = await response.json();
-                        const balances = data.balances || {};
-                        const chunkTime = ((Date.now() - chunkStartTime) / 1000).toFixed(1);
-                        console.log(`  ✅ Received data for ${accountChunk.length} accounts in ${chunkTime}s`);
-                        console.log(`     ✅ PROOF: Single query completed for entire period range`);
-                        
-                        // Process results - range query returns single total per account
-                        for (const {cacheKey, request} of groupRequests) {
-                            if (resolvedRequests.has(cacheKey)) continue;
+                            try {
+                                // Make batch API call
+                                const response = await fetch(`${SERVER_URL}/batch/balance`, {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({
+                                        accounts: accountChunk,
+                                        periods: periodChunk,
+                                        subsidiary: filters.subsidiary || '',
+                                        department: filters.department || '',
+                                        location: filters.location || '',
+                                        class: filters.class || '',
+                                        accountingbook: filters.accountingBook || ''
+                                    })
+                                });
                             
-                            const account = request.params.account;
-                            if (!accountChunk.includes(account)) continue;
+                                if (!response.ok) {
+                                    console.error(`  ❌ API error: ${response.status}`);
+                                    // Reject all promises in this chunk
+                                    for (const {cacheKey, request} of groupRequests) {
+                                        if (accountChunk.includes(request.params.account) && !resolvedRequests.has(cacheKey)) {
+                                            request.reject(new Error(`API error: ${response.status}`));
+                                            resolvedRequests.add(cacheKey);
+                                        }
+                                    }
+                                    continue;
+                                }
                             
-                            // Range query returns balance under range key
-                            const rangeKey = `${commonFromPeriod} to ${commonToPeriod}`;
-                            const accountData = balances[account] || {};
-                            const total = accountData[rangeKey] || 0;
+                                const data = await response.json();
+                                const balances = data.balances || {};
+                                const chunkTime = ((Date.now() - chunkStartTime) / 1000).toFixed(1);
+                                
+                                console.log(`  ✅ Received data for ${Object.keys(balances).length} accounts in ${chunkTime}s`);
+                                
+                                // Distribute results to waiting Promises
+                                for (const {cacheKey, request} of groupRequests) {
+                                    // Skip if already resolved
+                                    if (resolvedRequests.has(cacheKey)) {
+                                        continue;
+                                    }
+                                    
+                                    const account = request.params.account;
+                                    
+                                    // Only process accounts in this chunk
+                                    if (!accountChunk.includes(account)) {
+                                        continue;
+                                    }
+                                    
+                                    const fromPeriod = request.params.fromPeriod;
+                                    const toPeriod = request.params.toPeriod;
+                                    const accountBalances = balances[account] || {};
+                                    const accum = requestAccumulators.get(cacheKey);
+                                    
+                                    // Process each period in this chunk that this request needs
+                                    for (const period of periodChunk) {
+                                        // Check if this request needs this period
+                                        if (accum.periodsNeeded.has(period) && !accum.periodsProcessed.has(period)) {
+                                            accum.total += accountBalances[period] || 0;
+                                            accum.periodsProcessed.add(period);
+                                        }
+                                    }
+                                    
+                                    // Cache the accumulated result
+                                    cache.balance.set(cacheKey, accum.total);
+                                    
+                                    // Check if all needed periods are now processed
+                                    const allPeriodsProcessed = [...accum.periodsNeeded].every(p => accum.periodsProcessed.has(p));
+                                    
+                                    if (allPeriodsProcessed) {
+                                        console.log(`    🎯 RESOLVING: ${account} = ${accum.total}`);
+                                        try {
+                                            request.resolve(accum.total);
+                                            console.log(`    ✅ RESOLVED: ${account}`);
+                                        } catch (resolveErr) {
+                                            console.error(`    ❌ RESOLVE ERROR for ${account}:`, resolveErr);
+                                        }
+                                        resolvedRequests.add(cacheKey);
+                                    }
+                                }
                             
-                            // Cache the result
-                            cache.balance.set(cacheKey, total);
+                            } catch (error) {
+                                console.error(`  ❌ Fetch error:`, error);
+                                // Reject all promises in this chunk
+                                for (const {cacheKey, request} of groupRequests) {
+                                    if (accountChunk.includes(request.params.account) && !resolvedRequests.has(cacheKey)) {
+                                        request.reject(error);
+                                        resolvedRequests.add(cacheKey);
+                                    }
+                                }
+                            }
                             
-                            // Resolve the promise
-                            request.resolve(total);
-                            resolvedRequests.add(cacheKey);
-                            
-                            console.log(`    🎯 RESOLVING (range): ${account} = ${total}`);
-                        }
-                    } catch (error) {
-                        console.error(`  ❌ Chunk error:`, error);
-                        // Reject all promises in this chunk
-                        for (const {cacheKey, request} of groupRequests) {
-                            if (accountChunk.includes(request.params.account) && !resolvedRequests.has(cacheKey)) {
-                                request.reject(error);
-                                resolvedRequests.add(cacheKey);
+                            // Delay between chunks to avoid rate limiting
+                            if (chunkIndex < totalChunks) {
+                                console.log(`  ⏱️  Waiting ${CHUNK_DELAY}ms before next chunk...`);
+                                await new Promise(resolve => setTimeout(resolve, CHUNK_DELAY));
                             }
                         }
                     }
-                } else {
-                    // PERIOD LIST MODE: Process each period chunk
-                    for (let pi = 0; pi < periodChunks.length; pi++) {
-                        chunkIndex++;
-                        const accountChunk = accountChunks[ai];
-                        const periodChunk = periodChunks[pi];
-                        const chunkStartTime = Date.now();
-                        console.log(`  📤 Chunk ${chunkIndex}/${totalChunks}: ${accountChunk.length} accounts × ${periodChunk.length} periods (fetching...)`);
-                    
-                        try {
-                            // Make batch API call
-                            const response = await fetch(`${SERVER_URL}/batch/balance`, {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({
-                                    accounts: accountChunk,
-                                    periods: periodChunk,
-                                    subsidiary: filters.subsidiary || '',
-                                    department: filters.department || '',
-                                    location: filters.location || '',
-                                    class: filters.class || '',
-                                    accountingbook: filters.accountingBook || ''
-                                })
-                            });
-                    
-                        if (!response.ok) {
-                            console.error(`  ❌ API error: ${response.status}`);
-                            // Reject all promises in this chunk
-                            for (const {cacheKey, request} of groupRequests) {
-                                if (accountChunk.includes(request.params.account) && !resolvedRequests.has(cacheKey)) {
-                                    request.reject(new Error(`API error: ${response.status}`));
-                                    resolvedRequests.add(cacheKey);
-                                }
-                            }
-                            continue;
-                        }
-                    
-                        const data = await response.json();
-                        const balances = data.balances || {};
-                        const chunkTime = ((Date.now() - chunkStartTime) / 1000).toFixed(1);
-                        
-                        console.log(`  ✅ Received data for ${Object.keys(balances).length} accounts in ${chunkTime}s`);
-                        
-                        // Distribute results to waiting Promises
-                        for (const {cacheKey, request} of groupRequests) {
-                            // Skip if already resolved
-                            if (resolvedRequests.has(cacheKey)) {
-                                continue;
-                            }
-                            
-                            const account = request.params.account;
-                            
-                            // Only process accounts in this chunk
-                            if (!accountChunk.includes(account)) {
-                                continue;
-                            }
-                            
-                            const fromPeriod = request.params.fromPeriod;
-                            const toPeriod = request.params.toPeriod;
-                            const accountBalances = balances[account] || {};
+                }
+                
+                // Resolve any remaining unresolved requests
+                // Only needed for period list mode (period range mode resolves immediately)
+                if (!usePeriodRangeOptimization) {
+                    for (const {cacheKey, request} of groupRequests) {
+                        if (!resolvedRequests.has(cacheKey)) {
                             const accum = requestAccumulators.get(cacheKey);
-                            
-                            // Process each period in this chunk that this request needs
-                            for (const period of periodChunk) {
-                                // Check if this request needs this period
-                                if (accum.periodsNeeded.has(period) && !accum.periodsProcessed.has(period)) {
-                                    accum.total += accountBalances[period] || 0;
-                                    accum.periodsProcessed.add(period);
-                                }
-                            }
-                            
-                            // Cache the accumulated result
-                            cache.balance.set(cacheKey, accum.total);
-                            
-                            // Check if all needed periods are now processed
-                            const allPeriodsProcessed = [...accum.periodsNeeded].every(p => accum.periodsProcessed.has(p));
-                            
-                            if (allPeriodsProcessed) {
-                                console.log(`    🎯 RESOLVING: ${account} = ${accum.total}`);
+                            if (accum) {
+                                console.log(`  ⚠️ FORCE-RESOLVING: ${request.params.account} = ${accum.total}`);
                                 try {
                                     request.resolve(accum.total);
-                                    console.log(`    ✅ RESOLVED: ${account}`);
-                                } catch (resolveErr) {
-                                    console.error(`    ❌ RESOLVE ERROR for ${account}:`, resolveErr);
+                                } catch (err) {
+                                    console.error(`  ❌ Force-resolve FAILED:`, err);
                                 }
                                 resolvedRequests.add(cacheKey);
                             }
                         }
-                    
-                    } catch (error) {
-                        console.error(`  ❌ Fetch error:`, error);
-                        // Reject all promises in this chunk
-                        for (const {cacheKey, request} of groupRequests) {
-                            if (accountChunk.includes(request.params.account) && !resolvedRequests.has(cacheKey)) {
-                                request.reject(error);
-                                resolvedRequests.add(cacheKey);
-                            }
-                        }
-                    }
-                    
-                    // Delay between chunks to avoid rate limiting
-                    if (chunkIndex < totalChunks) {
-                        console.log(`  ⏱️  Waiting ${CHUNK_DELAY}ms before next chunk...`);
-                        await new Promise(resolve => setTimeout(resolve, CHUNK_DELAY));
                     }
                 }
-            }
-            
-            // Resolve any remaining unresolved requests
-            for (const {cacheKey, request} of groupRequests) {
-                if (!resolvedRequests.has(cacheKey)) {
-                    const accum = requestAccumulators.get(cacheKey);
-                    console.log(`  ⚠️ FORCE-RESOLVING: ${request.params.account} = ${accum.total}`);
-                    try {
-                        request.resolve(accum.total);
-                    } catch (err) {
-                        console.error(`  ❌ Force-resolve FAILED:`, err);
-                    }
-                    resolvedRequests.add(cacheKey);
-                }
-            }
-        }
+            } // Close the "if (!useYearEndpoint || usePeriodRangeOptimization)" block
+        } // Close the "for (const [filterKey, groupRequests] of groups.entries())" loop
     }
     
     // ================================================================
