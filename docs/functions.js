@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.17';  // Added BS debugging timestamps to track data ready vs written timing
+const FUNCTIONS_VERSION = '4.0.6.18';  // Added debugging timestamps for status close and batch queue activity tracking
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -313,6 +313,8 @@ function broadcastStatus(message, progress = 0, type = 'info') {
 
 function clearStatus() {
     try {
+        const closeTime = new Date().toISOString();
+        console.log(`🕐 [STATUS DEBUG] clearStatus() called - status cleared at ${closeTime}`);
         localStorage.removeItem('netsuite_status');
     } catch (e) {}
 }
@@ -6897,6 +6899,12 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
             }
         }
         
+        // DEBUG: Track when formula is called (before queuing)
+        const formulaCallTime = new Date().toISOString();
+        if (isBSRequest) {
+            console.log(`🕐 [BATCH DEBUG] BALANCE formula CALLED at ${formulaCallTime} - account: ${account}, period: ${toPeriod}`);
+        }
+        
         // In full refresh mode, queue silently (task pane will trigger processFullRefresh)
         // REDUCED LOGGING: Only log first few cache misses to prevent console flooding
         if (!isFullRefreshMode && cacheStats.misses < 10) {
@@ -6928,12 +6936,21 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
             if (!isFullRefreshMode) {
                 // Start batch timer if not already running (Mode 1: small batches)
                 // CRITICAL: Clear existing timer before setting new one (prevent multiple timers)
+                const queueTime = new Date().toISOString();
+                const wasTimerRunning = batchTimer !== null;
+                
                 if (batchTimer) {
+                    console.log(`🕐 [BATCH DEBUG] Timer RESET at ${queueTime} (was already running - user still dragging)`);
                     clearTimeout(batchTimer);
                     batchTimer = null;
+                } else {
+                    console.log(`🕐 [BATCH DEBUG] Formula QUEUED at ${queueTime} - starting batch timer`);
                 }
+                
                 console.log(`⏱️ STARTING batch timer (${BATCH_DELAY}ms)`);
                 batchTimer = setTimeout(() => {
+                    const fireTime = new Date().toISOString();
+                    console.log(`🕐 [BATCH DEBUG] Batch timer FIRED at ${fireTime}`);
                     console.log('⏱️ Batch timer FIRED!');
                     batchTimer = null;
                     processBatchQueue().catch(err => {
@@ -7840,8 +7857,20 @@ async function processBatchQueue() {
     const batchStartTime = Date.now();
     batchTimer = null;  // Reset timer reference
     
+    const processTime = new Date().toISOString();
     console.log('========================================');
     console.log(`🔄 processBatchQueue() CALLED at ${new Date().toLocaleTimeString()}`);
+    console.log(`🕐 [BATCH DEBUG] processBatchQueue() STARTED at ${processTime}`);
+    
+    // Track time since status was closed (if we can detect it)
+    try {
+        const lastStatusClose = localStorage.getItem('netsuite_status_close_time');
+        if (lastStatusClose) {
+            const timeSinceClose = ((Date.now() - parseInt(lastStatusClose)) / 1000).toFixed(1);
+            console.log(`🕐 [BATCH DEBUG] Time since status closed: ${timeSinceClose}s`);
+        }
+    } catch (e) {}
+    
     console.log('========================================');
     
     // CHECK: If build mode was entered, defer to it instead
