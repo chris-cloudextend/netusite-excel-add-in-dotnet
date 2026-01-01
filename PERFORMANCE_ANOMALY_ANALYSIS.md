@@ -4,12 +4,31 @@
 
 Income Statement period range queries show a dramatic performance degradation when the range includes 2023, jumping from **0.24 seconds** (2024-2025) to **74.64 seconds** (2023-2025). Subsequent year additions only add 5-15 seconds each, suggesting a threshold or data anomaly at 2023.
 
+### Critical Finding: Single Year Performance
+
+Testing individual years reveals:
+- **Jan 2023 to Dec 2023**: **14.56 seconds** (not cached)
+- **Jan 2024 to Dec 2024**: **17.87 seconds** (not cached)
+- **Jan 2025 to Dec 2025**: **0.33 seconds** (cached - query_count: 0)
+
+**Key Insight**: 2023 alone takes 14.56s, but when combined with 2024-2025, it jumps to 74.64s. This suggests the issue is **not** 2023 data volume alone, but rather a **query execution plan threshold** that triggers when combining 2023 with more recent years.
+
 ## Performance Data
+
+### Single Year Queries (Baseline)
+
+| Period Range | Query Time | Cached | Notes |
+|-------------|------------|--------|-------|
+| Jan 2023 to Dec 2023 | **14.56s** | No (query_count: 2) | 2023 alone |
+| Jan 2024 to Dec 2024 | **17.87s** | No (query_count: 2) | 2024 alone (slower than 2023!) |
+| Jan 2025 to Dec 2025 | **0.33s** | Yes (query_count: 0) | 2025 alone (cached) |
+
+### Multi-Year Range Queries
 
 | From Period | To Period | Years | Query Time | Performance Change |
 |------------|-----------|-------|------------|-------------------|
-| Jan 2025 | Dec 2025 | 1 | **0.28s** | Baseline |
-| Jan 2024 | Dec 2025 | 2 | **0.24s** | Fast |
+| Jan 2025 | Dec 2025 | 1 | **0.28s** | Baseline (likely cached) |
+| Jan 2024 | Dec 2025 | 2 | **0.24s** | Fast (likely cached) |
 | Jan 2023 | Dec 2025 | 3 | **74.64s** | **+74.40s (310x slower)** ⚠️ |
 | Jan 2022 | Dec 2025 | 4 | **84.87s** | +10.23s |
 | Jan 2021 | Dec 2025 | 5 | **81.55s** | -3.32s (faster!) |
@@ -23,8 +42,20 @@ Income Statement period range queries show a dramatic performance degradation wh
 ### Key Observations
 
 1. **Massive jump at 2023**: Adding 2023 causes a 310x slowdown (0.24s → 74.64s)
-2. **Inconsistent subsequent performance**: Adding more years sometimes makes queries faster (2021, 2019, 2017)
-3. **Stable range after 2023**: All queries 3+ years take 75-88 seconds, regardless of how many additional years are added
+2. **2023 alone is not the problem**: Single year 2023 query takes 14.56s (reasonable), but combining with 2024-2025 causes 74.64s
+3. **2024 is actually slower than 2023**: Single year 2024 takes 17.87s vs 14.56s for 2023
+4. **Caching effect**: 2025 queries are cached (0.33s), which explains why 2024-2025 is so fast (0.24s)
+5. **Inconsistent subsequent performance**: Adding more years sometimes makes queries faster (2021, 2019, 2017)
+6. **Stable range after 2023**: All queries 3+ years take 75-88 seconds, regardless of how many additional years are added
+
+### Critical Insight
+
+The performance anomaly is **NOT** caused by 2023 data volume alone. The issue appears when:
+- **2023 is combined with 2024-2025**: 74.64s (310x slower)
+- **2023 alone**: 14.56s (reasonable)
+- **2024-2025 together**: 0.24s (cached)
+
+This strongly suggests NetSuite's query optimizer switches to a **different execution plan** when the date range spans across a certain threshold (likely when combining 2023 with more recent cached data, or when the range exceeds 2 years of recent data).
 
 ## Query Being Executed
 
