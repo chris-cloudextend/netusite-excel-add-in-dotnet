@@ -2499,59 +2499,66 @@ public class BalanceService : IBalanceService
     
     /// <summary>
     /// Generate year ranges for a period range (e.g., "Jan 2023" to "Dec 2025" -> [("Jan 2023", "Dec 2023"), ("Jan 2024", "Dec 2024"), ("Jan 2025", "Dec 2025")]).
+    /// Uses calendar years extracted from period names for reliable year boundaries.
     /// </summary>
     private async Task<List<(string FromPeriod, string ToPeriod)>> GenerateYearRangesAsync(string fromPeriod, string toPeriod)
     {
         var ranges = new List<(string, string)>();
         
-        var fromPeriodData = await _netSuiteService.GetPeriodAsync(fromPeriod);
-        var toPeriodData = await _netSuiteService.GetPeriodAsync(toPeriod);
+        // Parse period names to extract years (e.g., "Jan 2023" -> 2023)
+        var fromParts = fromPeriod.Split(' ');
+        var toParts = toPeriod.Split(' ');
         
-        if (fromPeriodData?.StartDate == null || toPeriodData?.StartDate == null)
+        if (fromParts.Length != 2 || toParts.Length != 2)
             return ranges;
         
-        var fromDate = ParseDate(fromPeriodData.StartDate);
-        var toDate = ParseDate(toPeriodData.StartDate);
-        
-        if (fromDate == null || toDate == null)
+        if (!int.TryParse(fromParts[1], out var fromYear) || !int.TryParse(toParts[1], out var toYear))
             return ranges;
         
-        // Get all periods in range to identify year boundaries
-        var allPeriods = await GetPeriodsInRangeAsync(fromPeriod, toPeriod);
+        // Generate year ranges: for each year from fromYear to toYear, create "Jan YYYY" to "Dec YYYY"
+        var months = new[] { "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
         
-        if (allPeriods.Count == 0)
-            return ranges;
-        
-        // Group periods by year
-        var periodsByYear = new Dictionary<int, List<string>>();
-        
-        foreach (var periodName in allPeriods)
+        for (int year = fromYear; year <= toYear; year++)
         {
-            var periodData = await _netSuiteService.GetPeriodAsync(periodName);
-            if (periodData?.StartDate == null)
-                continue;
+            string yearFromPeriod, yearToPeriod;
             
-            var periodDate = ParseDate(periodData.StartDate);
-            if (periodDate == null)
-                continue;
+            if (year == fromYear && year == toYear)
+            {
+                // Same year - use original from/to periods
+                yearFromPeriod = fromPeriod;
+                yearToPeriod = toPeriod;
+            }
+            else if (year == fromYear)
+            {
+                // First year - use original from period, end with Dec
+                yearFromPeriod = fromPeriod;
+                yearToPeriod = $"Dec {year}";
+            }
+            else if (year == toYear)
+            {
+                // Last year - start with Jan, use original to period
+                yearFromPeriod = $"Jan {year}";
+                yearToPeriod = toPeriod;
+            }
+            else
+            {
+                // Middle years - full year
+                yearFromPeriod = $"Jan {year}";
+                yearToPeriod = $"Dec {year}";
+            }
             
-            var year = periodDate.Value.Year;
-            if (!periodsByYear.ContainsKey(year))
-                periodsByYear[year] = new List<string>();
-            periodsByYear[year].Add(periodName);
-        }
-        
-        // Generate ranges for each year
-        foreach (var year in periodsByYear.Keys.OrderBy(y => y))
-        {
-            var yearPeriods = periodsByYear[year].OrderBy(p => p).ToList();
-            if (yearPeriods.Count == 0)
-                continue;
+            // Verify periods exist before adding
+            var fromPeriodData = await _netSuiteService.GetPeriodAsync(yearFromPeriod);
+            var toPeriodData = await _netSuiteService.GetPeriodAsync(yearToPeriod);
             
-            var yearFrom = yearPeriods.First();
-            var yearTo = yearPeriods.Last();
-            
-            ranges.Add((yearFrom, yearTo));
+            if (fromPeriodData != null && toPeriodData != null)
+            {
+                ranges.Add((yearFromPeriod, yearToPeriod));
+            }
+            else
+            {
+                _logger.LogWarning("Could not verify periods for year range: {From} to {To}", yearFromPeriod, yearToPeriod);
+            }
         }
         
         return ranges;
