@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.26';  // Period range optimization - fixed book property name and logging
+const FUNCTIONS_VERSION = '4.0.6.27';  // Period range optimization - fixed boolean conversion and empty string handling
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -8493,12 +8493,13 @@ async function processBatchQueue() {
             // 1. All requests have the same period range
             // 2. All accounts are Income Statement (P&L) accounts
             // 3. Range is not a single period (fromPeriod !== toPeriod, already checked above)
-            const usePeriodRangeOptimization = allRequestsHaveSameRange && 
-                                               allAccountsAreIncomeStatement && 
-                                               commonFromPeriod && 
-                                               commonToPeriod;
+            // CRITICAL FIX: Explicitly convert to boolean - JavaScript && returns last truthy value, not boolean
+            const usePeriodRangeOptimization = !!(allRequestsHaveSameRange && 
+                                                   allAccountsAreIncomeStatement && 
+                                                   commonFromPeriod && 
+                                                   commonToPeriod);
             
-            console.log(`     usePeriodRangeOptimization: ${usePeriodRangeOptimization} (boolean: ${typeof usePeriodRangeOptimization === 'boolean' ? usePeriodRangeOptimization : 'ERROR - not boolean!'})`);
+            console.log(`     usePeriodRangeOptimization: ${usePeriodRangeOptimization} (type: ${typeof usePeriodRangeOptimization})`);
             
             if (usePeriodRangeOptimization) {
                 console.log(`  📅 PERIOD RANGE OPTIMIZATION: Using single query for ${commonFromPeriod} to ${commonToPeriod}`);
@@ -8743,7 +8744,18 @@ async function processBatchQueue() {
                             });
                         
                             if (!response.ok) {
-                                console.error(`  ❌ API error: ${response.status}`);
+                                // Try to get error details from response
+                                let errorDetails = '';
+                                try {
+                                    const errorData = await response.json();
+                                    errorDetails = JSON.stringify(errorData, null, 2);
+                                    console.error(`  ❌ API error ${response.status} details:`, errorData);
+                                } catch (e) {
+                                    const errorText = await response.text();
+                                    errorDetails = errorText || 'No error details available';
+                                    console.error(`  ❌ API error ${response.status} text:`, errorText);
+                                }
+                                console.error(`  ❌ API error: ${response.status} - ${errorDetails}`);
                                 // Reject all promises in this chunk
                                 for (const {cacheKey, request} of groupRequests) {
                                     if (accountChunk.includes(request.params.account) && !resolvedRequests.has(cacheKey)) {
