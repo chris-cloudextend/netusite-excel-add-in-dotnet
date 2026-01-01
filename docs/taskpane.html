@@ -8348,7 +8348,6 @@ For licensing inquiries, contact: legal@celigo.com
             setTimeout(() => {
                 const closeTime = new Date().toISOString();
                 const closeTimestamp = Date.now();
-                console.log(`🕐 [STATUS DEBUG] Status pane CLOSED at ${closeTime}`);
                 // Store timestamp for processBatchQueue() to track delay
                 try {
                     localStorage.setItem('netsuite_status_close_time', closeTimestamp.toString());

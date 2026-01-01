@@ -313,8 +313,6 @@ function broadcastStatus(message, progress = 0, type = 'info') {
 
 function clearStatus() {
     try {
-        const closeTime = new Date().toISOString();
-        console.log(`🕐 [STATUS DEBUG] clearStatus() called - status cleared at ${closeTime}`);
         localStorage.removeItem('netsuite_status');
     } catch (e) {}
 }
@@ -6944,7 +6942,6 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         // DEBUG: Track when formula is called (before queuing)
         const formulaCallTime = new Date().toISOString();
         if (isBSRequest) {
-            console.log(`🕐 [BATCH DEBUG] BALANCE formula CALLED at ${formulaCallTime} - account: ${account}, period: ${toPeriod}`);
         }
         
         // In full refresh mode, queue silently (task pane will trigger processFullRefresh)
@@ -6982,17 +6979,12 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                 const wasTimerRunning = batchTimer !== null;
                 
                 if (batchTimer) {
-                    console.log(`🕐 [BATCH DEBUG] Timer RESET at ${queueTime} (formula queued while batch timer active)`);
                     clearTimeout(batchTimer);
                     batchTimer = null;
-                } else {
-                    console.log(`🕐 [BATCH DEBUG] Formula QUEUED at ${queueTime} - starting batch timer`);
                 }
                 
                 console.log(`⏱️ STARTING batch timer (${BATCH_DELAY}ms)`);
                 batchTimer = setTimeout(() => {
-                    const fireTime = new Date().toISOString();
-                    console.log(`🕐 [BATCH DEBUG] Batch timer FIRED at ${fireTime}`);
                     console.log('⏱️ Batch timer FIRED!');
                     batchTimer = null;
                     processBatchQueue().catch(err => {
@@ -7899,19 +7891,8 @@ async function processBatchQueue() {
     const batchStartTime = Date.now();
     batchTimer = null;  // Reset timer reference
     
-    const processTime = new Date().toISOString();
     console.log('========================================');
     console.log(`🔄 processBatchQueue() CALLED at ${new Date().toLocaleTimeString()}`);
-    console.log(`🕐 [BATCH DEBUG] processBatchQueue() STARTED at ${processTime}`);
-    
-    // Track time since status was closed (if we can detect it)
-    try {
-        const lastStatusClose = localStorage.getItem('netsuite_status_close_time');
-        if (lastStatusClose) {
-            const timeSinceClose = ((Date.now() - parseInt(lastStatusClose)) / 1000).toFixed(1);
-            console.log(`🕐 [BATCH DEBUG] Time since status closed: ${timeSinceClose}s`);
-        }
-    } catch (e) {}
     
     console.log('========================================');
     
@@ -8153,26 +8134,15 @@ async function processBatchQueue() {
                     const dataReadyTime = new Date().toISOString();
                     
                     console.log(`   ✅ Preload cache hit (batch mode): ${account} for ${fromPeriod || '(cumulative)'} → ${toPeriod} = ${localStorageValue}`);
-                    if (isBS) {
-                        console.log(`   🕐 [BS DEBUG] DATA READY at ${dataReadyTime} (from cache)`);
-                    }
                     
                     cache.balance.set(cacheKey, localStorageValue);
                     
                     // Resolve ALL requests waiting for this result
                     const writeStartTime = Date.now();
                     requests.forEach(r => {
-                        if (isBS) {
-                            const writeTime = new Date().toISOString();
-                            console.log(`   🕐 [BS DEBUG] DATA WRITTEN (promise resolved) at ${writeTime} - delay: ${((Date.now() - writeStartTime) / 1000).toFixed(3)}s`);
-                        }
                         r.resolve(localStorageValue);
                     });
                     
-                    if (isBS) {
-                        const totalDelay = ((Date.now() - writeStartTime) / 1000).toFixed(3);
-                        console.log(`   🕐 [BS DEBUG] All ${requests.length} promise(s) resolved - total write delay: ${totalDelay}s`);
-                    }
                     
                     cacheHits++;
                     continue; // Skip API call
@@ -8192,26 +8162,15 @@ async function processBatchQueue() {
                     const dataReadyTime = new Date().toISOString();
                     
                     console.log(`   🎯 Wildcard cache hit: ${account} = ${wildcardResult.total.toLocaleString()} (${wildcardResult.matchCount} accounts)`);
-                    if (isBS) {
-                        console.log(`   🕐 [BS DEBUG] DATA READY at ${dataReadyTime} (from wildcard cache)`);
-                    }
                     
                     cache.balance.set(cacheKey, wildcardResult.total);
                     
                     // Resolve ALL requests waiting for this result
                     const writeStartTime = Date.now();
                     requests.forEach(r => {
-                        if (isBS) {
-                            const writeTime = new Date().toISOString();
-                            console.log(`   🕐 [BS DEBUG] DATA WRITTEN (promise resolved) at ${writeTime} - delay: ${((Date.now() - writeStartTime) / 1000).toFixed(3)}s`);
-                        }
                         r.resolve(wildcardResult.total);
                     });
                     
-                    if (isBS) {
-                        const totalDelay = ((Date.now() - writeStartTime) / 1000).toFixed(3);
-                        console.log(`   🕐 [BS DEBUG] All ${requests.length} promise(s) resolved - total write delay: ${totalDelay}s`);
-                    }
                     
                     cacheHits++;
                     continue; // Skip API call
@@ -8282,9 +8241,6 @@ async function processBatchQueue() {
                         const queryTimeMs = Date.now() - queryStartTime;
                         
                         console.log(`   ✅ Wildcard result: ${account} = ${total.toLocaleString()} (${Object.keys(accounts).length} accounts)`);
-                        if (isBS) {
-                            console.log(`   🕐 [BS DEBUG] DATA READY at ${dataReadyTime} (from API wildcard, query took ${(queryTimeMs / 1000).toFixed(1)}s)`);
-                        }
                         
                         // Cache the total for this wildcard pattern
                         cache.balance.set(cacheKey, total);
@@ -8295,17 +8251,8 @@ async function processBatchQueue() {
                         // Resolve ALL requests waiting for this result
                         const writeStartTime = Date.now();
                         requests.forEach(r => {
-                            if (isBS) {
-                                const writeTime = new Date().toISOString();
-                                console.log(`   🕐 [BS DEBUG] DATA WRITTEN (promise resolved) at ${writeTime} - delay: ${((Date.now() - writeStartTime) / 1000).toFixed(3)}s`);
-                            }
                             r.resolve(total);
                         });
-                        
-                        if (isBS) {
-                            const totalDelay = ((Date.now() - writeStartTime) / 1000).toFixed(3);
-                            console.log(`   🕐 [BS DEBUG] All ${requests.length} promise(s) resolved - total write delay: ${totalDelay}s`);
-                        }
                     } else {
                         // Parse JSON response for balance and error
                         let value = 0;
@@ -8357,9 +8304,6 @@ async function processBatchQueue() {
                             const dataReadyTime = new Date().toISOString();
                             
                             console.log(`   ✅ Cumulative result: ${account} = ${value.toLocaleString()} (${(queryTimeMs / 1000).toFixed(1)}s)`);
-                            if (isBS) {
-                                console.log(`   🕐 [BS DEBUG] DATA READY at ${dataReadyTime} (from API, query took ${(queryTimeMs / 1000).toFixed(1)}s)`);
-                            }
                             
                             // Only cache valid numeric values, not errors or null
                             cache.balance.set(cacheKey, value);
@@ -8367,17 +8311,9 @@ async function processBatchQueue() {
                             // Resolve ALL requests waiting for this result
                             const writeStartTime = Date.now();
                             requests.forEach(r => {
-                                if (isBS) {
-                                    const writeTime = new Date().toISOString();
-                                    console.log(`   🕐 [BS DEBUG] DATA WRITTEN (promise resolved) at ${writeTime} - delay: ${((Date.now() - writeStartTime) / 1000).toFixed(3)}s`);
-                                }
                                 r.resolve(value);
                             });
                             
-                            if (isBS) {
-                                const totalDelay = ((Date.now() - writeStartTime) / 1000).toFixed(3);
-                                console.log(`   🕐 [BS DEBUG] All ${requests.length} promise(s) resolved - total write delay: ${totalDelay}s`);
-                            }
                         }
                     }
                 } else {
@@ -9304,7 +9240,6 @@ async function processBatchQueue() {
     const batchCompleteTime = new Date().toISOString();
     console.log('========================================');
     console.log(`✅ BATCH PROCESSING COMPLETE in ${totalBatchTime}s`);
-    console.log(`🕐 [BS DEBUG] BATCH COMPLETE timestamp: ${batchCompleteTime}`);
     console.log('========================================\n');
     
     // NOTE: We do NOT broadcast status here because:
