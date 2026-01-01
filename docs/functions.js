@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.31';  // Fix quick start income statement to use full_year_refresh for 10+ months
+const FUNCTIONS_VERSION = '4.0.6.32';  // Fix quick start: use full_year_refresh for monthly breakdowns, fix misleading drag message
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -6982,7 +6982,7 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                 const wasTimerRunning = batchTimer !== null;
                 
                 if (batchTimer) {
-                    console.log(`🕐 [BATCH DEBUG] Timer RESET at ${queueTime} (was already running - user still dragging)`);
+                    console.log(`🕐 [BATCH DEBUG] Timer RESET at ${queueTime} (formula queued while batch timer active)`);
                     clearTimeout(batchTimer);
                     batchTimer = null;
                 } else {
@@ -8685,21 +8685,20 @@ async function processBatchQueue() {
             // NOTE: allAccountsAreIncomeStatement is already calculated above in the period range optimization check
             // Reuse that value instead of recalculating
             
-            // CRITICAL FIX: For income statement accounts, use year endpoint if:
-            // 1. All accounts are income statement (already checked)
-            // 2. Requesting full year (Jan to Dec) OR all 12 months are present OR 10+ months of same year
-            // 3. All requests are for the same year
-            // This enables single query for entire year instead of multiple chunked queries
-            // NOTE: Only check year endpoint if NOT using period range optimization
-            // NOTE: Year endpoint returns full year total, so we use it when all requests need full year
-            // For individual months, we'll use full_year_refresh pattern (all 12 months in one query)
-            const useYearEndpoint = !usePeriodRangeOptimization && allAccountsAreIncomeStatement && 
-                ((isFullYearRequest && yearForOptimization && periodsArray.length === 12) ||
-                 (periodsArray.length === 12 && yearForOptimization));
+            // CRITICAL: Don't use year endpoint when we need individual month values!
+            // The /batch/balance/year endpoint returns a single FY total (e.g., {"FY 2025": 123456})
+            // NOT individual month breakdowns. For monthly values, we must use /batch/full_year_refresh
+            // which returns all 12 months separately (e.g., {"Jan 2025": 10000, "Feb 2025": 20000, ...})
+            // 
+            // Year endpoint is ONLY for YTD totals, not monthly breakdowns.
+            // For quick start income statement with 12 single-period requests, we need monthly values,
+            // so we should use full_year_refresh pattern, NOT year endpoint.
+            const useYearEndpoint = false; // DISABLED: Year endpoint doesn't support monthly breakdowns
             
             // OPTIMIZATION: For individual month requests (10+ months of same year), use full_year_refresh pattern
             // This gets all 12 months in one query, then we extract the specific months needed
             // Much more efficient than chunking into 3-4 separate queries
+            // CRITICAL: This is the correct endpoint for monthly breakdowns (not year endpoint)
             const useFullYearRefreshPattern = !usePeriodRangeOptimization && !useYearEndpoint && 
                 allAccountsAreIncomeStatement && yearForOptimization && 
                 periodsArray.length >= 10 && periodsArray.every(p => {
@@ -8707,12 +8706,30 @@ async function processBatchQueue() {
                     return match && match[1] === yearForOptimization;
                 });
             
+            // Also use full_year_refresh if we have all 12 months (even if useYearEndpoint was considered)
+            // This ensures monthly breakdowns are returned, not just FY totals
+            let shouldUseFullYearRefresh = useFullYearRefreshPattern;
+            if (!shouldUseFullYearRefresh && !usePeriodRangeOptimization && !useYearEndpoint &&
+                allAccountsAreIncomeStatement && yearForOptimization && periodsArray.length === 12) {
+                const allSameYear = periodsArray.every(p => {
+                    const match = p.match(/^\w+\s+(\d{4})$/);
+                    return match && match[1] === yearForOptimization;
+                });
+                if (allSameYear) {
+                    // Override: Use full_year_refresh for 12 months to get monthly breakdowns
+                    shouldUseFullYearRefresh = true;
+                    console.log(`  ✅ Overriding: Using full_year_refresh for 12 months (need monthly breakdowns, not FY total)`);
+                }
+            }
+            const useFullYearRefreshPatternFinal = shouldUseFullYearRefresh;
+            
             // Enhanced logging for full-year pattern detection
-            if (useFullYearRefreshPattern) {
+            if (useFullYearRefreshPatternFinal) {
                 console.log(`  ✅ FULL YEAR REFRESH PATTERN DETECTED:`);
                 console.log(`     Accounts: ${accounts.length} (all Income Statement: ${allAccountsAreIncomeStatement})`);
                 console.log(`     Periods: ${periodsArray.length} months of ${yearForOptimization}`);
                 console.log(`     ✅ Will send all ${periodsArray.length} periods in ONE batch (no chunking)`);
+                console.log(`     ✅ Will use /batch/full_year_refresh to get monthly breakdowns (not FY total)`);
             } else if (allAccountsAreIncomeStatement && !usePeriodRangeOptimization && periodsArray.length >= 10) {
                 // Log why full-year pattern wasn't used
                 console.log(`  ⚠️ FULL YEAR PATTERN NOT USED (but should be?):`);
@@ -8758,7 +8775,7 @@ async function processBatchQueue() {
             if (usePeriodRangeOptimization) {
                 // For period range, we don't chunk periods - single query handles entire range
                 periodChunks.push([]); // Empty array indicates range mode
-            } else if (useFullYearRefreshPattern) {
+            } else if (useFullYearRefreshPatternFinal) {
                 // OPTIMIZATION: For 10+ months of same year, send all in one batch (no chunking)
                 // This is much faster than chunking into 3-4 separate queries
                 periodChunks.push(periodsArray); // Send all periods in one batch
@@ -8989,6 +9006,85 @@ async function processBatchQueue() {
                             const accountChunk = accountChunks[ai];
                             const periodChunk = periodChunks[pi];
                             const chunkStartTime = Date.now();
+                            
+                            // SPECIAL HANDLING: Use /batch/full_year_refresh for full year pattern
+                            // This endpoint returns all 12 months separately, which is what we need
+                            // for single-period requests (fromPeriod === toPeriod)
+                            if (useFullYearRefreshPatternFinal && periodChunk.length >= 10 && yearForOptimization) {
+                                console.log(`  📤 FULL YEAR REFRESH: ${accountChunk.length} accounts for year ${yearForOptimization} (fetching all 12 months...)`);
+                                
+                                try {
+                                    const response = await fetch(`${SERVER_URL}/batch/full_year_refresh`, {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({
+                                            year: parseInt(yearForOptimization),
+                                            subsidiary: filters.subsidiary || '',
+                                            department: filters.department || '',
+                                            location: filters.location || '',
+                                            class: filters.class || '',
+                                            skip_bs: true,
+                                            accountingbook: filters.accountingBook || ''
+                                        })
+                                    });
+                                    
+                                    if (!response.ok) {
+                                        console.error(`  ❌ Full year refresh error: ${response.status}`);
+                                        // Fall back to regular batch/balance
+                                        console.log(`  ⚠️ Falling back to regular /batch/balance endpoint`);
+                                    } else {
+                                        const data = await response.json();
+                                        const balances = data.balances || {};
+                                        const chunkTime = ((Date.now() - chunkStartTime) / 1000).toFixed(1);
+                                        
+                                        console.log(`  ✅ Full year refresh returned ${Object.keys(balances).length} accounts in ${chunkTime}s`);
+                                        console.log(`     ✅ All 12 months retrieved in single query`);
+                                        
+                                        // Distribute results - each request gets its specific month value
+                                        for (const {cacheKey, request} of groupRequests) {
+                                            if (resolvedRequests.has(cacheKey)) continue;
+                                            
+                                            const account = request.params.account;
+                                            if (!accountChunk.includes(account)) continue;
+                                            
+                                            // For single-period requests (fromPeriod === toPeriod), extract the specific month
+                                            const fromPeriod = request.params.fromPeriod;
+                                            const toPeriod = request.params.toPeriod;
+                                            
+                                            // Get account data with all 12 months
+                                            const accountBalances = balances[account] || {};
+                                            
+                                            // Determine which period value to use
+                                            let periodValue = 0;
+                                            if (fromPeriod && toPeriod && fromPeriod === toPeriod) {
+                                                // Single period request - get that specific month
+                                                periodValue = accountBalances[fromPeriod] || 0;
+                                            } else if (fromPeriod && toPeriod && fromPeriod !== toPeriod) {
+                                                // Range request - sum the months in range
+                                                const expanded = expandPeriodRangeFromTo(fromPeriod, toPeriod);
+                                                periodValue = expanded.reduce((sum, p) => sum + (accountBalances[p] || 0), 0);
+                                            } else if (toPeriod) {
+                                                // Single period (toPeriod only)
+                                                periodValue = accountBalances[toPeriod] || 0;
+                                            }
+                                            
+                                            // Cache and resolve
+                                            cache.balance.set(cacheKey, periodValue);
+                                            request.resolve(periodValue);
+                                            resolvedRequests.add(cacheKey);
+                                            
+                                            console.log(`    🎯 RESOLVING (full_year_refresh): ${account} for ${toPeriod} = ${periodValue}`);
+                                        }
+                                        
+                                        continue; // Skip to next chunk
+                                    }
+                                } catch (error) {
+                                    console.error(`  ❌ Full year refresh error:`, error);
+                                    console.log(`  ⚠️ Falling back to regular /batch/balance endpoint`);
+                                    // Fall through to regular batch/balance call below
+                                }
+                            }
+                            
                             console.log(`  📤 Chunk ${chunkIndex}/${totalChunks}: ${accountChunk.length} accounts × ${periodChunk.length} periods (fetching...)`);
                         
                             try {
