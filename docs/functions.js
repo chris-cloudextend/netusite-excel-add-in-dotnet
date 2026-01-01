@@ -8759,6 +8759,7 @@ async function processBatchQueue() {
                             const chunkTime = ((Date.now() - chunkStartTime) / 1000).toFixed(1);
                             console.log(`  ✅ Received data for ${accountChunk.length} accounts in ${chunkTime}s`);
                             console.log(`     ✅ PROOF: Single query completed for entire period range`);
+                            console.log(`     ✅ PROOF: This was recognized as a SINGLE QUERY (not chunked)`);
                             
                             // Process results - range query returns single total per account
                             for (const {cacheKey, request} of groupRequests) {
