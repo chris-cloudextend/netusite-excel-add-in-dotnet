@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.28';  // Period range optimization - fixed error handling for TIMEOUT
+const FUNCTIONS_VERSION = '4.0.6.29';  // Full year pattern optimization - send all months in one batch instead of chunking
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
