@@ -18818,6 +18818,58 @@ export default {
                 const totalAccounts = categories.income.length + categories.othIncome.length + 
                                      categories.cogs.length + categories.expense.length + categories.othExpense.length;
                 
+                // Check if no transactions were found
+                if (totalAccounts === 0) {
+                    // Remove the full-screen overlay
+                    const syncOverlay = document.getElementById('structureSyncOverlay');
+                    if (syncOverlay) {
+                        syncOverlay.style.opacity = '0';
+                        syncOverlay.style.transition = 'opacity 0.3s ease';
+                        setTimeout(() => syncOverlay.remove(), 300);
+                    }
+                    const syncStyle = document.getElementById('syncPulseStyle');
+                    if (syncStyle) syncStyle.remove();
+                    
+                    // Re-enable status bar
+                    suppressStatusBar = false;
+                    
+                    // Clear sync flag
+                    isSyncInProgress = false;
+                    console.log('🔓 Structure Sync: No transactions found - sync protection cleared');
+                    
+                    // Show alert to user
+                    const filterInfo = [
+                        currentSubsidiary ? `Subsidiary: ${currentSubsidiary}` : null,
+                        department ? `Department: ${department}` : null,
+                        location ? `Location: ${location}` : null,
+                        classId ? `Class: ${classId}` : null,
+                        accountingBook ? `Accounting Book: ${accountingBook}` : null
+                    ].filter(Boolean).join(', ') || 'No filters';
+                    
+                    showToast({
+                        title: '⚠️ No Transactions Found',
+                        message: `No transactions were found for ${targetYear} with the selected filters: ${filterInfo}. The sheet will show only Net Income (calculated) with $0.`,
+                        type: 'warning',
+                        icon: '⚠️',
+                        duration: 10000
+                    });
+                    
+                    // Update status element
+                    if (statusEl) {
+                        statusEl.innerHTML = `
+                            <div style="background: #fef3c7; padding: 12px; border-radius: 8px; margin-top: 10px;">
+                                <strong style="color: #92400e;">⚠️ No Transactions Found</strong><br>
+                                <span style="font-size: 12px; color: #78350f;">
+                                    No transactions were found for ${targetYear} with the selected filters: ${filterInfo}.<br>
+                                    The sheet will show only Net Income (calculated) with $0.
+                                </span>
+                            </div>
+                        `;
+                    }
+                    
+                    return; // Exit early - don't rebuild the sheet
+                }
+                
                 // Rebuild the sheet
                 await Excel.run(async (context) => {
                     const sheet = context.workbook.worksheets.getActiveWorksheet();
@@ -19204,7 +19256,10 @@ export default {
                     statusEl.innerHTML = '';
                 }
                 
+                // Clear sync flag after successful completion
+                isSyncInProgress = false;
                 console.log(`✅ Auto-sync complete for ${targetYear}`);
+                console.log('🔓 Structure Sync: Filter change handlers unblocked - sync complete');
                 
                 // Apply currency formatting after structure rebuild
                 // Wait a bit for formulas to start resolving
@@ -19229,6 +19284,10 @@ export default {
                 if (syncOverlay) syncOverlay.remove();
                 const syncStyle = document.getElementById('syncPulseStyle');
                 if (syncStyle) syncStyle.remove();
+                
+                // Clear sync flag on error
+                isSyncInProgress = false;
+                console.log('🔓 Structure Sync: Filter change handlers unblocked (error case)');
                 
                 // Show error toast
                 showToast({
