@@ -353,7 +353,8 @@ public class LookupService : ILookupService
         }
 
         if (!string.IsNullOrEmpty(type))
-            conditions.Add($"a.accttype = '{NetSuiteService.EscapeSql(type)}'");
+            // Case-insensitive account type matching - allows "income" or "Income"
+            conditions.Add($"UPPER(a.accttype) = UPPER('{NetSuiteService.EscapeSql(type)}')");
 
         // Note: Don't include ORDER BY - QueryPaginatedAsync adds it
         var query = $@"

@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.42';  // Silent zero elimination: error-aware queries, parse failures throw errors
+const FUNCTIONS_VERSION = '4.0.6.43';  // Reduced console verbosity - verbose logs gated behind DEBUG_VERBOSE_LOGGING flag
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -433,6 +433,7 @@ const VALIDATE_COLUMN_BASED_BS_BATCHING = false;
  * Only logs when true - no behavior changes.
  */
 const DEBUG_COLUMN_BASED_BS_BATCHING = false; // Disabled: verbose debug logging
+const DEBUG_VERBOSE_LOGGING = false; // Set to true for detailed console logs (cache hits, budget lookups, etc.)
 
 // ============================================================================
 // BALANCE SHEET GRID BATCHING - Helper Functions
@@ -5433,7 +5434,9 @@ async function NAME(accountNumber, invocation) {
                 // Populate in-memory cache too
                 cache.title.set(cacheKey, names[account]);
                 cacheStats.hits++;
-                console.log(`⚡ LOCALSTORAGE HIT [title]: ${account} → ${names[account]}`);
+                if (DEBUG_VERBOSE_LOGGING) {
+                    console.log(`⚡ LOCALSTORAGE HIT [title]: ${account} → ${names[account]}`);
+                }
                 return names[account];
             }
         }
@@ -5587,7 +5590,9 @@ async function TYPE(accountNumber, invocation) {
                 // Populate in-memory cache too
                 cache.type.set(cacheKey, types[account]);
                 cacheStats.hits++;
-                console.log(`⚡ LOCALSTORAGE HIT [type]: ${account} → ${types[account]}`);
+                if (DEBUG_VERBOSE_LOGGING) {
+                    console.log(`⚡ LOCALSTORAGE HIT [type]: ${account} → ${types[account]}`);
+                }
                 return types[account];
             }
         }
@@ -5788,7 +5793,9 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
             const { timestamp, reason } = JSON.parse(clearSignal);
             // Extended window to 30 seconds (was 10) to handle timing issues
             if (Date.now() - timestamp < 30000) {
-                console.log(`🔄 Cache cleared (${reason}) - clearing in-memory cache synchronously`);
+                if (DEBUG_VERBOSE_LOGGING) {
+                    console.log(`🔄 Cache cleared (${reason}) - clearing in-memory cache synchronously`);
+                }
                 // Clear in-memory cache FIRST
                 cache.balance.clear();
                 cache.budget.clear();
@@ -5804,13 +5811,17 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                     localStorage.removeItem('xavi_balance_cache');
                     localStorage.removeItem('netsuite_balance_cache');
                     localStorage.removeItem('netsuite_balance_cache_timestamp');
-                    console.log(`   ✅ Cleared localStorage caches from functions.js context`);
+                    if (DEBUG_VERBOSE_LOGGING) {
+                        console.log(`   ✅ Cleared localStorage caches from functions.js context`);
+                    }
                 } catch (e) {
                     console.warn('   ⚠️ Failed to clear localStorage from functions.js:', e);
                 }
                 // Remove signal after processing
                 localStorage.removeItem('netsuite_cache_clear_signal');
-                console.log(`✅ Cache clear complete - all caches cleared synchronously`);
+                if (DEBUG_VERBOSE_LOGGING) {
+                    console.log(`✅ Cache clear complete - all caches cleared synchronously`);
+                }
             } else {
                 // Stale signal - remove it
                 localStorage.removeItem('netsuite_cache_clear_signal');
@@ -5831,7 +5842,9 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         
         if (rawAccount === '__CLEARCACHE__') {
             const itemsStr = String(fromPeriod || '').trim();
-            console.log('🔧 __CLEARCACHE__ command received:', itemsStr || 'ALL');
+            if (DEBUG_VERBOSE_LOGGING) {
+                console.log('🔧 __CLEARCACHE__ command received:', itemsStr || 'ALL');
+            }
             
             let cleared = 0;
             
@@ -5899,12 +5912,16 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                 try {
                     localStorage.removeItem('netsuite_balance_cache');
                     localStorage.removeItem('netsuite_balance_cache_timestamp');
-                    console.log('   ✓ Cleared localStorage (functions context)');
+                    if (DEBUG_VERBOSE_LOGGING) {
+                        console.log('   ✓ Cleared localStorage (functions context)');
+                    }
                 } catch (e) {
                     console.warn('   ⚠️ localStorage clear failed:', e.message);
                 }
                 
-                console.log(`🗑️ Cleared ALL caches (${cleared} balance entries)`);
+                if (DEBUG_VERBOSE_LOGGING) {
+                    console.log(`🗑️ Cleared ALL caches (${cleared} balance entries)`);
+                }
             } else {
                 // Clear SPECIFIC items - parse format:
                 // Old: "60032:May 2025,60032:Jun 2025"
@@ -7630,9 +7647,11 @@ async function processBudgetBatchQueue() {
     }
     
     const requestCount = pendingRequests.budget.size;
-    console.log('========================================');
-    console.log(`📊 BUDGET BATCH: Processing ${requestCount} requests`);
-    console.log('========================================');
+    if (DEBUG_VERBOSE_LOGGING) {
+        console.log('========================================');
+        console.log(`📊 BUDGET BATCH: Processing ${requestCount} requests`);
+        console.log('========================================');
+    }
     
     // Extract requests and clear queue
     const requests = Array.from(pendingRequests.budget.entries());
@@ -7670,7 +7689,9 @@ async function processBudgetBatchQueue() {
         group.requests.push({ cacheKey, request });
     }
     
-    console.log(`   Grouped into ${groups.size} filter combination(s)`);
+    if (DEBUG_VERBOSE_LOGGING) {
+        console.log(`   Grouped into ${groups.size} filter combination(s)`);
+    }
     
     // Process each group with a batch API call
     for (const [filterKey, group] of groups) {
@@ -7678,8 +7699,10 @@ async function processBudgetBatchQueue() {
         const periods = Array.from(group.periods);
         const { filters, requests: groupRequests } = group;
         
-        console.log(`   📤 Batch: ${accounts.length} accounts × ${periods.length} periods`);
-        console.log(`      Filters: sub=${filters.subsidiary || 'all'}, cat=${filters.budgetCategory || 'all'}`);
+        if (DEBUG_VERBOSE_LOGGING) {
+            console.log(`   📤 Batch: ${accounts.length} accounts × ${periods.length} periods`);
+            console.log(`      Filters: sub=${filters.subsidiary || 'all'}, cat=${filters.budgetCategory || 'all'}`);
+        }
         
         try {
             const response = await fetch(`${SERVER_URL}/batch/budget`, {
@@ -7712,7 +7735,9 @@ async function processBudgetBatchQueue() {
             const data = await response.json();
             const budgets = data.budgets || {};
             
-            console.log(`   ✅ Received data in ${data.query_time?.toFixed(2) || '?'}s`);
+            if (DEBUG_VERBOSE_LOGGING) {
+                console.log(`   ✅ Received data in ${data.query_time?.toFixed(2) || '?'}s`);
+            }
             
             // Resolve promises and cache results
             for (const { cacheKey, request } of groupRequests) {
@@ -7737,8 +7762,10 @@ async function processBudgetBatchQueue() {
                     if (budgets[account][fromPeriod] !== undefined) {
                         value = budgets[account][fromPeriod];
                     } else {
-                        // Debug: log available periods if lookup fails
-                        console.warn(`   ⚠️ Budget lookup failed for ${account}/${fromPeriod}. Available periods:`, Object.keys(budgets[account] || {}));
+                        // Missing budget data is expected - only log in debug mode
+                        if (DEBUG_VERBOSE_LOGGING) {
+                            console.warn(`   ⚠️ Budget lookup failed for ${account}/${fromPeriod}. Available periods:`, Object.keys(budgets[account] || {}));
+                        }
                     }
                 }
                 
