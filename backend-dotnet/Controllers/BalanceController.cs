@@ -730,8 +730,21 @@ public class BalanceController : ControllerBase
 
             _logger.LogDebug("Executing full year refresh query...");
 
-            var rows = await _netSuiteService.QueryRawAsync(query);
+            var result = await _netSuiteService.QueryRawWithErrorAsync(query);
+            
+            // Check for query errors - fail loudly instead of returning empty results
+            if (!result.Success)
+            {
+                _logger.LogError("Full Year Refresh: Query failed with {ErrorCode}: {ErrorDetails}", 
+                    result.ErrorCode, result.ErrorDetails);
+                return StatusCode(500, new { 
+                    error = "Failed to fetch full year balances", 
+                    errorCode = result.ErrorCode,
+                    errorDetails = result.ErrorDetails 
+                });
+            }
 
+            var rows = result.Items;
             var elapsed = (DateTime.UtcNow - startTime).TotalSeconds;
             _logger.LogDebug("Query time: {Elapsed:F2} seconds, {Count} account rows", elapsed, rows.Count);
 
@@ -901,8 +914,21 @@ public class BalanceController : ControllerBase
                   AND tl.subsidiary IN ({subFilter})
                 GROUP BY a.acctnumber";
 
-            var results = await _netSuiteService.QueryRawAsync(query, 60);
+            var result = await _netSuiteService.QueryRawWithErrorAsync(query, 60);
+            
+            // Check for query errors - fail loudly instead of returning empty results
+            if (!result.Success)
+            {
+                _logger.LogError("Get Balance Year: Query failed with {ErrorCode}: {ErrorDetails}", 
+                    result.ErrorCode, result.ErrorDetails);
+                return StatusCode(500, new { 
+                    error = "Failed to fetch annual balances", 
+                    errorCode = result.ErrorCode,
+                    errorDetails = result.ErrorDetails 
+                });
+            }
 
+            var results = result.Items;
             var balances = new Dictionary<string, Dictionary<string, decimal>>();
             foreach (var row in results)
             {
@@ -2310,10 +2336,17 @@ public class BalanceController : ControllerBase
                               AND t.postingperiod <= {targetPeriodId}
                               AND tal.accountingbook = {accountingBook}
                               AND {segmentWhere}";
-                        var niResults = await _netSuiteService.QueryRawAsync(netIncomeQuery, 120);
-                        if (niResults.Any())
+                        var niResult = await _netSuiteService.QueryRawWithErrorAsync(netIncomeQuery, 120);
+                        if (!niResult.Success)
                         {
-                            var niRow = niResults.First();
+                            _logger.LogError("Balance Sheet Report: Net Income query failed with {ErrorCode}: {ErrorDetails}", 
+                                niResult.ErrorCode, niResult.ErrorDetails);
+                            // Fail loudly - don't silently return 0
+                            throw new InvalidOperationException($"Failed to calculate Net Income: {niResult.ErrorDetails}");
+                        }
+                        if (niResult.Items.Any())
+                        {
+                            var niRow = niResult.Items.First();
                             netIncome = ParseBalance(niRow.TryGetProperty("value", out var niProp) ? niProp : default);
                         }
                     }
@@ -2355,9 +2388,15 @@ public class BalanceController : ControllerBase
                               AND t.postingperiod < {fyStartPeriodId}
                               AND tal.accountingbook = {accountingBook}
                               AND {segmentWhere}";
-                        var priorPlResults = await _netSuiteService.QueryRawAsync(priorPlQuery, 120);
-                        decimal priorPl = priorPlResults.Any() 
-                            ? ParseBalance(priorPlResults.First().TryGetProperty("value", out var ppProp) ? ppProp : default)
+                        var priorPlResult = await _netSuiteService.QueryRawWithErrorAsync(priorPlQuery, 120);
+                        if (!priorPlResult.Success)
+                        {
+                            _logger.LogError("Balance Sheet Report: Prior P&L query failed with {ErrorCode}: {ErrorDetails}", 
+                                priorPlResult.ErrorCode, priorPlResult.ErrorDetails);
+                            throw new InvalidOperationException($"Failed to calculate Prior P&L: {priorPlResult.ErrorDetails}");
+                        }
+                        decimal priorPl = priorPlResult.Items.Any() 
+                            ? ParseBalance(priorPlResult.Items.First().TryGetProperty("value", out var ppProp) ? ppProp : default)
                             : 0;
                         
                         // Posted RE - CRITICAL FIX: Use t.postingperiod <= targetPeriodId instead of ap.enddate <= TO_DATE(...)
@@ -2376,9 +2415,15 @@ public class BalanceController : ControllerBase
                               AND t.postingperiod <= {targetPeriodId}
                               AND tal.accountingbook = {accountingBook}
                               AND {segmentWhere}";
-                        var postedReResults = await _netSuiteService.QueryRawAsync(postedReQuery, 120);
-                        decimal postedRe = postedReResults.Any()
-                            ? ParseBalance(postedReResults.First().TryGetProperty("value", out var prProp) ? prProp : default)
+                        var postedReResult = await _netSuiteService.QueryRawWithErrorAsync(postedReQuery, 120);
+                        if (!postedReResult.Success)
+                        {
+                            _logger.LogError("Balance Sheet Report: Posted RE query failed with {ErrorCode}: {ErrorDetails}", 
+                                postedReResult.ErrorCode, postedReResult.ErrorDetails);
+                            throw new InvalidOperationException($"Failed to calculate Posted RE: {postedReResult.ErrorDetails}");
+                        }
+                        decimal postedRe = postedReResult.Items.Any()
+                            ? ParseBalance(postedReResult.Items.First().TryGetProperty("value", out var prProp) ? prProp : default)
                             : 0;
                         
                         retainedEarnings = priorPl + postedRe;
@@ -2442,20 +2487,45 @@ public class BalanceController : ControllerBase
                           AND t.postingperiod <= {targetPeriodId}
                           AND tal.accountingbook = {accountingBook}";
                     
-                    var assetsTask = _netSuiteService.QueryRawAsync(assetsQuery, 120);
-                    var liabilitiesTask = _netSuiteService.QueryRawAsync(liabilitiesQuery, 120);
-                    var equityTask = _netSuiteService.QueryRawAsync(equityQuery, 120);
+                    var assetsTask = _netSuiteService.QueryRawWithErrorAsync(assetsQuery, 120);
+                    var liabilitiesTask = _netSuiteService.QueryRawWithErrorAsync(liabilitiesQuery, 120);
+                    var equityTask = _netSuiteService.QueryRawWithErrorAsync(equityQuery, 120);
                     
                     await Task.WhenAll(assetsTask, liabilitiesTask, equityTask);
                     
-                    decimal ctaTotalAssets = assetsTask.Result.Any()
-                        ? ParseBalance(assetsTask.Result.First().TryGetProperty("value", out var aProp) ? aProp : default)
+                    // Check each query result for errors
+                    var assetsResult = await assetsTask;
+                    if (!assetsResult.Success)
+                    {
+                        _logger.LogError("Balance Sheet Report: Assets query failed with {ErrorCode}: {ErrorDetails}", 
+                            assetsResult.ErrorCode, assetsResult.ErrorDetails);
+                        throw new InvalidOperationException($"Failed to calculate Assets: {assetsResult.ErrorDetails}");
+                    }
+                    
+                    var liabilitiesResult = await liabilitiesTask;
+                    if (!liabilitiesResult.Success)
+                    {
+                        _logger.LogError("Balance Sheet Report: Liabilities query failed with {ErrorCode}: {ErrorDetails}", 
+                            liabilitiesResult.ErrorCode, liabilitiesResult.ErrorDetails);
+                        throw new InvalidOperationException($"Failed to calculate Liabilities: {liabilitiesResult.ErrorDetails}");
+                    }
+                    
+                    var equityResult = await equityTask;
+                    if (!equityResult.Success)
+                    {
+                        _logger.LogError("Balance Sheet Report: Equity query failed with {ErrorCode}: {ErrorDetails}", 
+                            equityResult.ErrorCode, equityResult.ErrorDetails);
+                        throw new InvalidOperationException($"Failed to calculate Equity: {equityResult.ErrorDetails}");
+                    }
+                    
+                    decimal ctaTotalAssets = assetsResult.Items.Any()
+                        ? ParseBalance(assetsResult.Items.First().TryGetProperty("value", out var aProp) ? aProp : default)
                         : 0;
-                    decimal ctaTotalLiabilities = liabilitiesTask.Result.Any()
-                        ? ParseBalance(liabilitiesTask.Result.First().TryGetProperty("value", out var lProp) ? lProp : default)
+                    decimal ctaTotalLiabilities = liabilitiesResult.Items.Any()
+                        ? ParseBalance(liabilitiesResult.Items.First().TryGetProperty("value", out var lProp) ? lProp : default)
                         : 0;
-                    decimal ctaPostedEquity = equityTask.Result.Any()
-                        ? ParseBalance(equityTask.Result.First().TryGetProperty("value", out var eProp) ? eProp : default)
+                    decimal ctaPostedEquity = equityResult.Items.Any()
+                        ? ParseBalance(equityResult.Items.First().TryGetProperty("value", out var eProp) ? eProp : default)
                         : 0;
                     
                     // Prior P&L (for CTA calculation) - CRITICAL FIX: Use fiscal year start period ID from GetFiscalYearInfoAsync (period-based, not date-based)
@@ -2500,12 +2570,12 @@ public class BalanceController : ControllerBase
                           AND t.postingperiod <= {targetPeriodId}
                           AND tal.accountingbook = {accountingBook}";
                     
-                    Task<List<JsonElement>>? priorPlTask = null;
+                    Task<QueryResult<JsonElement>>? priorPlTask = null;
                     if (fyStartPeriodId != null && priorPlQuery != null)
                     {
-                        priorPlTask = _netSuiteService.QueryRawAsync(priorPlQuery, 120);
+                        priorPlTask = _netSuiteService.QueryRawWithErrorAsync(priorPlQuery, 120);
                     }
-                    var postedReTask = _netSuiteService.QueryRawAsync(postedReQuery, 120);
+                    var postedReTask = _netSuiteService.QueryRawWithErrorAsync(postedReQuery, 120);
                     
                     if (priorPlTask != null)
                     {
@@ -2516,13 +2586,33 @@ public class BalanceController : ControllerBase
                         await postedReTask;
                     }
                     
-                    decimal priorPl = 0;
-                    if (priorPlTask != null && priorPlTask.Result.Any())
+                    // Check posted RE query result
+                    var postedReResult = await postedReTask;
+                    if (!postedReResult.Success)
                     {
-                        priorPl = ParseBalance(priorPlTask.Result.First().TryGetProperty("value", out var ppProp) ? ppProp : default);
+                        _logger.LogError("Balance Sheet Report: Posted RE query failed with {ErrorCode}: {ErrorDetails}", 
+                            postedReResult.ErrorCode, postedReResult.ErrorDetails);
+                        throw new InvalidOperationException($"Failed to calculate Posted RE: {postedReResult.ErrorDetails}");
                     }
-                    decimal postedRe = postedReTask.Result.Any()
-                        ? ParseBalance(postedReTask.Result.First().TryGetProperty("value", out var prProp) ? prProp : default)
+                    
+                    // Check prior P&L query result if it was executed
+                    decimal priorPl = 0;
+                    if (priorPlTask != null)
+                    {
+                        var priorPlResult = await priorPlTask;
+                        if (!priorPlResult.Success)
+                        {
+                            _logger.LogError("Balance Sheet Report: Prior P&L query failed with {ErrorCode}: {ErrorDetails}", 
+                                priorPlResult.ErrorCode, priorPlResult.ErrorDetails);
+                            throw new InvalidOperationException($"Failed to calculate Prior P&L: {priorPlResult.ErrorDetails}");
+                        }
+                        if (priorPlResult.Items.Any())
+                        {
+                            priorPl = ParseBalance(priorPlResult.Items.First().TryGetProperty("value", out var ppProp) ? ppProp : default);
+                        }
+                    }
+                    decimal postedRe = postedReResult.Items.Any()
+                        ? ParseBalance(postedReResult.Items.First().TryGetProperty("value", out var prProp) ? prProp : default)
                         : 0;
                     
                     // CTA = Assets - Liabilities - Equity - Prior P&L - Posted RE - Net Income

@@ -146,14 +146,40 @@ public class SpecialFormulaController : ControllerBase
                   AND tal.accountingbook = {accountingBook}
                   AND {segmentWhere}";
 
-            // Execute queries in parallel
-            var priorPlTask = _netSuiteService.QueryRawAsync(priorPlQuery, 120);
-            var postedReTask = _netSuiteService.QueryRawAsync(postedReQuery, 120);
+            // Execute queries in parallel with error handling
+            var priorPlTask = _netSuiteService.QueryRawWithErrorAsync(priorPlQuery, 120);
+            var postedReTask = _netSuiteService.QueryRawWithErrorAsync(postedReQuery, 120);
 
             await Task.WhenAll(priorPlTask, postedReTask);
 
-            decimal priorPl = ParseDecimalFromResult(await priorPlTask);
-            decimal postedRe = ParseDecimalFromResult(await postedReTask);
+            // Check for query errors - fail loudly instead of returning 0
+            var priorPlResult = await priorPlTask;
+            if (!priorPlResult.Success)
+            {
+                _logger.LogError("Retained Earnings: Prior P&L query failed with {ErrorCode}: {ErrorDetails}", 
+                    priorPlResult.ErrorCode, priorPlResult.ErrorDetails);
+                return StatusCode(500, new { 
+                    error = "Failed to calculate prior P&L", 
+                    errorCode = priorPlResult.ErrorCode,
+                    errorDetails = priorPlResult.ErrorDetails 
+                });
+            }
+
+            var postedReResult = await postedReTask;
+            if (!postedReResult.Success)
+            {
+                _logger.LogError("Retained Earnings: Posted RE query failed with {ErrorCode}: {ErrorDetails}", 
+                    postedReResult.ErrorCode, postedReResult.ErrorDetails);
+                return StatusCode(500, new { 
+                    error = "Failed to calculate posted RE", 
+                    errorCode = postedReResult.ErrorCode,
+                    errorDetails = postedReResult.ErrorDetails 
+                });
+            }
+
+            // Parse results only if queries succeeded
+            decimal priorPl = ParseDecimalFromResult(priorPlResult.Items);
+            decimal postedRe = ParseDecimalFromResult(postedReResult.Items);
 
             var retainedEarnings = priorPl + postedRe;
 
@@ -331,22 +357,96 @@ public class SpecialFormulaController : ControllerBase
                   AND t.postingperiod <= {targetPeriodId}
                   AND tal.accountingbook = {accountingBook}";
 
-            // Execute all 6 queries in parallel
-            var assetsTask = _netSuiteService.QueryRawAsync(assetsQuery, 120);
-            var liabilitiesTask = _netSuiteService.QueryRawAsync(liabilitiesQuery, 120);
-            var equityTask = _netSuiteService.QueryRawAsync(equityQuery, 120);
-            var priorPlTask = _netSuiteService.QueryRawAsync(priorPlQuery, 120);
-            var postedReTask = _netSuiteService.QueryRawAsync(postedReQuery, 120);
-            var netIncomeTask = _netSuiteService.QueryRawAsync(netIncomeQuery, 120);
+            // Execute all 6 queries in parallel with error handling
+            var assetsTask = _netSuiteService.QueryRawWithErrorAsync(assetsQuery, 120);
+            var liabilitiesTask = _netSuiteService.QueryRawWithErrorAsync(liabilitiesQuery, 120);
+            var equityTask = _netSuiteService.QueryRawWithErrorAsync(equityQuery, 120);
+            var priorPlTask = _netSuiteService.QueryRawWithErrorAsync(priorPlQuery, 120);
+            var postedReTask = _netSuiteService.QueryRawWithErrorAsync(postedReQuery, 120);
+            var netIncomeTask = _netSuiteService.QueryRawWithErrorAsync(netIncomeQuery, 120);
 
             await Task.WhenAll(assetsTask, liabilitiesTask, equityTask, priorPlTask, postedReTask, netIncomeTask);
 
-            decimal totalAssets = ParseDecimalFromResult(await assetsTask);
-            decimal totalLiabilities = ParseDecimalFromResult(await liabilitiesTask);
-            decimal postedEquity = ParseDecimalFromResult(await equityTask);
-            decimal priorPl = ParseDecimalFromResult(await priorPlTask);
-            decimal postedRe = ParseDecimalFromResult(await postedReTask);
-            decimal netIncome = ParseDecimalFromResult(await netIncomeTask);
+            // Check for query errors - fail loudly instead of returning 0
+            var assetsResult = await assetsTask;
+            if (!assetsResult.Success)
+            {
+                _logger.LogError("CTA: Assets query failed with {ErrorCode}: {ErrorDetails}", 
+                    assetsResult.ErrorCode, assetsResult.ErrorDetails);
+                return StatusCode(500, new { 
+                    error = "Failed to calculate assets", 
+                    errorCode = assetsResult.ErrorCode,
+                    errorDetails = assetsResult.ErrorDetails 
+                });
+            }
+
+            var liabilitiesResult = await liabilitiesTask;
+            if (!liabilitiesResult.Success)
+            {
+                _logger.LogError("CTA: Liabilities query failed with {ErrorCode}: {ErrorDetails}", 
+                    liabilitiesResult.ErrorCode, liabilitiesResult.ErrorDetails);
+                return StatusCode(500, new { 
+                    error = "Failed to calculate liabilities", 
+                    errorCode = liabilitiesResult.ErrorCode,
+                    errorDetails = liabilitiesResult.ErrorDetails 
+                });
+            }
+
+            var equityResult = await equityTask;
+            if (!equityResult.Success)
+            {
+                _logger.LogError("CTA: Equity query failed with {ErrorCode}: {ErrorDetails}", 
+                    equityResult.ErrorCode, equityResult.ErrorDetails);
+                return StatusCode(500, new { 
+                    error = "Failed to calculate equity", 
+                    errorCode = equityResult.ErrorCode,
+                    errorDetails = equityResult.ErrorDetails 
+                });
+            }
+
+            var priorPlResult = await priorPlTask;
+            if (!priorPlResult.Success)
+            {
+                _logger.LogError("CTA: Prior P&L query failed with {ErrorCode}: {ErrorDetails}", 
+                    priorPlResult.ErrorCode, priorPlResult.ErrorDetails);
+                return StatusCode(500, new { 
+                    error = "Failed to calculate prior P&L", 
+                    errorCode = priorPlResult.ErrorCode,
+                    errorDetails = priorPlResult.ErrorDetails 
+                });
+            }
+
+            var postedReResult = await postedReTask;
+            if (!postedReResult.Success)
+            {
+                _logger.LogError("CTA: Posted RE query failed with {ErrorCode}: {ErrorDetails}", 
+                    postedReResult.ErrorCode, postedReResult.ErrorDetails);
+                return StatusCode(500, new { 
+                    error = "Failed to calculate posted RE", 
+                    errorCode = postedReResult.ErrorCode,
+                    errorDetails = postedReResult.ErrorDetails 
+                });
+            }
+
+            var netIncomeResult = await netIncomeTask;
+            if (!netIncomeResult.Success)
+            {
+                _logger.LogError("CTA: Net Income query failed with {ErrorCode}: {ErrorDetails}", 
+                    netIncomeResult.ErrorCode, netIncomeResult.ErrorDetails);
+                return StatusCode(500, new { 
+                    error = "Failed to calculate net income", 
+                    errorCode = netIncomeResult.ErrorCode,
+                    errorDetails = netIncomeResult.ErrorDetails 
+                });
+            }
+
+            // Parse results only if queries succeeded
+            decimal totalAssets = ParseDecimalFromResult(assetsResult.Items);
+            decimal totalLiabilities = ParseDecimalFromResult(liabilitiesResult.Items);
+            decimal postedEquity = ParseDecimalFromResult(equityResult.Items);
+            decimal priorPl = ParseDecimalFromResult(priorPlResult.Items);
+            decimal postedRe = ParseDecimalFromResult(postedReResult.Items);
+            decimal netIncome = ParseDecimalFromResult(netIncomeResult.Items);
 
             // CTA = Assets - Liabilities - Equity - Prior P&L - Posted RE - Net Income
             var cta = totalAssets - totalLiabilities - postedEquity - priorPl - postedRe - netIncome;
@@ -471,8 +571,22 @@ public class SpecialFormulaController : ControllerBase
                   AND tal.accountingbook = {accountingBook}
                   AND {segmentWhere}";
 
-            var results = await _netSuiteService.QueryRawAsync(netIncomeQuery, 120);
-            decimal netIncome = ParseDecimalFromResult(results, "net_income");
+            var result = await _netSuiteService.QueryRawWithErrorAsync(netIncomeQuery, 120);
+            
+            // Check for query errors - fail loudly instead of returning 0
+            if (!result.Success)
+            {
+                _logger.LogError("Net Income: Query failed with {ErrorCode}: {ErrorDetails}", 
+                    result.ErrorCode, result.ErrorDetails);
+                return StatusCode(500, new { 
+                    error = "Failed to calculate net income", 
+                    errorCode = result.ErrorCode,
+                    errorDetails = result.ErrorDetails 
+                });
+            }
+
+            // Parse result only if query succeeded
+            decimal netIncome = ParseDecimalFromResult(result.Items, "net_income");
 
             _logger.LogInformation("Net Income: {NI:N2}", netIncome);
 
@@ -584,17 +698,27 @@ public class SpecialFormulaController : ControllerBase
 
     /// <summary>
     /// Parse decimal from query result (handles both string and number types, including scientific notation).
+    /// 
+    /// CRITICAL: Returns 0 ONLY if query succeeded and value is explicitly null/empty (legitimate zero).
+    /// Throws exception if parsing fails (invalid data shape or unparseable string).
     /// </summary>
     private decimal ParseDecimalFromResult(List<JsonElement> results, string fieldName = "value")
     {
-        if (!results.Any()) return 0;
+        // Empty result set after successful query = legitimate zero (no activity)
+        if (!results.Any()) 
+            return 0;
+            
         var row = results.First();
+        
+        // Field missing or null = legitimate zero
         if (!row.TryGetProperty(fieldName, out var prop) || prop.ValueKind == JsonValueKind.Null)
             return 0;
         
         if (prop.ValueKind == JsonValueKind.String)
         {
             var strVal = prop.GetString();
+            
+            // Empty string = legitimate zero
             if (string.IsNullOrEmpty(strVal))
                 return 0;
             
@@ -605,15 +729,23 @@ public class SpecialFormulaController : ControllerBase
                 return (decimal)dblVal;
             }
             
+            // Try decimal parsing
             if (decimal.TryParse(strVal, out var decVal))
                 return decVal;
                 
-            return 0;
+            // String cannot be parsed - this is an error, not a zero
+            throw new InvalidOperationException(
+                $"Failed to parse decimal from string value '{strVal}' in field '{fieldName}'. " +
+                "This indicates a data format issue, not a legitimate zero balance.");
         }
+        
         if (prop.ValueKind == JsonValueKind.Number)
             return prop.GetDecimal();
         
-        return 0;
+        // Unexpected ValueKind (Object, Array, etc.) - this is an error, not a zero
+        throw new InvalidOperationException(
+            $"Unexpected JSON value kind '{prop.ValueKind}' for field '{fieldName}'. " +
+            "Expected Number or String, but got invalid data shape. This indicates a query result format issue.");
     }
 
     /// <summary>

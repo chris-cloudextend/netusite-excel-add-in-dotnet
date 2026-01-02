@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.41';  // Add dismiss buttons to alerts, fix no-transactions alert styling
+const FUNCTIONS_VERSION = '4.0.6.42';  // Silent zero elimination: error-aware queries, parse failures throw errors
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -9704,6 +9704,24 @@ async function RETAINEDEARNINGS(period, subsidiary, accountingBook, classId, dep
                 const data = await response.json();
                 console.log(`📨 Retained Earnings API response:`, JSON.stringify(data));
                 
+                // Check for backend error response - fail loudly instead of returning 0
+                if (data.error || data.errorCode) {
+                    const errorMsg = data.error || data.errorDetails || `Error: ${data.errorCode}`;
+                    console.error(`❌ Retained Earnings API error: ${errorMsg}`);
+                    if (toastId) {
+                        updateBroadcastToast(toastId, 'Retained Earnings Failed', errorMsg, 'error');
+                        setTimeout(() => removeBroadcastToast(toastId), 5000);
+                    }
+                    // Map backend error codes to Excel errors
+                    if (data.errorCode === 'TIMEOUT' || data.errorCode === 'RATE_LIMIT') {
+                        throw new Error('TIMEOUT');
+                    }
+                    if (data.errorCode === 'AUTH_ERROR') {
+                        throw new Error('AUTHERR');
+                    }
+                    throw new Error('ERROR');
+                }
+                
                 // Validate response - don't mask null/undefined as 0
                 if (data.value === null || data.value === undefined) {
                     console.error(`❌ Retained Earnings (${period}): API returned null/undefined`);
@@ -9943,6 +9961,24 @@ async function NETINCOME(fromPeriod, toPeriod, subsidiary, accountingBook, class
                 
                 const data = await response.json();
                 console.log(`📨 Net Income API response (${rangeDesc}):`, JSON.stringify(data));
+                
+                // Check for backend error response - fail loudly instead of returning 0
+                if (data.error || data.errorCode) {
+                    const errorMsg = data.error || data.errorDetails || `Error: ${data.errorCode}`;
+                    console.error(`❌ Net Income API error: ${errorMsg}`);
+                    if (toastId) {
+                        updateBroadcastToast(toastId, 'Net Income Failed', errorMsg, 'error');
+                        setTimeout(() => removeBroadcastToast(toastId), 5000);
+                    }
+                    // Map backend error codes to Excel errors
+                    if (data.errorCode === 'TIMEOUT' || data.errorCode === 'RATE_LIMIT') {
+                        throw new Error('TIMEOUT');
+                    }
+                    if (data.errorCode === 'AUTH_ERROR') {
+                        throw new Error('AUTHERR');
+                    }
+                    throw new Error('ERROR');
+                }
                 
                 // Validate response - don't mask null/undefined as 0
                 if (data.value === null || data.value === undefined) {
@@ -10321,7 +10357,38 @@ async function TYPEBALANCE(accountType, fromPeriod, toPeriod, subsidiary, depart
                 }
                 
                 const data = await response.json();
-                const value = parseFloat(data.value) || 0;
+                
+                // Check for backend error response - fail loudly instead of returning 0
+                if (data.error || data.errorCode) {
+                    const errorMsg = data.error || data.errorDetails || `Error: ${data.errorCode}`;
+                    console.error(`❌ TYPEBALANCE API error: ${errorMsg}`);
+                    releaseSpecialFormulaLock(cacheKey);
+                    inFlightRequests.delete(cacheKey);
+                    // Map backend error codes to Excel errors
+                    if (data.errorCode === 'TIMEOUT' || data.errorCode === 'RATE_LIMIT') {
+                        throw new Error('TIMEOUT');
+                    }
+                    if (data.errorCode === 'AUTH_ERROR') {
+                        throw new Error('AUTHERR');
+                    }
+                    throw new Error('ERROR');
+                }
+                
+                // Validate response - don't mask null/undefined as 0
+                if (data.value === null || data.value === undefined) {
+                    console.error(`❌ TYPEBALANCE (${normalizedType}): API returned null/undefined`);
+                    releaseSpecialFormulaLock(cacheKey);
+                    inFlightRequests.delete(cacheKey);
+                    throw new Error('NODATA');
+                }
+                
+                const value = parseFloat(data.value);
+                if (isNaN(value)) {
+                    console.error(`❌ TYPEBALANCE (${normalizedType}): Invalid number: ${data.value}`);
+                    releaseSpecialFormulaLock(cacheKey);
+                    inFlightRequests.delete(cacheKey);
+                    throw new Error('ERROR');
+                }
                 
                 console.log(`✅ TYPEBALANCE ${normalizedType} (${convertedFromPeriod || 'inception'} → ${convertedToPeriod}): ${value.toLocaleString()}`);
                 
@@ -10503,6 +10570,24 @@ async function CTA(period, subsidiary, accountingBook) {
                     
                     const data = await response.json();
                     console.log(`📨 CTA API response:`, JSON.stringify(data));
+                    
+                    // Check for backend error response - fail loudly instead of returning 0
+                    if (data.error || data.errorCode) {
+                        const errorMsg = data.error || data.errorDetails || `Error: ${data.errorCode}`;
+                        console.error(`❌ CTA API error: ${errorMsg}`);
+                        if (toastId) {
+                            updateBroadcastToast(toastId, 'CTA Failed', errorMsg, 'error');
+                            setTimeout(() => removeBroadcastToast(toastId), 5000);
+                        }
+                        // Map backend error codes to Excel errors
+                        if (data.errorCode === 'TIMEOUT' || data.errorCode === 'RATE_LIMIT') {
+                            throw new Error('TIMEOUT');
+                        }
+                        if (data.errorCode === 'AUTH_ERROR') {
+                            throw new Error('AUTHERR');
+                        }
+                        throw new Error('ERROR');
+                    }
                     
                     // Validate response - don't mask null/undefined as 0
                     if (data.value === null || data.value === undefined) {

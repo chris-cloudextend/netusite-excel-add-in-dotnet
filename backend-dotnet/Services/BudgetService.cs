@@ -28,18 +28,25 @@ public class BudgetService : IBudgetService
     
     /// <summary>
     /// Parse an amount value from JSON, handling scientific notation (e.g., "2.402086483E7").
+    /// 
+    /// CRITICAL: Returns 0 ONLY if value is explicitly null or empty (legitimate zero).
+    /// Throws exception if parsing fails (invalid data shape or unparseable string).
     /// </summary>
     private static decimal ParseAmount(JsonElement element)
     {
+        // Null = legitimate zero
         if (element.ValueKind == JsonValueKind.Null)
             return 0;
         
+        // Number = direct conversion
         if (element.ValueKind == JsonValueKind.Number)
             return element.GetDecimal();
         
         if (element.ValueKind == JsonValueKind.String)
         {
             var strVal = element.GetString();
+            
+            // Empty string = legitimate zero
             if (string.IsNullOrEmpty(strVal))
                 return 0;
             
@@ -52,9 +59,17 @@ public class BudgetService : IBudgetService
             
             if (decimal.TryParse(strVal, out var decVal))
                 return decVal;
+            
+            // String cannot be parsed - this is an error, not a zero
+            throw new InvalidOperationException(
+                $"Failed to parse budget amount from string value '{strVal}'. " +
+                "This indicates a data format issue, not a legitimate zero budget.");
         }
         
-        return 0;
+        // Unexpected ValueKind (Object, Array, etc.) - this is an error, not a zero
+        throw new InvalidOperationException(
+            $"Unexpected JSON value kind '{element.ValueKind}' for budget amount. " +
+            "Expected Number or String, but got invalid data shape. This indicates a query result format issue.");
     }
 
     /// <summary>

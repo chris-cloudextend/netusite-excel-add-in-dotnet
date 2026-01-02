@@ -199,8 +199,21 @@ public class TypeBalanceController : ControllerBase
 
             _logger.LogDebug("Executing batch query...");
 
-            var rows = await _netSuiteService.QueryRawAsync(query);
+            var result = await _netSuiteService.QueryRawWithErrorAsync(query);
+            
+            // Check for query errors - fail loudly instead of returning empty results
+            if (!result.Success)
+            {
+                _logger.LogError("Batch Type Balance Refresh: Query failed with {ErrorCode}: {ErrorDetails}", 
+                    result.ErrorCode, result.ErrorDetails);
+                return StatusCode(500, new { 
+                    error = "Failed to fetch type balances", 
+                    errorCode = result.ErrorCode,
+                    errorDetails = result.ErrorDetails 
+                });
+            }
 
+            var rows = result.Items;
             var elapsed = (DateTime.UtcNow - startTime).TotalSeconds;
             _logger.LogDebug("Query time: {Elapsed:F2} seconds, {Count} account type rows", elapsed, rows.Count);
 
