@@ -543,26 +543,25 @@ public class NetSuiteService : INetSuiteService
     }
 
     /// <summary>
-    /// Get accounting period dates from period name.
+    /// Get accounting period from period name.
+    /// CRITICAL: Always queries NetSuite to get actual AccountingPeriod internal ID.
+    /// For year-only inputs, this method should NOT be used - use GetPeriodsForYearAsync instead.
     /// </summary>
     public async Task<AccountingPeriod?> GetPeriodAsync(string periodName)
     {
+        // Year-only inputs should use GetPeriodsForYearAsync to get all 12 months
         if (IsYearOnly(periodName))
         {
-            return new AccountingPeriod
-            {
-                PeriodName = periodName,
-                StartDate = $"1/1/{periodName}",
-                EndDate = $"12/31/{periodName}",
-                IsYear = true
-            };
+            _logger.LogWarning("GetPeriodAsync called with year-only input '{Year}'. Use GetPeriodsForYearAsync instead.", periodName);
+            // Return null to force caller to use proper method
+            return null;
         }
 
         var cacheKey = $"period:{periodName}";
         return await GetOrSetCacheAsync(cacheKey, async () =>
         {
             var query = $@"
-                SELECT id, periodname, startdate, enddate
+                SELECT id, periodname, startdate, enddate, isquarter, isyear
                 FROM AccountingPeriod
                 WHERE periodname = '{EscapeSql(periodName)}'
                 AND isquarter = 'F'
@@ -572,6 +571,51 @@ public class NetSuiteService : INetSuiteService
             var results = await QueryAsync<AccountingPeriod>(query);
             return results.FirstOrDefault();
         });
+    }
+
+    /// <summary>
+    /// Get all 12 monthly accounting periods for a given year.
+    /// Returns periods ordered by startdate.
+    /// CRITICAL: This ensures full-year queries use the exact same period IDs as month-by-month queries.
+    /// </summary>
+    public async Task<List<AccountingPeriod>> GetPeriodsForYearAsync(int year)
+    {
+        var cacheKey = $"periods:year:{year}";
+        return await GetOrSetCacheAsync(cacheKey, async () =>
+        {
+            var query = $@"
+                SELECT id, periodname, startdate, enddate, isquarter, isyear
+                FROM AccountingPeriod
+                WHERE isyear = 'F' 
+                  AND isquarter = 'F'
+                  AND isadjust = 'F'
+                  AND EXTRACT(YEAR FROM startdate) = {year}
+                ORDER BY startdate";
+
+            var results = await QueryAsync<AccountingPeriod>(query);
+            return results.ToList();
+        }, TimeSpan.FromHours(24)); // Cache for 24 hours since periods don't change
+    }
+
+    /// <summary>
+    /// Get all 12 monthly accounting periods for a given year (string input).
+    /// Handles year-only strings like "2025".
+    /// </summary>
+    public async Task<List<AccountingPeriod>> GetPeriodsForYearAsync(string yearString)
+    {
+        if (!IsYearOnly(yearString))
+        {
+            _logger.LogWarning("GetPeriodsForYearAsync called with non-year input '{Input}'. Expected 4-digit year.", yearString);
+            return new List<AccountingPeriod>();
+        }
+
+        if (!int.TryParse(yearString, out var year))
+        {
+            _logger.LogWarning("Could not parse year from '{Input}'", yearString);
+            return new List<AccountingPeriod>();
+        }
+
+        return await GetPeriodsForYearAsync(year);
     }
 
     /// <summary>
@@ -602,6 +646,8 @@ public interface INetSuiteService
     Task<T?> GetOrSetCacheAsync<T>(string key, Func<Task<T>> factory, TimeSpan? expiration = null);
     void ClearCache();
     Task<AccountingPeriod?> GetPeriodAsync(string periodName);
+    Task<List<AccountingPeriod>> GetPeriodsForYearAsync(int year);
+    Task<List<AccountingPeriod>> GetPeriodsForYearAsync(string yearString);
 }
 
 /// <summary>
