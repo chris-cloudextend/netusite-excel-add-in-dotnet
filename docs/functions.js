@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.37';  // Fix syntax error in year-only period expansion
+const FUNCTIONS_VERSION = '4.0.6.38';  // Fix year-only period summing in full_year_refresh response
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -8809,16 +8809,36 @@ async function processBatchQueue() {
                             
                             // Determine which period value to use
                             let periodValue = 0;
+                            
+                            // Helper to check if period is year-only
+                            const isYearOnly = (str) => str && /^\d{4}$/.test(String(str).trim());
+                            
                             if (fromPeriod && toPeriod && fromPeriod === toPeriod) {
-                                // Single period request - get that specific month
-                                periodValue = accountBalances[fromPeriod] || 0;
+                                // Single period request
+                                if (isYearOnly(fromPeriod)) {
+                                    // Year-only format - sum all 12 months for that year
+                                    const expanded = expandPeriodRangeFromTo(fromPeriod, fromPeriod);
+                                    periodValue = expanded.reduce((sum, p) => sum + (accountBalances[p] || 0), 0);
+                                    console.log(`    📊 Summing ${expanded.length} months for year ${fromPeriod}: ${periodValue}`);
+                                } else {
+                                    // Specific month - get that month's value
+                                    periodValue = accountBalances[fromPeriod] || 0;
+                                }
                             } else if (fromPeriod && toPeriod && fromPeriod !== toPeriod) {
                                 // Range request - sum the months in range
                                 const expanded = expandPeriodRangeFromTo(fromPeriod, toPeriod);
                                 periodValue = expanded.reduce((sum, p) => sum + (accountBalances[p] || 0), 0);
                             } else if (toPeriod) {
                                 // Single period (toPeriod only)
-                                periodValue = accountBalances[toPeriod] || 0;
+                                if (isYearOnly(toPeriod)) {
+                                    // Year-only format - sum all 12 months for that year
+                                    const expanded = expandPeriodRangeFromTo(toPeriod, toPeriod);
+                                    periodValue = expanded.reduce((sum, p) => sum + (accountBalances[p] || 0), 0);
+                                    console.log(`    📊 Summing ${expanded.length} months for year ${toPeriod}: ${periodValue}`);
+                                } else {
+                                    // Specific month - get that month's value
+                                    periodValue = accountBalances[toPeriod] || 0;
+                                }
                             }
                             
                             // Cache and resolve
