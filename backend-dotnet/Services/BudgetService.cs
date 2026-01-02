@@ -65,12 +65,27 @@ public class BudgetService : IBudgetService
         var fromPeriod = request.FromPeriod;
         var toPeriod = string.IsNullOrEmpty(request.ToPeriod) ? request.FromPeriod : request.ToPeriod;
 
-        // Handle year-only format
+        // Handle year-only format - use shared period resolver
         if (NetSuiteService.IsYearOnly(fromPeriod))
         {
-            var (from, to) = NetSuiteService.ExpandYearToPeriods(fromPeriod);
-            fromPeriod = from;
-            toPeriod = to;
+            var yearPeriods = await _netSuiteService.GetPeriodsForYearAsync(fromPeriod);
+            if (yearPeriods.Count >= 2)
+            {
+                fromPeriod = yearPeriods.First().PeriodName;
+                toPeriod = yearPeriods.Last().PeriodName;
+            }
+            else
+            {
+                _logger.LogWarning("GetBudgetAsync: Could not resolve periods for year {Year}", fromPeriod);
+                return new BudgetResponse
+                {
+                    Account = request.Account,
+                    FromPeriod = request.FromPeriod,
+                    ToPeriod = request.ToPeriod,
+                    Amount = 0,
+                    Error = $"Could not resolve periods for year {fromPeriod}"
+                };
+            }
         }
 
         var fromPeriodData = await _netSuiteService.GetPeriodAsync(fromPeriod);
@@ -246,16 +261,29 @@ public class BudgetService : IBudgetService
         if (!request.Accounts.Any() || !request.Periods.Any())
             return result;
 
-        // Expand periods that are year-only
-        var expandedPeriods = request.Periods.SelectMany(p =>
+        // Expand periods that are year-only - use shared period resolver
+        var expandedPeriods = new List<string>();
+        foreach (var period in request.Periods)
         {
-            if (NetSuiteService.IsYearOnly(p))
+            if (NetSuiteService.IsYearOnly(period))
             {
-                var (from, to) = NetSuiteService.ExpandYearToPeriods(p);
-                return GenerateMonthlyPeriods(from, to);
+                var yearPeriods = await _netSuiteService.GetPeriodsForYearAsync(period);
+                if (yearPeriods.Count > 0)
+                {
+                    // Add all period names from the year
+                    expandedPeriods.AddRange(yearPeriods.Select(p => p.PeriodName).Where(p => !string.IsNullOrEmpty(p)));
+                }
+                else
+                {
+                    _logger.LogWarning("GetBatchBudgetAsync: Could not resolve periods for year {Year}", period);
+                }
             }
-            return new[] { p };
-        }).Distinct().ToList();
+            else
+            {
+                expandedPeriods.Add(period);
+            }
+        }
+        expandedPeriods = expandedPeriods.Distinct().ToList();
 
         // Get period IDs for all expanded periods
         var periodIds = new List<string>();
@@ -465,63 +493,29 @@ public class BudgetService : IBudgetService
 
         try
         {
-            // Step 1: Get all periods for the year
-            var periodQuery = $@"
-                SELECT id, periodname, startdate
-                FROM AccountingPeriod
-                WHERE EXTRACT(YEAR FROM startdate) = {year}
-                  AND isquarter = 'F'
-                  AND isyear = 'F'
-                  AND isadjust = 'F'
-                ORDER BY startdate";
+            // Step 1: Get all periods for the year using shared period resolver
+            var yearPeriods = await _netSuiteService.GetPeriodsForYearAsync(year);
 
-            var periodResults = await _netSuiteService.QueryRawAsync(periodQuery);
-
-            if (!periodResults.Any())
+            if (!yearPeriods.Any())
             {
                 _logger.LogWarning("No accounting periods found for year {Year}", year);
                 return result;
             }
 
-            // Step 2: Build period ID to month name mapping
+            // Step 2: Build period ID to month name mapping using PeriodName
             var periodMap = new Dictionary<string, string>(); // period_id -> month name (e.g., "Jan")
-            var monthNames = new[] { "Jan", "Feb", "Mar", "Apr", "May", "Jun", 
-                                     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
 
-            foreach (var row in periodResults)
+            foreach (var period in yearPeriods)
             {
-                var periodId = row.TryGetProperty("id", out var idProp) ? idProp.GetString() : null;
-                var startdate = row.TryGetProperty("startdate", out var dateProp) ? dateProp.GetString() : null;
-
-                if (string.IsNullOrEmpty(periodId) || string.IsNullOrEmpty(startdate))
+                if (string.IsNullOrEmpty(period.Id) || string.IsNullOrEmpty(period.PeriodName))
                     continue;
 
-                // Parse month from startdate (format: "1/1/2011" or "2011-01-01")
-                try
+                // Extract month name from PeriodName (e.g., "Jan 2025" -> "Jan")
+                var periodNameParts = period.PeriodName.Split(' ');
+                if (periodNameParts.Length > 0)
                 {
-                    int monthNum = 0;
-                    if (startdate.Contains('/'))
-                    {
-                        var parts = startdate.Split('/');
-                        if (parts.Length >= 1 && int.TryParse(parts[0], out monthNum))
-                        {
-                            if (monthNum >= 1 && monthNum <= 12)
-                                periodMap[periodId] = monthNames[monthNum - 1];
-                        }
-                    }
-                    else if (startdate.Contains('-'))
-                    {
-                        var parts = startdate.Split('-');
-                        if (parts.Length >= 2 && int.TryParse(parts[1], out monthNum))
-                        {
-                            if (monthNum >= 1 && monthNum <= 12)
-                                periodMap[periodId] = monthNames[monthNum - 1];
-                        }
-                    }
-                }
-                catch
-                {
-                    // Skip invalid dates
+                    var monthName = periodNameParts[0];
+                    periodMap[period.Id] = monthName;
                 }
             }
 

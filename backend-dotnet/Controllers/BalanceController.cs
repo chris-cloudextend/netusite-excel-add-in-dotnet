@@ -654,20 +654,14 @@ public class BalanceController : ControllerBase
                 segmentFilters.Add($"tl.location = {locationId}");
             var segmentWhere = string.Join(" AND ", segmentFilters);
 
-            // Get fiscal year periods
-            var periodsQuery = $@"
-                SELECT id, periodname, startdate, enddate
-                FROM accountingperiod
-                WHERE isyear = 'F' AND isquarter = 'F'
-                  AND EXTRACT(YEAR FROM startdate) = {fiscalYear}
-                  AND isadjust = 'F'
-                ORDER BY startdate";
-            
-            var periods = await _netSuiteService.QueryRawAsync(periodsQuery);
-            if (!periods.Any())
+            // Get periods for the year using shared period resolver
+            var yearPeriods = await _netSuiteService.GetPeriodsForYearAsync(fiscalYear);
+            if (!yearPeriods.Any())
             {
-                return BadRequest(new { error = $"No periods found for fiscal year {fiscalYear}" });
+                return BadRequest(new { error = $"No periods found for year {fiscalYear}" });
             }
+            
+            _logger.LogDebug("Found {Count} periods for year {Year}", yearPeriods.Count, fiscalYear);
 
             _logger.LogDebug("Found {Count} periods for FY {Year}", periods.Count, fiscalYear);
 
@@ -676,10 +670,10 @@ public class BalanceController : ControllerBase
             
             // Build month columns dynamically
             var monthCases = new List<string>();
-            foreach (var period in periods)
+            foreach (var period in yearPeriods)
             {
-                var periodId = period.TryGetProperty("id", out var idProp) ? idProp.ToString() : "";
-                var periodName = period.TryGetProperty("periodname", out var nameProp) ? nameProp.GetString() ?? "" : "";
+                var periodId = period.Id ?? "";
+                var periodName = period.PeriodName ?? "";
                 
                 if (string.IsNullOrEmpty(periodId) || string.IsNullOrEmpty(periodName))
                     continue;
@@ -705,9 +699,9 @@ public class BalanceController : ControllerBase
             var monthColumns = string.Join(",\n", monthCases);
 
             // Get period IDs for filter
-            var periodIds = periods
-                .Select(p => p.TryGetProperty("id", out var idProp) ? idProp.ToString() : "")
-                .Where(id => !string.IsNullOrEmpty(id))
+            var periodIds = yearPeriods
+                .Where(p => !string.IsNullOrEmpty(p.Id))
+                .Select(p => p.Id!)
                 .ToList();
             var periodFilter = string.Join(", ", periodIds);
 
@@ -741,22 +735,20 @@ public class BalanceController : ControllerBase
             var elapsed = (DateTime.UtcNow - startTime).TotalSeconds;
             _logger.LogDebug("Query time: {Elapsed:F2} seconds, {Count} account rows", elapsed, rows.Count);
 
-            // Month column mapping
-            var monthMapping = new Dictionary<string, string>
+            // Month column mapping - build from actual periods (not hardcoded calendar months)
+            var monthMapping = new Dictionary<string, string>();
+            foreach (var period in yearPeriods)
             {
-                { "jan", $"Jan {fiscalYear}" },
-                { "feb", $"Feb {fiscalYear}" },
-                { "mar", $"Mar {fiscalYear}" },
-                { "apr", $"Apr {fiscalYear}" },
-                { "may", $"May {fiscalYear}" },
-                { "jun", $"Jun {fiscalYear}" },
-                { "jul", $"Jul {fiscalYear}" },
-                { "aug", $"Aug {fiscalYear}" },
-                { "sep", $"Sep {fiscalYear}" },
-                { "oct", $"Oct {fiscalYear}" },
-                { "nov", $"Nov {fiscalYear}" },
-                { "dec_month", $"Dec {fiscalYear}" }
-            };
+                if (string.IsNullOrEmpty(period.PeriodName))
+                    continue;
+                
+                var monthAbbr = period.PeriodName.Split(' ').FirstOrDefault()?.ToLower() ?? "";
+                if (string.IsNullOrEmpty(monthAbbr))
+                    continue;
+                
+                var colName = monthAbbr == "dec" ? "dec_month" : monthAbbr;
+                monthMapping[colName] = period.PeriodName;
+            }
 
             // Transform results to nested dict: { account: { period: value } }
             var balances = new Dictionary<string, Dictionary<string, decimal>>();
@@ -865,9 +857,20 @@ public class BalanceController : ControllerBase
             // Build account filter
             var accountFilter = string.Join("', '", request.Accounts.Select(a => NetSuiteService.EscapeSql(a)));
             var incomeTypesSql = "'Income', 'OthIncome'";
-            var periodName = $"FY {year}";
+            // CRITICAL FIX: Get period IDs for the year using shared period resolver (not calendar inference)
+            var yearPeriods = await _netSuiteService.GetPeriodsForYearAsync(year);
+            if (!yearPeriods.Any())
+            {
+                return BadRequest(new { error = $"No periods found for year {year}" });
+            }
+            
+            var periodIds = yearPeriods
+                .Where(p => !string.IsNullOrEmpty(p.Id))
+                .Select(p => p.Id!)
+                .ToList();
+            var periodIdList = string.Join(", ", periodIds);
 
-            // Query all 12 months and SUM
+            // Query all periods in the year and SUM - use period IDs, not calendar year extraction
             var query = $@"
                 SELECT 
                     a.acctnumber,
@@ -892,7 +895,7 @@ public class BalanceController : ControllerBase
                 WHERE t.posting = 'T'
                   AND tal.posting = 'T'
                   AND a.acctnumber IN ('{accountFilter}')
-                  AND EXTRACT(YEAR FROM ap.startdate) = {year}
+                  AND t.postingperiod IN ({periodIdList})
                   AND ap.isyear = 'F' AND ap.isquarter = 'F'
                   AND tal.accountingbook = {accountingBook}
                   AND tl.subsidiary IN ({subFilter})
@@ -2280,24 +2283,8 @@ public class BalanceController : ControllerBase
                     // Call net-income endpoint logic inline (simplified)
                     var plTypesSql = "'Income', 'COGS', 'Expense', 'OthIncome', 'OthExpense'";
                     
-                    // CRITICAL FIX: Get fiscal year start period ID instead of using date
-                    var fyStartPeriodQuery = $@"
-                        SELECT id
-                        FROM accountingperiod
-                        WHERE TO_DATE('{ConvertToYYYYMMDD(fyInfo.FyStart)}', 'YYYY-MM-DD') >= startdate
-                          AND TO_DATE('{ConvertToYYYYMMDD(fyInfo.FyStart)}', 'YYYY-MM-DD') <= enddate
-                          AND isposting = 'T'
-                          AND isquarter = 'F'
-                          AND isyear = 'F'
-                        FETCH FIRST 1 ROWS ONLY";
-                    
-                    var fyStartPeriodResult = await _netSuiteService.QueryRawAsync(fyStartPeriodQuery, 30);
-                    string? fyStartPeriodId = null;
-                    if (fyStartPeriodResult != null && fyStartPeriodResult.Any())
-                    {
-                        var fyStartRow = fyStartPeriodResult.First();
-                        fyStartPeriodId = fyStartRow.TryGetProperty("id", out var idProp) ? idProp.ToString() : null;
-                    }
+                    // CRITICAL FIX: Use fiscal year start period ID from GetFiscalYearInfoAsync (period-based, not date-based)
+                    var fyStartPeriodId = fyInfo.FyStartPeriodId;
                     
                     if (fyStartPeriodId == null)
                     {
@@ -2342,24 +2329,8 @@ public class BalanceController : ControllerBase
                 {
                     var plTypesSql = "'Income', 'COGS', 'Expense', 'OthIncome', 'OthExpense'";
                     
-                    // CRITICAL FIX: Get fiscal year start period ID instead of using date
-                    var fyStartPeriodQuery = $@"
-                        SELECT id
-                        FROM accountingperiod
-                        WHERE TO_DATE('{ConvertToYYYYMMDD(fyInfo.FyStart)}', 'YYYY-MM-DD') >= startdate
-                          AND TO_DATE('{ConvertToYYYYMMDD(fyInfo.FyStart)}', 'YYYY-MM-DD') <= enddate
-                          AND isposting = 'T'
-                          AND isquarter = 'F'
-                          AND isyear = 'F'
-                        FETCH FIRST 1 ROWS ONLY";
-                    
-                    var fyStartPeriodResult = await _netSuiteService.QueryRawAsync(fyStartPeriodQuery, 30);
-                    string? fyStartPeriodId = null;
-                    if (fyStartPeriodResult != null && fyStartPeriodResult.Any())
-                    {
-                        var fyStartRow = fyStartPeriodResult.First();
-                        fyStartPeriodId = fyStartRow.TryGetProperty("id", out var idProp) ? idProp.ToString() : null;
-                    }
+                    // CRITICAL FIX: Use fiscal year start period ID from GetFiscalYearInfoAsync (period-based, not date-based)
+                    var fyStartPeriodId = fyInfo.FyStartPeriodId;
                     
                     if (fyStartPeriodId == null)
                     {
@@ -2487,24 +2458,8 @@ public class BalanceController : ControllerBase
                         ? ParseBalance(equityTask.Result.First().TryGetProperty("value", out var eProp) ? eProp : default)
                         : 0;
                     
-                    // Prior P&L (for CTA calculation) - CRITICAL FIX: Get fiscal year start period ID
-                    var fyStartPeriodQuery = $@"
-                        SELECT id
-                        FROM accountingperiod
-                        WHERE TO_DATE('{ConvertToYYYYMMDD(fyInfo.FyStart)}', 'YYYY-MM-DD') >= startdate
-                          AND TO_DATE('{ConvertToYYYYMMDD(fyInfo.FyStart)}', 'YYYY-MM-DD') <= enddate
-                          AND isposting = 'T'
-                          AND isquarter = 'F'
-                          AND isyear = 'F'
-                        FETCH FIRST 1 ROWS ONLY";
-                    
-                    var fyStartPeriodResult = await _netSuiteService.QueryRawAsync(fyStartPeriodQuery, 30);
-                    string? fyStartPeriodId = null;
-                    if (fyStartPeriodResult != null && fyStartPeriodResult.Any())
-                    {
-                        var fyStartRow = fyStartPeriodResult.First();
-                        fyStartPeriodId = fyStartRow.TryGetProperty("id", out var idProp) ? idProp.ToString() : null;
-                    }
+                    // Prior P&L (for CTA calculation) - CRITICAL FIX: Use fiscal year start period ID from GetFiscalYearInfoAsync (period-based, not date-based)
+                    var fyStartPeriodId = fyInfo.FyStartPeriodId;
                     
                     string? priorPlQuery = null;
                     if (fyStartPeriodId == null)
@@ -2673,38 +2628,82 @@ public class BalanceController : ControllerBase
     /// <summary>
     /// Helper to get fiscal year info for a period (used by special formulas).
     /// </summary>
+    /// <summary>
+    /// Get fiscal year information using period relationships (not calendar inference).
+    /// Returns fiscal year start period ID to avoid date-based lookups.
+    /// </summary>
     private async Task<FiscalYearInfo?> GetFiscalYearInfoAsync(string periodName, int accountingBook)
     {
         try
         {
-            var periodData = await _netSuiteService.GetPeriodAsync(periodName);
-            if (periodData == null)
+            // Use period relationships to find fiscal year (same approach as SpecialFormulaController)
+            var query = $@"
+                SELECT 
+                    fy.id AS fiscal_year_id,
+                    fy.startdate AS fy_start,
+                    fy.enddate AS fy_end,
+                    tp.id AS period_id,
+                    tp.startdate AS period_start,
+                    tp.enddate AS period_end
+                FROM accountingperiod tp
+                LEFT JOIN accountingperiod q ON q.id = tp.parent AND q.isquarter = 'T'
+                LEFT JOIN accountingperiod fy ON (
+                    (q.parent IS NOT NULL AND fy.id = q.parent) OR
+                    (q.parent IS NULL AND tp.parent IS NOT NULL AND fy.id = tp.parent)
+                )
+                WHERE LOWER(tp.periodname) = LOWER('{NetSuiteService.EscapeSql(periodName)}')
+                  AND tp.isquarter = 'F'
+                  AND tp.isyear = 'F'
+                  AND fy.isyear = 'T'
+                FETCH FIRST 1 ROWS ONLY";
+
+            var results = await _netSuiteService.QueryRawAsync(query);
+            if (!results.Any())
                 return null;
 
-            // Get fiscal year start
-            var fyQuery = $@"
-                SELECT MIN(startdate) AS fy_start
-                FROM accountingperiod
-                WHERE EXTRACT(YEAR FROM startdate) = EXTRACT(YEAR FROM TO_DATE('{ConvertToYYYYMMDD(periodData.StartDate)}', 'YYYY-MM-DD'))
-                  AND isyear = 'F'
-                  AND isquarter = 'F'
-                  AND isadjust = 'F'";
+            var row = results.First();
             
-            var fyResults = await _netSuiteService.QueryRawAsync(fyQuery);
-            if (!fyResults.Any())
-                return null;
+            string GetDateString(JsonElement row, string propName)
+            {
+                if (!row.TryGetProperty(propName, out var prop) || prop.ValueKind == JsonValueKind.Null)
+                    return "";
+                var dateStr = prop.GetString() ?? "";
+                // Convert MM/DD/YYYY to YYYY-MM-DD
+                if (DateTime.TryParseExact(dateStr, "M/d/yyyy", null, System.Globalization.DateTimeStyles.None, out var date))
+                    return date.ToString("yyyy-MM-dd");
+                return dateStr;
+            }
 
-            var fyStartStr = fyResults.First().TryGetProperty("fy_start", out var fyProp) 
-                ? fyProp.GetString() : null;
+            var fiscalYearId = row.TryGetProperty("fiscal_year_id", out var fyId) ? fyId.ToString() : null;
             
-            if (string.IsNullOrEmpty(fyStartStr))
-                return null;
+            // Get the first period of the fiscal year (using period relationships, not dates)
+            string? fyStartPeriodId = null;
+            if (!string.IsNullOrEmpty(fiscalYearId))
+            {
+                var firstPeriodQuery = $@"
+                    SELECT id
+                    FROM accountingperiod
+                    WHERE parent = {fiscalYearId}
+                      AND isquarter = 'F'
+                      AND isyear = 'F'
+                      AND isposting = 'T'
+                    ORDER BY startdate
+                    FETCH FIRST 1 ROWS ONLY";
+                
+                var firstPeriodResults = await _netSuiteService.QueryRawAsync(firstPeriodQuery);
+                if (firstPeriodResults.Any())
+                {
+                    var firstPeriodRow = firstPeriodResults.First();
+                    fyStartPeriodId = firstPeriodRow.TryGetProperty("id", out var idProp) ? idProp.ToString() : null;
+                }
+            }
 
             return new FiscalYearInfo
             {
-                FyStart = ConvertToYYYYMMDD(fyStartStr),
-                PeriodEnd = ConvertToYYYYMMDD(periodData.EndDate),
-                PeriodId = periodData.Id
+                FyStart = GetDateString(row, "fy_start"),
+                PeriodEnd = GetDateString(row, "period_end"),
+                PeriodId = row.TryGetProperty("period_id", out var id) ? id.ToString() : null,
+                FyStartPeriodId = fyStartPeriodId
             };
         }
         catch
@@ -2718,6 +2717,7 @@ public class BalanceController : ControllerBase
         public string FyStart { get; set; } = "";
         public string PeriodEnd { get; set; } = "";
         public string? PeriodId { get; set; }
+        public string? FyStartPeriodId { get; set; }  // Fiscal year start period ID (for period-based lookups)
     }
 
     /// <summary>
