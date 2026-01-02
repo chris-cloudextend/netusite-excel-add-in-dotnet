@@ -13635,7 +13635,8 @@ For licensing inquiries, contact: legal@celigo.com
                     
                     // ========== ROW 1: TITLE ==========
                     const titleCell = sheet.getRange("A1");
-                    titleCell.formulas = [['="Budget Report For: "&P3&" - "&R3']];
+                    // P3=YEAR, V3=Budget Category (moved to end)
+                    titleCell.formulas = [['="Budget Report For: "&P3&" - "&V3']];
                     await context.sync();
                     
                     try {
@@ -13646,13 +13647,14 @@ For licensing inquiries, contact: legal@celigo.com
                     } catch (e) {}
                     
                     // ========== ROW 2: PARAMETER LABELS ==========
+                    // Order: YEAR, Subsidiary, Department, Location, Class, Acct Book, Budget Category (at end)
                     sheet.getRange("P2").values = [["YEAR"]];
                     sheet.getRange("Q2").values = [["Subsidiary"]];
-                    sheet.getRange("R2").values = [["Budget Category"]];
-                    sheet.getRange("S2").values = [["Department"]];
-                    sheet.getRange("T2").values = [["Location"]];
-                    sheet.getRange("U2").values = [["Class"]];
-                    sheet.getRange("V2").values = [["Acct Book"]];
+                    sheet.getRange("R2").values = [["Department"]];
+                    sheet.getRange("S2").values = [["Location"]];
+                    sheet.getRange("T2").values = [["Class"]];
+                    sheet.getRange("U2").values = [["Acct Book"]];
+                    sheet.getRange("V2").values = [["Budget Category"]];
                     await context.sync();
                     
                     // Style parameter labels
@@ -13671,13 +13673,14 @@ For licensing inquiries, contact: legal@celigo.com
                     lastSyncedYear = String(budgetYear);
                     lastSyncedSubsidiary = defaultSubsidiary;
                     
+                    // Order: YEAR, Subsidiary, Department, Location, Class, Acct Book, Budget Category (at end)
                     sheet.getRange("P3").values = [[budgetYear]];
                     sheet.getRange("Q3").values = [[defaultSubsidiary]];
-                    sheet.getRange("R3").values = [[budgetCategory || 'All Categories']];
-                    sheet.getRange("S3").values = [[""]];  // Department - empty by default
-                    sheet.getRange("T3").values = [[""]];  // Location - empty by default
-                    sheet.getRange("U3").values = [[""]];  // Class - empty by default
-                    sheet.getRange("V3").values = [[""]];  // Accounting Book - empty by default
+                    sheet.getRange("R3").values = [[""]];  // Department - empty by default
+                    sheet.getRange("S3").values = [[""]];  // Location - empty by default
+                    sheet.getRange("T3").values = [[""]];  // Class - empty by default
+                    sheet.getRange("U3").values = [[""]];  // Accounting Book - empty by default
+                    sheet.getRange("V3").values = [[budgetCategory || 'All Categories']];  // Budget Category at end
                     await context.sync();
                     
                     // Style parameter value cells
@@ -13749,12 +13752,13 @@ For licensing inquiries, contact: legal@celigo.com
                         
                         // BUDGET formulas for each month
                         // =XAVI.BUDGET(account, fromPeriod, toPeriod, subsidiary, department, location, classId, accountingBook, budgetCategory)
-                        // Cell refs: Q3=Subsidiary, S3=Dept, T3=Location, U3=Class, V3=AcctBook, R3=BudgetCategory
+                        // Cell refs: P3=YEAR, Q3=Subsidiary, R3=Department, S3=Location, T3=Class, U3=AcctBook, V3=BudgetCategory
                         for (let m = 0; m < 12; m++) {
                             const colLetter = String.fromCharCode(67 + m);
                             const cell = sheet.getRange(`${colLetter}${row}`);
                             // Full formula with all parameters as cell references
-                            cell.formulas = [[`=XAVI.BUDGET($A${row},${colLetter}$5,${colLetter}$5,$Q$3,$S$3,$T$3,$U$3,$V$3,$R$3)`]];
+                            // Order: account, fromPeriod, toPeriod, subsidiary, department, location, classId, accountingBook, budgetCategory
+                            cell.formulas = [[`=XAVI.BUDGET($A${row},${colLetter}$5,${colLetter}$5,$Q$3,$R$3,$S$3,$T$3,$U$3,$V$3)`]];
                         }
                         
                         // YTD formula
