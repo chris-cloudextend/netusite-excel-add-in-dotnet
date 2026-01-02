@@ -6,6 +6,7 @@
  */
 
 using Microsoft.AspNetCore.Mvc;
+using System.Text.Json;
 using XaviApi.Services;
 
 namespace XaviApi.Controllers;
@@ -17,11 +18,13 @@ namespace XaviApi.Controllers;
 public class LookupController : ControllerBase
 {
     private readonly ILookupService _lookupService;
+    private readonly INetSuiteService _netSuiteService;
     private readonly ILogger<LookupController> _logger;
 
-    public LookupController(ILookupService lookupService, ILogger<LookupController> logger)
+    public LookupController(ILookupService lookupService, INetSuiteService netSuiteService, ILogger<LookupController> logger)
     {
         _lookupService = lookupService;
+        _netSuiteService = netSuiteService;
         _logger = logger;
     }
 
@@ -261,6 +264,69 @@ public class LookupController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error getting currencies");
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Get all accounting periods from a start year to the current date.
+    /// Returns periods with internal ID, period ID, year, month, and period name.
+    /// </summary>
+    [HttpGet("/periods/from-year")]
+    public async Task<IActionResult> GetPeriodsFromYear([FromQuery] int startYear)
+    {
+        try
+        {
+            if (startYear < 2000 || startYear > 2099)
+            {
+                return BadRequest(new { error = "Start year must be between 2000 and 2099" });
+            }
+
+            var currentYear = DateTime.Now.Year;
+            var periods = new List<object>();
+
+            // Get periods for each year from startYear to currentYear
+            for (int year = startYear; year <= currentYear; year++)
+            {
+                var yearPeriods = await _netSuiteService.GetPeriodsForYearAsync(year);
+                
+                foreach (var period in yearPeriods)
+                {
+                    // Extract month from period name (e.g., "Jan 2025" -> "Jan")
+                    var month = "";
+                    if (!string.IsNullOrEmpty(period.PeriodName))
+                    {
+                        var parts = period.PeriodName.Split(' ');
+                        if (parts.Length > 0)
+                        {
+                            month = parts[0];
+                        }
+                    }
+
+                    periods.Add(new
+                    {
+                        internal_id = period.Id,
+                        period_id = period.Id, // Same as internal_id for AccountingPeriod
+                        period_name = period.PeriodName,
+                        year = year,
+                        month = month,
+                        start_date = period.StartDate,
+                        end_date = period.EndDate
+                    });
+                }
+            }
+
+            return Ok(new
+            {
+                start_year = startYear,
+                end_year = currentYear,
+                count = periods.Count,
+                periods = periods
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting periods from year {StartYear}", startYear);
             return StatusCode(500, new { error = ex.Message });
         }
     }

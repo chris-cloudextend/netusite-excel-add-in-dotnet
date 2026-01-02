@@ -4980,37 +4980,65 @@ For licensing inquiries, contact: legal@celigo.com
                             <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="16"></line><line x1="8" y1="12" x2="16" y2="12"></line></svg>
                         </div>
                         <div class="header-text">
-                            <span>Bulk Add GL Accounts</span>
-                            <span class="subtitle">Add multiple accounts at once</span>
+                            <span>Bulk Add GL and Periods</span>
+                            <span class="subtitle">Add multiple accounts or periods at once</span>
                         </div>
                     </h3>
                     <svg class="chevron" viewBox="0 0 24 24"><path d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z"/></svg>
                 </summary>
                 <div class="collapsible-content">
-                    <p style="color: var(--bottlenose); font-size: 12px; margin-bottom: 12px; line-height: 1.5;">
-                        Search by account number or type. Results insert at your cursor position.
-                    </p>
-                    
-                    <input 
-                        type="text" 
-                        id="accountSearchInput" 
-                        class="search-input"
-                        placeholder="e.g., 4*, *income, expense"
-                        onkeypress="if(event.key === 'Enter') searchAccounts()"
-                    />
-                    
-                    <div class="search-hints">
-                        <p style="color: var(--bottlenose); font-size: 11px; margin: 0; line-height: 1.6;">
-                            <strong>By Number:</strong> <code>4*</code> <code>42*</code> <code>*</code><br>
-                            <strong>By Type:</strong> <code>income</code> <code>expense</code> <code>bank</code> <code>asset</code>
+                    <!-- GL Accounts Section -->
+                    <div style="margin-bottom: 20px; padding-bottom: 16px; border-bottom: 1px dashed rgba(0,0,0,0.1);">
+                        <p style="color: var(--bottlenose); font-size: 12px; margin-bottom: 12px; line-height: 1.5;">
+                            Search by account number or type. Results insert at your cursor position.
                         </p>
+                        
+                        <input 
+                            type="text" 
+                            id="accountSearchInput" 
+                            class="search-input"
+                            placeholder="e.g., 4*, *income, expense"
+                            onkeypress="if(event.key === 'Enter') searchAccounts()"
+                        />
+                        
+                        <div class="search-hints">
+                            <p style="color: var(--bottlenose); font-size: 11px; margin: 0; line-height: 1.6;">
+                                <strong>By Number:</strong> <code>4*</code> <code>42*</code> <code>*</code><br>
+                                <strong>By Type:</strong> <code>income</code> <code>expense</code> <code>bank</code> <code>asset</code>
+                            </p>
+                        </div>
+                        
+                        <button class="btn-primary" style="margin-top: 12px; background: linear-gradient(135deg, var(--anenome) 0%, #06d6a0 100%); color: var(--deep-dive);" onclick="searchAccounts()">
+                            <span>➕</span> Bulk Add GL Accounts
+                        </button>
+                        
+                        <div class="refresh-status" id="searchStatus"></div>
                     </div>
                     
-                    <button class="btn-primary" style="margin-top: 12px; background: linear-gradient(135deg, var(--anenome) 0%, #06d6a0 100%); color: var(--deep-dive);" onclick="searchAccounts()">
-                        <span>➕</span> Bulk Add GL Accounts
-                    </button>
-                    
-                    <div class="refresh-status" id="searchStatus"></div>
+                    <!-- Periods Section -->
+                    <div>
+                        <p style="color: var(--bottlenose); font-size: 12px; margin-bottom: 12px; line-height: 1.5;">
+                            Add all periods from a start year to the current date. Results insert at your cursor position.
+                        </p>
+                        
+                        <!-- Year Input for Periods -->
+                        <div style="margin-bottom: 12px; padding: 12px; background: linear-gradient(135deg, rgba(16,185,129,0.05), rgba(16,185,129,0.1)); border-radius: 10px; border: 1px solid rgba(16,185,129,0.2);">
+                            <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px;">
+                                <label for="periodYearInput" style="font-size: 12px; font-weight: 600; color: #10B981;">Start Year:</label>
+                                <input type="number" id="periodYearInput" value="2023" min="2000" max="2099" 
+                                       style="width: 90px; padding: 8px 12px; border: 2px solid #10B981; border-radius: 8px; font-size: 14px; font-weight: 700; text-align: center; color: #10B981; background: white;">
+                            </div>
+                            <div style="font-size: 10px; color: #666; line-height: 1.4;">
+                                💡 <strong>Adds all periods</strong> from the selected year through the current year (e.g., 2023-2025 = 36 periods).
+                            </div>
+                        </div>
+                        
+                        <button class="btn-primary" style="margin-top: 12px; background: linear-gradient(135deg, #10B981 0%, #059669 100%); color: white;" onclick="addPeriods()">
+                            <span>📅</span> Add Periods
+                        </button>
+                        
+                        <div class="refresh-status" id="periodStatus"></div>
+                    </div>
                 </div>
             </details>
 
@@ -23707,6 +23735,151 @@ export default {
                 btn.disabled = false;
                 btn.textContent = 'Bulk Add GL Accounts';
             }
+        }
+
+        // ==========================================================================
+        // ADD PERIODS FUNCTION (adds periods from start year to current date)
+        // ==========================================================================
+        async function addPeriods() {
+            const statusEl = document.getElementById('periodStatus');
+            const yearInput = document.getElementById('periodYearInput');
+            const btn = event.target;
+            
+            try {
+                const startYear = parseInt(yearInput.value, 10);
+                
+                if (!startYear || startYear < 2000 || startYear > 2099) {
+                    statusEl.innerHTML = `<div style="background: #fee2e2; padding: 10px; border-radius: 6px;"><strong style="color: #dc2626;">⚠ Invalid year:</strong> Please enter a year between 2000 and 2099</div>`;
+                    setTimeout(() => { statusEl.textContent = ''; }, 3000);
+                    return;
+                }
+                
+                btn.disabled = true;
+                btn.innerHTML = '<span>⏳</span> Loading...';
+                
+                showLoading('Period Search', `Fetching periods from ${startYear} to ${new Date().getFullYear()}...`, 20);
+                
+                console.log('=== PERIOD SEARCH START ===');
+                console.log('Start Year:', startYear);
+                
+                // Call backend API
+                const url = `${getServerUrl()}/periods/from-year?startYear=${startYear}`;
+                console.log('API URL:', url);
+                
+                const response = await fetch(url);
+                
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    console.error('API error:', errorText);
+                    throw new Error(`API error: ${response.status}`);
+                }
+                
+                const data = await response.json();
+                console.log('Period results:', data);
+                
+                const periods = data.periods || [];
+                
+                if (periods.length === 0) {
+                    hideLoading();
+                    statusEl.innerHTML = `<div style="background: #fef3c7; padding: 10px; border-radius: 6px;"><strong style="color: #d97706;">⚠ No periods found</strong> for year ${startYear}</div>`;
+                    setTimeout(() => { statusEl.textContent = ''; }, 5000);
+                    return;
+                }
+                
+                updateLoading(`Inserting ${periods.length} periods...`, 70);
+                
+                // Create results sheet
+                await Excel.run(async (context) => {
+                    await createPeriodSearchSheet(context, periods, startYear);
+                });
+                
+                updateLoading('Complete!', 100);
+                await new Promise(resolve => setTimeout(resolve, 500));
+                hideLoading();
+                
+                statusEl.innerHTML = `<div style="background: #d1fae5; padding: 10px; border-radius: 6px;"><strong style="color: #059669;">✓ Inserted ${periods.length} periods!</strong></div>`;
+                
+                setTimeout(() => {
+                    statusEl.textContent = '';
+                }, 5000);
+                
+                console.log('=== PERIOD SEARCH COMPLETE ===');
+                
+            } catch (error) {
+                console.error('=== PERIOD SEARCH ERROR ===');
+                console.error('Error:', error);
+                hideLoading();
+                
+                statusEl.innerHTML = `<div style="background: #fee2e2; padding: 10px; border-radius: 6px;"><strong style="color: #dc2626;">✗ Error:</strong> ${error.message}</div>`;
+                
+                setTimeout(() => {
+                    statusEl.textContent = '';
+                }, 8000);
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = '<span>📅</span> Add Periods';
+            }
+        }
+
+        async function createPeriodSearchSheet(context, periods, startYear) {
+            // INSERT AT CURSOR POSITION (not new sheet!)
+            const sheet = context.workbook.worksheets.getActiveWorksheet();
+            const range = context.workbook.getSelectedRange();
+            range.load(['address', 'rowIndex', 'columnIndex']);
+            await context.sync();
+            
+            console.log(`Inserting ${periods.length} periods at ${range.address}`);
+            
+            // Headers row
+            const headers = ['Internal ID', 'Period ID', 'Period Name', 'Year', 'Month', 'Start Date', 'End Date'];
+            
+            // Prepare data rows
+            const dataRows = periods.map(period => [
+                period.internal_id || '',
+                period.period_id || '',
+                period.period_name || '',
+                period.year || '',
+                period.month || '',
+                period.start_date || '',
+                period.end_date || ''
+            ]);
+            
+            // Insert headers
+            const headerRange = sheet.getRangeByIndexes(range.rowIndex, range.columnIndex, 1, headers.length);
+            headerRange.values = [headers];
+            headerRange.format.fill.color = '#10B981';
+            headerRange.format.font.bold = true;
+            headerRange.format.font.color = 'white';
+            headerRange.format.borders.getItem('EdgeTop').style = 'Continuous';
+            headerRange.format.borders.getItem('EdgeBottom').style = 'Continuous';
+            headerRange.format.borders.getItem('EdgeLeft').style = 'Continuous';
+            headerRange.format.borders.getItem('EdgeRight').style = 'Continuous';
+            headerRange.format.borders.getItem('EdgeTop').color = '#059669';
+            headerRange.format.borders.getItem('EdgeBottom').color = '#059669';
+            headerRange.format.borders.getItem('EdgeLeft').color = '#059669';
+            headerRange.format.borders.getItem('EdgeRight').color = '#059669';
+            
+            // Insert data rows
+            if (dataRows.length > 0) {
+                const dataRange = sheet.getRangeByIndexes(range.rowIndex + 1, range.columnIndex, dataRows.length, headers.length);
+                dataRange.values = dataRows;
+                
+                // Style data rows
+                dataRange.format.borders.getItem('EdgeTop').style = 'Continuous';
+                dataRange.format.borders.getItem('EdgeBottom').style = 'Continuous';
+                dataRange.format.borders.getItem('EdgeLeft').style = 'Continuous';
+                dataRange.format.borders.getItem('EdgeRight').style = 'Continuous';
+                dataRange.format.borders.getItem('EdgeTop').color = '#d1d5db';
+                dataRange.format.borders.getItem('EdgeBottom').color = '#d1d5db';
+                dataRange.format.borders.getItem('EdgeLeft').color = '#d1d5db';
+                dataRange.format.borders.getItem('EdgeRight').color = '#d1d5db';
+                
+                // Auto-fit columns
+                headerRange.format.autofitColumns();
+            }
+            
+            await context.sync();
+            console.log(`Inserted ${periods.length} periods successfully`);
         }
 
         async function createAccountSearchSheet(context, accounts, pattern) {

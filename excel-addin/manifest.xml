@@ -16,7 +16,7 @@ ARCHITECTURE (v3.0.5.190+):
 - Taskpane UI page: taskpane.html (actual UI)
 - This separation ensures Mac's "Developer Window" is blank, not a duplicate UI
 
-LAST UPDATED: 2026-01-02 (Version 4.0.6.38 - Fix year-only period validation to allow "2025" format)
+LAST UPDATED: 2026-01-02 (Version 4.0.6.39 - Add bulk periods feature to task pane)
 
 Context menu uses ExecuteFunction (runs in blank sharedruntime.html):
 1. ExecuteFunction sets localStorage flag with cell info
@@ -31,13 +31,13 @@ Context menu uses ExecuteFunction (runs in blank sharedruntime.html):
   xsi:type="TaskPaneApp">
 
   <Id>c3d4e5f6-7890-12ab-cdef-345678901cde</Id>
-        <Version>4.0.6.38</Version>
+        <Version>4.0.6.39</Version>
   <ProviderName>CloudExtend</ProviderName>
   <DefaultLocale>en-US</DefaultLocale>
   <DisplayName DefaultValue="XAVI for NetSuite"/>
   <Description DefaultValue="XAVI - Financial reporting formulas for NetSuite"/>
-    <IconUrl DefaultValue="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/icon-32.png?v=4.0.6.38"/>
-    <HighResolutionIconUrl DefaultValue="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/icon-64.png?v=4.0.6.38"/>
+    <IconUrl DefaultValue="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/icon-32.png?v=4.0.6.39"/>
+    <HighResolutionIconUrl DefaultValue="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/icon-64.png?v=4.0.6.39"/>
   <SupportUrl DefaultValue="https://www.cloudextend.io"/>
 
   <Hosts>
@@ -53,7 +53,7 @@ Context menu uses ExecuteFunction (runs in blank sharedruntime.html):
 
   <!-- Task Pane (fallback for older Office versions) -->
   <DefaultSettings>
-    <SourceLocation DefaultValue="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/taskpane.html?v=4.0.6.38"/>
+    <SourceLocation DefaultValue="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/taskpane.html?v=4.0.6.39"/>
   </DefaultSettings>
 
   <Permissions>ReadWriteDocument</Permissions>
