@@ -13753,12 +13753,14 @@ For licensing inquiries, contact: legal@celigo.com
                         // BUDGET formulas for each month
                         // =XAVI.BUDGET(account, fromPeriod, toPeriod, subsidiary, department, location, classId, accountingBook, budgetCategory)
                         // Cell refs: P3=YEAR, Q3=Subsidiary, R3=Department, S3=Location, T3=Class, U3=AcctBook, V3=BudgetCategory
+                        // Use TEXT() to convert date in row 5 to "mmm yyyy" format (e.g., "Jan 2011")
                         for (let m = 0; m < 12; m++) {
                             const colLetter = String.fromCharCode(67 + m);
                             const cell = sheet.getRange(`${colLetter}${row}`);
                             // Full formula with all parameters as cell references
                             // Order: account, fromPeriod, toPeriod, subsidiary, department, location, classId, accountingBook, budgetCategory
-                            cell.formulas = [[`=XAVI.BUDGET($A${row},${colLetter}$5,${colLetter}$5,$Q$3,$R$3,$S$3,$T$3,$U$3,$V$3)`]];
+                            // Convert date to period string using TEXT() to ensure proper format
+                            cell.formulas = [[`=XAVI.BUDGET($A${row},TEXT(${colLetter}$5,"mmm yyyy"),TEXT(${colLetter}$5,"mmm yyyy"),$Q$3,$R$3,$S$3,$T$3,$U$3,$V$3)`]];
                         }
                         
                         // YTD formula
