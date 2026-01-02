@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.36';  // Fix year-only period expansion in batch processing
+const FUNCTIONS_VERSION = '4.0.6.37';  // Fix syntax error in year-only period expansion
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -8582,9 +8582,10 @@ async function processBatchQueue() {
                                 // Set year for optimization if not set yet
                                 if (yearForOptimization === null) {
                                     yearForOptimization = year;
-                            } else if (yearForOptimization !== year) {
-                                // Multiple years detected - can't use year endpoint
-                                isFullYearRequest = false;
+                                } else if (yearForOptimization !== year) {
+                                    // Multiple years detected - can't use year endpoint
+                                    isFullYearRequest = false;
+                                }
                             }
                         }
                     } else if (fromPeriod) {
