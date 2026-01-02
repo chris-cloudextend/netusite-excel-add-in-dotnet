@@ -16,7 +16,7 @@ ARCHITECTURE (v3.0.5.190+):
 - Taskpane UI page: taskpane.html (actual UI)
 - This separation ensures Mac's "Developer Window" is blank, not a duplicate UI
 
-LAST UPDATED: 2026-01-02 (Version 4.0.6.40 - Add period ID support to frontend validation)
+LAST UPDATED: 2026-01-02 (Version 4.0.6.41 - Simplify BUDGET formula to use direct cell references)
 
 Context menu uses ExecuteFunction (runs in blank sharedruntime.html):
 1. ExecuteFunction sets localStorage flag with cell info
@@ -53,7 +53,7 @@ Context menu uses ExecuteFunction (runs in blank sharedruntime.html):
 
   <!-- Task Pane (fallback for older Office versions) -->
   <DefaultSettings>
-    <SourceLocation DefaultValue="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/taskpane.html?v=4.0.6.40"/>
+    <SourceLocation DefaultValue="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/taskpane.html?v=4.0.6.41"/>
   </DefaultSettings>
 
   <Permissions>ReadWriteDocument</Permissions>
@@ -190,10 +190,10 @@ Context menu uses ExecuteFunction (runs in blank sharedruntime.html):
 
       <!-- External Files (cache-busted) -->
       <bt:Urls>
-        <bt:Url id="Taskpane.Url" DefaultValue="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/taskpane.html?v=4.0.6.38"/>
-        <bt:Url id="DrillDown.Url" DefaultValue="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/taskpane.html?v=4.0.6.38&amp;action=drilldown"/>
-        <bt:Url id="SharedRuntime.Url" DefaultValue="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/sharedruntime.html?v=4.0.6.38"/>
-        <bt:Url id="Functions.Script.Url" DefaultValue="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.38"/>
+        <bt:Url id="Taskpane.Url" DefaultValue="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/taskpane.html?v=4.0.6.41"/>
+        <bt:Url id="DrillDown.Url" DefaultValue="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/taskpane.html?v=4.0.6.41&amp;action=drilldown"/>
+        <bt:Url id="SharedRuntime.Url" DefaultValue="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/sharedruntime.html?v=4.0.6.41"/>
+        <bt:Url id="Functions.Script.Url" DefaultValue="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.41"/>
         <bt:Url id="Functions.Metadata.Url" DefaultValue="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.json?v=4.0.6.38"/>
         <bt:Url id="GetStarted.LearnMoreUrl" DefaultValue="https://www.cloudextend.io"/>
       </bt:Urls>
