@@ -4613,6 +4613,19 @@ For licensing inquiries, contact: legal@celigo.com
                         <div style="font-size: 11px; color: #8B5CF6; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; font-weight: 600;">💰 Other Reports</div>
                     </div>
                     
+                    <!-- Year Input for Budget Report -->
+                    <div style="margin-bottom: 12px; padding: 12px; background: linear-gradient(135deg, rgba(139,92,246,0.05), rgba(139,92,246,0.1)); border-radius: 10px; border: 1px solid rgba(139,92,246,0.2);">
+                        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px;">
+                            <label for="budgetYearInput" style="font-size: 12px; font-weight: 600; color: #8B5CF6;">Budget Year:</label>
+                            <input type="number" id="budgetYearInput" value="2011" min="2000" max="2099" 
+                                   style="width: 90px; padding: 8px 12px; border: 2px solid #8B5CF6; border-radius: 8px; font-size: 14px; font-weight: 700; text-align: center; color: #8B5CF6; background: white;">
+                        </div>
+                        <div style="font-size: 10px; color: #666; line-height: 1.4;">
+                            💡 <strong>Select the fiscal year</strong> for the budget report.<br>
+                            The report will load all budget data for this year from NetSuite.
+                        </div>
+                    </div>
+                    
                     <!-- Option 5: Budget Report -->
                     <div class="guide-choice" onclick="generateBudgetReport()" style="background: rgba(255,255,255,0.8); border: 2px solid #8B5CF6;">
                         <div class="guide-choice-icon">💰</div>
@@ -13440,7 +13453,9 @@ For licensing inquiries, contact: legal@celigo.com
         
         async function generateBudgetReport() {
             const progress = document.getElementById('guideMeProgress');
-            const budgetYear = 2011;  // For testing - only year with budget data
+            // Get budget year from input field
+            const budgetYearInput = document.getElementById('budgetYearInput');
+            const budgetYear = budgetYearInput ? parseInt(budgetYearInput.value, 10) : 2011;
             const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 
                                'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
             
