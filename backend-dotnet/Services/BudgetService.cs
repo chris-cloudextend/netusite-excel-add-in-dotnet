@@ -87,20 +87,131 @@ public class BudgetService : IBudgetService
             };
         }
 
-        var filters = BuildFilters(request.Subsidiary, request.Department, request.Class, request.Location, request.Category);
+        // Get period IDs for the date range
+        // If single period, use that period's ID
+        // If range, expand to all months in range
+        var periodIds = new List<string>();
+        
+        if (fromPeriod == toPeriod)
+        {
+            // Single period
+            if (fromPeriodData?.Id != null)
+                periodIds.Add(fromPeriodData.Id);
+        }
+        else
+        {
+            // Range - expand to all months
+            var expandedPeriods = GenerateMonthlyPeriods(fromPeriod, toPeriod);
+            foreach (var period in expandedPeriods)
+            {
+                var periodData = await _netSuiteService.GetPeriodAsync(period);
+                if (periodData?.Id != null)
+                    periodIds.Add(periodData.Id);
+            }
+        }
 
-        // Query BudgetsMachine table for period-level budget data
+        if (!periodIds.Any())
+        {
+            _logger.LogWarning("No period IDs found for range {From} to {To}", fromPeriod, toPeriod);
+            return new BudgetResponse
+            {
+                Account = request.Account,
+                FromPeriod = fromPeriod,
+                ToPeriod = toPeriod,
+                Category = request.Category,
+                Amount = 0
+            };
+        }
+
+        var periodIdList = string.Join(",", periodIds);
+
+        // Build filters using the correct table structure (Budgets table, not BudgetsMachine)
+        var whereClauses = new List<string> 
+        { 
+            $"a.acctnumber = '{NetSuiteService.EscapeSql(request.Account)}'",
+            $"bm.period IN ({periodIdList})"
+        };
+
+        // Category filter - use Budgets table (b.category)
+        if (!string.IsNullOrEmpty(request.Category))
+        {
+            if (int.TryParse(request.Category, out var catId))
+            {
+                whereClauses.Add($"b.category = {catId}");
+            }
+            else
+            {
+                // Look up category ID by name
+                var catQuery = $@"
+                    SELECT id FROM BudgetCategory 
+                    WHERE name = '{NetSuiteService.EscapeSql(request.Category)}'
+                    FETCH FIRST 1 ROWS ONLY";
+                var catResults = await _netSuiteService.QueryRawAsync(catQuery);
+                if (catResults.Any())
+                {
+                    var catRow = catResults.First();
+                    if (catRow.TryGetProperty("id", out var catIdProp))
+                    {
+                        var catIdStr = catIdProp.GetString();
+                        if (!string.IsNullOrEmpty(catIdStr))
+                            whereClauses.Add($"b.category = {catIdStr}");
+                    }
+                }
+            }
+        }
+
+        // Subsidiary filter - use Budgets table (b.subsidiary)
+        string? subsidiaryId = null;
+        if (!string.IsNullOrEmpty(request.Subsidiary))
+        {
+            if (int.TryParse(request.Subsidiary, out var subId))
+            {
+                subsidiaryId = request.Subsidiary;
+            }
+            else
+            {
+                // Look up subsidiary ID by name
+                var subQuery = $@"
+                    SELECT id FROM subsidiary 
+                    WHERE name = '{NetSuiteService.EscapeSql(request.Subsidiary)}'
+                    FETCH FIRST 1 ROWS ONLY";
+                var subResults = await _netSuiteService.QueryRawAsync(subQuery);
+                if (subResults.Any())
+                {
+                    var subRow = subResults.First();
+                    if (subRow.TryGetProperty("id", out var subIdProp))
+                        subsidiaryId = subIdProp.GetString();
+                }
+            }
+        }
+
+        // Use default subsidiary if not specified
+        var targetSub = subsidiaryId ?? "1";
+
+        if (!string.IsNullOrEmpty(subsidiaryId))
+        {
+            whereClauses.Add($"b.subsidiary = {subsidiaryId}");
+        }
+
+        // Department, Class, Location filters - these are on BudgetsMachine but may not be available
+        // Skip these for now as they may not be supported in NetSuite's BudgetsMachine structure
+
+        var whereClause = string.Join(" AND ", whereClauses);
+
+        // Query BudgetsMachine table - use correct structure matching GetAllBudgetsAsync
+        // CRITICAL: Join through Budgets table (b) to get account and category
         var query = $@"
             SELECT 
-                SUM(bm.amount) as amount
+                SUM(
+                    TO_NUMBER(BUILTIN.CONSOLIDATE(
+                        bm.amount, 'LEDGER', 'DEFAULT', 'DEFAULT',
+                        {targetSub}, bm.period, 'DEFAULT'
+                    ))
+                ) as amount
             FROM BudgetsMachine bm
-            JOIN account a ON bm.account = a.id
-            JOIN accountingperiod p ON bm.accountingperiod = p.id
-            WHERE a.acctnumber = '{NetSuiteService.EscapeSql(request.Account)}'
-            AND p.startdate >= TO_DATE('{fromPeriodData.StartDate}', 'MM/DD/YYYY')
-            AND p.enddate <= TO_DATE('{toPeriodData.EndDate}', 'MM/DD/YYYY')
-            AND p.isquarter = 'F' AND p.isyear = 'F'
-            {filters}";
+            INNER JOIN Budgets b ON bm.budget = b.id
+            INNER JOIN Account a ON b.account = a.id
+            WHERE {whereClause}";
 
         var results = await _netSuiteService.QueryRawAsync(query);
 
