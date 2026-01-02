@@ -876,7 +876,7 @@ public class BalanceService : IBalanceService
                     WHERE t.posting = 'T'
                       AND tal.posting = 'T'
                       AND {NetSuiteService.BuildAccountFilter(new[] { request.Account })}
-                      AND t.trandate <= TO_DATE('{toEndDate}', 'YYYY-MM-DD')
+                      AND t.postingperiod <= {targetPeriodId}
                       AND tal.accountingbook = {accountingBook}
                       AND {segmentWhere}
                       AND BUILTIN.CONSOLIDATE(
@@ -900,11 +900,31 @@ public class BalanceService : IBalanceService
                 fromStartDate = ConvertToYYYYMMDD(toPeriodData.StartDate ?? toPeriodData.EndDate!);
             }
 
-            // For P&L accounts, using t.postingperiod is acceptable (each period uses its own rate)
-            // But for consistency and to match NetSuite GL reports, we can also use target period
-            // 
+            // CRITICAL FIX: Use period IDs instead of date ranges for P&L period activity
+            // Get all period IDs in the range
+            var periodIdsInRange = await GetPeriodIdsInRangeAsync(fromPeriod, toPeriod);
+            
+            if (!periodIdsInRange.Any())
+            {
+                _logger.LogWarning("BalanceBeta P&L: Could not find period IDs for range: {FromPeriod} to {ToPeriod}", fromPeriod, toPeriod);
+                return new BalanceBetaResponse
+                {
+                    Account = request.Account,
+                    FromPeriod = request.FromPeriod,
+                    ToPeriod = toPeriod,
+                    Balance = 0,
+                    Error = $"Could not resolve period IDs for range {fromPeriod} to {toPeriod}"
+                };
+            }
+            
+            var periodIdList = string.Join(", ", periodIdsInRange);
+            
+            _logger.LogDebug("BalanceBeta P&L: fromPeriod={FromPeriod}, toPeriod={ToPeriod}, periodCount={Count}", 
+                fromPeriod, toPeriod, periodIdsInRange.Count);
+            
             // IMPORTANT: BUILTIN.CONSOLIDATE returns NULL for transactions that cannot be consolidated
             // to the target subsidiary. We filter out NULLs to only include successfully converted amounts.
+            // CRITICAL FIX: Filter by t.postingperiod IN (periodId1, periodId2, ...) instead of date ranges
             query = $@"
                 SELECT SUM(x.cons_amt) AS balance
                 FROM (
@@ -923,13 +943,11 @@ public class BalanceService : IBalanceService
                     FROM transactionaccountingline tal
                     JOIN transaction t ON t.id = tal.transaction
                     JOIN account a ON a.id = tal.account
-                    JOIN accountingperiod ap ON ap.id = t.postingperiod
                     JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id
                     WHERE t.posting = 'T'
                       AND tal.posting = 'T'
                       AND {NetSuiteService.BuildAccountFilter(new[] { request.Account })}
-                      AND ap.startdate >= TO_DATE('{fromStartDate}', 'YYYY-MM-DD')
-                      AND ap.enddate <= TO_DATE('{toEndDate}', 'YYYY-MM-DD')
+                      AND t.postingperiod IN ({periodIdList})
                       AND tal.accountingbook = {accountingBook}
                       AND {segmentWhere}
                       AND BUILTIN.CONSOLIDATE(
@@ -1603,6 +1621,14 @@ public class BalanceService : IBalanceService
                 var endDate = ConvertToYYYYMMDD(info.End);
                 var periodId = info.Id ?? "NULL";
 
+                if (string.IsNullOrEmpty(periodId) || periodId == "NULL")
+                {
+                    _logger.LogWarning("BS batch query: period {Period} has no ID, cannot use period-based filtering", period);
+                    continue; // Skip this period
+                }
+
+                // CRITICAL FIX: Use t.postingperiod <= periodId instead of t.trandate <= TO_DATE(...)
+                // This ensures month-by-month and batched queries use identical period filtering
                 var bsQuery = $@"
                     SELECT 
                         a.acctnumber,
@@ -1627,7 +1653,7 @@ public class BalanceService : IBalanceService
                       AND tal.posting = 'T'
                       AND {bsAccountFilter}
                       AND a.accttype NOT IN ({AccountType.PlTypesSql})
-                      AND t.trandate <= TO_DATE('{endDate}', 'YYYY-MM-DD')
+                      AND t.postingperiod <= {periodId}
                       AND tal.accountingbook = {accountingBook}
                       AND {segmentWhere}
                     GROUP BY a.acctnumber";
@@ -1834,11 +1860,26 @@ public class BalanceService : IBalanceService
             // Sign flip for Liabilities and Equity (credits stored negative, display positive)
             var signFlip = $"CASE WHEN a.accttype IN ({AccountType.SignFlipTypesSql}) THEN -1 ELSE 1 END";
             
-            // Get period ID for BUILTIN.CONSOLIDATE exchange rate
+            // Get period ID for BUILTIN.CONSOLIDATE exchange rate and filtering
             var targetPeriodId = !string.IsNullOrEmpty(toPeriodData?.Id) ? toPeriodData.Id : "NULL";
+            
+            if (string.IsNullOrEmpty(toPeriodData?.Id))
+            {
+                _logger.LogWarning("TypeBalance BS: toPeriod {ToPeriod} has no ID, cannot use period-based filtering", toPeriod);
+                return new TypeBalanceResponse
+                {
+                    AccountType = request.AccountType,
+                    FromPeriod = fromPeriod,
+                    ToPeriod = toPeriod,
+                    Balance = 0,
+                    Error = $"Could not resolve period ID for {toPeriod}"
+                };
+            }
             
             _logger.LogDebug("TypeBalance BS: periodId={PeriodId}, endDate={EndDate}", targetPeriodId, toEndDate);
             
+            // CRITICAL FIX: Use t.postingperiod <= toPeriodId instead of t.trandate <= toEndDate
+            // This ensures month-by-month and batched queries use identical period filtering
             query = $@"
                 SELECT SUM(
                     TO_NUMBER(
@@ -1860,7 +1901,7 @@ public class BalanceService : IBalanceService
                 WHERE t.posting = 'T'
                   AND tal.posting = 'T'
                   AND a.accttype IN ({typeFilter})
-                  AND t.trandate <= TO_DATE('{toEndDate}', 'YYYY-MM-DD')
+                  AND t.postingperiod <= {targetPeriodId}
                   AND tal.accountingbook = {accountingBook}
                   AND {segmentWhere}";
         }
@@ -1870,6 +1911,30 @@ public class BalanceService : IBalanceService
             // Sign flip for Income types (credits stored negative, display positive)
             var signFlip = $"CASE WHEN a.accttype IN ({AccountType.IncomeTypesSql}) THEN -1 ELSE 1 END";
             
+            // CRITICAL FIX: Use period IDs instead of date ranges
+            // Get all period IDs in the range
+            var periodIdsInRange = await GetPeriodIdsInRangeAsync(fromPeriod, toPeriod);
+            
+            if (!periodIdsInRange.Any())
+            {
+                _logger.LogWarning("TypeBalance P&L: Could not find period IDs for range: {FromPeriod} to {ToPeriod}", fromPeriod, toPeriod);
+                return new TypeBalanceResponse
+                {
+                    AccountType = request.AccountType,
+                    FromPeriod = fromPeriod,
+                    ToPeriod = toPeriod,
+                    Balance = 0,
+                    Error = $"Could not resolve period IDs for range {fromPeriod} to {toPeriod}"
+                };
+            }
+            
+            var periodIdList = string.Join(", ", periodIdsInRange);
+            
+            _logger.LogDebug("TypeBalance P&L: fromPeriod={FromPeriod}, toPeriod={ToPeriod}, periodCount={Count}", 
+                fromPeriod, toPeriod, periodIdsInRange.Count);
+            
+            // CRITICAL FIX: Filter by t.postingperiod IN (periodId1, periodId2, ...) instead of date ranges
+            // This ensures month-by-month and batched queries use identical period filtering
             query = $@"
                 SELECT SUM(
                     TO_NUMBER(
@@ -1887,13 +1952,11 @@ public class BalanceService : IBalanceService
                 FROM transactionaccountingline tal
                 JOIN transaction t ON t.id = tal.transaction
                 JOIN account a ON a.id = tal.account
-                JOIN accountingperiod ap ON ap.id = t.postingperiod
                 JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id
                 WHERE t.posting = 'T'
                   AND tal.posting = 'T'
                   AND a.accttype IN ({typeFilter})
-                  AND ap.startdate >= TO_DATE('{fromStartDate}', 'YYYY-MM-DD')
-                  AND ap.enddate <= TO_DATE('{toEndDate}', 'YYYY-MM-DD')
+                  AND t.postingperiod IN ({periodIdList})
                   AND tal.accountingbook = {accountingBook}
                   AND {segmentWhere}";
         }
@@ -2040,6 +2103,14 @@ public class BalanceService : IBalanceService
             var signFlip = $"CASE WHEN a.accttype IN ({AccountType.SignFlipTypesSql}) THEN -1 ELSE 1 END";
             var targetPeriodId = !string.IsNullOrEmpty(toPeriodData?.Id) ? toPeriodData.Id : "NULL";
 
+            if (string.IsNullOrEmpty(toPeriodData?.Id))
+            {
+                _logger.LogWarning("AccountsByType BS: toPeriod {ToPeriod} has no ID, cannot use period-based filtering", toPeriod);
+                return new List<AccountBalance>();
+            }
+
+            // CRITICAL FIX: Use t.postingperiod <= toPeriodId instead of t.trandate <= toEndDate
+            // This ensures month-by-month and batched queries use identical period filtering
             query = $@"
                 SELECT 
                     a.acctnumber,
@@ -2065,7 +2136,7 @@ public class BalanceService : IBalanceService
                   AND tal.posting = 'T'
                   AND {typeWhere}
                   AND a.isinactive = 'F'
-                  AND t.trandate <= TO_DATE('{toEndDate}', 'YYYY-MM-DD')
+                  AND t.postingperiod <= {targetPeriodId}
                   AND tal.accountingbook = {accountingBook}
                   AND {segmentWhere}
                 GROUP BY a.acctnumber, a.accountsearchdisplayname, a.accttype
@@ -2075,6 +2146,23 @@ public class BalanceService : IBalanceService
         {
             var signFlip = $"CASE WHEN a.accttype IN ({AccountType.IncomeTypesSql}) THEN -1 ELSE 1 END";
 
+            // CRITICAL FIX: Use period IDs instead of date ranges
+            // Get all period IDs in the range
+            var periodIdsInRange = await GetPeriodIdsInRangeAsync(fromPeriod, toPeriod);
+            
+            if (!periodIdsInRange.Any())
+            {
+                _logger.LogWarning("AccountsByType P&L: Could not find period IDs for range: {FromPeriod} to {ToPeriod}", fromPeriod, toPeriod);
+                return new List<AccountBalance>();
+            }
+            
+            var periodIdList = string.Join(", ", periodIdsInRange);
+            
+            _logger.LogDebug("AccountsByType P&L: fromPeriod={FromPeriod}, toPeriod={ToPeriod}, periodCount={Count}", 
+                fromPeriod, toPeriod, periodIdsInRange.Count);
+
+            // CRITICAL FIX: Filter by t.postingperiod IN (periodId1, periodId2, ...) instead of date ranges
+            // This ensures month-by-month and batched queries use identical period filtering
             query = $@"
                 SELECT 
                     a.acctnumber,
@@ -2095,14 +2183,12 @@ public class BalanceService : IBalanceService
                 FROM transactionaccountingline tal
                 JOIN transaction t ON t.id = tal.transaction
                 JOIN account a ON a.id = tal.account
-                JOIN accountingperiod ap ON ap.id = t.postingperiod
                 JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id
                 WHERE t.posting = 'T'
                   AND tal.posting = 'T'
                   AND {typeWhere}
                   AND a.isinactive = 'F'
-                  AND ap.startdate >= TO_DATE('{fromStartDate}', 'YYYY-MM-DD')
-                  AND ap.enddate <= TO_DATE('{toEndDate}', 'YYYY-MM-DD')
+                  AND t.postingperiod IN ({periodIdList})
                   AND tal.accountingbook = {accountingBook}
                   AND {segmentWhere}
                 GROUP BY a.acctnumber, a.accountsearchdisplayname, a.accttype
@@ -2231,6 +2317,49 @@ public class BalanceService : IBalanceService
         var accountingBook = request.Book ?? DefaultAccountingBook;
         var anchorDateStr = anchorDate.ToString("yyyy-MM-dd");
         
+        // CRITICAL FIX: Find the accounting period that contains the anchor date
+        // Then use the period ID for filtering instead of the date
+        var anchorPeriodQuery = $@"
+            SELECT id, periodname
+            FROM accountingperiod
+            WHERE TO_DATE('{anchorDateStr}', 'YYYY-MM-DD') >= startdate
+              AND TO_DATE('{anchorDateStr}', 'YYYY-MM-DD') <= enddate
+              AND isposting = 'T'
+              AND isquarter = 'F'
+              AND isyear = 'F'
+            FETCH FIRST 1 ROWS ONLY";
+        
+        var anchorPeriodResult = await _netSuiteService.QueryRawAsync(anchorPeriodQuery, 30);
+        if (anchorPeriodResult == null || !anchorPeriodResult.Any())
+        {
+            _logger.LogWarning("Opening balance: Could not find period for anchor date {AnchorDate}", anchorDateStr);
+            return new BalanceResponse
+            {
+                Account = request.Account,
+                Balance = 0,
+                Error = $"Could not find accounting period for anchor date {anchorDateStr}"
+            };
+        }
+        
+        var anchorPeriodRow = anchorPeriodResult.First();
+        var anchorPeriodId = anchorPeriodRow.TryGetProperty("id", out var idProp) 
+            ? idProp.ToString() 
+            : null;
+        
+        if (string.IsNullOrEmpty(anchorPeriodId))
+        {
+            _logger.LogWarning("Opening balance: Period found but has no ID for anchor date {AnchorDate}", anchorDateStr);
+            return new BalanceResponse
+            {
+                Account = request.Account,
+                Balance = 0,
+                Error = $"Period has no ID for anchor date {anchorDateStr}"
+            };
+        }
+        
+        _logger.LogDebug("Opening balance: anchor_date={AnchorDate}, anchor_period_id={PeriodId}", 
+            anchorDateStr, anchorPeriodId);
+        
         // Universal sign flip
         var signFlip = $@"
             CASE 
@@ -2243,9 +2372,9 @@ public class BalanceService : IBalanceService
             ? "JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id" 
             : "";
         
-        // Query cumulative balance up to anchor date
-        // Use anchor date's period ID for currency conversion (if available)
-        // For now, use postingperiod as fallback
+        // CRITICAL FIX: Use t.postingperiod <= anchorPeriodId instead of t.trandate <= anchorDate
+        // This ensures month-by-month and batched queries use identical period filtering
+        // Use anchor period ID for currency conversion to ensure consistent exchange rates
         var query = $@"
             SELECT SUM(x.cons_amt) AS balance
             FROM (
@@ -2257,7 +2386,7 @@ public class BalanceService : IBalanceService
                             'DEFAULT',
                             'DEFAULT',
                             {targetSub},
-                            t.postingperiod,
+                            {anchorPeriodId},
                             'DEFAULT'
                         )
                     ) * {signFlip} AS cons_amt
@@ -2268,7 +2397,7 @@ public class BalanceService : IBalanceService
                 WHERE t.posting = 'T'
                   AND tal.posting = 'T'
                   AND {NetSuiteService.BuildAccountFilter(new[] { request.Account })}
-                  AND t.trandate <= TO_DATE('{anchorDateStr}', 'YYYY-MM-DD')
+                  AND t.postingperiod <= {anchorPeriodId}
                   AND tal.accountingbook = {accountingBook}
                   {whereSegment}
             ) x";
@@ -3044,29 +3173,25 @@ public class BalanceService : IBalanceService
         _logger.LogInformation("Batch opening balances: {AccountCount} accounts, anchor_period={AnchorPeriod}", 
             accounts.Count, anchorPeriod);
         
-        // Resolve anchor period to date (delegate to accounting calendar)
+        // CRITICAL FIX: Get anchor period ID instead of using date
         var anchorPeriodData = await _netSuiteService.GetPeriodAsync(anchorPeriod);
-        if (anchorPeriodData?.EndDate == null)
+        if (anchorPeriodData?.Id == null)
         {
             return new BatchOpeningBalancesResponse
             {
-                Error = $"Could not resolve anchor period: {anchorPeriod}"
+                Error = $"Could not resolve anchor period ID: {anchorPeriod}"
             };
         }
         
-        // Parse anchor date (end of anchor period)
-        var anchorDate = ParseDate(anchorPeriodData.EndDate);
-        if (anchorDate == null)
-        {
-            return new BatchOpeningBalancesResponse
-            {
-                Error = $"Could not parse anchor date from period: {anchorPeriod}"
-            };
-        }
+        var anchorPeriodId = anchorPeriodData.Id;
         
-        var anchorDateStr = anchorDate.Value.ToString("yyyy-MM-dd");
-        _logger.LogDebug("Resolved anchor_period={AnchorPeriod} to anchor_date={AnchorDate}", 
-            anchorPeriod, anchorDateStr);
+        // Also get end date for logging
+        var anchorDateStr = anchorPeriodData.EndDate != null 
+            ? ConvertToYYYYMMDD(anchorPeriodData.EndDate) 
+            : "unknown";
+        
+        _logger.LogDebug("Resolved anchor_period={AnchorPeriod} to anchor_period_id={PeriodId}, anchor_date={AnchorDate}", 
+            anchorPeriod, anchorPeriodId, anchorDateStr);
         
         // Resolve subsidiary and get hierarchy
         var subsidiaryId = await _lookupService.ResolveSubsidiaryIdAsync(subsidiary);
@@ -3146,7 +3271,7 @@ public class BalanceService : IBalanceService
                         WHERE t.posting = 'T'
                           AND tal.posting = 'T'
                           AND {NetSuiteService.BuildAccountFilter(new[] { account })}
-                          AND t.trandate <= TO_DATE('{anchorDateStr}', 'YYYY-MM-DD')
+                          AND t.postingperiod <= {anchorPeriodId}
                           AND tal.accountingbook = {accountingBook}
                           {whereSegment}
                     ) x";
@@ -3474,5 +3599,11 @@ public interface IBalanceService
     /// Made public for controller to check period count limits.
     /// </summary>
     Task<List<string>> GetPeriodsInRangeAsync(string fromPeriod, string toPeriod);
+    
+    /// <summary>
+    /// Get all period IDs between fromPeriod and toPeriod (inclusive).
+    /// Used for period-ID-based filtering in queries.
+    /// </summary>
+    Task<List<string>> GetPeriodIdsInRangeAsync(string fromPeriod, string toPeriod);
 }
 

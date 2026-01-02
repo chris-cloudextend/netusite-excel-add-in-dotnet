@@ -99,7 +99,34 @@ public class SpecialFormulaController : ControllerBase
             // Result: Accumulated Net Income = Income - Expenses
             var signFlipAll = "* -1";
 
+            // CRITICAL FIX: Get fiscal year start period ID instead of using date
+            // Find the period that contains the fiscal year start date
+            var fyStartPeriodQuery = $@"
+                SELECT id
+                FROM accountingperiod
+                WHERE TO_DATE('{fyStartDate}', 'YYYY-MM-DD') >= startdate
+                  AND TO_DATE('{fyStartDate}', 'YYYY-MM-DD') <= enddate
+                  AND isposting = 'T'
+                  AND isquarter = 'F'
+                  AND isyear = 'F'
+                FETCH FIRST 1 ROWS ONLY";
+            
+            var fyStartPeriodResult = await _netSuiteService.QueryRawAsync(fyStartPeriodQuery, 30);
+            string? fyStartPeriodId = null;
+            if (fyStartPeriodResult != null && fyStartPeriodResult.Any())
+            {
+                var fyStartRow = fyStartPeriodResult.First();
+                fyStartPeriodId = fyStartRow.TryGetProperty("id", out var idProp) ? idProp.ToString() : null;
+            }
+            
+            if (fyStartPeriodId == null)
+            {
+                _logger.LogWarning("Retained Earnings: Could not find period for fiscal year start {FyStart}", fyStartDate);
+                return BadRequest(new { error = $"Could not find period for fiscal year start: {fyStartDate}" });
+            }
+            
             // Query 1: Prior years' P&L (all P&L before fiscal year start)
+            // CRITICAL FIX: Use t.postingperiod < fyStartPeriodId instead of ap.enddate < TO_DATE(...)
             // Using Net Income style flip (all * -1) for proper cumulative profit/loss
             var priorPlQuery = $@"
                 SELECT SUM(
@@ -109,16 +136,16 @@ public class SpecialFormulaController : ControllerBase
                 FROM transactionaccountingline tal
                 JOIN transaction t ON t.id = tal.transaction
                 JOIN account a ON a.id = tal.account
-                JOIN accountingperiod ap ON ap.id = t.postingperiod
                 JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id
                 WHERE t.posting = 'T'
                   AND tal.posting = 'T'
                   AND a.accttype IN ({plTypesSql})
-                  AND ap.enddate < TO_DATE('{fyStartDate}', 'YYYY-MM-DD')
+                  AND t.postingperiod < {fyStartPeriodId}
                   AND tal.accountingbook = {accountingBook}
                   AND {segmentWhere}";
 
             // Query 2: Posted RE adjustments (journal entries to RetainedEarnings accounts)
+            // CRITICAL FIX: Use t.postingperiod <= targetPeriodId instead of ap.enddate <= TO_DATE(...)
             // RE is equity (credit/negative), so flip by -1 to get positive for accumulated profits
             var postedReQuery = $@"
                 SELECT SUM(
@@ -128,12 +155,11 @@ public class SpecialFormulaController : ControllerBase
                 FROM transactionaccountingline tal
                 JOIN transaction t ON t.id = tal.transaction
                 JOIN account a ON a.id = tal.account
-                JOIN accountingperiod ap ON ap.id = t.postingperiod
                 JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id
                 WHERE t.posting = 'T'
                   AND tal.posting = 'T'
                   AND (a.accttype = 'RetainedEarnings' OR LOWER(a.fullname) LIKE '%retained earnings%')
-                  AND ap.enddate <= TO_DATE('{periodEndDate}', 'YYYY-MM-DD')
+                  AND t.postingperiod <= {targetPeriodId}
                   AND tal.accountingbook = {accountingBook}
                   AND {segmentWhere}";
 
@@ -214,8 +240,10 @@ public class SpecialFormulaController : ControllerBase
             // IMPORTANT: NO TransactionLine join - BUILTIN.CONSOLIDATE handles subsidiary filtering
             // Use target_period_id for proper exchange rate translation
             // All sign flips use * -1 to convert credits (negative) to positive display values
+            // CRITICAL FIX: Use period IDs instead of dates for all CTA queries
 
             // Query 1: Total Assets (through period end) - NO flip, debits are already positive
+            // CRITICAL FIX: Use t.postingperiod <= targetPeriodId instead of ap.enddate <= TO_DATE(...)
             var assetsQuery = $@"
                 SELECT SUM(
                     TO_NUMBER(BUILTIN.CONSOLIDATE(tal.amount, 'LEDGER', 'DEFAULT', 'DEFAULT', {targetSub}, {targetPeriodId}, 'DEFAULT'))
@@ -223,16 +251,14 @@ public class SpecialFormulaController : ControllerBase
                 FROM transactionaccountingline tal
                 JOIN transaction t ON t.id = tal.transaction
                 JOIN account a ON a.id = tal.account
-                JOIN accountingperiod ap ON ap.id = t.postingperiod
                 WHERE t.posting = 'T'
                   AND tal.posting = 'T'
                   AND a.accttype IN ({assetTypesSql})
-                  AND ap.enddate <= TO_DATE('{periodEndDate}', 'YYYY-MM-DD')
-                  AND ap.isyear = 'F'
-                  AND ap.isquarter = 'F'
+                  AND t.postingperiod <= {targetPeriodId}
                   AND tal.accountingbook = {accountingBook}";
 
             // Query 2: Total Liabilities - flip * -1 to convert credits to positive
+            // CRITICAL FIX: Use t.postingperiod <= targetPeriodId instead of ap.enddate <= TO_DATE(...)
             var liabilitiesQuery = $@"
                 SELECT SUM(
                     TO_NUMBER(BUILTIN.CONSOLIDATE(tal.amount, 'LEDGER', 'DEFAULT', 'DEFAULT', {targetSub}, {targetPeriodId}, 'DEFAULT'))
@@ -241,16 +267,14 @@ public class SpecialFormulaController : ControllerBase
                 FROM transactionaccountingline tal
                 JOIN transaction t ON t.id = tal.transaction
                 JOIN account a ON a.id = tal.account
-                JOIN accountingperiod ap ON ap.id = t.postingperiod
                 WHERE t.posting = 'T'
                   AND tal.posting = 'T'
                   AND a.accttype IN ({liabilityTypesSql})
-                  AND ap.enddate <= TO_DATE('{periodEndDate}', 'YYYY-MM-DD')
-                  AND ap.isyear = 'F'
-                  AND ap.isquarter = 'F'
+                  AND t.postingperiod <= {targetPeriodId}
                   AND tal.accountingbook = {accountingBook}";
 
             // Query 3: Posted Equity (excluding Retained Earnings accounts) - flip * -1
+            // CRITICAL FIX: Use t.postingperiod <= targetPeriodId instead of ap.enddate <= TO_DATE(...)
             var equityQuery = $@"
                 SELECT SUM(
                     TO_NUMBER(BUILTIN.CONSOLIDATE(tal.amount, 'LEDGER', 'DEFAULT', 'DEFAULT', {targetSub}, {targetPeriodId}, 'DEFAULT'))
@@ -259,17 +283,39 @@ public class SpecialFormulaController : ControllerBase
                 FROM transactionaccountingline tal
                 JOIN transaction t ON t.id = tal.transaction
                 JOIN account a ON a.id = tal.account
-                JOIN accountingperiod ap ON ap.id = t.postingperiod
                 WHERE t.posting = 'T'
                   AND tal.posting = 'T'
                   AND a.accttype = 'Equity'
                   AND LOWER(a.fullname) NOT LIKE '%retained earnings%'
-                  AND ap.enddate <= TO_DATE('{periodEndDate}', 'YYYY-MM-DD')
-                  AND ap.isyear = 'F'
-                  AND ap.isquarter = 'F'
+                  AND t.postingperiod <= {targetPeriodId}
                   AND tal.accountingbook = {accountingBook}";
 
             // Query 4: Prior P&L (all P&L before fiscal year start) - flip ALL * -1 (same as RE)
+            // CRITICAL FIX: Get fiscal year start period ID and use t.postingperiod < fyStartPeriodId
+            var fyStartPeriodQuery = $@"
+                SELECT id
+                FROM accountingperiod
+                WHERE TO_DATE('{fyStartDate}', 'YYYY-MM-DD') >= startdate
+                  AND TO_DATE('{fyStartDate}', 'YYYY-MM-DD') <= enddate
+                  AND isposting = 'T'
+                  AND isquarter = 'F'
+                  AND isyear = 'F'
+                FETCH FIRST 1 ROWS ONLY";
+            
+            var fyStartPeriodResult = await _netSuiteService.QueryRawAsync(fyStartPeriodQuery, 30);
+            string? fyStartPeriodId = null;
+            if (fyStartPeriodResult != null && fyStartPeriodResult.Any())
+            {
+                var fyStartRow = fyStartPeriodResult.First();
+                fyStartPeriodId = fyStartRow.TryGetProperty("id", out var idProp) ? idProp.ToString() : null;
+            }
+            
+            if (fyStartPeriodId == null)
+            {
+                _logger.LogWarning("CTA: Could not find period for fiscal year start {FyStart}", fyStartDate);
+                return BadRequest(new { error = $"Could not find period for fiscal year start: {fyStartDate}" });
+            }
+            
             var priorPlQuery = $@"
                 SELECT SUM(
                     TO_NUMBER(BUILTIN.CONSOLIDATE(tal.amount, 'LEDGER', 'DEFAULT', 'DEFAULT', {targetSub}, {targetPeriodId}, 'DEFAULT'))
@@ -278,16 +324,14 @@ public class SpecialFormulaController : ControllerBase
                 FROM transactionaccountingline tal
                 JOIN transaction t ON t.id = tal.transaction
                 JOIN account a ON a.id = tal.account
-                JOIN accountingperiod ap ON ap.id = t.postingperiod
                 WHERE t.posting = 'T'
                   AND tal.posting = 'T'
                   AND a.accttype IN ({plTypesSql})
-                  AND ap.enddate < TO_DATE('{fyStartDate}', 'YYYY-MM-DD')
-                  AND ap.isyear = 'F'
-                  AND ap.isquarter = 'F'
+                  AND t.postingperiod < {fyStartPeriodId}
                   AND tal.accountingbook = {accountingBook}";
 
             // Query 5: Posted RE adjustments - flip * -1 to convert credits to positive
+            // CRITICAL FIX: Use t.postingperiod <= targetPeriodId instead of ap.enddate <= TO_DATE(...)
             var postedReQuery = $@"
                 SELECT SUM(
                     TO_NUMBER(BUILTIN.CONSOLIDATE(tal.amount, 'LEDGER', 'DEFAULT', 'DEFAULT', {targetSub}, {targetPeriodId}, 'DEFAULT'))
@@ -296,16 +340,15 @@ public class SpecialFormulaController : ControllerBase
                 FROM transactionaccountingline tal
                 JOIN transaction t ON t.id = tal.transaction
                 JOIN account a ON a.id = tal.account
-                JOIN accountingperiod ap ON ap.id = t.postingperiod
                 WHERE t.posting = 'T'
                   AND tal.posting = 'T'
                   AND (a.accttype = 'RetainedEarnings' OR LOWER(a.fullname) LIKE '%retained earnings%')
-                  AND ap.enddate <= TO_DATE('{periodEndDate}', 'YYYY-MM-DD')
-                  AND ap.isyear = 'F'
-                  AND ap.isquarter = 'F'
+                  AND t.postingperiod <= {targetPeriodId}
                   AND tal.accountingbook = {accountingBook}";
 
             // Query 6: Net Income (current FY P&L) - flip ALL * -1 (same as Net Income endpoint)
+            // CRITICAL FIX: Use t.postingperiod >= fyStartPeriodId AND t.postingperiod <= targetPeriodId
+            // (fyStartPeriodId already resolved in Query 4 above)
             var netIncomeQuery = $@"
                 SELECT SUM(
                     TO_NUMBER(BUILTIN.CONSOLIDATE(tal.amount, 'LEDGER', 'DEFAULT', 'DEFAULT', {targetSub}, {targetPeriodId}, 'DEFAULT'))
@@ -314,14 +357,11 @@ public class SpecialFormulaController : ControllerBase
                 FROM transactionaccountingline tal
                 JOIN transaction t ON t.id = tal.transaction
                 JOIN account a ON a.id = tal.account
-                JOIN accountingperiod ap ON ap.id = t.postingperiod
                 WHERE t.posting = 'T'
                   AND tal.posting = 'T'
                   AND a.accttype IN ({plTypesSql})
-                  AND ap.startdate >= TO_DATE('{fyStartDate}', 'YYYY-MM-DD')
-                  AND ap.enddate <= TO_DATE('{periodEndDate}', 'YYYY-MM-DD')
-                  AND ap.isyear = 'F'
-                  AND ap.isquarter = 'F'
+                  AND t.postingperiod >= {fyStartPeriodId}
+                  AND t.postingperiod <= {targetPeriodId}
                   AND tal.accountingbook = {accountingBook}";
 
             // Execute all 6 queries in parallel
@@ -433,10 +473,38 @@ public class SpecialFormulaController : ControllerBase
 
             _logger.LogDebug("Net Income range: {Start} to {End}", rangeStart, periodEndDate);
 
+            // CRITICAL FIX: Get period IDs for the range instead of using dates
+            // Find the period that contains rangeStart (FY start or fromPeriod)
+            var rangeStartPeriodQuery = $@"
+                SELECT id
+                FROM accountingperiod
+                WHERE TO_DATE('{rangeStart}', 'YYYY-MM-DD') >= startdate
+                  AND TO_DATE('{rangeStart}', 'YYYY-MM-DD') <= enddate
+                  AND isposting = 'T'
+                  AND isquarter = 'F'
+                  AND isyear = 'F'
+                FETCH FIRST 1 ROWS ONLY";
+            
+            var rangeStartPeriodResult = await _netSuiteService.QueryRawAsync(rangeStartPeriodQuery, 30);
+            string? rangeStartPeriodId = null;
+            if (rangeStartPeriodResult != null && rangeStartPeriodResult.Any())
+            {
+                var rangeStartRow = rangeStartPeriodResult.First();
+                rangeStartPeriodId = rangeStartRow.TryGetProperty("id", out var idProp) ? idProp.ToString() : null;
+            }
+            
+            if (rangeStartPeriodId == null)
+            {
+                _logger.LogWarning("Net Income: Could not find period for range start {RangeStart}", rangeStart);
+                return BadRequest(new { error = $"Could not find period for range start: {rangeStart}" });
+            }
+
             // P&L types SQL and sign flip
             var plTypesSql = "'Income', 'COGS', 'Expense', 'OthIncome', 'OthExpense'";
             
             // Net Income query - flip ALL P&L by -1
+            // CRITICAL FIX: Use t.postingperiod >= rangeStartPeriodId AND t.postingperiod <= targetPeriodId
+            // instead of date-based filtering
             // Income becomes positive, Expenses become negative
             var netIncomeQuery = $@"
                 SELECT SUM(
@@ -446,13 +514,12 @@ public class SpecialFormulaController : ControllerBase
                 FROM transactionaccountingline tal
                 JOIN transaction t ON t.id = tal.transaction
                 JOIN account a ON a.id = tal.account
-                JOIN accountingperiod ap ON ap.id = t.postingperiod
                 JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id
                 WHERE t.posting = 'T'
                   AND tal.posting = 'T'
                   AND a.accttype IN ({plTypesSql})
-                  AND ap.startdate >= TO_DATE('{rangeStart}', 'YYYY-MM-DD')
-                  AND ap.enddate <= TO_DATE('{periodEndDate}', 'YYYY-MM-DD')
+                  AND t.postingperiod >= {rangeStartPeriodId}
+                  AND t.postingperiod <= {targetPeriodId}
                   AND tal.accountingbook = {accountingBook}
                   AND {segmentWhere}";
 

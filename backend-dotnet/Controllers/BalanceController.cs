@@ -1030,6 +1030,12 @@ public class BalanceController : ControllerBase
                 var endDate = ConvertToYYYYMMDD(period.EndDate);
                 var periodId = !string.IsNullOrEmpty(period.Id) ? period.Id : "NULL";
             
+                if (string.IsNullOrEmpty(periodId) || periodId == "NULL")
+                {
+                    _logger.LogWarning("BS Preload: period {Period} has no ID, cannot use period-based filtering", periodName);
+                    continue; // Skip this period
+                }
+            
                 // Sign flip for Balance Sheet: Liabilities and Equity are stored as negative credits,
                 // need to flip to positive for display (same as NetSuite reports)
                 var signFlipSql = Models.AccountType.SignFlipTypesSql;
@@ -1049,6 +1055,7 @@ public class BalanceController : ControllerBase
                 // 1. Segment filters are properly applied (only sum when tl.id IS NOT NULL)
                 // 2. Zero balance accounts are returned (accounts with no matching transactions)
                 // 3. Accounting book filter doesn't collapse LEFT JOIN unexpectedly
+                // CRITICAL FIX: Use t.postingperiod <= periodId instead of t.trandate <= TO_DATE(...)
                 var query = $@"
                     SELECT 
                         a.acctnumber,
@@ -1075,7 +1082,7 @@ public class BalanceController : ControllerBase
                         AND (tal.accountingbook = {accountingBook} OR tal.accountingbook IS NULL)
                     LEFT JOIN transaction t ON t.id = tal.transaction
                         AND t.posting = 'T'
-                        AND t.trandate <= TO_DATE('{endDate}', 'YYYY-MM-DD')
+                        AND t.postingperiod <= {periodId}
                     LEFT JOIN TransactionLine tl ON t.id = tl.transaction 
                         AND tal.transactionline = tl.id
                         AND ({segmentWhere})
@@ -1297,11 +1304,18 @@ public class BalanceController : ControllerBase
                 var endDate = ConvertToYYYYMMDD(period.EndDate);
                 var periodId = !string.IsNullOrEmpty(period.Id) ? period.Id : "NULL";
                 
+                if (string.IsNullOrEmpty(periodId) || periodId == "NULL")
+                {
+                    _logger.LogWarning("BS Targeted Preload: period {Period} has no ID, cannot use period-based filtering", periodName);
+                    continue; // Skip this period
+                }
+                
                 // Sign flip for Balance Sheet: Liabilities and Equity are stored as negative credits,
                 // need to flip to positive for display (same as NetSuite reports)
                 var signFlipSql = Models.AccountType.SignFlipTypesSql;
                 
                 // Query ONLY the specific accounts
+                // CRITICAL FIX: Use t.postingperiod <= periodId instead of t.trandate <= TO_DATE(...)
                 var query = $@"
                     SELECT 
                         a.acctnumber,
@@ -1326,7 +1340,7 @@ public class BalanceController : ControllerBase
                     WHERE t.posting = 'T'
                       AND tal.posting = 'T'
                       AND a.acctnumber IN ('{accountFilter}')
-                      AND t.trandate <= TO_DATE('{endDate}', 'YYYY-MM-DD')
+                      AND t.postingperiod <= {periodId}
                       AND tal.accountingbook = {accountingBook}
                       AND {segmentWhere}
                     GROUP BY a.acctnumber, a.accttype
@@ -2265,29 +2279,56 @@ public class BalanceController : ControllerBase
                     };
                     // Call net-income endpoint logic inline (simplified)
                     var plTypesSql = "'Income', 'COGS', 'Expense', 'OthIncome', 'OthExpense'";
-                    var fyStartDate = ConvertToYYYYMMDD(fyInfo.FyStart);
-                    var netIncomeQuery = $@"
-                        SELECT SUM(
-                            TO_NUMBER(BUILTIN.CONSOLIDATE(tal.amount, 'LEDGER', 'DEFAULT', 'DEFAULT', {targetSub}, {targetPeriodId}, 'DEFAULT'))
-                            * -1
-                        ) AS value
-                        FROM transactionaccountingline tal
-                        JOIN transaction t ON t.id = tal.transaction
-                        JOIN account a ON a.id = tal.account
-                        JOIN accountingperiod ap ON ap.id = t.postingperiod
-                        JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id
-                        WHERE t.posting = 'T'
-                          AND tal.posting = 'T'
-                          AND a.accttype IN ({plTypesSql})
-                          AND ap.startdate >= TO_DATE('{fyStartDate}', 'YYYY-MM-DD')
-                          AND ap.enddate <= TO_DATE('{periodEndDate}', 'YYYY-MM-DD')
-                          AND tal.accountingbook = {accountingBook}
-                          AND {segmentWhere}";
-                    var niResults = await _netSuiteService.QueryRawAsync(netIncomeQuery, 120);
-                    if (niResults.Any())
+                    
+                    // CRITICAL FIX: Get fiscal year start period ID instead of using date
+                    var fyStartPeriodQuery = $@"
+                        SELECT id
+                        FROM accountingperiod
+                        WHERE TO_DATE('{ConvertToYYYYMMDD(fyInfo.FyStart)}', 'YYYY-MM-DD') >= startdate
+                          AND TO_DATE('{ConvertToYYYYMMDD(fyInfo.FyStart)}', 'YYYY-MM-DD') <= enddate
+                          AND isposting = 'T'
+                          AND isquarter = 'F'
+                          AND isyear = 'F'
+                        FETCH FIRST 1 ROWS ONLY";
+                    
+                    var fyStartPeriodResult = await _netSuiteService.QueryRawAsync(fyStartPeriodQuery, 30);
+                    string? fyStartPeriodId = null;
+                    if (fyStartPeriodResult != null && fyStartPeriodResult.Any())
                     {
-                        var niRow = niResults.First();
-                        netIncome = ParseBalance(niRow.TryGetProperty("value", out var niProp) ? niProp : default);
+                        var fyStartRow = fyStartPeriodResult.First();
+                        fyStartPeriodId = fyStartRow.TryGetProperty("id", out var idProp) ? idProp.ToString() : null;
+                    }
+                    
+                    if (fyStartPeriodId == null)
+                    {
+                        _logger.LogWarning("Full Year Refresh: Could not find period for fiscal year start {FyStart}", fyInfo.FyStart);
+                        // Continue without net income calculation
+                    }
+                    else
+                    {
+                        // CRITICAL FIX: Use t.postingperiod >= fyStartPeriodId AND t.postingperiod <= targetPeriodId
+                        var netIncomeQuery = $@"
+                            SELECT SUM(
+                                TO_NUMBER(BUILTIN.CONSOLIDATE(tal.amount, 'LEDGER', 'DEFAULT', 'DEFAULT', {targetSub}, {targetPeriodId}, 'DEFAULT'))
+                                * -1
+                            ) AS value
+                            FROM transactionaccountingline tal
+                            JOIN transaction t ON t.id = tal.transaction
+                            JOIN account a ON a.id = tal.account
+                            JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id
+                            WHERE t.posting = 'T'
+                              AND tal.posting = 'T'
+                              AND a.accttype IN ({plTypesSql})
+                              AND t.postingperiod >= {fyStartPeriodId}
+                              AND t.postingperiod <= {targetPeriodId}
+                              AND tal.accountingbook = {accountingBook}
+                              AND {segmentWhere}";
+                        var niResults = await _netSuiteService.QueryRawAsync(netIncomeQuery, 120);
+                        if (niResults.Any())
+                        {
+                            var niRow = niResults.First();
+                            netIncome = ParseBalance(niRow.TryGetProperty("value", out var niProp) ? niProp : default);
+                        }
                     }
                 }
                 catch (Exception ex)
@@ -2300,52 +2341,77 @@ public class BalanceController : ControllerBase
                 try
                 {
                     var plTypesSql = "'Income', 'COGS', 'Expense', 'OthIncome', 'OthExpense'";
-                    var fyStartDate = ConvertToYYYYMMDD(fyInfo.FyStart);
-                    // Prior P&L
-                    var priorPlQuery = $@"
-                        SELECT SUM(
-                            TO_NUMBER(BUILTIN.CONSOLIDATE(tal.amount, 'LEDGER', 'DEFAULT', 'DEFAULT', {targetSub}, {targetPeriodId}, 'DEFAULT'))
-                            * -1
-                        ) AS value
-                        FROM transactionaccountingline tal
-                        JOIN transaction t ON t.id = tal.transaction
-                        JOIN account a ON a.id = tal.account
-                        JOIN accountingperiod ap ON ap.id = t.postingperiod
-                        JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id
-                        WHERE t.posting = 'T'
-                          AND tal.posting = 'T'
-                          AND a.accttype IN ({plTypesSql})
-                          AND ap.enddate < TO_DATE('{fyStartDate}', 'YYYY-MM-DD')
-                          AND tal.accountingbook = {accountingBook}
-                          AND {segmentWhere}";
-                    var priorPlResults = await _netSuiteService.QueryRawAsync(priorPlQuery, 120);
-                    decimal priorPl = priorPlResults.Any() 
-                        ? ParseBalance(priorPlResults.First().TryGetProperty("value", out var ppProp) ? ppProp : default)
-                        : 0;
                     
-                    // Posted RE
-                    var postedReQuery = $@"
-                        SELECT SUM(
-                            TO_NUMBER(BUILTIN.CONSOLIDATE(tal.amount, 'LEDGER', 'DEFAULT', 'DEFAULT', {targetSub}, {targetPeriodId}, 'DEFAULT'))
-                            * -1
-                        ) AS value
-                        FROM transactionaccountingline tal
-                        JOIN transaction t ON t.id = tal.transaction
-                        JOIN account a ON a.id = tal.account
-                        JOIN accountingperiod ap ON ap.id = t.postingperiod
-                        JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id
-                        WHERE t.posting = 'T'
-                          AND tal.posting = 'T'
-                          AND (a.accttype = 'RetainedEarnings' OR LOWER(a.fullname) LIKE '%retained earnings%')
-                          AND ap.enddate <= TO_DATE('{periodEndDate}', 'YYYY-MM-DD')
-                          AND tal.accountingbook = {accountingBook}
-                          AND {segmentWhere}";
-                    var postedReResults = await _netSuiteService.QueryRawAsync(postedReQuery, 120);
-                    decimal postedRe = postedReResults.Any()
-                        ? ParseBalance(postedReResults.First().TryGetProperty("value", out var prProp) ? prProp : default)
-                        : 0;
+                    // CRITICAL FIX: Get fiscal year start period ID instead of using date
+                    var fyStartPeriodQuery = $@"
+                        SELECT id
+                        FROM accountingperiod
+                        WHERE TO_DATE('{ConvertToYYYYMMDD(fyInfo.FyStart)}', 'YYYY-MM-DD') >= startdate
+                          AND TO_DATE('{ConvertToYYYYMMDD(fyInfo.FyStart)}', 'YYYY-MM-DD') <= enddate
+                          AND isposting = 'T'
+                          AND isquarter = 'F'
+                          AND isyear = 'F'
+                        FETCH FIRST 1 ROWS ONLY";
                     
-                    retainedEarnings = priorPl + postedRe;
+                    var fyStartPeriodResult = await _netSuiteService.QueryRawAsync(fyStartPeriodQuery, 30);
+                    string? fyStartPeriodId = null;
+                    if (fyStartPeriodResult != null && fyStartPeriodResult.Any())
+                    {
+                        var fyStartRow = fyStartPeriodResult.First();
+                        fyStartPeriodId = fyStartRow.TryGetProperty("id", out var idProp) ? idProp.ToString() : null;
+                    }
+                    
+                    if (fyStartPeriodId == null)
+                    {
+                        _logger.LogWarning("Full Year Refresh RE: Could not find period for fiscal year start {FyStart}", fyInfo.FyStart);
+                        // Continue without prior P&L calculation
+                    }
+                    else
+                    {
+                        // Prior P&L - CRITICAL FIX: Use t.postingperiod < fyStartPeriodId instead of ap.enddate < TO_DATE(...)
+                        var priorPlQuery = $@"
+                            SELECT SUM(
+                                TO_NUMBER(BUILTIN.CONSOLIDATE(tal.amount, 'LEDGER', 'DEFAULT', 'DEFAULT', {targetSub}, {targetPeriodId}, 'DEFAULT'))
+                                * -1
+                            ) AS value
+                            FROM transactionaccountingline tal
+                            JOIN transaction t ON t.id = tal.transaction
+                            JOIN account a ON a.id = tal.account
+                            JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id
+                            WHERE t.posting = 'T'
+                              AND tal.posting = 'T'
+                              AND a.accttype IN ({plTypesSql})
+                              AND t.postingperiod < {fyStartPeriodId}
+                              AND tal.accountingbook = {accountingBook}
+                              AND {segmentWhere}";
+                        var priorPlResults = await _netSuiteService.QueryRawAsync(priorPlQuery, 120);
+                        decimal priorPl = priorPlResults.Any() 
+                            ? ParseBalance(priorPlResults.First().TryGetProperty("value", out var ppProp) ? ppProp : default)
+                            : 0;
+                        
+                        // Posted RE - CRITICAL FIX: Use t.postingperiod <= targetPeriodId instead of ap.enddate <= TO_DATE(...)
+                        var postedReQuery = $@"
+                            SELECT SUM(
+                                TO_NUMBER(BUILTIN.CONSOLIDATE(tal.amount, 'LEDGER', 'DEFAULT', 'DEFAULT', {targetSub}, {targetPeriodId}, 'DEFAULT'))
+                                * -1
+                            ) AS value
+                            FROM transactionaccountingline tal
+                            JOIN transaction t ON t.id = tal.transaction
+                            JOIN account a ON a.id = tal.account
+                            JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id
+                            WHERE t.posting = 'T'
+                              AND tal.posting = 'T'
+                              AND (a.accttype = 'RetainedEarnings' OR LOWER(a.fullname) LIKE '%retained earnings%')
+                              AND t.postingperiod <= {targetPeriodId}
+                              AND tal.accountingbook = {accountingBook}
+                              AND {segmentWhere}";
+                        var postedReResults = await _netSuiteService.QueryRawAsync(postedReQuery, 120);
+                        decimal postedRe = postedReResults.Any()
+                            ? ParseBalance(postedReResults.First().TryGetProperty("value", out var prProp) ? prProp : default)
+                            : 0;
+                        
+                        retainedEarnings = priorPl + postedRe;
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -2360,7 +2426,7 @@ public class BalanceController : ControllerBase
                     var liabilityTypesSql = AccountType.BsLiabilityTypesSql;
                     var plTypesSql = "'Income', 'COGS', 'Expense', 'OthIncome', 'OthExpense'";
                     
-                    // Total Assets
+                    // Total Assets - CRITICAL FIX: Use t.postingperiod <= targetPeriodId instead of ap.enddate <= TO_DATE(...)
                     var assetsQuery = $@"
                         SELECT SUM(
                             TO_NUMBER(BUILTIN.CONSOLIDATE(tal.amount, 'LEDGER', 'DEFAULT', 'DEFAULT', {targetSub}, {targetPeriodId}, 'DEFAULT'))
@@ -2368,16 +2434,13 @@ public class BalanceController : ControllerBase
                         FROM transactionaccountingline tal
                         JOIN transaction t ON t.id = tal.transaction
                         JOIN account a ON a.id = tal.account
-                        JOIN accountingperiod ap ON ap.id = t.postingperiod
                         WHERE t.posting = 'T'
                           AND tal.posting = 'T'
                           AND a.accttype IN ({assetTypesSql})
-                          AND ap.enddate <= TO_DATE('{periodEndDate}', 'YYYY-MM-DD')
-                          AND ap.isyear = 'F'
-                          AND ap.isquarter = 'F'
+                          AND t.postingperiod <= {targetPeriodId}
                           AND tal.accountingbook = {accountingBook}";
                     
-                    // Total Liabilities
+                    // Total Liabilities - CRITICAL FIX: Use t.postingperiod <= targetPeriodId instead of ap.enddate <= TO_DATE(...)
                     var liabilitiesQuery = $@"
                         SELECT SUM(
                             TO_NUMBER(BUILTIN.CONSOLIDATE(tal.amount, 'LEDGER', 'DEFAULT', 'DEFAULT', {targetSub}, {targetPeriodId}, 'DEFAULT'))
@@ -2386,16 +2449,13 @@ public class BalanceController : ControllerBase
                         FROM transactionaccountingline tal
                         JOIN transaction t ON t.id = tal.transaction
                         JOIN account a ON a.id = tal.account
-                        JOIN accountingperiod ap ON ap.id = t.postingperiod
                         WHERE t.posting = 'T'
                           AND tal.posting = 'T'
                           AND a.accttype IN ({liabilityTypesSql})
-                          AND ap.enddate <= TO_DATE('{periodEndDate}', 'YYYY-MM-DD')
-                          AND ap.isyear = 'F'
-                          AND ap.isquarter = 'F'
+                          AND t.postingperiod <= {targetPeriodId}
                           AND tal.accountingbook = {accountingBook}";
                     
-                    // Posted Equity (excluding RE)
+                    // Posted Equity (excluding RE) - CRITICAL FIX: Use t.postingperiod <= targetPeriodId instead of ap.enddate <= TO_DATE(...)
                     var equityQuery = $@"
                         SELECT SUM(
                             TO_NUMBER(BUILTIN.CONSOLIDATE(tal.amount, 'LEDGER', 'DEFAULT', 'DEFAULT', {targetSub}, {targetPeriodId}, 'DEFAULT'))
@@ -2404,14 +2464,11 @@ public class BalanceController : ControllerBase
                         FROM transactionaccountingline tal
                         JOIN transaction t ON t.id = tal.transaction
                         JOIN account a ON a.id = tal.account
-                        JOIN accountingperiod ap ON ap.id = t.postingperiod
                         WHERE t.posting = 'T'
                           AND tal.posting = 'T'
                           AND a.accttype = 'Equity'
                           AND LOWER(a.fullname) NOT LIKE '%retained earnings%'
-                          AND ap.enddate <= TO_DATE('{periodEndDate}', 'YYYY-MM-DD')
-                          AND ap.isyear = 'F'
-                          AND ap.isquarter = 'F'
+                          AND t.postingperiod <= {targetPeriodId}
                           AND tal.accountingbook = {accountingBook}";
                     
                     var assetsTask = _netSuiteService.QueryRawAsync(assetsQuery, 120);
@@ -2430,26 +2487,49 @@ public class BalanceController : ControllerBase
                         ? ParseBalance(equityTask.Result.First().TryGetProperty("value", out var eProp) ? eProp : default)
                         : 0;
                     
-                    // Prior P&L (for CTA calculation)
-                    var fyStartDate = ConvertToYYYYMMDD(fyInfo.FyStart);
-                    var priorPlQuery = $@"
-                        SELECT SUM(
-                            TO_NUMBER(BUILTIN.CONSOLIDATE(tal.amount, 'LEDGER', 'DEFAULT', 'DEFAULT', {targetSub}, {targetPeriodId}, 'DEFAULT'))
-                            * -1
-                        ) AS value
-                        FROM transactionaccountingline tal
-                        JOIN transaction t ON t.id = tal.transaction
-                        JOIN account a ON a.id = tal.account
-                        JOIN accountingperiod ap ON ap.id = t.postingperiod
-                        WHERE t.posting = 'T'
-                          AND tal.posting = 'T'
-                          AND a.accttype IN ({plTypesSql})
-                          AND ap.enddate < TO_DATE('{fyStartDate}', 'YYYY-MM-DD')
-                          AND ap.isyear = 'F'
-                          AND ap.isquarter = 'F'
-                          AND tal.accountingbook = {accountingBook}";
+                    // Prior P&L (for CTA calculation) - CRITICAL FIX: Get fiscal year start period ID
+                    var fyStartPeriodQuery = $@"
+                        SELECT id
+                        FROM accountingperiod
+                        WHERE TO_DATE('{ConvertToYYYYMMDD(fyInfo.FyStart)}', 'YYYY-MM-DD') >= startdate
+                          AND TO_DATE('{ConvertToYYYYMMDD(fyInfo.FyStart)}', 'YYYY-MM-DD') <= enddate
+                          AND isposting = 'T'
+                          AND isquarter = 'F'
+                          AND isyear = 'F'
+                        FETCH FIRST 1 ROWS ONLY";
                     
-                    // Posted RE (for CTA)
+                    var fyStartPeriodResult = await _netSuiteService.QueryRawAsync(fyStartPeriodQuery, 30);
+                    string? fyStartPeriodId = null;
+                    if (fyStartPeriodResult != null && fyStartPeriodResult.Any())
+                    {
+                        var fyStartRow = fyStartPeriodResult.First();
+                        fyStartPeriodId = fyStartRow.TryGetProperty("id", out var idProp) ? idProp.ToString() : null;
+                    }
+                    
+                    if (fyStartPeriodId == null)
+                    {
+                        _logger.LogWarning("Full Year Refresh CTA: Could not find period for fiscal year start {FyStart}", fyInfo.FyStart);
+                        // Continue without prior P&L calculation
+                    }
+                    else
+                    {
+                        // CRITICAL FIX: Use t.postingperiod < fyStartPeriodId instead of ap.enddate < TO_DATE(...)
+                        var priorPlQuery = $@"
+                            SELECT SUM(
+                                TO_NUMBER(BUILTIN.CONSOLIDATE(tal.amount, 'LEDGER', 'DEFAULT', 'DEFAULT', {targetSub}, {targetPeriodId}, 'DEFAULT'))
+                                * -1
+                            ) AS value
+                            FROM transactionaccountingline tal
+                            JOIN transaction t ON t.id = tal.transaction
+                            JOIN account a ON a.id = tal.account
+                            WHERE t.posting = 'T'
+                              AND tal.posting = 'T'
+                              AND a.accttype IN ({plTypesSql})
+                              AND t.postingperiod < {fyStartPeriodId}
+                              AND tal.accountingbook = {accountingBook}";
+                    }
+                    
+                    // Posted RE (for CTA) - CRITICAL FIX: Use t.postingperiod <= targetPeriodId instead of ap.enddate <= TO_DATE(...)
                     var postedReQuery = $@"
                         SELECT SUM(
                             TO_NUMBER(BUILTIN.CONSOLIDATE(tal.amount, 'LEDGER', 'DEFAULT', 'DEFAULT', {targetSub}, {targetPeriodId}, 'DEFAULT'))
@@ -2458,22 +2538,33 @@ public class BalanceController : ControllerBase
                         FROM transactionaccountingline tal
                         JOIN transaction t ON t.id = tal.transaction
                         JOIN account a ON a.id = tal.account
-                        JOIN accountingperiod ap ON ap.id = t.postingperiod
                         WHERE t.posting = 'T'
                           AND tal.posting = 'T'
                           AND (a.accttype = 'RetainedEarnings' OR LOWER(a.fullname) LIKE '%retained earnings%')
-                          AND ap.enddate <= TO_DATE('{periodEndDate}', 'YYYY-MM-DD')
-                          AND ap.isyear = 'F'
-                          AND ap.isquarter = 'F'
+                          AND t.postingperiod <= {targetPeriodId}
                           AND tal.accountingbook = {accountingBook}";
                     
-                    var priorPlTask = _netSuiteService.QueryRawAsync(priorPlQuery, 120);
+                    Task<List<JsonElement>>? priorPlTask = null;
+                    if (fyStartPeriodId != null)
+                    {
+                        priorPlTask = _netSuiteService.QueryRawAsync(priorPlQuery, 120);
+                    }
                     var postedReTask = _netSuiteService.QueryRawAsync(postedReQuery, 120);
-                    await Task.WhenAll(priorPlTask, postedReTask);
                     
-                    decimal priorPl = priorPlTask.Result.Any()
-                        ? ParseBalance(priorPlTask.Result.First().TryGetProperty("value", out var ppProp) ? ppProp : default)
-                        : 0;
+                    if (priorPlTask != null)
+                    {
+                        await Task.WhenAll(priorPlTask, postedReTask);
+                    }
+                    else
+                    {
+                        await postedReTask;
+                    }
+                    
+                    decimal priorPl = 0;
+                    if (priorPlTask != null && priorPlTask.Result.Any())
+                    {
+                        priorPl = ParseBalance(priorPlTask.Result.First().TryGetProperty("value", out var ppProp) ? ppProp : default);
+                    }
                     decimal postedRe = postedReTask.Result.Any()
                         ? ParseBalance(postedReTask.Result.First().TryGetProperty("value", out var prProp) ? prProp : default)
                         : 0;
@@ -2727,6 +2818,20 @@ public class BalanceController : ControllerBase
             _logger.LogInformation("🚀 Executing SINGLE aggregated query for ALL BS accounts × {Months} months...", monthCount);
             _logger.LogInformation("   CRITICAL: This test executes EXACTLY ONE NetSuite query (no loops, no per-account calls)");
             
+            // CRITICAL FIX: Get period IDs for the range instead of using dates
+            var periodIdsInRange = await _balanceService.GetPeriodIdsInRangeAsync(fromPeriod, toPeriod);
+            if (!periodIdsInRange.Any())
+            {
+                return Ok(new BsGridBatchingTestResponse
+                {
+                    Success = false,
+                    Error = $"Could not resolve period IDs for range: {fromPeriod} to {toPeriod}",
+                    ElapsedSeconds = (DateTime.UtcNow - queryStartTime).TotalSeconds
+                });
+            }
+            
+            var periodIdList = string.Join(", ", periodIdsInRange);
+            
             var accountingBook = DefaultAccountingBook;
             var signFlip = $@"
                 CASE 
@@ -2737,6 +2842,7 @@ public class BalanceController : ControllerBase
             // CRITICAL: This is the ONE query that validates grid batching
             // It aggregates ALL balance sheet accounts × ALL periods in a single NetSuite call
             // Returns: (account, posting_period, period_activity_amount)
+            // CRITICAL FIX: Use t.postingperiod IN (periodId1, periodId2, ...) instead of date ranges
             var aggregatedQuery = $@"
                 SELECT 
                     a.acctnumber AS account,
@@ -2763,8 +2869,7 @@ public class BalanceController : ControllerBase
                   AND tal.posting = 'T'
                   AND a.accttype IN ({AccountType.BsTypesSql})
                   AND a.isinactive = 'F'
-                  AND ap.startdate >= TO_DATE('{fromStartDate}', 'YYYY-MM-DD')
-                  AND ap.enddate <= TO_DATE('{toEndDate}', 'YYYY-MM-DD')
+                  AND t.postingperiod IN ({periodIdList})
                   AND tl.subsidiary IN ({subFilter})
                   AND tal.accountingbook = {accountingBook}
                 GROUP BY a.acctnumber, ap.periodname
@@ -2929,6 +3034,36 @@ public class BalanceController : ControllerBase
             
             var anchorDateStr = anchorDate.ToString("yyyy-MM-dd");
             
+            // CRITICAL FIX: Find the accounting period that contains the anchor date
+            // Then use the period ID for filtering instead of the date
+            var anchorPeriodQuery = $@"
+                SELECT id
+                FROM accountingperiod
+                WHERE TO_DATE('{anchorDateStr}', 'YYYY-MM-DD') >= startdate
+                  AND TO_DATE('{anchorDateStr}', 'YYYY-MM-DD') <= enddate
+                  AND isposting = 'T'
+                  AND isquarter = 'F'
+                  AND isyear = 'F'
+                FETCH FIRST 1 ROWS ONLY";
+            
+            var anchorPeriodResult = await _netSuiteService.QueryRawAsync(anchorPeriodQuery, 30);
+            string? anchorPeriodId = null;
+            if (anchorPeriodResult != null && anchorPeriodResult.Any())
+            {
+                var anchorPeriodRow = anchorPeriodResult.First();
+                anchorPeriodId = anchorPeriodRow.TryGetProperty("id", out var idProp) ? idProp.ToString() : null;
+            }
+            
+            if (anchorPeriodId == null)
+            {
+                return BadRequest(new BsGridOpeningBalancesResponse
+                {
+                    Success = false,
+                    Error = $"Could not find accounting period for anchor date {anchorDateStr}",
+                    ElapsedSeconds = (DateTime.UtcNow - startTime).TotalSeconds
+                });
+            }
+            
             // Resolve filters
             var subsidiaryId = await _lookupService.ResolveSubsidiaryIdAsync(request.Subsidiary);
             var targetSub = subsidiaryId ?? "1";
@@ -2937,18 +3072,18 @@ public class BalanceController : ControllerBase
             
             // Get period ID for currency conversion
             // For opening balances, we use the period from the earliest fromPeriod (if provided)
-            // Otherwise, we'll use a fallback
+            // Otherwise, use the anchor period ID
             string targetPeriodId;
             if (!string.IsNullOrEmpty(request.FromPeriod))
             {
                 // Use the fromPeriod's ID for currency conversion (consistent with period activity)
                 var fromPeriodData = await _netSuiteService.GetPeriodAsync(request.FromPeriod);
-                targetPeriodId = fromPeriodData?.Id ?? "1";
+                targetPeriodId = fromPeriodData?.Id ?? anchorPeriodId;
             }
             else
             {
-                // Fallback: use period 1
-                targetPeriodId = "1";
+                // Use anchor period ID
+                targetPeriodId = anchorPeriodId;
             }
             
             var accountingBook = request.Book ?? DefaultAccountingBook;
@@ -3012,7 +3147,7 @@ public class BalanceController : ControllerBase
                   AND {accountFilter}
                   AND a.accttype IN ({AccountType.BsTypesSql})
                   AND a.isinactive = 'F'
-                  AND t.trandate <= TO_DATE('{anchorDateStr}', 'YYYY-MM-DD')
+                  AND t.postingperiod <= {anchorPeriodId}
                   AND tal.accountingbook = {accountingBook}
                   AND {segmentWhere}
                 GROUP BY a.acctnumber
@@ -3134,8 +3269,19 @@ public class BalanceController : ControllerBase
                 });
             }
             
-            var fromStartDate = ConvertToYYYYMMDD(fromPeriodData.StartDate);
-            var toEndDate = ConvertToYYYYMMDD(toPeriodData.EndDate);
+            // CRITICAL FIX: Get period IDs for the range instead of using dates
+            var periodIdsInRange = await _balanceService.GetPeriodIdsInRangeAsync(request.FromPeriod, request.ToPeriod);
+            if (!periodIdsInRange.Any())
+            {
+                return BadRequest(new BsGridPeriodActivityResponse
+                {
+                    Success = false,
+                    Error = $"Could not resolve period IDs for range: {request.FromPeriod} to {request.ToPeriod}",
+                    ElapsedSeconds = (DateTime.UtcNow - startTime).TotalSeconds
+                });
+            }
+            
+            var periodIdList = string.Join(", ", periodIdsInRange);
             
             // Resolve filters
             var subsidiaryId = await _lookupService.ResolveSubsidiaryIdAsync(request.Subsidiary);
@@ -3192,6 +3338,7 @@ public class BalanceController : ControllerBase
             
             // Single aggregated query for all accounts × all periods
             // Returns: (account, posting_period, period_activity_amount)
+            // CRITICAL FIX: Use t.postingperiod IN (periodId1, periodId2, ...) instead of date ranges
             var query = $@"
                 SELECT 
                     a.acctnumber AS account,
@@ -3219,8 +3366,7 @@ public class BalanceController : ControllerBase
                   AND {accountFilter}
                   AND a.accttype IN ({AccountType.BsTypesSql})
                   AND a.isinactive = 'F'
-                  AND ap.startdate >= TO_DATE('{fromStartDate}', 'YYYY-MM-DD')
-                  AND ap.enddate <= TO_DATE('{toEndDate}', 'YYYY-MM-DD')
+                  AND t.postingperiod IN ({periodIdList})
                   AND tal.accountingbook = {accountingBook}
                   AND {segmentWhere}
                 GROUP BY a.acctnumber, ap.periodname
