@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.35';  // Fix year-only period validation to allow "2025" format
+const FUNCTIONS_VERSION = '4.0.6.36';  // Fix year-only period expansion in batch processing
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -8541,22 +8541,47 @@ async function processBatchQueue() {
                             }
                         });
                     } else if (fromPeriod && toPeriod && fromPeriod === toPeriod) {
-                        // Single period request (e.g., "Feb 2025" to "Feb 2025")
-                        periods.add(fromPeriod);
-                        
-                        // Extract year and month for full year detection
-                        const periodMatch = fromPeriod.match(/^(\w+)\s+(\d{4})$/);
-                        if (periodMatch) {
-                            const month = periodMatch[1];
-                            const year = periodMatch[2];
-                            if (!periodsByYear.has(year)) {
-                                periodsByYear.set(year, new Set());
-                            }
-                            periodsByYear.get(year).add(month);
-                            
-                            // Set year for optimization if not set yet
+                        // Single period request (e.g., "Feb 2025" to "Feb 2025" or "2025" to "2025")
+                        // Check if it's year-only format that needs expansion
+                        const isYearOnly = (str) => str && /^\d{4}$/.test(String(str).trim());
+                        if (isYearOnly(fromPeriod)) {
+                            // Expand year-only to all 12 months
+                            const expanded = expandPeriodRangeFromTo(fromPeriod, fromPeriod);
+                            console.log(`  📅 Year-only period expansion: ${fromPeriod} → ${expanded.length} months`);
+                            expanded.forEach(p => {
+                                periods.add(p);
+                                // Track by year for full year detection
+                                const periodMatch = p.match(/^(\w+)\s+(\d{4})$/);
+                                if (periodMatch) {
+                                    const year = periodMatch[2];
+                                    if (!periodsByYear.has(year)) {
+                                        periodsByYear.set(year, new Set());
+                                    }
+                                    periodsByYear.get(year).add(periodMatch[1]);
+                                }
+                            });
+                            // Set year for optimization
+                            const year = parseInt(fromPeriod);
                             if (yearForOptimization === null) {
-                                yearForOptimization = year;
+                                yearForOptimization = String(year);
+                            }
+                        } else {
+                            // Regular single period (e.g., "Feb 2025")
+                            periods.add(fromPeriod);
+                            
+                            // Extract year and month for full year detection
+                            const periodMatch = fromPeriod.match(/^(\w+)\s+(\d{4})$/);
+                            if (periodMatch) {
+                                const month = periodMatch[1];
+                                const year = periodMatch[2];
+                                if (!periodsByYear.has(year)) {
+                                    periodsByYear.set(year, new Set());
+                                }
+                                periodsByYear.get(year).add(month);
+                                
+                                // Set year for optimization if not set yet
+                                if (yearForOptimization === null) {
+                                    yearForOptimization = year;
                             } else if (yearForOptimization !== year) {
                                 // Multiple years detected - can't use year endpoint
                                 isFullYearRequest = false;
