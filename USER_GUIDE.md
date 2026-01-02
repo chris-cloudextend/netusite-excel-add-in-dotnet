@@ -82,8 +82,8 @@ Get the GL account balance for a specific period or date range.
 | Parameter | Required | Description | Example |
 |-----------|----------|-------------|---------|
 | account | Yes | Account number or wildcard pattern | `"4010"` or `"4*"` |
-| fromPeriod | Yes | Start period | `"Jan 2025"` or `"2025"` |
-| toPeriod | Yes | End period | `"Dec 2025"` or `"2025"` |
+| fromPeriod | Yes | Start period | `"Jan 2025"` |
+| toPeriod | Yes | End period | `"Dec 2025"` |
 | subsidiary | No | Subsidiary name or ID | `"Celigo Inc."` |
 | department | No | Department name or ID | `"Sales"` |
 | location | No | Location name or ID | `"US"` |
@@ -93,7 +93,7 @@ Get the GL account balance for a specific period or date range.
 **Examples:**
 ```
 =XAVI.BALANCE("4010", "Jan 2025", "Jan 2025")
-=XAVI.BALANCE("4010", "2025", "2025")                    ← Full year (faster!)
+=XAVI.BALANCE("4010", "Jan 2025", "Dec 2025")            ← Full year
 =XAVI.BALANCE("4*", "Jan 2025", "Dec 2025")             ← All revenue accounts
 =XAVI.BALANCE("4010", "Q1 2025", "Q1 2025", "Celigo Inc.")
 =XAVI.BALANCE(A2, B$1, B$1, $P$3, $Q$3, $R$3, $S$3)    ← With cell references
@@ -163,7 +163,7 @@ Get the budget amount for an account and period.
 **Examples:**
 ```
 =XAVI.BUDGET("5000", "Jan 2025", "Dec 2025")
-=XAVI.BUDGET("6*", "2025", "2025")                      ← All expense budgets
+=XAVI.BUDGET("6*", "Jan 2025", "Dec 2025")              ← All expense budgets
 =XAVI.BUDGET("5000", "Q1 2025", "Q1 2025", "Celigo Inc.", "Sales")
 ```
 
@@ -273,9 +273,9 @@ Build a complete P&L summary in just 4 formulas:
 ### Example: Subsidiary Revenue Comparison
 
 ```
-=XAVI.BALANCE("4*", "2025", "2025", "Celigo Inc.")            → US Revenue
-=XAVI.BALANCE("4*", "2025", "2025", "Celigo Europe B.V.")     → Europe Revenue
-=XAVI.BALANCE("4*", "2025", "2025", "Celigo Australia")       → Australia Revenue
+=XAVI.BALANCE("4*", "Jan 2025", "Dec 2025", "Celigo Inc.")            → US Revenue
+=XAVI.BALANCE("4*", "Jan 2025", "Dec 2025", "Celigo Europe B.V.")     → Europe Revenue
+=XAVI.BALANCE("4*", "Jan 2025", "Dec 2025", "Celigo Australia")       → Australia Revenue
 ```
 
 ### Combining XAVI Formulas with Excel Math
@@ -284,19 +284,19 @@ XAVI formulas return numbers, so you can use standard Excel operations to combin
 
 **Gross Profit (Revenue minus COGS):**
 ```
-=XAVI.BALANCE("4*", "2025", "2025", "Celigo Inc. (Consolidated)")
- - XAVI.BALANCE("5*", "2025", "2025", "Celigo Inc. (Consolidated)")
+=XAVI.BALANCE("4*", "Jan 2025", "Dec 2025", "Celigo Inc. (Consolidated)")
+ - XAVI.BALANCE("5*", "Jan 2025", "Dec 2025", "Celigo Inc. (Consolidated)")
 ```
 
 **Gross Margin Percentage:**
 ```
-=(XAVI.BALANCE("4*", "2025", "2025") - XAVI.BALANCE("5*", "2025", "2025"))
- / XAVI.BALANCE("4*", "2025", "2025")
+=(XAVI.BALANCE("4*", "Jan 2025", "Dec 2025") - XAVI.BALANCE("5*", "Jan 2025", "Dec 2025"))
+ / XAVI.BALANCE("4*", "Jan 2025", "Dec 2025")
 ```
 
 **Year-over-Year Variance:**
 ```
-=XAVI.BALANCE("4*", "2025", "2025") - XAVI.BALANCE("4*", "2024", "2024")
+=XAVI.BALANCE("4*", "Jan 2025", "Dec 2025") - XAVI.BALANCE("4*", "Jan 2024", "Dec 2024")
 ```
 
 **Budget vs. Actual:**
@@ -306,9 +306,9 @@ XAVI formulas return numbers, so you can use standard Excel operations to combin
 
 **Sum Multiple Subsidiaries (alternative to Consolidated):**
 ```
-=XAVI.BALANCE("4*", "2025", "2025", "Celigo Inc.")
- + XAVI.BALANCE("4*", "2025", "2025", "Celigo Europe B.V.")
- + XAVI.BALANCE("4*", "2025", "2025", "Celigo Australia")
+=XAVI.BALANCE("4*", "Jan 2025", "Dec 2025", "Celigo Inc.")
+ + XAVI.BALANCE("4*", "Jan 2025", "Dec 2025", "Celigo Europe B.V.")
+ + XAVI.BALANCE("4*", "Jan 2025", "Dec 2025", "Celigo Australia")
 ```
 
 > **Tip:** For cleaner formulas, put each XAVI.BALANCE in its own cell, then use a simple formula like `=B2-B3` or `=SUM(B2:B4)` to combine them.
@@ -442,17 +442,9 @@ Each drill-down sheet includes:
 
 ## Performance Tips
 
-### Use Year-Only Format
+### Batch Optimization
 
-Instead of:
-```
-=XAVI.BALANCE("4010", "Jan 2025", "Dec 2025")   ← 12 separate queries
-```
-
-Use:
-```
-=XAVI.BALANCE("4010", "2025", "2025")           ← 1 optimized query
-```
+The add-in automatically batches multiple formulas together for efficiency. When you drag formulas or have multiple formulas in a sheet, they are automatically grouped and sent in optimized batch queries.
 
 ### Drag, Don't Type
 
@@ -492,7 +484,7 @@ If data seems stale after posting new transactions:
 
 **Solution:** Check that:
 - Account is a number or valid wildcard (e.g., `"4010"` or `"4*"`)
-- Period format is correct (e.g., `"Jan 2025"` or `"2025"`)
+- Period format is correct (e.g., `"Jan 2025"`)
 - Filter parameters use `""` for empty, not missing
 
 ### All Formulas Return 0 Suddenly
@@ -509,9 +501,9 @@ If data seems stale after posting new transactions:
 ### Slow Performance
 
 **Solution:**
-1. Use year-only format (`"2025"`) instead of month ranges
-2. Use wildcards for summary rows instead of many individual accounts
-3. Drag formulas instead of typing each one (triggers batch optimization)
+1. Use wildcards for summary rows instead of many individual accounts
+2. Drag formulas instead of typing each one (triggers batch optimization)
+3. Group similar formulas together (they will be automatically batched)
 
 ---
 
@@ -531,13 +523,13 @@ XAVI shows the true GL (General Ledger) values. NetSuite sometimes displays diff
 
 ### Q: Can I use wildcards with budgets?
 
-Yes! `=XAVI.BUDGET("6*", "2025", "2025")` returns the sum of all 6xxx expense budgets.
+Yes! `=XAVI.BUDGET("6*", "Jan 2025", "Dec 2025")` returns the sum of all 6xxx expense budgets.
 
 ### Q: How do I report on multiple subsidiaries?
 
 Use `"(Consolidated)"` suffix:
 ```
-=XAVI.BALANCE("4*", "2025", "2025", "Celigo Inc. (Consolidated)")
+=XAVI.BALANCE("4*", "Jan 2025", "Dec 2025", "Celigo Inc. (Consolidated)")
 ```
 
 Or create separate rows for each subsidiary and sum them.

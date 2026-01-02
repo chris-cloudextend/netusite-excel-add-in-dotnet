@@ -184,7 +184,7 @@
 ```excel
 =XAVI.RETAINEDEARNINGS("Mar 2025")
 =XAVI.RETAINEDEARNINGS("Mar 2025", "Celigo Inc.")
-=XAVI.RETAINEDEARNINGS("2025")                          // Uses Dec 31, 2025
+=XAVI.RETAINEDEARNINGS("Dec 2025")                      // Year-end balance
 ```
 
 ---
@@ -197,7 +197,7 @@
 ```
 
 **Parameters:**
-1. **`fromPeriod`** (required) - Start period (e.g., `"Jan 2025"`, `"2025"`, or cell reference)
+1. **`fromPeriod`** (required) - Start period (e.g., `"Jan 2025"` or cell reference)
 2. **`toPeriod`** (optional) - End period (defaults to fromPeriod if empty)
 3. **`subsidiary`** (optional) - Subsidiary name or ID (use `""` for all)
 4. **`accountingBook`** (optional) - Accounting Book ID (defaults to Primary Book)
@@ -210,7 +210,7 @@
 **Examples:**
 ```excel
 =XAVI.NETINCOME("Jan 2025", "Mar 2025")
-=XAVI.NETINCOME("2025")                                  // Full year
+=XAVI.NETINCOME("Jan 2025", "Dec 2025")                  // Full year
 ```
 
 ---
@@ -333,7 +333,6 @@
 ### Period Parameters
 - **Balance Sheet accounts:** `fromPeriod` can be empty (cumulative from inception)
 - **P&L accounts:** `fromPeriod` is required
-- **Year-only format:** `"2025"` is automatically expanded to `"Jan 2025"` (from) and `"Dec 2025"` (to)
 
 ### BALANCECURRENCY Parameter Order
 **CRITICAL:** The `currency` parameter is in **position 5** (after `subsidiary`, before `department`), not position 4 like in BALANCE.

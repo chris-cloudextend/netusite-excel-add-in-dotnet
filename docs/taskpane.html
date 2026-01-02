@@ -4775,7 +4775,7 @@ For licensing inquiries, contact: legal@celigo.com
                     </div>
                     
                     <div class="formula-example-box">
-                        <code>=XAVI.BALANCE("5*", "2025", "2025")</code>
+                        <code>=XAVI.BALANCE("5*", "Jan 2025", "Dec 2025")</code>
                         <span class="result">Total COGS (all 5xxx accounts)</span>
                     </div>
                     
@@ -5194,11 +5194,11 @@ For licensing inquiries, contact: legal@celigo.com
                 <div class="formula-details">
                     <div class="formula-syntax">=XAVI.BALANCE(acct, from, to, [sub], [dept], [loc], [class])</div>
                     <div class="param-item"><span class="param-name">acct</span> - Account # or wildcard ("4*")</div>
-                    <div class="param-item"><span class="param-name">from/to</span> - Period ("Jan 2025" or "2025")</div>
+                    <div class="param-item"><span class="param-name">from/to</span> - Period (e.g., "Jan 2025")</div>
                     <div class="param-item"><span class="param-name">sub/dept/loc/class</span> - Optional filters</div>
                     <div class="example">
                         <div class="example-code">=XAVI.BALANCE("4010", "Jan 2025", "Dec 2025")</div>
-                        <div class="example-code">=XAVI.BALANCE("4*", "2025", "2025")</div> <span class="example-result">← All 4xxx accounts</span>
+                        <div class="example-code">=XAVI.BALANCE("4*", "Jan 2025", "Dec 2025")</div> <span class="example-result">← All 4xxx accounts</span>
                     </div>
                 </div>
             </div>
@@ -5215,7 +5215,7 @@ For licensing inquiries, contact: legal@celigo.com
                 <div class="formula-details">
                     <div class="formula-syntax">=XAVI.BALANCECURRENCY(acct, from, to, [sub], [currency], [dept], [loc], [class])</div>
                     <div class="param-item"><span class="param-name">acct</span> - Account # or wildcard ("4*")</div>
-                    <div class="param-item"><span class="param-name">from/to</span> - Period ("Jan 2025" or "2025")</div>
+                    <div class="param-item"><span class="param-name">from/to</span> - Period (e.g., "Jan 2025")</div>
                     <div class="param-item"><span class="param-name">currency</span> - Currency code for consolidation root (e.g., "USD", "EUR") - optional</div>
                     <div class="param-item" style="color: var(--bottlenose); font-size: 10px;">⚠️ Currency parameter is in position 5 (after subsidiary, before department)</div>
                     <div class="example">
@@ -5263,7 +5263,7 @@ For licensing inquiries, contact: legal@celigo.com
                     <div class="param-item"><span class="param-name">acct</span> - Account # or wildcard ("6*")</div>
                     <div class="param-item"><span class="param-name">from/to</span> - Period range</div>
                 <div class="example">
-                        <div class="example-code">=XAVI.BUDGET("5000", "2025", "2025")</div>
+                        <div class="example-code">=XAVI.BUDGET("5000", "Jan 2025", "Dec 2025")</div>
                         <div class="example-code">=XAVI.BUDGET("6*", "Jan 2025", "Dec 2025")</div>
                     </div>
                 </div>
@@ -5283,7 +5283,7 @@ For licensing inquiries, contact: legal@celigo.com
                     <div class="param-item"><span class="param-name">type</span> - "Income", "Expense", "COGS", etc.</div>
                     <div class="example">
                         <div class="example-code">=XAVI.TYPEBALANCE("Income", "Jan 2025", "Dec 2025")</div>
-                        <div class="example-code">=XAVI.TYPEBALANCE("COGS", "2025", "2025")</div>
+                        <div class="example-code">=XAVI.TYPEBALANCE("COGS", "Jan 2025", "Dec 2025")</div>
                     </div>
                     </div>
                     </div>
@@ -5302,7 +5302,7 @@ For licensing inquiries, contact: legal@celigo.com
                     <div class="param-item"><span class="param-name">from/to</span> - Period range (to defaults to from)</div>
                     <div class="example">
                         <div class="example-code">=XAVI.NETINCOME("Jan 2025", "Dec 2025")</div>
-                        <div class="example-code">=XAVI.NETINCOME("2025",, "Celigo Inc.")</div>
+                        <div class="example-code">=XAVI.NETINCOME("Jan 2025", "Dec 2025", "Celigo Inc.")</div>
                     </div>
                     <div style="font-size: 10px; color: var(--bottlenose); margin-top: 6px;">⏱️ 10–20 sec</div>
                     </div>

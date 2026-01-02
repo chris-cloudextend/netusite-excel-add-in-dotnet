@@ -339,9 +339,9 @@ Operating Exp   =XAVI.BALANCE("6*", "Jan 2025", "Jan 2025") $4,500,000
 
 **Example 3: Subsidiary Comparison**
 ```
-=XAVI.BALANCE("4*", "2025", "2025", "Celigo Inc.")           → US Revenue
-=XAVI.BALANCE("4*", "2025", "2025", "Celigo Europe B.V.")    → Europe Revenue
-=XAVI.BALANCE("4*", "2025", "2025", "Celigo Australia")      → Australia Revenue
+=XAVI.BALANCE("4*", "Jan 2025", "Dec 2025", "Celigo Inc.")           → US Revenue
+=XAVI.BALANCE("4*", "Jan 2025", "Dec 2025", "Celigo Europe B.V.")    → Europe Revenue
+=XAVI.BALANCE("4*", "Jan 2025", "Dec 2025", "Celigo Australia")      → Australia Revenue
 ```
 
 ### Granular Control with Sub-Patterns

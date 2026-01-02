@@ -447,7 +447,7 @@
       "parameters": [
         {
           "name": "fromPeriod",
-          "description": "Start period (e.g., \"Jan 2025\", \"2025\", or cell reference)",
+          "description": "Start period (e.g., \"Jan 2025\" or cell reference)",
           "type": "any",
           "dimensionality": "scalar"
         },

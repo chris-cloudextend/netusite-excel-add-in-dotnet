@@ -5077,6 +5077,10 @@ function normalizePeriodKey(value, isFromPeriod = true) {
     // YEAR-ONLY FORMAT: "2025" or 2025 -> expand to "Jan 2025" or "Dec 2025"
     // Handle both string "2025" and number 2025 (Excel often passes numbers)
     // This avoids timezone bugs where new Date("2025") becomes Dec 31, 2024 in local time
+    // 
+    // NOTE: This feature is supported in code but NOT documented to users.
+    // Users should use explicit period ranges (e.g., "Jan 2025" to "Dec 2025") for clarity.
+    // Year-only format adds complexity and is less intuitive than explicit month ranges.
     if (typeof value === 'string') {
         const trimmed = value.trim();
         if (/^\d{4}$/.test(trimmed)) {
