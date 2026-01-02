@@ -257,37 +257,115 @@ public class BudgetService : IBudgetService
             return new[] { p };
         }).Distinct().ToList();
 
-        // Get all period dates
-        var periodDates = new Dictionary<string, (string? Start, string? End)>();
+        // Get period IDs for all expanded periods
+        var periodIds = new List<string>();
+        var periodNameMap = new Dictionary<string, string>(); // periodId -> periodName
         foreach (var period in expandedPeriods)
         {
             var pd = await _netSuiteService.GetPeriodAsync(period);
-            if (pd != null)
-                periodDates[period] = (pd.StartDate, pd.EndDate);
+            if (pd != null && pd.Id != null)
+            {
+                periodIds.Add(pd.Id);
+                periodNameMap[pd.Id] = pd.PeriodName;
+            }
         }
 
-        if (!periodDates.Any())
+        if (!periodIds.Any())
+        {
+            _logger.LogWarning("No period IDs found for batch budget request");
             return result;
+        }
 
-        var filters = BuildFilters(request.Subsidiary, request.Department, request.Class, request.Location, request.Category);
+        var periodIdList = string.Join(",", periodIds);
         var accountFilter = NetSuiteService.BuildAccountFilter(request.Accounts);
-        var minDate = periodDates.Values.Where(v => v.Start != null).Min(v => v.Start);
-        var maxDate = periodDates.Values.Where(v => v.End != null).Max(v => v.End);
 
+        // Build WHERE clauses using correct table structure
+        var whereClauses = new List<string> 
+        { 
+            accountFilter,
+            $"bm.period IN ({periodIdList})"
+        };
+
+        // Category filter - use Budgets table (b.category)
+        if (!string.IsNullOrEmpty(request.Category))
+        {
+            if (int.TryParse(request.Category, out var catId))
+            {
+                whereClauses.Add($"b.category = {catId}");
+            }
+            else
+            {
+                // Look up category ID by name
+                var catQuery = $@"
+                    SELECT id FROM BudgetCategory 
+                    WHERE name = '{NetSuiteService.EscapeSql(request.Category)}'
+                    FETCH FIRST 1 ROWS ONLY";
+                var catResults = await _netSuiteService.QueryRawAsync(catQuery);
+                if (catResults.Any())
+                {
+                    var catRow = catResults.First();
+                    if (catRow.TryGetProperty("id", out var catIdProp))
+                    {
+                        var catIdStr = catIdProp.GetString();
+                        if (!string.IsNullOrEmpty(catIdStr))
+                            whereClauses.Add($"b.category = {catIdStr}");
+                    }
+                }
+            }
+        }
+
+        // Subsidiary filter - use Budgets table (b.subsidiary)
+        string? subsidiaryId = null;
+        if (!string.IsNullOrEmpty(request.Subsidiary))
+        {
+            if (int.TryParse(request.Subsidiary, out var subId))
+            {
+                subsidiaryId = request.Subsidiary;
+            }
+            else
+            {
+                // Look up subsidiary ID by name
+                var subQuery = $@"
+                    SELECT id FROM subsidiary 
+                    WHERE name = '{NetSuiteService.EscapeSql(request.Subsidiary)}'
+                    FETCH FIRST 1 ROWS ONLY";
+                var subResults = await _netSuiteService.QueryRawAsync(subQuery);
+                if (subResults.Any())
+                {
+                    var subRow = subResults.First();
+                    if (subRow.TryGetProperty("id", out var subIdProp))
+                        subsidiaryId = subIdProp.GetString();
+                }
+            }
+        }
+
+        // Use default subsidiary if not specified
+        var targetSub = subsidiaryId ?? "1";
+
+        if (!string.IsNullOrEmpty(subsidiaryId))
+        {
+            whereClauses.Add($"b.subsidiary = {subsidiaryId}");
+        }
+
+        var whereClause = string.Join(" AND ", whereClauses);
+
+        // Query using correct table structure - match GetAllBudgetsAsync pattern
         var query = $@"
             SELECT 
                 a.acctnumber,
-                p.periodname,
-                SUM(bm.amount) as amount
+                ap.periodname,
+                SUM(
+                    TO_NUMBER(BUILTIN.CONSOLIDATE(
+                        bm.amount, 'LEDGER', 'DEFAULT', 'DEFAULT',
+                        {targetSub}, bm.period, 'DEFAULT'
+                    ))
+                ) as amount
             FROM BudgetsMachine bm
-            JOIN account a ON bm.account = a.id
-            JOIN accountingperiod p ON bm.accountingperiod = p.id
-            WHERE {accountFilter}
-            AND p.startdate >= TO_DATE('{minDate}', 'MM/DD/YYYY')
-            AND p.enddate <= TO_DATE('{maxDate}', 'MM/DD/YYYY')
-            AND p.isquarter = 'F' AND p.isyear = 'F'
-            {filters}
-            GROUP BY a.acctnumber, p.periodname";
+            INNER JOIN Budgets b ON bm.budget = b.id
+            INNER JOIN Account a ON b.account = a.id
+            INNER JOIN AccountingPeriod ap ON ap.id = bm.period
+            WHERE {whereClause}
+            GROUP BY a.acctnumber, ap.periodname";
 
         var rows = await _netSuiteService.QueryRawAsync(query);
 

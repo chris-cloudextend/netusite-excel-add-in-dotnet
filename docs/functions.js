@@ -7527,6 +7527,11 @@ async function BUDGET(account, fromPeriod, toPeriod, subsidiary, department, loc
         accountingBook = String(accountingBook || '').trim();
         budgetCategory = String(budgetCategory || '').trim();
         
+        // CRITICAL: Convert "All Categories" to empty string (backend expects empty string for all categories)
+        if (budgetCategory.toLowerCase() === 'all categories') {
+            budgetCategory = '';
+        }
+        
         const params = { account, fromPeriod, toPeriod, subsidiary, department, location, classId, accountingBook, budgetCategory };
         const cacheKey = getCacheKey('budget', params);
         
