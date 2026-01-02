@@ -5018,37 +5018,42 @@ For licensing inquiries, contact: legal@celigo.com
                             <p style="color: var(--bottlenose); font-size: 11px; margin: 0; line-height: 1.6; margin-bottom: 8px;">
                                 <strong>By Number:</strong> <code>4*</code> <code>42*</code> <code>*</code>
                             </p>
-                            <details style="margin-top: 8px;">
-                                <summary style="cursor: pointer; color: var(--bottlenose); font-size: 11px; font-weight: 600; margin-bottom: 6px;">
-                                    <strong>By Type:</strong> <span style="font-weight: 400;">(click to expand - case-insensitive)</span>
-                                </summary>
-                                <div style="margin-top: 8px; padding: 8px; background: rgba(139,92,246,0.05); border-radius: 6px; border: 1px solid rgba(139,92,246,0.1);">
-                                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 6px; font-size: 10px;">
-                                        <div>
-                                            <code>Bank</code> <code>AcctRec</code><br>
-                                            <code>OthCurrAsset</code><br>
-                                            <code>FixedAsset</code> <code>OthAsset</code><br>
-                                            <code>DeferExpense</code>
-                                        </div>
-                                        <div>
-                                            <code>AcctPay</code> <code>CredCard</code><br>
-                                            <code>OthCurrLiab</code><br>
-                                            <code>DeferRevenue</code><br>
-                                            <code>LongTermLiab</code>
-                                        </div>
-                                        <div>
-                                            <code>Equity</code>
-                                        </div>
-                                        <div>
-                                            <code>Income</code> <code>OthIncome</code>
-                                        </div>
-                                        <div>
-                                            <code>COGS</code> <code>Expense</code><br>
-                                            <code>OthExpense</code>
+                            <div style="margin-top: 8px;">
+                                <p style="color: var(--bottlenose); font-size: 11px; margin: 0; line-height: 1.6; margin-bottom: 4px;">
+                                    <strong>By Type:</strong> <code>Bank</code> <code>Income</code> <code>Expense</code> <code>Equity</code> <code>COGS</code>
+                                </p>
+                                <details style="margin-top: 4px;">
+                                    <summary style="cursor: pointer; color: var(--bottlenose); font-size: 10px; font-weight: 400; margin-bottom: 6px; list-style: none;">
+                                        <span style="text-decoration: underline; color: #7c3aed;">Click to expand for all types</span> <span style="color: #666;">(case-insensitive)</span>
+                                    </summary>
+                                    <div style="margin-top: 8px; padding: 8px; background: rgba(139,92,246,0.05); border-radius: 6px; border: 1px solid rgba(139,92,246,0.1);">
+                                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 6px; font-size: 10px;">
+                                            <div>
+                                                <code>Bank</code> <code>AcctRec</code><br>
+                                                <code>OthCurrAsset</code><br>
+                                                <code>FixedAsset</code> <code>OthAsset</code><br>
+                                                <code>DeferExpense</code>
+                                            </div>
+                                            <div>
+                                                <code>AcctPay</code> <code>CredCard</code><br>
+                                                <code>OthCurrLiab</code><br>
+                                                <code>DeferRevenue</code><br>
+                                                <code>LongTermLiab</code>
+                                            </div>
+                                            <div>
+                                                <code>Equity</code>
+                                            </div>
+                                            <div>
+                                                <code>Income</code> <code>OthIncome</code>
+                                            </div>
+                                            <div>
+                                                <code>COGS</code> <code>Expense</code><br>
+                                                <code>OthExpense</code>
+                                            </div>
                                         </div>
                                     </div>
-                                </div>
-                            </details>
+                                </details>
+                            </div>
                         </div>
                         
                         <button class="btn-primary" style="margin-top: 12px; background: linear-gradient(135deg, var(--anenome) 0%, #06d6a0 100%); color: var(--deep-dive);" onclick="searchAccounts()">
