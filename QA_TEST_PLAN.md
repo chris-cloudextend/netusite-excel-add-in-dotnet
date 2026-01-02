@@ -113,7 +113,7 @@ Account 60040: Jan=701,624.88, Feb=189,037.42
 | Test Case | Formula | Expected | Manual Test |
 |-----------|---------|----------|-------------|
 | TC-2.1.1 | `=XAVI.BALANCE("60010","Jan 2025","Jan 2025")` | Returns balance | ⬜ |
-| TC-2.1.2 | `=XAVI.BALANCE("60010","2025","2025")` | Returns full year | ⬜ |
+| TC-2.1.2 | `=XAVI.BALANCE("60010","Jan 2025","Dec 2025")` | Returns full year | ⬜ |
 | TC-2.1.3 | `=XAVI.BALANCE("60010","Jan 2025","Dec 2025")` | Returns full year | ⬜ |
 | TC-2.1.4 | `=XAVI.BUDGET("60010","Jan 2025")` | Returns budget | ⬜ |
 | TC-2.1.5 | `=XAVI.NAME("60010")` | Returns "Salaries" | ⬜ |
