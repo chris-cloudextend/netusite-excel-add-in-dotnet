@@ -117,22 +117,24 @@ public class TypeBalanceController : ControllerBase
                 segmentFilters.Add($"tl.location = {locationId}");
             var segmentWhere = string.Join(" AND ", segmentFilters);
 
-            // Get fiscal year periods
-            var periodsQuery = $@"
-                SELECT id, periodname, startdate, enddate
-                FROM accountingperiod
-                WHERE isyear = 'F' AND isquarter = 'F'
-                  AND EXTRACT(YEAR FROM startdate) = {fiscalYear}
-                  AND isadjust = 'F'
-                ORDER BY startdate";
-            
-            var periods = await _netSuiteService.QueryRawAsync(periodsQuery);
-            if (!periods.Any())
+            // Get fiscal year periods using shared period resolver (not calendar inference)
+            var yearPeriods = await _netSuiteService.GetPeriodsForYearAsync(fiscalYear);
+            if (!yearPeriods.Any())
             {
-                return BadRequest(new { error = $"No periods found for fiscal year {fiscalYear}" });
+                return BadRequest(new { error = $"No periods found for year {fiscalYear}" });
             }
 
-            _logger.LogDebug("Found {Count} periods for FY {Year}", periods.Count, fiscalYear);
+            _logger.LogDebug("Found {Count} periods for FY {Year}", yearPeriods.Count, fiscalYear);
+            
+            // Convert AccountingPeriod objects to JsonElement format for compatibility
+            var periods = yearPeriods.Select(p => {
+                var dict = new Dictionary<string, object>();
+                dict["id"] = p.Id ?? "";
+                dict["periodname"] = p.PeriodName ?? "";
+                dict["startdate"] = p.StartDate ?? "";
+                dict["enddate"] = p.EndDate ?? "";
+                return System.Text.Json.JsonSerializer.SerializeToElement(dict);
+            }).ToList();
 
             // Build the optimized batch query - ONE query gets ALL types × ALL months
             // Using CASE WHEN to pivot by account type and period
