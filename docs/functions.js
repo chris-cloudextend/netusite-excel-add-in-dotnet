@@ -7719,6 +7719,10 @@ async function processBudgetBatchQueue() {
                 const { account, fromPeriod } = request.params;
                 let value = 0;
                 
+                // CRITICAL: fromPeriod is already normalized to "Mon YYYY" format by normalizePeriodKey
+                // Backend returns budgets keyed by period name (e.g., "Jan 2011")
+                // So we can directly look up using fromPeriod
+                
                 // Handle year-only periods by summing all 12 months
                 if (fromPeriod && /^\d{4}$/.test(fromPeriod)) {
                     const expanded = expandPeriodRangeFromTo(fromPeriod, fromPeriod);
@@ -7727,8 +7731,15 @@ async function processBudgetBatchQueue() {
                             value += budgets[account][period];
                         }
                     }
-                } else if (budgets[account] && budgets[account][fromPeriod] !== undefined) {
-                    value = budgets[account][fromPeriod];
+                } else if (budgets[account]) {
+                    // Look up by normalized period name
+                    // Backend returns periods as "Jan 2011", "Feb 2011", etc.
+                    if (budgets[account][fromPeriod] !== undefined) {
+                        value = budgets[account][fromPeriod];
+                    } else {
+                        // Debug: log available periods if lookup fails
+                        console.warn(`   ⚠️ Budget lookup failed for ${account}/${fromPeriod}. Available periods:`, Object.keys(budgets[account] || {}));
+                    }
                 }
                 
                 cache.budget.set(cacheKey, value);
