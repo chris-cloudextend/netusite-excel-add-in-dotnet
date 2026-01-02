@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.34';  // Fix duplicate requestAccumulators declaration causing SyntaxError
+const FUNCTIONS_VERSION = '4.0.6.35';  // Fix year-only period validation to allow "2025" format
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -6057,7 +6057,8 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         // Removed excessive logging - this fired on every formula evaluation
         
         // Validate that periods were converted successfully
-        const periodPattern = /^[A-Za-z]{3}\s+\d{4}$/;
+        // Allow both "Mon YYYY" format and year-only "YYYY" format (backend handles both)
+        const periodPattern = /^([A-Za-z]{3}\s+\d{4}|\d{4})$/;
         if (fromPeriod && !periodPattern.test(fromPeriod)) {
             console.error(`❌ Invalid fromPeriod after conversion: "${fromPeriod}" (raw: ${rawFrom})`);
         }
@@ -7097,7 +7098,8 @@ async function BALANCECURRENCY(account, fromPeriod, toPeriod, subsidiary, curren
         console.log(`📅 BALANCECURRENCY periods: ${rawFrom} → "${fromPeriod}", ${rawTo} → "${toPeriod}"`);
         
         // Validate that periods were converted successfully
-        const periodPattern = /^[A-Za-z]{3}\s+\d{4}$/;
+        // Allow both "Mon YYYY" format and year-only "YYYY" format (backend handles both)
+        const periodPattern = /^([A-Za-z]{3}\s+\d{4}|\d{4})$/;
         if (fromPeriod && !periodPattern.test(fromPeriod)) {
             console.error(`❌ Invalid fromPeriod after conversion: "${fromPeriod}" (raw: ${rawFrom})`);
         }
