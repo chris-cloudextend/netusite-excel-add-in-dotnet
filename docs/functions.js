@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.38';  // Fix year-only period summing in full_year_refresh response
+const FUNCTIONS_VERSION = '4.0.6.39';  // Add support for period IDs (e.g., "344" instead of "Jan 2025")
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -5097,6 +5097,20 @@ function normalizePeriodKey(value, isFromPeriod = true) {
             }
         }
         
+        // PERIOD ID FORMAT: Numeric strings like "344" are NetSuite period IDs
+        // These should be passed through to the backend as-is (backend resolves them)
+        // Period IDs are typically 1-6 digits and are NOT years (not 1900-2100)
+        // and NOT Excel date serials (not >= 40000)
+        if (/^\d{1,6}$/.test(trimmed)) {
+            const numValue = parseInt(trimmed, 10);
+            // If it's NOT a year (1900-2100) and NOT an Excel date serial (>= 40000),
+            // treat it as a period ID and pass through as-is
+            if ((numValue < 1900 || numValue > 2100) && numValue < 40000) {
+                // This is a period ID - return as-is (backend will resolve it)
+                return trimmed;
+            }
+        }
+        
         // CRITICAL: Handle string representations of Excel date serials
         // When extractValueFromRange extracts a date serial from a Range object,
         // it returns a string like "45658" (not a number)
@@ -6061,8 +6075,11 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         // Removed excessive logging - this fired on every formula evaluation
         
         // Validate that periods were converted successfully
-        // Allow both "Mon YYYY" format and year-only "YYYY" format (backend handles both)
-        const periodPattern = /^([A-Za-z]{3}\s+\d{4}|\d{4})$/;
+        // Allow:
+        // - "Mon YYYY" format (e.g., "Jan 2025")
+        // - Year-only "YYYY" format (e.g., "2025") - backend handles expansion
+        // - Period ID format (e.g., "344") - numeric ID that backend resolves to period
+        const periodPattern = /^([A-Za-z]{3}\s+\d{4}|\d{4}|\d{1,6})$/;
         if (fromPeriod && !periodPattern.test(fromPeriod)) {
             console.error(`❌ Invalid fromPeriod after conversion: "${fromPeriod}" (raw: ${rawFrom})`);
         }
@@ -7102,8 +7119,11 @@ async function BALANCECURRENCY(account, fromPeriod, toPeriod, subsidiary, curren
         console.log(`📅 BALANCECURRENCY periods: ${rawFrom} → "${fromPeriod}", ${rawTo} → "${toPeriod}"`);
         
         // Validate that periods were converted successfully
-        // Allow both "Mon YYYY" format and year-only "YYYY" format (backend handles both)
-        const periodPattern = /^([A-Za-z]{3}\s+\d{4}|\d{4})$/;
+        // Allow:
+        // - "Mon YYYY" format (e.g., "Jan 2025")
+        // - Year-only "YYYY" format (e.g., "2025") - backend handles expansion
+        // - Period ID format (e.g., "344") - numeric ID that backend resolves to period
+        const periodPattern = /^([A-Za-z]{3}\s+\d{4}|\d{4}|\d{1,6})$/;
         if (fromPeriod && !periodPattern.test(fromPeriod)) {
             console.error(`❌ Invalid fromPeriod after conversion: "${fromPeriod}" (raw: ${rawFrom})`);
         }
