@@ -18744,9 +18744,6 @@ export default {
                 const accountTypes = refreshData.account_types || {};
                 const accountNames = refreshData.account_names || {};
                 
-                // Debug: Log what we received
-                console.log(`📊 Structure Sync: Received ${Object.keys(allBalances).length} accounts from API`);
-                
                 // CRITICAL FINANCIAL INTEGRITY FIX: Save fetched data to cache IMMEDIATELY
                 // This ensures formulas use the CORRECT filtered data, not stale unfiltered cache
                 // Without this, formulas check cache and find old data from previous filter settings
@@ -18825,11 +18822,8 @@ export default {
                 const totalAccounts = categories.income.length + categories.othIncome.length + 
                                      categories.cogs.length + categories.expense.length + categories.othExpense.length;
                 
-                console.log(`📊 Structure Sync: Categorized accounts - Income: ${categories.income.length}, COGS: ${categories.cogs.length}, Expense: ${categories.expense.length}, Other Income: ${categories.othIncome.length}, Other Expense: ${categories.othExpense.length}, Total: ${totalAccounts}`);
-                
                 // Check if no transactions were found
                 if (totalAccounts === 0) {
-                    console.log('⚠️ Structure Sync: No accounts with data found - showing alert');
                     // Remove the full-screen overlay
                     const syncOverlay = document.getElementById('structureSyncOverlay');
                     if (syncOverlay) {
@@ -18867,8 +18861,8 @@ export default {
                     // Update status element
                     if (statusEl) {
                         statusEl.innerHTML = `
-                            <div style="background: #fee2e2; padding: 12px; border-radius: 8px; margin-top: 10px; position: relative;">
-                                <button onclick="this.parentElement.parentElement.textContent = ''" style="position: absolute; top: 8px; right: 8px; background: none; border: none; color: #dc2626; font-size: 18px; font-weight: bold; cursor: pointer; padding: 0; width: 20px; height: 20px; line-height: 1; opacity: 0.7; transition: opacity 0.2s;" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.7'" title="Dismiss">×</button>
+                            <div style="background: #fee2e2; padding: 10px; border-radius: 6px; position: relative;">
+                                <button onclick="this.parentElement.parentElement.textContent = ''" style="position: absolute; top: 6px; right: 6px; background: none; border: none; color: #dc2626; font-size: 18px; font-weight: bold; cursor: pointer; padding: 0; width: 20px; height: 20px; line-height: 1; opacity: 0.7; transition: opacity 0.2s;" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.7'" title="Dismiss">×</button>
                                 <strong style="color: #dc2626;">⚠️ No Transactions Found</strong><br>
                                 <span style="font-size: 12px; color: #991b1b;">
                                     No transactions were found for ${targetYear} with the selected filters: ${filterInfo}.<br>
