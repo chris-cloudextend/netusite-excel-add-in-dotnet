@@ -57,13 +57,12 @@ curl -s "https://<tunnel>/health"
 
 ---
 
-### 1.4 Year-Only Format
+### 1.4 Full Year Period Range
 | Test Case | Period Parameters | Expected | Result |
 |-----------|------------------|----------|--------|
-| TC-1.4.1 | `from=2025, to=2025` | Sum of all 12 months | ✅ $43,983,641.42 |
-| TC-1.4.2 | `from=Jan 2025, to=Dec 2025` | Same as above | ✅ $43,983,641.42 |
+| TC-1.4.1 | `from=Jan 2025, to=Dec 2025` | Sum of all 12 months | ✅ $43,983,641.42 |
 
-**Verified:** Both formats return identical results.
+**Note:** Year-only format (e.g., "2025") is supported in code but not documented to users. Users should use explicit period ranges (e.g., "Jan 2025" to "Dec 2025") for clarity.
 
 ---
 
@@ -114,7 +113,6 @@ Account 60040: Jan=701,624.88, Feb=189,037.42
 |-----------|---------|----------|-------------|
 | TC-2.1.1 | `=XAVI.BALANCE("60010","Jan 2025","Jan 2025")` | Returns balance | ⬜ |
 | TC-2.1.2 | `=XAVI.BALANCE("60010","Jan 2025","Dec 2025")` | Returns full year | ⬜ |
-| TC-2.1.3 | `=XAVI.BALANCE("60010","Jan 2025","Dec 2025")` | Returns full year | ⬜ |
 | TC-2.1.4 | `=XAVI.BUDGET("60010","Jan 2025")` | Returns budget | ⬜ |
 | TC-2.1.5 | `=XAVI.NAME("60010")` | Returns "Salaries" | ⬜ |
 | TC-2.1.6 | `=XAVI.TYPE("60010")` | Returns "Expense" | ⬜ |
