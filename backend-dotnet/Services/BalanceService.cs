@@ -138,12 +138,27 @@ public class BalanceService : IBalanceService
         var fromPeriod = request.FromPeriod;
         var toPeriod = string.IsNullOrEmpty(request.ToPeriod) ? request.FromPeriod : request.ToPeriod;
 
-        // Handle year-only format
+        // Handle year-only format - get actual period IDs from NetSuite
         if (NetSuiteService.IsYearOnly(fromPeriod))
         {
-            var (from, to) = NetSuiteService.ExpandYearToPeriods(fromPeriod);
-            fromPeriod = from;
-            toPeriod = to;
+            var yearPeriods = await _netSuiteService.GetPeriodsForYearAsync(fromPeriod);
+            if (yearPeriods.Count == 12)
+            {
+                fromPeriod = yearPeriods.First().PeriodName;
+                toPeriod = yearPeriods.Last().PeriodName;
+            }
+            else
+            {
+                _logger.LogWarning("Expected 12 periods for year {Year}, got {Count}", fromPeriod, yearPeriods.Count);
+                return new BalanceResponse
+                {
+                    Account = request.Account,
+                    FromPeriod = request.FromPeriod,
+                    ToPeriod = request.ToPeriod,
+                    Balance = 0,
+                    Error = $"Could not resolve 12 periods for year {fromPeriod}"
+                };
+            }
         }
 
         // ========================================================================
@@ -669,12 +684,27 @@ public class BalanceService : IBalanceService
         var fromPeriod = request.FromPeriod;
         var toPeriod = string.IsNullOrEmpty(request.ToPeriod) ? request.FromPeriod : request.ToPeriod;
 
-        // Handle year-only format
+        // Handle year-only format - get actual period IDs from NetSuite
         if (NetSuiteService.IsYearOnly(fromPeriod))
         {
-            var (from, to) = NetSuiteService.ExpandYearToPeriods(fromPeriod);
-            fromPeriod = from;
-            toPeriod = to;
+            var yearPeriods = await _netSuiteService.GetPeriodsForYearAsync(fromPeriod);
+            if (yearPeriods.Count == 12)
+            {
+                fromPeriod = yearPeriods.First().PeriodName;
+                toPeriod = yearPeriods.Last().PeriodName;
+            }
+            else
+            {
+                _logger.LogWarning("Expected 12 periods for year {Year}, got {Count}", fromPeriod, yearPeriods.Count);
+                return new BalanceResponse
+                {
+                    Account = request.Account,
+                    FromPeriod = request.FromPeriod,
+                    ToPeriod = request.ToPeriod,
+                    Balance = 0,
+                    Error = $"Could not resolve 12 periods for year {fromPeriod}"
+                };
+            }
         }
 
         // Auto-detect Balance Sheet accounts (same as BALANCE)
@@ -1088,15 +1118,24 @@ public class BalanceService : IBalanceService
         else
         {
             // Period list query - expand periods that are year-only
-            expandedPeriods = request.Periods.SelectMany(p =>
+            expandedPeriods = new List<string>();
+            foreach (var p in request.Periods)
             {
                 if (NetSuiteService.IsYearOnly(p))
                 {
-                    var (from, to) = NetSuiteService.ExpandYearToPeriods(p);
-                    return GenerateMonthlyPeriods(from, to);
+                    // Get actual period IDs from NetSuite for this year
+                    var yearPeriods = await _netSuiteService.GetPeriodsForYearAsync(p);
+                    foreach (var period in yearPeriods)
+                    {
+                        expandedPeriods.Add(period.PeriodName);
+                    }
                 }
-                return new[] { p };
-            }).Distinct().ToList();
+                else
+                {
+                    expandedPeriods.Add(p);
+                }
+            }
+            expandedPeriods = expandedPeriods.Distinct().ToList();
         }
         
         // CACHE CHECK: Try to serve entirely from cache (like Python's balance_cache)
@@ -1278,9 +1317,17 @@ public class BalanceService : IBalanceService
                     if (yearRanges.Count == 0)
                     {
                         _logger.LogWarning("Could not generate year ranges for {From} to {To}", fromPeriodForRange, toPeriodForRange);
-                        // Fall back to single query
+                        // Fall back to single query using period IDs
                         isRangeQuery = true;
-                        plQuery = BuildPeriodRangeQuery(plAccountFilter, fromStartDate!, toEndDate!, targetSub, signFlip, accountingBook, segmentWhere);
+                        var periodIdsInRange = await GetPeriodIdsInRangeAsync(fromPeriodForRange, toPeriodForRange);
+                        if (!periodIdsInRange.Any())
+                        {
+                            _logger.LogWarning("Could not resolve period IDs for range: {From} to {To}", fromPeriodForRange, toPeriodForRange);
+                            result.Error = "NOTFOUND";
+                            return result;
+                        }
+                        var periodIdList = string.Join(", ", periodIdsInRange);
+                        plQuery = BuildPeriodRangeQueryByIds(plAccountFilter, periodIdList, targetSub, signFlip, accountingBook, segmentWhere);
                     }
                     else
                     {
@@ -1374,18 +1421,51 @@ public class BalanceService : IBalanceService
                 else
                 {
                     // PERIOD RANGE QUERY: Single query summing all periods in range (≤2 years)
-                    // This is faster for small ranges
+                    // CRITICAL FIX: Use period IDs instead of date ranges
+                    // This is faster for small ranges and ensures identical period filtering
                     isRangeQuery = true;
-                    plQuery = BuildPeriodRangeQuery(plAccountFilter, fromStartDate!, toEndDate!, targetSub, signFlip, accountingBook, segmentWhere);
+                    var periodIdsInRange = await GetPeriodIdsInRangeAsync(fromPeriodForRange, toPeriodForRange);
+                    if (!periodIdsInRange.Any())
+                    {
+                        _logger.LogWarning("Could not resolve period IDs for range: {From} to {To}", fromPeriodForRange, toPeriodForRange);
+                        result.Error = "NOTFOUND";
+                        return result;
+                    }
+                    var periodIdList = string.Join(", ", periodIdsInRange);
+                    plQuery = BuildPeriodRangeQueryByIds(plAccountFilter, periodIdList, targetSub, signFlip, accountingBook, segmentWhere);
                     
-                    _logger.LogInformation("📅 P&L PERIOD RANGE QUERY: {Count} accounts, {From} to {To} ({PeriodCount} periods, {Years:F1} years) - SINGLE QUERY", 
-                        plAccounts.Count, fromPeriodForRange, toPeriodForRange, expandedPeriods.Count, yearsDiff);
+                    _logger.LogInformation("📅 P&L PERIOD RANGE QUERY: {Count} accounts, {From} to {To} ({PeriodCount} periods, {Years:F1} years) - SINGLE QUERY (using period IDs)", 
+                        plAccounts.Count, fromPeriodForRange, toPeriodForRange, periodIdsInRange.Count, yearsDiff);
                 }
             }
             else
             {
-                // PERIOD LIST QUERY: Query specific periods (existing behavior)
-                var periodsIn = string.Join(", ", expandedPeriods.Select(p => $"'{NetSuiteService.EscapeSql(p)}'"));
+                // PERIOD LIST QUERY: Query specific periods using period IDs
+                // CRITICAL FIX: Use t.postingperiod IN (periodId1, periodId2, ...) instead of ap.periodname IN (...)
+                // Get period IDs for all expanded periods
+                var periodIds = new List<string>();
+                foreach (var periodName in expandedPeriods)
+                {
+                    var periodData = await _netSuiteService.GetPeriodAsync(periodName);
+                    if (periodData?.Id != null)
+                    {
+                        periodIds.Add(periodData.Id);
+                    }
+                    else
+                    {
+                        _logger.LogWarning("Could not resolve period ID for {PeriodName}", periodName);
+                    }
+                }
+                
+                if (!periodIds.Any())
+                {
+                    _logger.LogWarning("No valid period IDs found for period list query");
+                    result.Error = "NOTFOUND";
+                    return result;
+                }
+                
+                var periodIdList = string.Join(", ", periodIds);
+                // Join to accountingperiod to get periodname for result mapping
                 plQuery = $@"
                     SELECT 
                         a.acctnumber,
@@ -1411,13 +1491,13 @@ public class BalanceService : IBalanceService
                     WHERE t.posting = 'T'
                       AND tal.posting = 'T'
                       AND {plAccountFilter}
-                      AND ap.periodname IN ({periodsIn})
+                      AND t.postingperiod IN ({periodIdList})
                       AND a.accttype IN ({AccountType.PlTypesSql})
                       AND tal.accountingbook = {accountingBook}
                       AND {segmentWhere}
                     GROUP BY a.acctnumber, ap.periodname";
                 
-                _logger.LogDebug("P&L batch query for {Count} accounts × {Periods} periods", plAccounts.Count, expandedPeriods.Count);
+                _logger.LogDebug("P&L batch query for {Count} accounts × {Periods} periods (using period IDs)", plAccounts.Count, expandedPeriods.Count);
             }
             
             // Use error-aware query method
@@ -1651,9 +1731,24 @@ public class BalanceService : IBalanceService
         // Handle year-only format (only for P&L types - BS types don't use fromPeriod)
         if (!isBalanceSheet && NetSuiteService.IsYearOnly(fromPeriod))
         {
-            var (from, to) = NetSuiteService.ExpandYearToPeriods(fromPeriod);
-            fromPeriod = from;
-            toPeriod = to;
+            var yearPeriods = await _netSuiteService.GetPeriodsForYearAsync(fromPeriod);
+            if (yearPeriods.Count == 12)
+            {
+                fromPeriod = yearPeriods.First().PeriodName;
+                toPeriod = yearPeriods.Last().PeriodName;
+            }
+            else
+            {
+                _logger.LogWarning("Expected 12 periods for year {Year}, got {Count}", fromPeriod, yearPeriods.Count);
+                return new TypeBalanceResponse
+                {
+                    AccountType = request.AccountType,
+                    FromPeriod = request.FromPeriod,
+                    ToPeriod = request.ToPeriod,
+                    Balance = 0,
+                    Error = $"Could not resolve 12 periods for year {fromPeriod}"
+                };
+            }
         }
 
         // For BS types, fromPeriod is ignored (cumulative from inception)
@@ -1861,12 +1956,20 @@ public class BalanceService : IBalanceService
         var fromPeriod = request.FromPeriod;
         var toPeriod = string.IsNullOrEmpty(request.ToPeriod) ? request.FromPeriod : request.ToPeriod;
 
-        // Handle year-only (e.g., "2025")
+        // Handle year-only (e.g., "2025") - get actual period IDs from NetSuite
         if (NetSuiteService.IsYearOnly(fromPeriod))
         {
-            var (from, to) = NetSuiteService.ExpandYearToPeriods(fromPeriod);
-            fromPeriod = from;
-            toPeriod = to;
+            var yearPeriods = await _netSuiteService.GetPeriodsForYearAsync(fromPeriod);
+            if (yearPeriods.Count == 12)
+            {
+                fromPeriod = yearPeriods.First().PeriodName;
+                toPeriod = yearPeriods.Last().PeriodName;
+            }
+            else
+            {
+                _logger.LogWarning("Expected 12 periods for year {Year}, got {Count}", fromPeriod, yearPeriods.Count);
+                return new List<AccountBalance>();
+            }
         }
 
         var fromPeriodData = await _netSuiteService.GetPeriodAsync(fromPeriod);
@@ -2591,19 +2694,13 @@ public class BalanceService : IBalanceService
     {
         try
         {
-            // Get fiscal year periods
-            var periodsQuery = $@"
-                SELECT id, periodname, startdate, enddate
-                FROM accountingperiod
-                WHERE isyear = 'F' AND isquarter = 'F'
-                  AND EXTRACT(YEAR FROM startdate) = {year}
-                  AND isadjust = 'F'
-                ORDER BY startdate";
-            
-            var periods = await _netSuiteService.QueryRawAsync(periodsQuery);
-            if (!periods.Any())
+            // CRITICAL FIX: Use GetPeriodsForYearAsync to get the exact same periods
+            // that would be selected if user entered all 12 months individually
+            // This ensures month-by-month and full-year queries use identical period IDs
+            var periods = await _netSuiteService.GetPeriodsForYearAsync(year);
+            if (periods.Count != 12)
             {
-                _logger.LogWarning("No periods found for year {Year}", year);
+                _logger.LogWarning("Expected 12 periods for year {Year}, got {Count}", year, periods.Count);
                 return null;
             }
             
@@ -2619,8 +2716,8 @@ public class BalanceService : IBalanceService
             
             foreach (var period in periods)
             {
-                var periodId = period.TryGetProperty("id", out var idProp) ? idProp.ToString() : "";
-                var periodName = period.TryGetProperty("periodname", out var nameProp) ? nameProp.GetString() ?? "" : "";
+                var periodId = period.Id;
+                var periodName = period.PeriodName;
                 
                 if (string.IsNullOrEmpty(periodId) || string.IsNullOrEmpty(periodName))
                     continue;
@@ -2645,8 +2742,8 @@ public class BalanceService : IBalanceService
             
             // Get period IDs for filter
             var periodIds = periods
-                .Select(p => p.TryGetProperty("id", out var idProp) ? idProp.ToString() : "")
-                .Where(id => !string.IsNullOrEmpty(id))
+                .Where(p => !string.IsNullOrEmpty(p.Id))
+                .Select(p => p.Id)
                 .ToList();
             var periodFilter = string.Join(", ", periodIds);
             
@@ -2680,7 +2777,7 @@ public class BalanceService : IBalanceService
             var monthMapping = new Dictionary<string, string>();
             foreach (var period in periods)
             {
-                var periodName = period.TryGetProperty("periodname", out var nameProp) ? nameProp.GetString() ?? "" : "";
+                var periodName = period.PeriodName;
                 if (string.IsNullOrEmpty(periodName))
                     continue;
                 
@@ -2771,6 +2868,43 @@ public class BalanceService : IBalanceService
             GROUP BY a.acctnumber";
     }
     
+    /// <summary>
+    /// Build period range query using period IDs instead of dates.
+    /// CRITICAL: Uses t.postingperiod IN (periodId1, periodId2, ...) to ensure identical period filtering.
+    /// </summary>
+    private string BuildPeriodRangeQueryByIds(string plAccountFilter, string periodIdList, 
+        string targetSub, string signFlip, int accountingBook, string segmentWhere)
+    {
+        return $@"
+            SELECT 
+                a.acctnumber,
+                SUM(
+                    TO_NUMBER(
+                        BUILTIN.CONSOLIDATE(
+                            tal.amount,
+                            'LEDGER',
+                            'DEFAULT',
+                            'DEFAULT',
+                            {targetSub},
+                            t.postingperiod,
+                            'DEFAULT'
+                        )
+                    ) * {signFlip}
+                ) as balance
+            FROM transactionaccountingline tal
+            JOIN transaction t ON t.id = tal.transaction
+            JOIN account a ON a.id = tal.account
+            JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id
+            WHERE t.posting = 'T'
+              AND tal.posting = 'T'
+              AND {plAccountFilter}
+              AND t.postingperiod IN ({periodIdList})
+              AND a.accttype IN ({AccountType.PlTypesSql})
+              AND tal.accountingbook = {accountingBook}
+              AND {segmentWhere}
+            GROUP BY a.acctnumber";
+    }
+
     /// <summary>
     /// Parse date string (handles MM/DD/YYYY and YYYY-MM-DD formats).
     /// </summary>
