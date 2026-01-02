@@ -285,10 +285,14 @@ public class LookupController : ControllerBase
             var currentYear = DateTime.Now.Year;
             var periods = new List<object>();
 
+            _logger.LogInformation("GetPeriodsFromYear: Requesting periods from {StartYear} to {CurrentYear}", startYear, currentYear);
+
             // Get periods for each year from startYear to currentYear
             for (int year = startYear; year <= currentYear; year++)
             {
+                _logger.LogInformation("GetPeriodsFromYear: Fetching periods for year {Year}", year);
                 var yearPeriods = await _netSuiteService.GetPeriodsForYearAsync(year);
+                _logger.LogInformation("GetPeriodsFromYear: Found {Count} periods for year {Year}", yearPeriods.Count, year);
                 
                 foreach (var period in yearPeriods)
                 {
@@ -315,6 +319,8 @@ public class LookupController : ControllerBase
                     });
                 }
             }
+
+            _logger.LogInformation("GetPeriodsFromYear: Returning {Count} total periods", periods.Count);
 
             return Ok(new
             {

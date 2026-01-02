@@ -543,33 +543,83 @@ public class NetSuiteService : INetSuiteService
     }
 
     /// <summary>
-    /// Get accounting period from period name.
+    /// Get accounting period from period name or period ID.
     /// CRITICAL: Always queries NetSuite to get actual AccountingPeriod internal ID.
+    /// Supports both period names (e.g., "Jan 2025") and period IDs (e.g., "344").
     /// For year-only inputs, this method should NOT be used - use GetPeriodsForYearAsync instead.
     /// </summary>
-    public async Task<AccountingPeriod?> GetPeriodAsync(string periodName)
+    public async Task<AccountingPeriod?> GetPeriodAsync(string periodNameOrId)
     {
         // Year-only inputs should use GetPeriodsForYearAsync to get all 12 months
-        if (IsYearOnly(periodName))
+        if (IsYearOnly(periodNameOrId))
         {
-            _logger.LogWarning("GetPeriodAsync called with year-only input '{Year}'. Use GetPeriodsForYearAsync instead.", periodName);
+            _logger.LogWarning("GetPeriodAsync called with year-only input '{Year}'. Use GetPeriodsForYearAsync instead.", periodNameOrId);
             // Return null to force caller to use proper method
             return null;
         }
 
-        var cacheKey = $"period:{periodName}";
+        // Check if input is a numeric ID (period ID)
+        bool isNumericId = int.TryParse(periodNameOrId, out var periodId);
+        
+        var cacheKey = isNumericId ? $"period:id:{periodNameOrId}" : $"period:{periodNameOrId}";
         return await GetOrSetCacheAsync(cacheKey, async () =>
         {
-            var query = $@"
-                SELECT id, periodname, startdate, enddate, isquarter, isyear
-                FROM AccountingPeriod
-                WHERE periodname = '{EscapeSql(periodName)}'
-                AND isquarter = 'F'
-                AND isyear = 'F'
-                FETCH FIRST 1 ROWS ONLY";
+            string query;
+            if (isNumericId)
+            {
+                // Query by period ID
+                query = $@"
+                    SELECT id, periodname, startdate, enddate, isquarter, isyear
+                    FROM AccountingPeriod
+                    WHERE id = {periodId}
+                    AND isquarter = 'F'
+                    AND isyear = 'F'
+                    FETCH FIRST 1 ROWS ONLY";
+            }
+            else
+            {
+                // Query by period name
+                query = $@"
+                    SELECT id, periodname, startdate, enddate, isquarter, isyear
+                    FROM AccountingPeriod
+                    WHERE periodname = '{EscapeSql(periodNameOrId)}'
+                    AND isquarter = 'F'
+                    AND isyear = 'F'
+                    FETCH FIRST 1 ROWS ONLY";
+            }
 
-            var results = await QueryAsync<AccountingPeriod>(query);
-            return results.FirstOrDefault();
+            // Use QueryRawAsync to handle NetSuite's "T"/"F" boolean format
+            var rawResults = await QueryRawAsync(query);
+            if (!rawResults.Any())
+            {
+                _logger.LogWarning("GetPeriodAsync: No period found for {Input} (isNumericId={IsNumeric})", periodNameOrId, isNumericId);
+                return null;
+            }
+
+            var row = rawResults.First();
+            
+            // Helper to parse NetSuite boolean ("T"/"F" or true/false)
+            bool ParseNetSuiteBoolean(JsonElement prop)
+            {
+                if (prop.ValueKind == JsonValueKind.String)
+                    return prop.GetString() == "T";
+                if (prop.ValueKind == JsonValueKind.True || prop.ValueKind == JsonValueKind.False)
+                    return prop.GetBoolean();
+                return false;
+            }
+
+            var period = new AccountingPeriod
+            {
+                Id = row.TryGetProperty("id", out var idProp) ? idProp.ToString() : null,
+                PeriodName = row.TryGetProperty("periodname", out var pnProp) ? pnProp.GetString() : null,
+                StartDate = row.TryGetProperty("startdate", out var sdProp) ? sdProp.GetString() : null,
+                EndDate = row.TryGetProperty("enddate", out var edProp) ? edProp.GetString() : null,
+                IsQuarter = row.TryGetProperty("isquarter", out var iqProp) ? ParseNetSuiteBoolean(iqProp) : false,
+                IsYear = row.TryGetProperty("isyear", out var iyProp) ? ParseNetSuiteBoolean(iyProp) : false
+            };
+
+            _logger.LogInformation("GetPeriodAsync: Found period {PeriodName} (ID: {Id}) for input {Input}", period.PeriodName, period.Id, periodNameOrId);
+            return period;
         });
     }
 
@@ -592,8 +642,47 @@ public class NetSuiteService : INetSuiteService
                   AND EXTRACT(YEAR FROM startdate) = {year}
                 ORDER BY startdate";
 
-            var results = await QueryAsync<AccountingPeriod>(query);
-            return results.ToList();
+            _logger.LogInformation("GetPeriodsForYearAsync: Executing query for year {Year}", year);
+            
+            // Use QueryRawAsync to get raw results and manually deserialize
+            var rawResults = await QueryRawAsync(query);
+            _logger.LogInformation("GetPeriodsForYearAsync: Raw query returned {Count} rows for year {Year}", rawResults.Count, year);
+            
+            var results = new List<AccountingPeriod>();
+            foreach (var row in rawResults)
+            {
+                try
+                {
+                    // Helper to parse NetSuite boolean ("T"/"F" or true/false)
+                    bool ParseNetSuiteBoolean(JsonElement prop)
+                    {
+                        if (prop.ValueKind == JsonValueKind.String)
+                            return prop.GetString() == "T";
+                        if (prop.ValueKind == JsonValueKind.True || prop.ValueKind == JsonValueKind.False)
+                            return prop.GetBoolean();
+                        return false;
+                    }
+                    
+                    var period = new AccountingPeriod
+                    {
+                        Id = row.TryGetProperty("id", out var idProp) ? idProp.ToString() : null,
+                        PeriodName = row.TryGetProperty("periodname", out var pnProp) ? pnProp.GetString() : null,
+                        StartDate = row.TryGetProperty("startdate", out var sdProp) ? sdProp.GetString() : null,
+                        EndDate = row.TryGetProperty("enddate", out var edProp) ? edProp.GetString() : null,
+                        IsQuarter = row.TryGetProperty("isquarter", out var iqProp) ? ParseNetSuiteBoolean(iqProp) : false,
+                        IsYear = row.TryGetProperty("isyear", out var iyProp) ? ParseNetSuiteBoolean(iyProp) : false
+                    };
+                    results.Add(period);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "GetPeriodsForYearAsync: Failed to deserialize period row for year {Year}", year);
+                }
+            }
+            
+            _logger.LogInformation("GetPeriodsForYearAsync: Successfully deserialized {Count} periods for year {Year}", results.Count, year);
+            
+            return results;
         }, TimeSpan.FromHours(24)); // Cache for 24 hours since periods don't change
     }
 

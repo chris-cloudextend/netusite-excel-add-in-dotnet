@@ -1428,5 +1428,5 @@ Backend prints detailed query information:
 
 ---
 
-*Document Version: 2.7*
-*Last Updated: December 28, 2025*
+*Document Version: 4.0.6*
+*Last Updated: January 2, 2025*

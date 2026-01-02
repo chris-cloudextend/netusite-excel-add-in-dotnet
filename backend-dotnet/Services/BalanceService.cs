@@ -597,13 +597,13 @@ public class BalanceService : IBalanceService
                 
                 // Get account name for response
                 var accountNameForActivity = await _lookupService.GetAccountNameAsync(request.Account);
-                var accountTypeForActivity = await _lookupService.GetAccountTypeAsync(request.Account);
+                var accountTypeForActivityInner = await _lookupService.GetAccountTypeAsync(request.Account);
                 
                 return new BalanceResponse
                 {
                     Account = request.Account,
                     AccountName = accountNameForActivity,
-                    AccountType = accountTypeForActivity,
+                    AccountType = accountTypeForActivityInner,
                     FromPeriod = request.FromPeriod,
                     ToPeriod = toPeriod,
                     Balance = activity
@@ -696,7 +696,7 @@ public class BalanceService : IBalanceService
             else
             {
                 _logger.LogWarning("Expected 12 periods for year {Year}, got {Count}", fromPeriod, yearPeriods.Count);
-                return new BalanceResponse
+                return new BalanceBetaResponse
                 {
                     Account = request.Account,
                     FromPeriod = request.FromPeriod,
@@ -1102,6 +1102,11 @@ public class BalanceService : IBalanceService
         string? fromStartDate = null;
         string? toEndDate = null;
         
+        // CRITICAL: Map resolved period names back to original period inputs
+        // This ensures frontend receives balances keyed by original input (e.g., "344" → balance)
+        // Key = resolved period name (from NetSuite), Value = original input (from frontend)
+        Dictionary<string, string> periodNameToOriginalMapping = new Dictionary<string, string>();
+        
         // Store period data for later use in P&L query logic
         AccountingPeriod? fromPeriodData = null;
         AccountingPeriod? toPeriodData = null;
@@ -1136,6 +1141,8 @@ public class BalanceService : IBalanceService
         else
         {
             // Period list query - expand periods that are year-only
+            // CRITICAL: Maintain mapping from resolved period name to original period input
+            // This ensures frontend receives balances keyed by original input (e.g., "344" → balance)
             expandedPeriods = new List<string>();
             foreach (var p in request.Periods)
             {
@@ -1146,11 +1153,24 @@ public class BalanceService : IBalanceService
                     foreach (var period in yearPeriods)
                     {
                         expandedPeriods.Add(period.PeriodName);
+                        periodNameToOriginalMapping[period.PeriodName] = period.PeriodName; // Year expansion: resolved = original
                     }
                 }
                 else
                 {
-                    expandedPeriods.Add(p);
+                    // Resolve period ID to period name (e.g., "344" → "Jan 2025")
+                    var resolvedPeriod = await _netSuiteService.GetPeriodAsync(p);
+                    if (resolvedPeriod != null && !string.IsNullOrEmpty(resolvedPeriod.PeriodName))
+                    {
+                        expandedPeriods.Add(resolvedPeriod.PeriodName);
+                        periodNameToOriginalMapping[resolvedPeriod.PeriodName] = p; // Map resolved name back to original input
+                    }
+                    else
+                    {
+                        // If resolution fails, use original (fallback)
+                        expandedPeriods.Add(p);
+                        periodNameToOriginalMapping[p] = p;
+                    }
                 }
             }
             expandedPeriods = expandedPeriods.Distinct().ToList();
@@ -1181,12 +1201,16 @@ public class BalanceService : IBalanceService
             else
             {
                 // For period list, check each period
+                // CRITICAL: Use expandedPeriods for cache lookup (cache is keyed by resolved period names)
+                // But use original periods for response keys
                 foreach (var period in expandedPeriods)
                 {
                     var cacheKey = $"balance:{account}:{period}:{filtersHash}";
                     if (_cache.TryGetValue(cacheKey, out decimal cachedBalance))
                     {
-                        cachedBalances[account][period] = cachedBalance;
+                        // Map resolved period name back to original input for response
+                        var originalPeriod = periodNameToOriginalMapping.TryGetValue(period, out var orig) ? orig : period;
+                        cachedBalances[account][originalPeriod] = cachedBalance;
                     }
                     else
                     {
@@ -1587,7 +1611,10 @@ public class BalanceService : IBalanceService
                             if (!result.Balances.ContainsKey(acctnumber))
                                 result.Balances[acctnumber] = new Dictionary<string, decimal>();
 
-                            result.Balances[acctnumber][periodname] = balance;
+                            // CRITICAL: Use original period input as key (e.g., "344") instead of resolved name (e.g., "Jan 2025")
+                            // This ensures frontend can find the balance using the original period it sent
+                            var originalPeriod = periodNameToOriginalMapping.TryGetValue(periodname, out var orig) ? orig : periodname;
+                            result.Balances[acctnumber][originalPeriod] = balance;
                         }
                     }
                 }
@@ -1686,7 +1713,10 @@ public class BalanceService : IBalanceService
                     if (!result.Balances.ContainsKey(acctnumber))
                         result.Balances[acctnumber] = new Dictionary<string, decimal>();
 
-                    result.Balances[acctnumber][period] = balance;
+                    // CRITICAL: Use original period input as key (e.g., "344") instead of resolved name (e.g., "Jan 2025")
+                    // This ensures frontend can find the balance using the original period it sent
+                    var originalPeriod = periodNameToOriginalMapping.TryGetValue(period, out var orig) ? orig : period;
+                    result.Balances[acctnumber][originalPeriod] = balance;
                 }
             }
             }
@@ -1721,15 +1751,33 @@ public class BalanceService : IBalanceService
         }
 
         // Fill in zeros for missing account/period combinations
+        // CRITICAL: Use original period inputs (from request.Periods) not expandedPeriods
+        // This ensures response keys match what frontend sent
         foreach (var account in request.Accounts)
         {
             if (!result.Balances.ContainsKey(account))
                 result.Balances[account] = new Dictionary<string, decimal>();
 
-            foreach (var period in expandedPeriods)
+            // Use original periods from request, not expanded periods
+            foreach (var originalPeriod in request.Periods)
             {
-                if (!result.Balances[account].ContainsKey(period))
-                    result.Balances[account][period] = 0;
+                // Skip year-only periods (they get expanded, zeros filled per expanded period)
+                if (NetSuiteService.IsYearOnly(originalPeriod))
+                {
+                    // For year-only, check each expanded period
+                    foreach (var expandedPeriod in expandedPeriods)
+                    {
+                        var orig = periodNameToOriginalMapping.TryGetValue(expandedPeriod, out var o) ? o : expandedPeriod;
+                        if (!result.Balances[account].ContainsKey(orig))
+                            result.Balances[account][orig] = 0;
+                    }
+                }
+                else
+                {
+                    // For regular periods, use original input
+                    if (!result.Balances[account].ContainsKey(originalPeriod))
+                        result.Balances[account][originalPeriod] = 0;
+                }
             }
         }
 
@@ -3606,4 +3654,5 @@ public interface IBalanceService
     /// </summary>
     Task<List<string>> GetPeriodIdsInRangeAsync(string fromPeriod, string toPeriod);
 }
+
 

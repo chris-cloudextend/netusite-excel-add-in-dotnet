@@ -2506,6 +2506,7 @@ public class BalanceController : ControllerBase
                         fyStartPeriodId = fyStartRow.TryGetProperty("id", out var idProp) ? idProp.ToString() : null;
                     }
                     
+                    string? priorPlQuery = null;
                     if (fyStartPeriodId == null)
                     {
                         _logger.LogWarning("Full Year Refresh CTA: Could not find period for fiscal year start {FyStart}", fyInfo.FyStart);
@@ -2514,7 +2515,7 @@ public class BalanceController : ControllerBase
                     else
                     {
                         // CRITICAL FIX: Use t.postingperiod < fyStartPeriodId instead of ap.enddate < TO_DATE(...)
-                        var priorPlQuery = $@"
+                        priorPlQuery = $@"
                             SELECT SUM(
                                 TO_NUMBER(BUILTIN.CONSOLIDATE(tal.amount, 'LEDGER', 'DEFAULT', 'DEFAULT', {targetSub}, {targetPeriodId}, 'DEFAULT'))
                                 * -1
@@ -2545,7 +2546,7 @@ public class BalanceController : ControllerBase
                           AND tal.accountingbook = {accountingBook}";
                     
                     Task<List<JsonElement>>? priorPlTask = null;
-                    if (fyStartPeriodId != null)
+                    if (fyStartPeriodId != null && priorPlQuery != null)
                     {
                         priorPlTask = _netSuiteService.QueryRawAsync(priorPlQuery, 120);
                     }
@@ -3372,8 +3373,8 @@ public class BalanceController : ControllerBase
                 GROUP BY a.acctnumber, ap.periodname
                 ORDER BY a.acctnumber, ap.periodname";
             
-            _logger.LogDebug("Period activity query: {AccountCount} accounts, {FromDate} to {ToDate}", 
-                request.Accounts.Count, fromStartDate, toEndDate);
+            _logger.LogDebug("Period activity query: {AccountCount} accounts, {FromPeriod} to {ToPeriod}", 
+                request.Accounts.Count, request.FromPeriod, request.ToPeriod);
             
             var queryResult = await _netSuiteService.QueryRawWithErrorAsync(query, 300);
             
