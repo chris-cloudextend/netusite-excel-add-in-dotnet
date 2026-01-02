@@ -13753,14 +13753,18 @@ For licensing inquiries, contact: legal@celigo.com
                         // BUDGET formulas for each month
                         // =XAVI.BUDGET(account, fromPeriod, toPeriod, subsidiary, department, location, classId, accountingBook, budgetCategory)
                         // Cell refs: P3=YEAR, Q3=Subsidiary, R3=Department, S3=Location, T3=Class, U3=AcctBook, V3=BudgetCategory
-                        // Use TEXT() to convert date in row 5 to "mmm yyyy" format (e.g., "Jan 2011")
+                        // Row 5 contains: =DATE($P$3,1,1), =DATE($P$3,2,1), etc. (formatted as "mmmm" for display)
+                        // Construct period string directly from month number and year: TEXT(DATE($P$3,month,1),"mmm yyyy")
+                        const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
                         for (let m = 0; m < 12; m++) {
-                            const colLetter = String.fromCharCode(67 + m);
+                            const colLetter = String.fromCharCode(67 + m); // C=67
                             const cell = sheet.getRange(`${colLetter}${row}`);
-                            // Full formula with all parameters as cell references
-                            // Order: account, fromPeriod, toPeriod, subsidiary, department, location, classId, accountingBook, budgetCategory
-                            // Convert date to period string using TEXT() to ensure proper format
-                            cell.formulas = [[`=XAVI.BUDGET($A${row},TEXT(${colLetter}$5,"mmm yyyy"),TEXT(${colLetter}$5,"mmm yyyy"),$Q$3,$R$3,$S$3,$T$3,$U$3,$V$3)`]];
+                            const monthNum = m + 1; // 1-12
+                            const monthName = monthNames[m]; // "Jan", "Feb", etc.
+                            // Build period string directly: "Jan 2011", "Feb 2011", etc.
+                            // Use TEXT() with the DATE formula to convert to period format
+                            // This ensures the period is correctly formatted regardless of row 5's display format
+                            cell.formulas = [[`=XAVI.BUDGET($A${row},TEXT(DATE($P$3,${monthNum},1),"mmm yyyy"),TEXT(DATE($P$3,${monthNum},1),"mmm yyyy"),$Q$3,$R$3,$S$3,$T$3,$U$3,$V$3)`]];
                         }
                         
                         // YTD formula
