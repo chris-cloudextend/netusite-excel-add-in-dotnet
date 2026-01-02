@@ -38,7 +38,8 @@ public class BudgetController : ControllerBase
         [FromQuery] string? department = null,
         [FromQuery(Name = "class")] string? classFilter = null,
         [FromQuery] string? location = null,
-        [FromQuery] string? category = null)
+        [FromQuery] string? category = null,
+        [FromQuery(Name = "budget_category")] string? budgetCategory = null)
     {
         if (string.IsNullOrEmpty(account))
             return BadRequest(new { error = "Account number is required" });
@@ -48,6 +49,9 @@ public class BudgetController : ControllerBase
 
         try
         {
+            // Accept both 'category' and 'budget_category' parameter names for compatibility
+            var finalCategory = category ?? budgetCategory;
+            
             var request = new BudgetRequest
             {
                 Account = account,
@@ -57,7 +61,7 @@ public class BudgetController : ControllerBase
                 Department = department,
                 Class = classFilter,
                 Location = location,
-                Category = category
+                Category = finalCategory
             };
 
             var result = await _budgetService.GetBudgetAsync(request);
