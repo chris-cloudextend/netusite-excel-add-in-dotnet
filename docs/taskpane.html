@@ -14480,7 +14480,8 @@ For licensing inquiries, contact: legal@celigo.com
                         } else {
                             // Sync is disabled
                             statusEl.innerHTML = `
-                                <div style="background: #fef3c7; padding: 12px; border-radius: 8px; margin-top: 10px;">
+                                <div style="background: #fef3c7; padding: 12px; border-radius: 8px; margin-top: 10px; position: relative;">
+                                    <button onclick="this.parentElement.parentElement.textContent = ''" style="position: absolute; top: 8px; right: 8px; background: none; border: none; color: #92400e; font-size: 18px; font-weight: bold; cursor: pointer; padding: 0; width: 20px; height: 20px; line-height: 1; opacity: 0.7; transition: opacity 0.2s;" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.7'" title="Dismiss">×</button>
                                     <strong style="color: #92400e;">⚠️ Structure Sync Disabled</strong><br>
                                     <span style="font-size: 12px; color: #78350f;">
                                         Cell B3 is set to "${syncValue}". Change it to TRUE to enable structure sync.
@@ -14492,7 +14493,8 @@ For licensing inquiries, contact: legal@celigo.com
                     } else {
                         // Not an auto-generated sheet
                         statusEl.innerHTML = `
-                            <div style="background: #fee2e2; padding: 12px; border-radius: 8px; margin-top: 10px;">
+                            <div style="background: #fee2e2; padding: 12px; border-radius: 8px; margin-top: 10px; position: relative;">
+                                <button onclick="this.parentElement.parentElement.textContent = ''" style="position: absolute; top: 8px; right: 8px; background: none; border: none; color: #dc2626; font-size: 18px; font-weight: bold; cursor: pointer; padding: 0; width: 20px; height: 20px; line-height: 1; opacity: 0.7; transition: opacity 0.2s;" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.7'" title="Dismiss">×</button>
                                 <strong style="color: #dc2626;">✗ Not an Auto-Generated Sheet</strong><br>
                                 <span style="font-size: 12px; color: #991b1b;">
                                     This feature only works on Income Statements created by "Full Income Statement" generator.
@@ -17860,7 +17862,8 @@ export default {
                 try {
                     const statusEl = document.getElementById('filterStatus');
                     if (statusEl) {
-                        statusEl.innerHTML = `<div style="background: #dbeafe; padding: 8px; border-radius: 4px; font-size: 11px;">
+                        statusEl.innerHTML = `<div style="background: #dbeafe; padding: 8px; border-radius: 4px; font-size: 11px; position: relative;">
+                            <button onclick="this.parentElement.parentElement.textContent = ''" style="position: absolute; top: 4px; right: 4px; background: none; border: none; color: #1e40af; font-size: 16px; font-weight: bold; cursor: pointer; padding: 0; width: 18px; height: 18px; line-height: 1; opacity: 0.7; transition: opacity 0.2s;" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.7'" title="Dismiss">×</button>
                             <strong style="color: #1e40af;">🔄 Subsidiary changed to "${subsidiary}"</strong><br>
                             <small>Pre-fetching data for fast formula resolution...</small>
                         </div>`;
@@ -17980,7 +17983,8 @@ export default {
                 try {
                     const statusEl = document.getElementById('filterStatus');
                     if (statusEl) {
-                        statusEl.innerHTML = `<div style="background: #d1fae5; padding: 8px; border-radius: 4px; font-size: 11px;">
+                        statusEl.innerHTML = `<div style="background: #d1fae5; padding: 8px; border-radius: 4px; font-size: 11px; position: relative;">
+                            <button onclick="this.parentElement.parentElement.textContent = ''" style="position: absolute; top: 4px; right: 4px; background: none; border: none; color: #059669; font-size: 16px; font-weight: bold; cursor: pointer; padding: 0; width: 18px; height: 18px; line-height: 1; opacity: 0.7; transition: opacity 0.2s;" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.7'" title="Dismiss">×</button>
                             <strong style="color: #059669;">✓ Ready!</strong> Data pre-fetched for "${subsidiary}"
                         </div>`;
                         setTimeout(() => { statusEl.textContent = ''; }, 5000);
@@ -18857,7 +18861,8 @@ export default {
                     // Update status element
                     if (statusEl) {
                         statusEl.innerHTML = `
-                            <div style="background: #fee2e2; padding: 12px; border-radius: 8px; margin-top: 10px;">
+                            <div style="background: #fee2e2; padding: 12px; border-radius: 8px; margin-top: 10px; position: relative;">
+                                <button onclick="this.parentElement.parentElement.textContent = ''" style="position: absolute; top: 8px; right: 8px; background: none; border: none; color: #dc2626; font-size: 18px; font-weight: bold; cursor: pointer; padding: 0; width: 20px; height: 20px; line-height: 1; opacity: 0.7; transition: opacity 0.2s;" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.7'" title="Dismiss">×</button>
                                 <strong style="color: #dc2626;">⚠️ No Transactions Found</strong><br>
                                 <span style="font-size: 12px; color: #991b1b;">
                                     No transactions were found for ${targetYear} with the selected filters: ${filterInfo}.<br>
@@ -19299,7 +19304,8 @@ export default {
                 });
                 
                 if (statusEl) {
-                    statusEl.innerHTML = `<div style="background: #fee2e2; padding: 10px; border-radius: 6px;">
+                    statusEl.innerHTML = `<div style="background: #fee2e2; padding: 10px; border-radius: 6px; position: relative;">
+                        <button onclick="this.parentElement.parentElement.textContent = ''" style="position: absolute; top: 6px; right: 6px; background: none; border: none; color: #dc2626; font-size: 18px; font-weight: bold; cursor: pointer; padding: 0; width: 20px; height: 20px; line-height: 1; opacity: 0.7; transition: opacity 0.2s;" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.7'" title="Dismiss">×</button>
                         <strong style="color: #dc2626;">Sync Error:</strong> ${error.message}
                     </div>`;
                 }
@@ -19475,7 +19481,10 @@ export default {
                 hideLoading();
                 
                 // Show success message
-                statusEl.innerHTML = `<div style="background: #d1fae5; padding: 10px; border-radius: 6px;"><strong style="color: #059669;">✓ Cache cleared!</strong><br><span style="font-size: 11px;">Formulas will fetch fresh data from NetSuite</span></div>`;
+                statusEl.innerHTML = `<div style="background: #d1fae5; padding: 10px; border-radius: 6px; position: relative;">
+                    <button onclick="this.parentElement.parentElement.textContent = ''" style="position: absolute; top: 6px; right: 6px; background: none; border: none; color: #059669; font-size: 18px; font-weight: bold; cursor: pointer; padding: 0; width: 20px; height: 20px; line-height: 1; opacity: 0.7; transition: opacity 0.2s;" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.7'" title="Dismiss">×</button>
+                    <strong style="color: #059669;">✓ Cache cleared!</strong><br><span style="font-size: 11px;">Formulas will fetch fresh data from NetSuite</span>
+                </div>`;
                 
                 setTimeout(() => {
                     statusEl.textContent = '';
@@ -19485,7 +19494,10 @@ export default {
                 console.error('Error clearing cache:', error);
                 hideLoading();
                 
-                statusEl.innerHTML = `<div style="background: #fee2e2; padding: 10px; border-radius: 6px;"><strong style="color: #dc2626;">✗ Error:</strong> ${error.message}</div>`;
+                statusEl.innerHTML = `<div style="background: #fee2e2; padding: 10px; border-radius: 6px; position: relative;">
+                    <button onclick="this.parentElement.parentElement.textContent = ''" style="position: absolute; top: 6px; right: 6px; background: none; border: none; color: #dc2626; font-size: 18px; font-weight: bold; cursor: pointer; padding: 0; width: 20px; height: 20px; line-height: 1; opacity: 0.7; transition: opacity 0.2s;" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.7'" title="Dismiss">×</button>
+                    <strong style="color: #dc2626;">✗ Error:</strong> ${error.message}
+                </div>`;
                 
                 setTimeout(() => {
                     statusEl.textContent = '';
