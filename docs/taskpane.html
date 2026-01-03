@@ -18449,6 +18449,120 @@ export default {
                     }
                 });
                 
+                // ============================================
+                // Validate subsidiary/accounting book combination
+                // ============================================
+                const statusEl = document.getElementById('refreshStatus');
+                let isValidCombination = true;
+                let validSubsidiaries = [];
+                
+                if (accountingBook && accountingBook !== '1' && newSubsidiary) {
+                    try {
+                        console.log(`🔍 Validating (subsidiary change): Subsidiary="${newSubsidiary}", Accounting Book="${accountingBook}"`);
+                        
+                        // Check if current subsidiary is valid for this accounting book
+                        const subResponse = await fetch(`${getServerUrl()}/lookups/accountingbook/${accountingBook}/subsidiaries`);
+                        if (subResponse.ok) {
+                            const subData = await subResponse.json();
+                            
+                            console.log(`📊 Validation response (subsidiary change):`, subData);
+                            
+                            if (subData.allSubsidiaries) {
+                                // All subsidiaries are valid (shouldn't happen for non-primary books, but handle it)
+                                isValidCombination = true;
+                                console.log(`✅ All subsidiaries are valid for accounting book ${accountingBook}`);
+                            } else {
+                                // Check if current subsidiary is in the valid list
+                                // Handle both regular names and "(Consolidated)" variants
+                                validSubsidiaries = (subData.subsidiaries || []).map(s => s.name);
+                                const subsidiariesWithValidChildren = (subData.subsidiariesWithValidChildren || []).map(s => s.name);
+                                
+                                console.log(`📊 Valid subsidiaries: ${validSubsidiaries.join(', ')}`);
+                                console.log(`📊 Subsidiaries with valid children: ${subsidiariesWithValidChildren.join(', ')}`);
+                                
+                                // Check exact match
+                                let isExactMatch = validSubsidiaries.includes(newSubsidiary);
+                                console.log(`🔍 Exact match: ${isExactMatch}`);
+                                
+                                // Check base name (without "(Consolidated)") match
+                                const baseName = newSubsidiary.replace(/\s*\(Consolidated\)\s*$/i, '').trim();
+                                const isBaseMatch = validSubsidiaries.includes(baseName);
+                                console.log(`🔍 Base name match (${baseName}): ${isBaseMatch}`);
+                                
+                                // Check if it's a consolidated subsidiary with valid children
+                                const isConsolidated = newSubsidiary.toLowerCase().includes('consolidated');
+                                let isConsolidatedWithValidChildren = false;
+                                
+                                if (isConsolidated) {
+                                    // Check if base name matches any subsidiary that has valid children
+                                    isConsolidatedWithValidChildren = subsidiariesWithValidChildren.some(s => {
+                                        const sBase = s.replace(/\s*\(Consolidated\)\s*$/i, '').trim();
+                                        const match = sBase === baseName || s === baseName || s === newSubsidiary;
+                                        if (match) {
+                                            console.log(`✅ Consolidated subsidiary "${newSubsidiary}" (base: "${baseName}") matches "${s}" which has valid children`);
+                                        }
+                                        return match;
+                                    });
+                                }
+                                
+                                console.log(`🔍 Consolidated with valid children: ${isConsolidatedWithValidChildren}`);
+                                
+                                isValidCombination = isExactMatch || isBaseMatch || isConsolidatedWithValidChildren;
+                                
+                                console.log(`🔍 Final validation result (subsidiary change): ${isValidCombination ? 'VALID' : 'INVALID'}`);
+                                
+                                if (!isValidCombination) {
+                                    // Show persistent warning in task pane
+                                    if (statusEl) {
+                                        statusEl.innerHTML = `
+                                            <div style="background: #fef3c7; border: 1px solid #f59e0b; padding: 12px; border-radius: 6px; margin: 10px 0; position: relative;">
+                                                <button onclick="this.parentElement.parentElement.textContent = ''" style="position: absolute; top: 6px; right: 6px; background: none; border: none; color: #92400e; font-size: 18px; font-weight: bold; cursor: pointer; padding: 0; width: 20px; height: 20px; line-height: 1; opacity: 0.7; transition: opacity 0.2s;" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.7'" title="Dismiss">×</button>
+                                                <strong style="color: #92400e; display: block; margin-bottom: 6px;">⚠️ Invalid Subsidiary/Accounting Book Combination</strong>
+                                                <div style="font-size: 12px; color: #78350f; line-height: 1.5;">
+                                                    The subsidiary "<strong>${newSubsidiary}</strong>" in cell Q3 does not have transactions in accounting book <strong>${accountingBook}</strong>.<br>
+                                                    <strong>Please select a valid subsidiary from the dropdown in Q3.</strong> The dropdown will show only valid subsidiaries for this accounting book.<br>
+                                                    <em>Note: You can turn off Excel's auto-calculate to make multiple changes before recalculating.</em>
+                                                </div>
+                                            </div>
+                                        `;
+                                    }
+                                    
+                                    console.warn(`⚠️ Invalid combination (subsidiary change): Subsidiary "${newSubsidiary}" is not valid for accounting book ${accountingBook}`);
+                                    console.warn(`   Valid subsidiaries: ${validSubsidiaries.join(', ')}`);
+                                    if (subsidiariesWithValidChildren.length > 0) {
+                                        console.warn(`   Subsidiaries with valid children: ${subsidiariesWithValidChildren.join(', ')}`);
+                                    }
+                                    
+                                    // Skip sync if invalid combination
+                                    shouldSync = false;
+                                    console.log(`⏸️ Skipping sync due to invalid subsidiary/accounting book combination`);
+                                } else {
+                                    // Valid combination - clear any previous warnings
+                                    if (statusEl) {
+                                        statusEl.innerHTML = '';
+                                    }
+                                    if (isConsolidatedWithValidChildren) {
+                                        console.log(`✅ Consolidated subsidiary "${newSubsidiary}" is valid because it has valid children in accounting book ${accountingBook}`);
+                                    } else if (isBaseMatch && isConsolidated) {
+                                        console.log(`✅ Consolidated subsidiary "${newSubsidiary}" base name matches a valid subsidiary in accounting book ${accountingBook}`);
+                                    }
+                                }
+                            }
+                        } else {
+                            console.warn(`⚠️ Failed to fetch valid subsidiaries for accounting book ${accountingBook}: ${subResponse.status}`);
+                        }
+                    } catch (e) {
+                        console.error('❌ Error validating subsidiary/accounting book combination (subsidiary change):', e.message);
+                        console.error(e);
+                    }
+                } else {
+                    // Clear warning if primary book or no subsidiary
+                    if (statusEl) {
+                        statusEl.innerHTML = '';
+                    }
+                    console.log(`ℹ️ Skipping validation (subsidiary change): accountingBook="${accountingBook}", newSubsidiary="${newSubsidiary}"`);
+                }
+                
                 if (shouldSync && year) {
                     console.log(`🔄 Auto-syncing for subsidiary "${newSubsidiary}"... (CFO Flash: ${isCFOFlash})`);
                     
