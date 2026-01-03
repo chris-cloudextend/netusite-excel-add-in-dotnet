@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.43';  // Reduced console verbosity - verbose logs gated behind DEBUG_VERBOSE_LOGGING flag
+const FUNCTIONS_VERSION = '4.0.6.44';  // Fix: Added accountingBook to cache keys for Multi-Book Accounting support
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -2970,7 +2970,8 @@ window.clearCacheForItems = function(items) {
             subsidiary: item.subsidiary || '',
             department: item.department || '',
             location: item.location || '',
-            classId: item.classId || ''
+            classId: item.classId || '',
+            accountingBook: item.accountingBook || ''
         });
         
         if (cache.balance.has(cacheKey)) {
@@ -3910,7 +3911,8 @@ async function runBuildModeBatch() {
                         subsidiary: filters.subsidiary,
                         department: filters.department,
                         location: filters.location,
-                        classId: filters.classId
+                        classId: filters.classId,
+                        accountingBook: filters.accountingBook
                     });
                     
                     if (cache.balance.has(ck)) {
@@ -3971,7 +3973,8 @@ async function runBuildModeBatch() {
                                     subsidiary: filters.subsidiary,
                                     department: filters.department,
                                     location: filters.location,
-                                    classId: filters.classId
+                                    classId: filters.classId,
+                                    accountingBook: filters.accountingBook
                                 });
                                 cache.balance.set(ck, bsBalances[acct][period]);
                                 bsCached++;
@@ -4005,7 +4008,8 @@ async function runBuildModeBatch() {
                         subsidiary: filters.subsidiary,
                         department: filters.department,
                         location: filters.location,
-                        classId: filters.classId
+                        classId: filters.classId,
+                        accountingBook: filters.accountingBook
                     });
                     
                     if (cache.balance.has(ck)) {
@@ -4068,7 +4072,8 @@ async function runBuildModeBatch() {
                                         subsidiary: filters.subsidiary,
                                         department: filters.department,
                                         location: filters.location,
-                                        classId: filters.classId
+                                        classId: filters.classId,
+                                        accountingBook: filters.accountingBook
                                     });
                                     cache.balance.set(ck, yearBalances[acct][period]);
                                     plCached++;
@@ -4120,7 +4125,8 @@ async function runBuildModeBatch() {
                                     subsidiary: filters.subsidiary,
                                     department: filters.department,
                                     location: filters.location,
-                                    classId: filters.classId
+                                    classId: filters.classId,
+                                    accountingBook: filters.accountingBook
                                 });
                                 cache.balance.set(ck, balances[acct][period]);
                             }
@@ -4139,7 +4145,8 @@ async function runBuildModeBatch() {
                                         subsidiary: filters.subsidiary,
                                         department: filters.department,
                                         location: filters.location,
-                                        classId: filters.classId
+                                        classId: filters.classId,
+                                        accountingBook: filters.accountingBook
                                     });
                                     cache.balance.set(ck, 0);
                                 }
@@ -4174,7 +4181,8 @@ async function runBuildModeBatch() {
                         subsidiary: filters.subsidiary,
                         department: filters.department,
                         location: filters.location,
-                        classId: filters.classId
+                        classId: filters.classId,
+                        accountingBook: filters.accountingBook
                     });
                     cache.balance.set(ck, 0);
                     zeroCached++;
@@ -4893,6 +4901,7 @@ window.populateFrontendCache = function(balances, filters = {}) {
     const department = filters.department || '';
     const location = filters.location || '';
     const classId = filters.class || '';
+    const accountingBook = filters.accountingBook || '';
     
     let cacheCount = 0;
     let resolvedCount = 0;
@@ -4908,7 +4917,8 @@ window.populateFrontendCache = function(balances, filters = {}) {
                 subsidiary: subsidiary,
                 department: department,
                 location: location,
-                classId: classId
+                classId: classId,
+                accountingBook: accountingBook
             });
             cache.balance.set(cacheKey, amount);
             cacheCount++;
@@ -5307,7 +5317,8 @@ function getCacheKey(type, params) {
             subsidiary: params.subsidiary || '',
             department: params.department || '',
             location: params.location || '',
-            class: params.classId || ''
+            class: params.classId || '',
+            book: params.accountingBook || ''
         });
     }
     return '';
@@ -7827,7 +7838,7 @@ async function processFullRefresh() {
         filters.department = firstRequest.params.department || '';
         filters.location = firstRequest.params.location || '';
         filters.class = firstRequest.params.classId || '';
-        filters.accountingbook = firstRequest.params.accountingBook || '';  // Multi-Book Accounting support
+        filters.accountingBook = firstRequest.params.accountingBook || '';  // Multi-Book Accounting support
     }
     
     console.log(`📊 Full Refresh Request:`);
@@ -7878,7 +7889,11 @@ async function processFullRefresh() {
                     account: account,
                     fromPeriod: period,
                     toPeriod: period,
-                    ...filters
+                    subsidiary: filters.subsidiary || '',
+                    department: filters.department || '',
+                    location: filters.location || '',
+                    classId: filters.class || '',
+                    accountingBook: filters.accountingBook || ''
                 });
                 cache.balance.set(cacheKey, balances[account][period]);
                 cachedCount++;
