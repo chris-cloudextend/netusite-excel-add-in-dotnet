@@ -10137,6 +10137,22 @@ For licensing inquiries, contact: legal@celigo.com
                     }
                 }, 5000); // Increment every 5 seconds
                 
+                // Get accounting book from sheet (U3) - default to "1" (Primary Book)
+                let accountingBook = "1"; // Default to Primary Book
+                try {
+                    await Excel.run(async (context) => {
+                        const sheet = context.workbook.worksheets.getActiveWorksheet();
+                        const bookCell = sheet.getRange("U3");
+                        bookCell.load("values");
+                        await context.sync();
+                        if (bookCell.values && bookCell.values[0] && bookCell.values[0][0]) {
+                            accountingBook = String(bookCell.values[0][0]).trim() || "1";
+                        }
+                    });
+                } catch (e) {
+                    console.warn('Could not read accounting book from U3, using default:', e.message);
+                }
+                
                 const refreshResponse = await fetch(`${getServerUrl()}/batch/full_year_refresh`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -10145,7 +10161,8 @@ For licensing inquiries, contact: legal@celigo.com
                         subsidiary: '',
                         department: '',
                         location: '',
-                        class: ''
+                        class: '',
+                        accountingBook: accountingBook || "1"
                     })
                 });
                 
@@ -10805,9 +10822,26 @@ For licensing inquiries, contact: legal@celigo.com
                 localStorage.setItem('netsuite_preload_status', 'running');
                 localStorage.setItem('netsuite_preload_timestamp', Date.now().toString());
                 
+                // Get accounting book from sheet (U3) - default to "1" (Primary Book)
+                let accountingBook = "1"; // Default to Primary Book
+                try {
+                    await Excel.run(async (context) => {
+                        const sheet = context.workbook.worksheets.getActiveWorksheet();
+                        const bookCell = sheet.getRange("U3");
+                        bookCell.load("values");
+                        await context.sync();
+                        if (bookCell.values && bookCell.values[0] && bookCell.values[0][0]) {
+                            accountingBook = String(bookCell.values[0][0]).trim() || "1";
+                        }
+                    });
+                } catch (e) {
+                    console.warn('Could not read accounting book from U3, using default:', e.message);
+                }
+                
                 let prefetchSuccess = false;
                 try {
                     console.log('🚀 CFO Flash: Pre-fetching TYPEBALANCE data for instant formula resolution...');
+                    console.log(`   Accounting Book: ${accountingBook}`);
                     updateProgress(25, '📥 Step 2 of 4: Pre-fetching Data', 'Querying NetSuite for account type totals...');
                     
                     const typeBalanceResponse = await fetch(`${getServerUrl()}/batch/typebalance_refresh`, {
@@ -10819,7 +10853,7 @@ For licensing inquiries, contact: legal@celigo.com
                             department: '',
                             location: '',
                             class: '',
-                            accountingBook: null
+                            accountingBook: accountingBook || "1"
                         })
                     });
                     
@@ -10850,8 +10884,8 @@ For licensing inquiries, contact: legal@celigo.com
                                     const value = monthData[period];
                                     // Key format must match TYPEBALANCE function exactly:
                                     // typebalance:${type}:${from}:${to}:${sub}:${dept}:${loc}:${class}:${book}:${special}
-                                    // Empty strings for: department, location, classId, accountingBook
-                                    const cacheKey = `typebalance:${accountType}:${period}:${period}:${(defaultSubsidiary || '').trim()}:::::${specialFlag}`;
+                                    // Include accounting book in cache key to match formula parameters
+                                    const cacheKey = `typebalance:${accountType}:${period}:${period}:${(defaultSubsidiary || '').trim()}:::${(accountingBook || '1').trim()}:${specialFlag}`;
                                     cacheEntries[cacheKey] = value;
                                 }
                             }
@@ -10879,7 +10913,7 @@ For licensing inquiries, contact: legal@celigo.com
                         
                         // Also try to call setTypeBalanceCache if available (for in-memory cache)
                         if (typeof window.setTypeBalanceCache === 'function') {
-                            window.setTypeBalanceCache(balances, currentYear, defaultSubsidiary, '', '', '', '', false);
+                            window.setTypeBalanceCache(balances, currentYear, defaultSubsidiary, '', '', '', accountingBook || '1', false);
                         }
                         
                         // CRITICAL FIX: Signal preload complete IMMEDIATELY after saving cache
@@ -11466,6 +11500,22 @@ For licensing inquiries, contact: legal@celigo.com
                     }
                 }, 4000);
                 
+                // Get accounting book from sheet (U3) - default to "1" (Primary Book)
+                let accountingBook = "1"; // Default to Primary Book
+                try {
+                    await Excel.run(async (context) => {
+                        const sheet = context.workbook.worksheets.getActiveWorksheet();
+                        const bookCell = sheet.getRange("U3");
+                        bookCell.load("values");
+                        await context.sync();
+                        if (bookCell.values && bookCell.values[0] && bookCell.values[0][0]) {
+                            accountingBook = String(bookCell.values[0][0]).trim() || "1";
+                        }
+                    });
+                } catch (e) {
+                    console.warn('Could not read accounting book from U3, using default:', e.message);
+                }
+                
                 const refreshResponse = await fetch(`${getServerUrl()}/batch/full_year_refresh`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -11474,7 +11524,8 @@ For licensing inquiries, contact: legal@celigo.com
                         subsidiary: '',
                         department: '',
                         location: '',
-                        class: ''
+                        class: '',
+                        accountingBook: accountingBook || "1"
                     })
                 });
                 
