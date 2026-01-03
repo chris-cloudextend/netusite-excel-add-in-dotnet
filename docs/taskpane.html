@@ -4967,7 +4967,7 @@ For licensing inquiries, contact: legal@celigo.com
                     <div class="filter-group">
                         <label class="filter-label">Accounting Book <span style="font-size:10px;color:#888;">(Multi-Book)</span></label>
                         <select id="accountingBookSelect" class="filter-select">
-                            <option value="1">Primary Book (Default)</option>
+                            <option value="">Loading...</option>
                         </select>
                         <button class="btn-filter" onclick="insertLookupValue('accountingBook')">Insert</button>
                     </div>
@@ -10977,7 +10977,7 @@ For licensing inquiries, contact: legal@celigo.com
                     sheet.getRange("R3").values = [[""]];
                     sheet.getRange("S3").values = [[""]];
                     sheet.getRange("T3").values = [[""]];
-                    sheet.getRange("U3").values = [[""]];
+                    sheet.getRange("U3").values = [["1"]];  // Accounting Book - default to Primary Book (ID 1)
                     sheet.getRange("V3").values = [["TRUE"]];  // Enable sync
                     await context.sync();
                     
@@ -11743,7 +11743,7 @@ For licensing inquiries, contact: legal@celigo.com
                     sheet.getRange("R3").values = [[""]];  // Department - empty by default
                     sheet.getRange("S3").values = [[""]];  // Location - empty by default
                     sheet.getRange("T3").values = [[""]];  // Class - empty by default
-                    sheet.getRange("U3").values = [[""]];  // Accounting Book - empty by default (uses Primary Book)
+                    sheet.getRange("U3").values = [["1"]];  // Accounting Book - default to Primary Book (ID 1)
                     sheet.getRange("V3").values = [["TRUE"]];
                     await context.sync();
                     
@@ -16864,13 +16864,22 @@ export default {
                 // Multi-Book Accounting: Primary Book, Secondary Books (GAAP, IFRS, Tax, etc.)
                 // Note: value="1" is the Primary Book ID in NetSuite
                 const bookSelect = document.getElementById('accountingBookSelect');
-                bookSelect.innerHTML = '<option value="1">Primary Book (Default)</option>';
+                bookSelect.innerHTML = '';  // Clear any existing options
                 (data.accountingbooks || []).forEach(item => {
                     const option = document.createElement('option');
                     option.value = item.id;  // Use ID as value (backend expects numeric ID)
                     option.textContent = item.name;  // Show name (includes "(Primary)" marker)
                     bookSelect.appendChild(option);
                 });
+                
+                // Set default to Primary Book (ID="1") if it exists
+                const primaryBook = Array.from(bookSelect.options).find(opt => opt.value === "1");
+                if (primaryBook) {
+                    bookSelect.value = "1";
+                } else if (bookSelect.options.length > 0) {
+                    // Fallback: select first option if Primary Book not found
+                    bookSelect.selectedIndex = 0;
+                }
                 
                 // Populate budget category dropdown - Show NAMES (backend accepts name or ID)
                 // Used with XAVI.BUDGET formula to filter by budget version
