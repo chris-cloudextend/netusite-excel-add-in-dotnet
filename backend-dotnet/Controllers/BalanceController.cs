@@ -663,8 +663,6 @@ public class BalanceController : ControllerBase
             
             _logger.LogDebug("Found {Count} periods for year {Year}", yearPeriods.Count, fiscalYear);
 
-            _logger.LogDebug("Found {Count} periods for FY {Year}", periods.Count, fiscalYear);
-
             // Build pivoted query - one row per account, 12 month columns
             var incomeTypesSql = "'Income', 'OthIncome'";
             
@@ -930,6 +928,8 @@ public class BalanceController : ControllerBase
 
             var results = result.Items;
             var balances = new Dictionary<string, Dictionary<string, decimal>>();
+            // Use year as period identifier for year-sum queries
+            var periodName = year.ToString();
             foreach (var row in results)
             {
                 var acctNum = row.TryGetProperty("acctnumber", out var acctProp) ? acctProp.GetString() ?? "" : "";

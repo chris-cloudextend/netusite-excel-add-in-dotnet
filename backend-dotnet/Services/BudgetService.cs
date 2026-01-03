@@ -92,14 +92,8 @@ public class BudgetService : IBudgetService
             else
             {
                 _logger.LogWarning("GetBudgetAsync: Could not resolve periods for year {Year}", fromPeriod);
-                return new BudgetResponse
-                {
-                    Account = request.Account,
-                    FromPeriod = request.FromPeriod,
-                    ToPeriod = request.ToPeriod,
-                    Amount = 0,
-                    Error = $"Could not resolve periods for year {fromPeriod}"
-                };
+                _logger.LogWarning("Could not resolve periods for year {Year}", fromPeriod);
+                throw new InvalidOperationException($"Could not resolve periods for year {fromPeriod}");
             }
         }
 

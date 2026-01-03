@@ -543,8 +543,9 @@ public class SpecialFormulaController : ControllerBase
 
             if (rangeStartPeriodId == null)
             {
-                _logger.LogWarning("Net Income: Could not find period for range start {RangeStart}", rangeStart);
-                return BadRequest(new { error = $"Could not find period for range start: {rangeStart}" });
+                var fromPeriodStr = request.FromPeriod ?? "fiscal year start";
+                _logger.LogWarning("Net Income: Could not find period for range start {RangeStart}", fromPeriodStr);
+                return BadRequest(new { error = $"Could not find period for range start: {fromPeriodStr}" });
             }
 
             // P&L types SQL and sign flip
