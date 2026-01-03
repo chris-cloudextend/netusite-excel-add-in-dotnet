@@ -18650,7 +18650,59 @@ export default {
                 console.log(`📚 Accounting book changed to "${accountingBook}" - clearing caches and refreshing...`);
                 
                 // ============================================
-                // STEP 1: Get subsidiary for accounting book (if relationship exists)
+                // STEP 1: Validate current subsidiary against new accounting book
+                // ============================================
+                const statusEl = document.getElementById('refreshStatus');
+                let isValidCombination = true;
+                let validSubsidiaries = [];
+                
+                if (accountingBook && accountingBook !== '1' && currentSubsidiary) {
+                    try {
+                        // Check if current subsidiary is valid for this accounting book
+                        const subResponse = await fetch(`${getServerUrl()}/lookups/accountingbook/${accountingBook}/subsidiaries`);
+                        if (subResponse.ok) {
+                            const subData = await subResponse.json();
+                            
+                            if (subData.allSubsidiaries) {
+                                // All subsidiaries are valid (shouldn't happen for non-primary books, but handle it)
+                                isValidCombination = true;
+                            } else {
+                                // Check if current subsidiary is in the valid list
+                                validSubsidiaries = (subData.subsidiaries || []).map(s => s.name);
+                                isValidCombination = validSubsidiaries.includes(currentSubsidiary);
+                                
+                                if (!isValidCombination) {
+                                    // Show persistent warning in task pane
+                                    if (statusEl) {
+                                        statusEl.innerHTML = `
+                                            <div style="background: #fef3c7; border: 1px solid #f59e0b; padding: 12px; border-radius: 6px; margin: 10px 0; position: relative;">
+                                                <button onclick="this.parentElement.parentElement.textContent = ''" style="position: absolute; top: 6px; right: 6px; background: none; border: none; color: #92400e; font-size: 18px; font-weight: bold; cursor: pointer; padding: 0; width: 20px; height: 20px; line-height: 1; opacity: 0.7; transition: opacity 0.2s;" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.7'" title="Dismiss">×</button>
+                                                <strong style="color: #92400e; display: block; margin-bottom: 6px;">⚠️ Invalid Subsidiary/Accounting Book Combination</strong>
+                                                <div style="font-size: 12px; color: #78350f; line-height: 1.5;">
+                                                    The subsidiary "<strong>${currentSubsidiary}</strong>" in cell Q3 does not have transactions in accounting book <strong>${accountingBook}</strong>.<br>
+                                                    <strong>Please select a valid subsidiary from the dropdown in Q3.</strong> The dropdown will show only valid subsidiaries for this accounting book.<br>
+                                                    <em>Note: You can turn off Excel's auto-calculate to make multiple changes before recalculating.</em>
+                                                </div>
+                                            </div>
+                                        `;
+                                    }
+                                    
+                                    console.warn(`⚠️ Invalid combination: Subsidiary "${currentSubsidiary}" is not valid for accounting book ${accountingBook}`);
+                                } else {
+                                    // Valid combination - clear any previous warnings
+                                    if (statusEl) {
+                                        statusEl.innerHTML = '';
+                                    }
+                                }
+                            }
+                        }
+                    } catch (e) {
+                        console.warn('Could not validate subsidiary/accounting book combination:', e.message);
+                    }
+                }
+                
+                // ============================================
+                // STEP 2: Get subsidiary for accounting book (if relationship exists)
                 // ============================================
                 let suggestedSubsidiaryId = null;
                 let suggestedSubsidiaryName = null;
@@ -18671,9 +18723,9 @@ export default {
                                     console.log(`📚 ⚠️ This accounting book has ${subCount} subsidiaries. Most common: ${suggestedSubsidiaryName}`);
                                 }
                                 
-                                // Only auto-update if there's exactly ONE subsidiary
+                                // Only auto-update if there's exactly ONE subsidiary AND current is invalid
                                 // If there are multiple, let the user choose from the filtered dropdown
-                                if (!hasMultiple && suggestedSubsidiaryName && currentSubsidiary !== suggestedSubsidiaryName) {
+                                if (!hasMultiple && suggestedSubsidiaryName && (!isValidCombination || currentSubsidiary !== suggestedSubsidiaryName)) {
                                     console.log(`📚 Auto-updating subsidiary from "${currentSubsidiary}" to "${suggestedSubsidiaryName}" (single subsidiary)`);
                                     try {
                                         await Excel.run(async (context) => {
@@ -18684,22 +18736,37 @@ export default {
                                         currentSubsidiary = suggestedSubsidiaryName;
                                         console.log(`✅ Subsidiary updated to "${suggestedSubsidiaryName}"`);
                                         
+                                        // Clear warning since we've fixed it
+                                        if (statusEl) {
+                                            statusEl.innerHTML = '';
+                                        }
+                                        
                                         // CRITICAL: Wait a moment for Excel to process the change
                                         // This ensures the updated value is available when we read it again
                                         await new Promise(resolve => setTimeout(resolve, 100));
                                     } catch (e) {
                                         console.warn('Could not auto-update subsidiary:', e.message);
                                     }
-                                } else if (hasMultiple) {
-                                    // Multiple subsidiaries - show message but don't auto-update
-                                    console.log(`📚 Multiple subsidiaries (${subCount}) - not auto-updating. User should select from filtered dropdown.`);
-                                    showToast({
-                                        title: '📚 Multiple Subsidiaries',
-                                        message: `This accounting book has ${subCount} subsidiaries. Please select one from the filtered dropdown. Most common: ${suggestedSubsidiaryName}`,
-                                        type: 'info',
-                                        icon: '📚',
-                                        duration: 6000
-                                    });
+                                } else if (hasMultiple && !isValidCombination) {
+                                    // Multiple subsidiaries and current is invalid - show message
+                                    console.log(`📚 Multiple subsidiaries (${subCount}) - current subsidiary is invalid. User should select from filtered dropdown.`);
+                                    if (statusEl && !statusEl.innerHTML.includes('Invalid Subsidiary/Accounting Book')) {
+                                        // Only add if we don't already have a warning
+                                        const existingWarning = statusEl.innerHTML;
+                                        statusEl.innerHTML = existingWarning + `
+                                            <div style="background: #dbeafe; border: 1px solid #3b82f6; padding: 12px; border-radius: 6px; margin: 10px 0; position: relative;">
+                                                <button onclick="this.parentElement.remove()" style="position: absolute; top: 6px; right: 6px; background: none; border: none; color: #1e40af; font-size: 18px; font-weight: bold; cursor: pointer; padding: 0; width: 20px; height: 20px; line-height: 1; opacity: 0.7; transition: opacity 0.2s;" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.7'" title="Dismiss">×</button>
+                                                <strong style="color: #1e40af; display: block; margin-bottom: 6px;">📚 Multiple Valid Subsidiaries</strong>
+                                                <div style="font-size: 12px; color: #1e3a8a; line-height: 1.5;">
+                                                    This accounting book has ${subCount} valid subsidiaries. Most common: <strong>${suggestedSubsidiaryName}</strong>.<br>
+                                                    Please select a valid subsidiary from the dropdown in Q3.
+                                                </div>
+                                            </div>
+                                        `;
+                                    }
+                                } else if (hasMultiple && isValidCombination) {
+                                    // Multiple subsidiaries but current is valid - just show info
+                                    console.log(`📚 Multiple subsidiaries (${subCount}) - current subsidiary is valid.`);
                                 }
                             }
                         }
@@ -18733,7 +18800,25 @@ export default {
                 }
                 
                 // ============================================
-                // STEP 3: Re-read subsidiary from sheet to ensure we have the latest value
+                // STEP 3: Filter subsidiary dropdown to only show valid subsidiaries
+                // ============================================
+                // CRITICAL: Filter the dropdown so when user clicks Q3, they only see valid options
+                if (accountingBook && accountingBook !== '1') {
+                    try {
+                        await filterSubsidiaryDropdownByAccountingBook(accountingBook);
+                        console.log(`📚 Filtered subsidiary dropdown for accounting book ${accountingBook}`);
+                    } catch (e) {
+                        console.warn('Could not filter subsidiary dropdown:', e.message);
+                    }
+                } else {
+                    // Primary Book - show all subsidiaries
+                    if (window.allSubsidiaries) {
+                        await populateSubsidiaryDropdown(window.allSubsidiaries);
+                    }
+                }
+                
+                // ============================================
+                // STEP 4: Re-read subsidiary from sheet to ensure we have the latest value
                 // (in case it was auto-updated or manually changed)
                 // ============================================
                 let finalSubsidiary = currentSubsidiary;
@@ -18751,7 +18836,18 @@ export default {
                 }
                 
                 // ============================================
-                // STEP 4: Trigger batch refresh and sync
+                // STEP 5: Only trigger sync if combination is valid
+                // ============================================
+                // If invalid, don't sync - let user fix the subsidiary first
+                if (!isValidCombination && accountingBook && accountingBook !== '1') {
+                    console.warn(`⚠️ Skipping sync - invalid subsidiary/accounting book combination`);
+                    console.warn(`   Subsidiary: "${finalSubsidiary}", Accounting Book: "${accountingBook}"`);
+                    console.warn(`   Valid subsidiaries: ${validSubsidiaries.join(', ')}`);
+                    return; // Exit early - don't sync with invalid combination
+                }
+                
+                // ============================================
+                // STEP 6: Trigger batch refresh and sync
                 // ============================================
                 isSyncInProgress = true;
                 
