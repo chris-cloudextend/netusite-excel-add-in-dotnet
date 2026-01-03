@@ -272,32 +272,38 @@ public class LookupController : ControllerBase
                 })
                 .ToList();
             
-            // Also check: if a valid subsidiary has a parent, include the parent in the valid children list
+            // Also check: if a valid subsidiary has parents/ancestors, include ALL ancestors in the valid children list
             // This allows consolidated subsidiaries (parents) to be considered valid if any child is valid
+            // We traverse up the entire parent chain to include top-level consolidated subsidiaries
             var parentSubsidiariesWithValidChildren = new List<object>();
+            var processedParentIds = new HashSet<string>();
+            
             foreach (var validSubId in subsidiaryIds)
             {
                 try
                 {
-                    // Find the parent of this valid subsidiary
-                    var validSub = allSubsidiaries.FirstOrDefault(s => s.Id == validSubId);
-                    if (validSub != null && !string.IsNullOrEmpty(validSub.Parent))
+                    // Traverse up the entire parent chain for this valid subsidiary
+                    var currentSub = allSubsidiaries.FirstOrDefault(s => s.Id == validSubId);
+                    while (currentSub != null && !string.IsNullOrEmpty(currentSub.Parent))
                     {
-                        var parent = allSubsidiaries.FirstOrDefault(s => s.Id == validSub.Parent);
-                        if (parent != null && !subsidiaryIds.Contains(parent.Id))
+                        var parent = allSubsidiaries.FirstOrDefault(s => s.Id == currentSub.Parent);
+                        if (parent != null && !subsidiaryIds.Contains(parent.Id) && !processedParentIds.Contains(parent.Id))
                         {
-                            // Check if this parent is already in the list
-                            if (!parentSubsidiariesWithValidChildren.Any(p => 
-                                (p as dynamic)?.id == parent.Id))
+                            parentSubsidiariesWithValidChildren.Add(new
                             {
-                                parentSubsidiariesWithValidChildren.Add(new
-                                {
-                                    id = parent.Id,
-                                    name = parent.Name,
-                                    fullName = parent.FullName,
-                                    hasValidChildren = true
-                                });
-                            }
+                                id = parent.Id,
+                                name = parent.Name,
+                                fullName = parent.FullName,
+                                hasValidChildren = true
+                            });
+                            processedParentIds.Add(parent.Id);
+                            
+                            // Continue up the chain
+                            currentSub = parent;
+                        }
+                        else
+                        {
+                            break; // No parent or already processed
                         }
                     }
                 }
