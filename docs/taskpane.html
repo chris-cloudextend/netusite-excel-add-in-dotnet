@@ -16850,30 +16850,158 @@ export default {
                 // Filter out elimination subsidiaries (backend already filters, but ensure frontend doesn't show them)
                 const subSelect = document.getElementById('subsidiarySelect');
                 if (subSelect) {
-                    subSelect.innerHTML = '<option value="">-- All (No Filter) --</option>';
+                    // Store all subsidiaries for filtering later
+                    if (!window.allSubsidiaries) {
+                        window.allSubsidiaries = [];
+                    }
                     
                     // Check if subsidiaries data exists
                     if (!data.subsidiaries || data.subsidiaries.length === 0) {
                         console.warn('⚠️ No subsidiaries returned from API');
                         subSelect.innerHTML = '<option value="">-- No subsidiaries available --</option>';
                     } else {
-                        // Sort subsidiaries hierarchically
+                        // Store all subsidiaries (filtered, sorted) for later filtering by accounting book
                         const subsidiaries = (data.subsidiaries || []).filter(sub => !sub.isElimination);
-                        const sortedSubs = sortSubsidiariesHierarchically(subsidiaries);
+                        window.allSubsidiaries = sortSubsidiariesHierarchically(subsidiaries);
                         
-                        console.log(`   Adding ${sortedSubs.length} subsidiaries to dropdown`);
-                        sortedSubs.forEach(item => {
-                            const option = document.createElement('option');
-                            option.value = item.name;  // Use NAME as value (backend converts)
-                            // Add visual indentation based on depth
-                            const indent = '\u00A0\u00A0\u00A0\u00A0'.repeat(item.depth || 0);  // 4 non-breaking spaces per level
-                            const prefix = (item.depth || 0) > 0 ? '└─ ' : '';
-                            option.textContent = indent + prefix + item.name;
-                            subSelect.appendChild(option);
-                        });
+                        // Populate dropdown with all subsidiaries initially
+                        await populateSubsidiaryDropdown(window.allSubsidiaries);
                     }
                 } else {
                     console.error('❌ subsidiarySelect element not found');
+                }
+                
+                // Helper function to populate subsidiary dropdown
+                async function populateSubsidiaryDropdown(subsidiaries) {
+                    const subSelect = document.getElementById('subsidiarySelect');
+                    if (!subSelect) return;
+                    
+                    subSelect.innerHTML = '<option value="">-- All (No Filter) --</option>';
+                    
+                    if (!subsidiaries || subsidiaries.length === 0) {
+                        subSelect.innerHTML = '<option value="">-- No subsidiaries available --</option>';
+                        return;
+                    }
+                    
+                    console.log(`   Adding ${subsidiaries.length} subsidiaries to dropdown`);
+                    subsidiaries.forEach(item => {
+                        const option = document.createElement('option');
+                        option.value = item.name;  // Use NAME as value (backend converts)
+                        // Add visual indentation based on depth
+                        const indent = '\u00A0\u00A0\u00A0\u00A0'.repeat(item.depth || 0);  // 4 non-breaking spaces per level
+                        const prefix = (item.depth || 0) > 0 ? '└─ ' : '';
+                        option.textContent = indent + prefix + item.name;
+                        subSelect.appendChild(option);
+                    });
+                }
+                
+                // Filter subsidiary dropdown based on selected accounting book
+                async function filterSubsidiaryDropdownByAccountingBook(accountingBookId) {
+                    if (!accountingBookId || accountingBookId === '1') {
+                        // Primary Book (ID 1) - show all subsidiaries
+                        if (window.allSubsidiaries) {
+                            await populateSubsidiaryDropdown(window.allSubsidiaries);
+                        }
+                        return;
+                    }
+                    
+                    try {
+                        console.log(`📚 Filtering subsidiaries for accounting book ${accountingBookId}...`);
+                        const response = await fetch(`${getServerUrl()}/lookups/accountingbook/${accountingBookId}/subsidiaries`);
+                        if (response.ok) {
+                            const data = await response.json();
+                            
+                            if (data.allSubsidiaries) {
+                                // All subsidiaries are valid (shouldn't happen for non-primary books, but handle it)
+                                if (window.allSubsidiaries) {
+                                    await populateSubsidiaryDropdown(window.allSubsidiaries);
+                                }
+                            } else {
+                                // Filter subsidiaries to only those valid for this accounting book
+                                const validSubNames = (data.subsidiaries || []).map(s => s.name);
+                                const filteredSubs = (window.allSubsidiaries || []).filter(sub => 
+                                    validSubNames.includes(sub.name)
+                                );
+                                
+                                console.log(`   Filtered to ${filteredSubs.length} valid subsidiaries (from ${window.allSubsidiaries?.length || 0} total)`);
+                                await populateSubsidiaryDropdown(filteredSubs);
+                                
+                                // If current selection is not valid, clear it and show warning
+                                const subSelect = document.getElementById('subsidiarySelect');
+                                if (subSelect && subSelect.value && !validSubNames.includes(subSelect.value)) {
+                                    subSelect.value = '';
+                                    showToast({
+                                        title: '⚠️ Invalid Subsidiary',
+                                        message: `The selected subsidiary is not valid for accounting book ${accountingBookId}. Please select a valid subsidiary.`,
+                                        type: 'warning',
+                                        icon: '⚠️',
+                                        duration: 5000
+                                    });
+                                }
+                            }
+                        }
+                    } catch (e) {
+                        console.warn('Could not filter subsidiaries by accounting book:', e.message);
+                        // On error, show all subsidiaries
+                        if (window.allSubsidiaries) {
+                            await populateSubsidiaryDropdown(window.allSubsidiaries);
+                        }
+                    }
+                }
+                
+                // Validate subsidiary/accounting book combination when subsidiary changes
+                async function validateSubsidiaryAccountingBookCombination(subsidiaryName, accountingBookId) {
+                    if (!subsidiaryName || !accountingBookId || accountingBookId === '1') {
+                        // Primary Book or no subsidiary - always valid
+                        return true;
+                    }
+                    
+                    try {
+                        const response = await fetch(`${getServerUrl()}/lookups/accountingbook/${accountingBookId}/subsidiaries`);
+                        if (response.ok) {
+                            const data = await response.json();
+                            
+                            if (data.allSubsidiaries) {
+                                return true; // All subsidiaries valid
+                            }
+                            
+                            const validSubNames = (data.subsidiaries || []).map(s => s.name);
+                            const isValid = validSubNames.includes(subsidiaryName);
+                            
+                            if (!isValid) {
+                                showToast({
+                                    title: '⚠️ Invalid Combination',
+                                    message: `Subsidiary "${subsidiaryName}" does not have transactions in accounting book ${accountingBookId}. Results may be empty or incorrect.`,
+                                    type: 'warning',
+                                    icon: '⚠️',
+                                    duration: 8000
+                                });
+                            }
+                            
+                            return isValid;
+                        }
+                    } catch (e) {
+                        console.warn('Could not validate subsidiary/accounting book combination:', e.message);
+                        return true; // On error, assume valid
+                    }
+                    
+                    return true;
+                }
+                
+                // Add validation to subsidiary dropdown onchange
+                if (subSelect) {
+                    const originalOnChange = subSelect.onchange;
+                    subSelect.onchange = async function() {
+                        if (originalOnChange) {
+                            await originalOnChange();
+                        }
+                        
+                        // Validate combination
+                        const bookSelect = document.getElementById('accountingBookSelect');
+                        if (bookSelect && bookSelect.value) {
+                            await validateSubsidiaryAccountingBookCombination(subSelect.value, bookSelect.value);
+                        }
+                    };
                 }
                 
                 // Populate currency dropdown (initially with all valid currencies)
@@ -16931,6 +17059,14 @@ export default {
                     // Fallback: select first option if Primary Book not found
                     bookSelect.selectedIndex = 0;
                 }
+                
+                // Add onchange handler to filter subsidiary dropdown when accounting book changes
+                bookSelect.onchange = async function() {
+                    await filterSubsidiaryDropdownByAccountingBook(bookSelect.value);
+                };
+                
+                // Initial filter based on default accounting book
+                await filterSubsidiaryDropdownByAccountingBook(bookSelect.value);
                 
                 // Populate budget category dropdown - Show NAMES (backend accepts name or ID)
                 // Used with XAVI.BUDGET formula to filter by budget version
@@ -17514,6 +17650,9 @@ export default {
             if (filterCells.includes(eventAddr)) {
                 console.log(`🔧🔧🔧 Filter cell ${eventAddr} changed! (raw: ${event.address}) 🔧🔧🔧`);
                 
+                // Special handling for accounting book changes (U3)
+                const isAccountingBookChange = eventAddr === 'U3';
+                
                 // Suppress statusBar immediately
                 suppressStatusBar = true;
                 localStorage.removeItem('netsuite_status');
@@ -17531,11 +17670,26 @@ export default {
                     localStorage.removeItem('netsuite_status');
                     hideStatus();
                     
-                    // Check if this is a CFO Flash Report or Income Statement and trigger sync
-                    try {
-                        await handleFilterChange();
-                    } catch (e) {
-                        console.error('❌ handleFilterChange() threw error:', e.message);
+                    // If accounting book changed, handle it specially
+                    if (isAccountingBookChange) {
+                        try {
+                            await handleAccountingBookChange();
+                        } catch (e) {
+                            console.error('❌ handleAccountingBookChange() threw error:', e.message);
+                            // Fall back to regular filter change handler
+                            try {
+                                await handleFilterChange();
+                            } catch (e2) {
+                                console.error('❌ handleFilterChange() also threw error:', e2.message);
+                            }
+                        }
+                    } else {
+                        // Regular filter change (department, location, class)
+                        try {
+                            await handleFilterChange();
+                        } catch (e) {
+                            console.error('❌ handleFilterChange() threw error:', e.message);
+                        }
                     }
                 }, 500);
             }
@@ -18409,6 +18563,171 @@ export default {
             }
         }
         
+        // Handle accounting book change - clears all caches, auto-updates subsidiary, triggers batch refresh
+        async function handleAccountingBookChange() {
+            console.log('📚 handleAccountingBookChange() called');
+            
+            // Prevent infinite loop
+            if (isSyncInProgress) {
+                console.log('⏸️ Sync already in progress, skipping accounting book change...');
+                return;
+            }
+            
+            try {
+                let year = null;
+                let currentSubsidiary = '';
+                let department = '';
+                let location = '';
+                let classId = '';
+                let accountingBook = '';
+                let syncType = null;
+                
+                await Excel.run(async (context) => {
+                    const sheet = context.workbook.worksheets.getActiveWorksheet();
+                    
+                    // Check for Sync marker
+                    const markerCell = sheet.getRange("V2");
+                    markerCell.load("values");
+                    const syncCell = sheet.getRange("V3");
+                    syncCell.load("values");
+                    
+                    // Read all filter values
+                    const yearCell = sheet.getRange("P3");
+                    const subCell = sheet.getRange("Q3");
+                    const deptCell = sheet.getRange("R3");
+                    const locCell = sheet.getRange("S3");
+                    const classCell = sheet.getRange("T3");
+                    const bookCell = sheet.getRange("U3");
+                    
+                    yearCell.load("values");
+                    subCell.load("values");
+                    deptCell.load("values");
+                    locCell.load("values");
+                    classCell.load("values");
+                    bookCell.load("values");
+                    await context.sync();
+                    
+                    const rawMarker = String(markerCell.values[0][0] || '');
+                    const marker = rawMarker.toLowerCase().trim();
+                    const rawSync = String(syncCell.values[0][0] || '');
+                    const sync = rawSync.toUpperCase().trim();
+                    
+                    year = parseInt(yearCell.values[0][0]) || new Date().getFullYear();
+                    currentSubsidiary = String(subCell.values[0][0] || '').trim();
+                    department = String(deptCell.values[0][0] || '').trim();
+                    location = String(locCell.values[0][0] || '').trim();
+                    classId = String(classCell.values[0][0] || '').trim();
+                    accountingBook = String(bookCell.values[0][0] || '').trim();
+                    
+                    // Check for CFO Flash Reports or Income Statement
+                    const isCFO = marker.includes('cfo sync') || marker.includes('cfo flash') || marker.includes('cfo');
+                    const syncEnabled = sync === 'TRUE' || sync === 'YES' || sync === '1';
+                    
+                    if (isCFO && syncEnabled) {
+                        syncType = 'cfo';
+                    } else if ((marker.includes('structure sync') || (marker.includes('🔄') && !marker.includes('cfo'))) && syncEnabled) {
+                        syncType = 'income';
+                    }
+                });
+                
+                if (!syncType || !year) {
+                    console.log(`📚 No sync needed: syncType=${syncType}, year=${year}`);
+                    return;
+                }
+                
+                console.log(`📚 Accounting book changed to "${accountingBook}" - clearing caches and refreshing...`);
+                
+                // ============================================
+                // STEP 1: Get subsidiary for accounting book (if relationship exists)
+                // ============================================
+                let suggestedSubsidiaryId = null;
+                let suggestedSubsidiaryName = null;
+                
+                if (accountingBook && accountingBook !== '1') {
+                    try {
+                        const subResponse = await fetch(`${getServerUrl()}/lookups/accountingbook/${accountingBook}/subsidiary`);
+                        if (subResponse.ok) {
+                            const subData = await subResponse.json();
+                            if (subData.subsidiaryId) {
+                                suggestedSubsidiaryId = subData.subsidiaryId;
+                                suggestedSubsidiaryName = subData.subsidiaryName || subData.subsidiaryFullName;
+                                console.log(`📚 Accounting book ${accountingBook} is associated with subsidiary: ${suggestedSubsidiaryName} (ID: ${suggestedSubsidiaryId})`);
+                                
+                                // Auto-update subsidiary if different from current
+                                if (suggestedSubsidiaryName && currentSubsidiary !== suggestedSubsidiaryName) {
+                                    console.log(`📚 Auto-updating subsidiary from "${currentSubsidiary}" to "${suggestedSubsidiaryName}"`);
+                                    try {
+                                        await Excel.run(async (context) => {
+                                            const sheet = context.workbook.worksheets.getActiveWorksheet();
+                                            sheet.getRange("Q3").values = [[suggestedSubsidiaryName]];
+                                            await context.sync();
+                                        });
+                                        currentSubsidiary = suggestedSubsidiaryName;
+                                        console.log(`✅ Subsidiary updated to "${suggestedSubsidiaryName}"`);
+                                    } catch (e) {
+                                        console.warn('Could not auto-update subsidiary:', e.message);
+                                    }
+                                }
+                            }
+                        }
+                    } catch (e) {
+                        console.warn('Could not get subsidiary for accounting book:', e.message);
+                    }
+                }
+                
+                // ============================================
+                // STEP 2: Clear ALL caches (balance, typebalance, etc.)
+                // ============================================
+                console.log('🧹 Clearing ALL caches for accounting book change...');
+                try {
+                    // Clear localStorage caches
+                    localStorage.removeItem('netsuite_balance_cache');
+                    localStorage.removeItem('netsuite_balance_cache_timestamp');
+                    localStorage.removeItem('netsuite_typebalance_cache');
+                    localStorage.removeItem('netsuite_typebalance_cache_timestamp');
+                    localStorage.removeItem('netsuite_preload_status');
+                    localStorage.removeItem('netsuite_preload_timestamp');
+                    
+                    // Signal functions.js to clear in-memory cache
+                    localStorage.setItem('netsuite_cache_clear_signal', JSON.stringify({
+                        timestamp: Date.now(),
+                        reason: 'accounting_book_change'
+                    }));
+                    
+                    console.log('✅ All caches cleared');
+                } catch (e) {
+                    console.warn('Cache clear failed:', e.message);
+                }
+                
+                // ============================================
+                // STEP 3: Trigger batch refresh and sync
+                // ============================================
+                isSyncInProgress = true;
+                
+                try {
+                    if (syncType === 'cfo') {
+                        console.log('🔄 Calling performCFOSync() for accounting book change...');
+                        await performCFOSync(year, currentSubsidiary, department, location, classId, accountingBook);
+                        console.log('✅ performCFOSync() completed');
+                    } else if (syncType === 'income') {
+                        console.log('🔄 Calling performStructureSync() for accounting book change...');
+                        await performStructureSync(year, currentSubsidiary, department, location, classId, accountingBook);
+                        console.log('✅ performStructureSync() completed');
+                    }
+                } catch (syncError) {
+                    console.error(`❌ Sync error (${syncType}):`, syncError.message);
+                } finally {
+                    setTimeout(() => {
+                        isSyncInProgress = false;
+                        console.log('✅ Accounting book change sync protection cleared');
+                    }, 3000);
+                }
+            } catch (e) {
+                console.error('❌ Accounting book change error:', e.message);
+                setTimeout(() => { isSyncInProgress = false; }, 3000);
+            }
+        }
+        
         // Perform Income Statement filter sync (legacy path)
         // NOTE: We now delegate to performStructureSync to avoid old overlay/success code.
         async function performIncomeStatementFilterSync(targetYear, currentSubsidiary, department = '', location = '', classId = '', accountingBook = '') {
@@ -18509,9 +18828,13 @@ export default {
                 console.log(`📊 Pre-fetching TYPEBALANCE data for ${targetYear}...`);
                 console.log(`   Filters: sub="${typeBalancePayload.subsidiary}", dept="${typeBalancePayload.department}", loc="${typeBalancePayload.location}", class="${typeBalancePayload.class}", book="${typeBalancePayload.accountingBook}"`);
                 
-                // Clear existing TYPEBALANCE cache to ensure fresh data
+                // Clear ALL caches (balance, typebalance, etc.) to ensure fresh data
+                localStorage.removeItem('netsuite_balance_cache');
+                localStorage.removeItem('netsuite_balance_cache_timestamp');
                 localStorage.removeItem('netsuite_typebalance_cache');
                 localStorage.removeItem('netsuite_typebalance_cache_timestamp');
+                localStorage.removeItem('netsuite_preload_status');
+                localStorage.removeItem('netsuite_preload_timestamp');
                 
                 // Signal functions.js to clear its in-memory cache
                 // CRITICAL: Must be JSON format with { timestamp, reason } that functions.js expects!

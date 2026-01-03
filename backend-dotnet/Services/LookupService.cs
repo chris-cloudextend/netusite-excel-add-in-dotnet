@@ -192,6 +192,108 @@ public class LookupService : ILookupService
     }
 
     /// <summary>
+    /// Get all subsidiaries that have transactions in the given accounting book.
+    /// Returns a list of subsidiary IDs. For Primary Book (ID 1), returns null to indicate all subsidiaries.
+    /// </summary>
+    public async Task<List<string>?> GetSubsidiariesForAccountingBookAsync(string accountingBookId)
+    {
+        if (string.IsNullOrEmpty(accountingBookId) || accountingBookId == "1")
+        {
+            // Primary Book (ID 1) is typically associated with all subsidiaries
+            // Return null to indicate all subsidiaries are valid
+            return null;
+        }
+
+        var cacheKey = $"lookups:accountingbook:{accountingBookId}:subsidiaries";
+        return await _netSuiteService.GetOrSetCacheAsync(cacheKey, async () =>
+        {
+            // Query to find all subsidiaries that have transactions in this accounting book
+            var query = $@"
+                SELECT DISTINCT tl.subsidiary AS id
+                FROM TransactionAccountingLine tal
+                JOIN TransactionLine tl ON tal.transactionline = tl.id
+                WHERE tal.accountingbook = {NetSuiteService.EscapeSql(accountingBookId)}
+                  AND tl.subsidiary IS NOT NULL
+                ORDER BY tl.subsidiary";
+
+            var result = await _netSuiteService.QueryRawWithErrorAsync(query);
+            
+            if (!result.Success || !result.Items.Any())
+            {
+                _logger.LogWarning("Could not find subsidiaries for accounting book {BookId}", accountingBookId);
+                return new List<string>(); // Return empty list if no subsidiaries found
+            }
+
+            var subsidiaryIds = result.Items
+                .Select(r => r.TryGetProperty("id", out var idProp) ? idProp.ToString() : null)
+                .Where(id => !string.IsNullOrEmpty(id))
+                .ToList()!;
+
+            _logger.LogInformation("Accounting book {BookId} has transactions for {Count} subsidiaries", 
+                accountingBookId, subsidiaryIds.Count);
+
+            return subsidiaryIds;
+        }, TimeSpan.FromHours(24)); // Cache for 24 hours since this relationship rarely changes
+    }
+
+    /// <summary>
+    /// Get the most common subsidiary associated with an accounting book.
+    /// This is determined by querying transactions to find which subsidiary
+    /// has the most transactions for the given accounting book.
+    /// Returns null if no clear relationship exists (e.g., Primary Book).
+    /// </summary>
+    public async Task<string?> GetSubsidiaryForAccountingBookAsync(string accountingBookId)
+    {
+        if (string.IsNullOrEmpty(accountingBookId) || accountingBookId == "1")
+        {
+            // Primary Book (ID 1) is typically associated with all subsidiaries
+            // Return null to indicate no specific subsidiary (use current filter)
+            return null;
+        }
+
+        var cacheKey = $"lookups:accountingbook:{accountingBookId}:subsidiary";
+        return await _netSuiteService.GetOrSetCacheAsync(cacheKey, async () =>
+        {
+            // Query to find the most common subsidiary for this accounting book
+            // by counting transactions grouped by subsidiary
+            var query = $@"
+                SELECT 
+                    tl.subsidiary AS id,
+                    COUNT(*) AS transaction_count
+                FROM TransactionAccountingLine tal
+                JOIN TransactionLine tl ON tal.transactionline = tl.id
+                WHERE tal.accountingbook = {NetSuiteService.EscapeSql(accountingBookId)}
+                  AND tl.subsidiary IS NOT NULL
+                GROUP BY tl.subsidiary
+                ORDER BY transaction_count DESC
+                FETCH FIRST 1 ROWS ONLY";
+
+            var result = await _netSuiteService.QueryRawWithErrorAsync(query);
+            
+            if (!result.Success || !result.Items.Any())
+            {
+                _logger.LogWarning("Could not find subsidiary for accounting book {BookId}", accountingBookId);
+                return null;
+            }
+
+            var row = result.Items.First();
+            var subsidiaryId = row.TryGetProperty("id", out var idProp) ? idProp.ToString() : null;
+            
+            if (!string.IsNullOrEmpty(subsidiaryId))
+            {
+                // Get subsidiary name for logging
+                var subsidiary = await GetSubsidiariesAsync();
+                var subItem = subsidiary.FirstOrDefault(s => s.Id == subsidiaryId);
+                var subName = subItem?.Name ?? $"ID {subsidiaryId}";
+                _logger.LogInformation("Accounting book {BookId} is associated with subsidiary {SubId} ({SubName})", 
+                    accountingBookId, subsidiaryId, subName);
+            }
+
+            return subsidiaryId;
+        }, TimeSpan.FromHours(24)); // Cache for 24 hours since this relationship rarely changes
+    }
+
+    /// <summary>
     /// Get all accounting books.
     /// </summary>
     public async Task<List<AccountingBookItem>> GetAccountingBooksAsync()
@@ -878,6 +980,7 @@ public interface ILookupService
     Task<List<LookupItem>> GetDepartmentsAsync();
     Task<List<LookupItem>> GetClassesAsync();
     Task<List<LookupItem>> GetLocationsAsync();
+    Task<string?> GetSubsidiaryForAccountingBookAsync(string accountingBookId);
     Task<List<AccountingBookItem>> GetAccountingBooksAsync();
     Task<List<BudgetCategoryItem>> GetBudgetCategoriesAsync();
     Task<List<string>> GetSubsidiaryAncestorsAsync(string subsidiaryId);
@@ -892,5 +995,6 @@ public interface ILookupService
     Task<string?> ResolveSubsidiaryIdAsync(string? subsidiaryNameOrId);
     Task<List<string>> GetSubsidiaryHierarchyAsync(string subsidiaryId);
     Task<string?> ResolveDimensionIdAsync(string dimensionType, string? nameOrId);
+    Task<List<string>?> GetSubsidiariesForAccountingBookAsync(string accountingBookId);
 }
 

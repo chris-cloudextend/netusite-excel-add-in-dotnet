@@ -137,6 +137,81 @@ public class LookupController : ControllerBase
     }
 
     /// <summary>
+    /// Get the subsidiary associated with an accounting book.
+    /// Returns the most common subsidiary for transactions in that book.
+    /// </summary>
+    [HttpGet("/lookups/accountingbook/{bookId}/subsidiary")]
+    public async Task<IActionResult> GetSubsidiaryForAccountingBook([FromRoute] string bookId)
+    {
+        try
+        {
+            var subsidiaryId = await _lookupService.GetSubsidiaryForAccountingBookAsync(bookId);
+            if (subsidiaryId == null)
+            {
+                return Ok(new { subsidiaryId = (string?)null, message = "No specific subsidiary associated with this accounting book" });
+            }
+
+            // Get subsidiary name for response
+            var subsidiaries = await _lookupService.GetSubsidiariesAsync();
+            var subsidiary = subsidiaries.FirstOrDefault(s => s.Id == subsidiaryId);
+            
+            return Ok(new 
+            { 
+                subsidiaryId = subsidiaryId,
+                subsidiaryName = subsidiary?.Name ?? (string?)null,
+                subsidiaryFullName = subsidiary?.FullName ?? (string?)null
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting subsidiary for accounting book {BookId}", bookId);
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Get all subsidiaries that have transactions in the given accounting book.
+    /// Returns null for Primary Book (ID 1) to indicate all subsidiaries are valid.
+    /// </summary>
+    [HttpGet("/lookups/accountingbook/{bookId}/subsidiaries")]
+    public async Task<IActionResult> GetSubsidiariesForAccountingBook([FromRoute] string bookId)
+    {
+        try
+        {
+            var subsidiaryIds = await _lookupService.GetSubsidiariesForAccountingBookAsync(bookId);
+            
+            if (subsidiaryIds == null)
+            {
+                // Primary Book - all subsidiaries are valid
+                return Ok(new { allSubsidiaries = true, subsidiaries = new List<object>() });
+            }
+
+            // Get subsidiary details for response
+            var allSubsidiaries = await _lookupService.GetSubsidiariesAsync();
+            var validSubsidiaries = allSubsidiaries
+                .Where(s => subsidiaryIds.Contains(s.Id))
+                .Select(s => new
+                {
+                    id = s.Id,
+                    name = s.Name,
+                    fullName = s.FullName
+                })
+                .ToList();
+            
+            return Ok(new 
+            { 
+                allSubsidiaries = false,
+                subsidiaries = validSubsidiaries
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting subsidiaries for accounting book {BookId}", bookId);
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
     /// Get budget categories.
     /// </summary>
     [HttpGet("/lookups/budget-categories")]
