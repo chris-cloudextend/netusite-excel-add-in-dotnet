@@ -139,16 +139,53 @@ public class LookupController : ControllerBase
     /// <summary>
     /// Get the subsidiary associated with an accounting book.
     /// Returns the most common subsidiary for transactions in that book.
+    /// Also includes information about whether there are multiple subsidiaries.
     /// </summary>
     [HttpGet("/lookups/accountingbook/{bookId}/subsidiary")]
     public async Task<IActionResult> GetSubsidiaryForAccountingBook([FromRoute] string bookId)
     {
         try
         {
+            // First check if there are multiple subsidiaries
+            var allSubsidiaryIds = await _lookupService.GetSubsidiariesForAccountingBookAsync(bookId);
+            
+            // If null, it's Primary Book (all subsidiaries valid)
+            if (allSubsidiaryIds == null)
+            {
+                return Ok(new 
+                { 
+                    subsidiaryId = (string?)null, 
+                    message = "Primary Book - all subsidiaries are valid",
+                    hasMultipleSubsidiaries = true,
+                    subsidiaryCount = 0
+                });
+            }
+            
+            // If empty list, no subsidiaries found
+            if (!allSubsidiaryIds.Any())
+            {
+                return Ok(new 
+                { 
+                    subsidiaryId = (string?)null, 
+                    message = "No subsidiaries found for this accounting book",
+                    hasMultipleSubsidiaries = false,
+                    subsidiaryCount = 0
+                });
+            }
+            
+            // If multiple subsidiaries, return the most common one but indicate there are multiple
+            var hasMultiple = allSubsidiaryIds.Count > 1;
             var subsidiaryId = await _lookupService.GetSubsidiaryForAccountingBookAsync(bookId);
+            
             if (subsidiaryId == null)
             {
-                return Ok(new { subsidiaryId = (string?)null, message = "No specific subsidiary associated with this accounting book" });
+                return Ok(new 
+                { 
+                    subsidiaryId = (string?)null, 
+                    message = "No specific subsidiary associated with this accounting book",
+                    hasMultipleSubsidiaries = hasMultiple,
+                    subsidiaryCount = allSubsidiaryIds.Count
+                });
             }
 
             // Get subsidiary name for response
@@ -159,7 +196,12 @@ public class LookupController : ControllerBase
             { 
                 subsidiaryId = subsidiaryId,
                 subsidiaryName = subsidiary?.Name ?? (string?)null,
-                subsidiaryFullName = subsidiary?.FullName ?? (string?)null
+                subsidiaryFullName = subsidiary?.FullName ?? (string?)null,
+                hasMultipleSubsidiaries = hasMultiple,
+                subsidiaryCount = allSubsidiaryIds.Count,
+                message = hasMultiple 
+                    ? $"This accounting book has {allSubsidiaryIds.Count} subsidiaries. Most common: {subsidiary?.Name ?? subsidiaryId}"
+                    : null
             });
         }
         catch (Exception ex)

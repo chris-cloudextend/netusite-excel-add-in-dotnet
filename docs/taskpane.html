@@ -18663,11 +18663,18 @@ export default {
                             if (subData.subsidiaryId) {
                                 suggestedSubsidiaryId = subData.subsidiaryId;
                                 suggestedSubsidiaryName = subData.subsidiaryName || subData.subsidiaryFullName;
-                                console.log(`📚 Accounting book ${accountingBook} is associated with subsidiary: ${suggestedSubsidiaryName} (ID: ${suggestedSubsidiaryId})`);
+                                const hasMultiple = subData.hasMultipleSubsidiaries || false;
+                                const subCount = subData.subsidiaryCount || 0;
                                 
-                                // Auto-update subsidiary if different from current
-                                if (suggestedSubsidiaryName && currentSubsidiary !== suggestedSubsidiaryName) {
-                                    console.log(`📚 Auto-updating subsidiary from "${currentSubsidiary}" to "${suggestedSubsidiaryName}"`);
+                                console.log(`📚 Accounting book ${accountingBook} is associated with subsidiary: ${suggestedSubsidiaryName} (ID: ${suggestedSubsidiaryId})`);
+                                if (hasMultiple) {
+                                    console.log(`📚 ⚠️ This accounting book has ${subCount} subsidiaries. Most common: ${suggestedSubsidiaryName}`);
+                                }
+                                
+                                // Only auto-update if there's exactly ONE subsidiary
+                                // If there are multiple, let the user choose from the filtered dropdown
+                                if (!hasMultiple && suggestedSubsidiaryName && currentSubsidiary !== suggestedSubsidiaryName) {
+                                    console.log(`📚 Auto-updating subsidiary from "${currentSubsidiary}" to "${suggestedSubsidiaryName}" (single subsidiary)`);
                                     try {
                                         await Excel.run(async (context) => {
                                             const sheet = context.workbook.worksheets.getActiveWorksheet();
@@ -18683,6 +18690,16 @@ export default {
                                     } catch (e) {
                                         console.warn('Could not auto-update subsidiary:', e.message);
                                     }
+                                } else if (hasMultiple) {
+                                    // Multiple subsidiaries - show message but don't auto-update
+                                    console.log(`📚 Multiple subsidiaries (${subCount}) - not auto-updating. User should select from filtered dropdown.`);
+                                    showToast({
+                                        title: '📚 Multiple Subsidiaries',
+                                        message: `This accounting book has ${subCount} subsidiaries. Please select one from the filtered dropdown. Most common: ${suggestedSubsidiaryName}`,
+                                        type: 'info',
+                                        icon: '📚',
+                                        duration: 6000
+                                    });
                                 }
                             }
                         }
