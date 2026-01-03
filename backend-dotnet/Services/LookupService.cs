@@ -8,6 +8,7 @@
  * classes, locations, accounts, and other reference data.
  */
 
+using System;
 using System.Text.Json;
 using XaviApi.Models;
 
@@ -203,13 +204,50 @@ public class LookupService : ILookupService
                 WHERE isinactive = 'F'
                 ORDER BY isprimary DESC, name";
 
-            var results = await _netSuiteService.QueryRawAsync(query);
-            return results.Select(r => new AccountingBookItem
+            var result = await _netSuiteService.QueryRawWithErrorAsync(query);
+            if (!result.Success)
             {
-                Id = r.TryGetProperty("id", out var id) ? id.ToString() : "",
-                Name = r.TryGetProperty("name", out var name) ? name.GetString() ?? "" : "",
-                IsPrimary = r.TryGetProperty("isprimary", out var ip) && ip.GetString() == "T"
-            }).ToList();
+                _logger.LogError("Failed to query accounting books: {Error}", result.ErrorCode);
+                throw new Exception($"Accounting books query failed: {result.ErrorCode}");
+            }
+
+            var books = new List<AccountingBookItem>();
+            foreach (var r in result.Items ?? new List<JsonElement>())
+            {
+                var id = r.TryGetProperty("id", out var idProp) ? idProp.ToString() : "";
+                var name = r.TryGetProperty("name", out var nameProp) ? nameProp.GetString() ?? "" : "";
+                
+                // Parse isprimary - NetSuite returns "T"/"F" strings
+                var isPrimary = false;
+                if (r.TryGetProperty("isprimary", out var ipProp))
+                {
+                    if (ipProp.ValueKind == System.Text.Json.JsonValueKind.String)
+                    {
+                        isPrimary = ipProp.GetString()?.Equals("T", StringComparison.OrdinalIgnoreCase) == true;
+                    }
+                    else if (ipProp.ValueKind == System.Text.Json.JsonValueKind.True)
+                    {
+                        isPrimary = true;
+                    }
+                }
+
+                // Mark primary book for clarity (match Python backend behavior)
+                var displayName = name;
+                if (isPrimary && !name.Contains("(Primary)"))
+                {
+                    displayName = $"{name} (Primary)";
+                }
+
+                books.Add(new AccountingBookItem
+                {
+                    Id = id,
+                    Name = displayName,
+                    IsPrimary = isPrimary
+                });
+            }
+
+            _logger.LogInformation("Retrieved {Count} accounting books", books.Count);
+            return books;
         }) ?? new List<AccountingBookItem>();
     }
 

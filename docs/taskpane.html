@@ -16865,7 +16865,7 @@ export default {
                 // Note: value="1" is the Primary Book ID in NetSuite
                 const bookSelect = document.getElementById('accountingBookSelect');
                 bookSelect.innerHTML = '<option value="1">Primary Book (Default)</option>';
-                (data.accountingBooks || []).forEach(item => {
+                (data.accountingbooks || []).forEach(item => {
                     const option = document.createElement('option');
                     option.value = item.id;  // Use ID as value (backend expects numeric ID)
                     option.textContent = item.name;  // Show name (includes "(Primary)" marker)
@@ -16876,7 +16876,7 @@ export default {
                 // Used with XAVI.BUDGET formula to filter by budget version
                 const budgetCatSelect = document.getElementById('budgetCategorySelect');
                 budgetCatSelect.innerHTML = '<option value="">-- All Categories --</option>';
-                (data.budgetCategories || []).forEach(item => {
+                (data.budgetcategories || []).forEach(item => {
                     const option = document.createElement('option');
                     option.value = item.name;  // Use NAME as value (more user-friendly)
                     option.textContent = item.name;
