@@ -10822,26 +10822,36 @@ For licensing inquiries, contact: legal@celigo.com
                 localStorage.setItem('netsuite_preload_status', 'running');
                 localStorage.setItem('netsuite_preload_timestamp', Date.now().toString());
                 
-                // Get accounting book from sheet (U3) - default to "1" (Primary Book)
+                // Get accounting book and subsidiary from sheet (U3 and Q3) - always read current values
+                // CRITICAL: Don't use cached defaultSubsidiary - read from Q3 to get the current value
+                // This ensures we use the correct subsidiary when accounting book changes
                 let accountingBook = "1"; // Default to Primary Book
+                let currentSubsidiary = defaultSubsidiary; // Start with default, but read from sheet
                 try {
                     await Excel.run(async (context) => {
                         const sheet = context.workbook.worksheets.getActiveWorksheet();
                         const bookCell = sheet.getRange("U3");
+                        const subCell = sheet.getRange("Q3");
                         bookCell.load("values");
+                        subCell.load("values");
                         await context.sync();
                         if (bookCell.values && bookCell.values[0] && bookCell.values[0][0]) {
                             accountingBook = String(bookCell.values[0][0]).trim() || "1";
                         }
+                        if (subCell.values && subCell.values[0] && subCell.values[0][0]) {
+                            currentSubsidiary = String(subCell.values[0][0]).trim() || defaultSubsidiary;
+                        }
                     });
+                    console.log(`📚 CFO Flash Preload: Using subsidiary="${currentSubsidiary}", accounting book="${accountingBook}"`);
                 } catch (e) {
-                    console.warn('Could not read accounting book from U3, using default:', e.message);
+                    console.warn('Could not read accounting book/subsidiary from sheet, using defaults:', e.message);
                 }
                 
                 let prefetchSuccess = false;
                 try {
                     console.log('🚀 CFO Flash: Pre-fetching TYPEBALANCE data for instant formula resolution...');
                     console.log(`   Accounting Book: ${accountingBook}`);
+                    console.log(`   Subsidiary: ${currentSubsidiary}`);
                     updateProgress(25, '📥 Step 2 of 4: Pre-fetching Data', 'Querying NetSuite for account type totals...');
                     
                     const typeBalanceResponse = await fetch(`${getServerUrl()}/batch/typebalance_refresh`, {
@@ -10849,7 +10859,7 @@ For licensing inquiries, contact: legal@celigo.com
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
                             year: currentYear,
-                            subsidiary: defaultSubsidiary,
+                            subsidiary: currentSubsidiary,  // Use current value from Q3, not cached defaultSubsidiary
                             department: '',
                             location: '',
                             class: '',
@@ -18664,6 +18674,10 @@ export default {
                                         });
                                         currentSubsidiary = suggestedSubsidiaryName;
                                         console.log(`✅ Subsidiary updated to "${suggestedSubsidiaryName}"`);
+                                        
+                                        // CRITICAL: Wait a moment for Excel to process the change
+                                        // This ensures the updated value is available when we read it again
+                                        await new Promise(resolve => setTimeout(resolve, 100));
                                     } catch (e) {
                                         console.warn('Could not auto-update subsidiary:', e.message);
                                     }
@@ -18700,18 +18714,38 @@ export default {
                 }
                 
                 // ============================================
-                // STEP 3: Trigger batch refresh and sync
+                // STEP 3: Re-read subsidiary from sheet to ensure we have the latest value
+                // (in case it was auto-updated or manually changed)
+                // ============================================
+                let finalSubsidiary = currentSubsidiary;
+                try {
+                    await Excel.run(async (context) => {
+                        const sheet = context.workbook.worksheets.getActiveWorksheet();
+                        const subCell = sheet.getRange("Q3");
+                        subCell.load("values");
+                        await context.sync();
+                        finalSubsidiary = String(subCell.values[0][0] || '').trim();
+                    });
+                    console.log(`📚 Final subsidiary value: "${finalSubsidiary}"`);
+                } catch (e) {
+                    console.warn('Could not re-read subsidiary, using current value:', e.message);
+                }
+                
+                // ============================================
+                // STEP 4: Trigger batch refresh and sync
                 // ============================================
                 isSyncInProgress = true;
                 
                 try {
                     if (syncType === 'cfo') {
                         console.log('🔄 Calling performCFOSync() for accounting book change...');
-                        await performCFOSync(year, currentSubsidiary, department, location, classId, accountingBook);
+                        console.log(`   Using subsidiary: "${finalSubsidiary}", accounting book: "${accountingBook}"`);
+                        await performCFOSync(year, finalSubsidiary, department, location, classId, accountingBook);
                         console.log('✅ performCFOSync() completed');
                     } else if (syncType === 'income') {
                         console.log('🔄 Calling performStructureSync() for accounting book change...');
-                        await performStructureSync(year, currentSubsidiary, department, location, classId, accountingBook);
+                        console.log(`   Using subsidiary: "${finalSubsidiary}", accounting book: "${accountingBook}"`);
+                        await performStructureSync(year, finalSubsidiary, department, location, classId, accountingBook);
                         console.log('✅ performStructureSync() completed');
                     }
                 } catch (syncError) {
@@ -19673,6 +19707,41 @@ export default {
                     ],
                     customHeader: `${currencyFlag} ${currentSubsidiary || 'All Subsidiaries'}`
                 });
+                
+                // ============================================
+                // CRITICAL: Force BALANCE formulas to recalculate NOW
+                // Excel may have already recalculated them BEFORE our pre-fetch completed,
+                // so we need to trigger a recalculation to use the fresh cache with correct filters
+                // ============================================
+                console.log(`🔄 Structure Sync: Triggering BALANCE formula recalculation to use pre-fetched cache...`);
+                try {
+                    await Excel.run(async (context) => {
+                        const sheet = context.workbook.worksheets.getActiveWorksheet();
+                        const usedRange = sheet.getUsedRange();
+                        usedRange.load(["formulas", "rowCount", "columnCount"]);
+                        await context.sync();
+                        
+                        const formulas = usedRange.formulas;
+                        const rowCount = usedRange.rowCount;
+                        const columnCount = usedRange.columnCount;
+                        let balanceCount = 0;
+                        
+                        for (let row = 0; row < rowCount; row++) {
+                            for (let col = 0; col < columnCount; col++) {
+                                const formula = formulas[row][col];
+                                if (typeof formula === 'string' && formula.toUpperCase().includes('XAVI.BALANCE')) {
+                                    const cell = usedRange.getCell(row, col);
+                                    cell.calculate();
+                                    balanceCount++;
+                                }
+                            }
+                        }
+                        await context.sync();
+                        console.log(`✅ Structure Sync: Triggered recalculation of ${balanceCount} BALANCE formulas - they should now use fresh cache`);
+                    });
+                } catch (recalcError) {
+                    console.warn('Structure Sync: BALANCE recalculation trigger failed:', recalcError.message);
+                }
                 
                 // Clear status element
                 if (statusEl) {
