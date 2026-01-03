@@ -260,6 +260,7 @@ public class LookupController : ControllerBase
             }
             
             // Now include subsidiaries that have a valid child (for consolidated validation)
+            // This includes parent subsidiaries whose children have transactions in this accounting book
             var subsidiariesWithValidChildren = allSubsidiaries
                 .Where(s => !subsidiaryIds.Contains(s.Id) && validSubsidiaryIdsWithChildren.Contains(s.Id))
                 .Select(s => new
@@ -271,11 +272,53 @@ public class LookupController : ControllerBase
                 })
                 .ToList();
             
+            // Also check: if a valid subsidiary has a parent, include the parent in the valid children list
+            // This allows consolidated subsidiaries (parents) to be considered valid if any child is valid
+            var parentSubsidiariesWithValidChildren = new List<object>();
+            foreach (var validSubId in subsidiaryIds)
+            {
+                try
+                {
+                    // Find the parent of this valid subsidiary
+                    var validSub = allSubsidiaries.FirstOrDefault(s => s.Id == validSubId);
+                    if (validSub != null && !string.IsNullOrEmpty(validSub.Parent))
+                    {
+                        var parent = allSubsidiaries.FirstOrDefault(s => s.Id == validSub.Parent);
+                        if (parent != null && !subsidiaryIds.Contains(parent.Id))
+                        {
+                            // Check if this parent is already in the list
+                            if (!parentSubsidiariesWithValidChildren.Any(p => 
+                                (p as dynamic)?.id == parent.Id))
+                            {
+                                parentSubsidiariesWithValidChildren.Add(new
+                                {
+                                    id = parent.Id,
+                                    name = parent.Name,
+                                    fullName = parent.FullName,
+                                    hasValidChildren = true
+                                });
+                            }
+                        }
+                    }
+                }
+                catch
+                {
+                    // Continue if lookup fails
+                }
+            }
+            
+            // Combine both lists (remove duplicates by ID)
+            var allSubsidiariesWithValidChildren = subsidiariesWithValidChildren
+                .Concat(parentSubsidiariesWithValidChildren)
+                .GroupBy(s => (s as dynamic)?.id)
+                .Select(g => g.First())
+                .ToList();
+            
             return Ok(new 
             { 
                 allSubsidiaries = false,
                 subsidiaries = validSubsidiaries,
-                subsidiariesWithValidChildren = subsidiariesWithValidChildren
+                subsidiariesWithValidChildren = allSubsidiariesWithValidChildren
             });
         }
         catch (Exception ex)
