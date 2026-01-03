@@ -13729,7 +13729,7 @@ For licensing inquiries, contact: legal@celigo.com
                     sheet.getRange("R3").values = [[""]];  // Department - empty by default
                     sheet.getRange("S3").values = [[""]];  // Location - empty by default
                     sheet.getRange("T3").values = [[""]];  // Class - empty by default
-                    sheet.getRange("U3").values = [[""]];  // Accounting Book - empty by default
+                    sheet.getRange("U3").values = [["1"]];  // Accounting Book - default to Primary Book (ID 1)
                     sheet.getRange("V3").values = [[budgetCategory || 'All Categories']];  // Budget Category at end
                     await context.sync();
                     
@@ -14725,7 +14725,7 @@ For licensing inquiries, contact: legal@celigo.com
                     sheet.getRange("R3").values = [[""]];  // Department - empty by default
                     sheet.getRange("S3").values = [[""]];  // Location - empty by default
                     sheet.getRange("T3").values = [[""]];  // Class - empty by default
-                    sheet.getRange("U3").values = [[""]];  // Accounting Book - empty by default
+                    sheet.getRange("U3").values = [["1"]];  // Accounting Book - default to Primary Book (ID 1)
                     sheet.getRange("V3").values = [["TRUE"]];
                     await context.sync();
                     
@@ -20467,7 +20467,7 @@ export default {
                             sheet.getRange("R3").values = [[""]];  // Department
                             sheet.getRange("S3").values = [[""]];  // Location
                             sheet.getRange("T3").values = [[""]];  // Class
-                            sheet.getRange("U3").values = [[""]];  // Accounting Book
+                            sheet.getRange("U3").values = [["1"]];  // Accounting Book - default to Primary Book (ID 1)
                             sheet.getRange("V3").values = [["TRUE"]];
                             await context.sync();
                             
