@@ -17014,6 +17014,23 @@ export default {
                             await validateSubsidiaryAccountingBookCombination(subSelect.value, bookSelect.value);
                         }
                     };
+                    
+                    // Filter dropdown when user clicks/focuses on it
+                    // This ensures the dropdown always shows only valid subsidiaries for the current accounting book
+                    subSelect.addEventListener('focus', async function() {
+                        const bookSelect = document.getElementById('accountingBookSelect');
+                        if (bookSelect && bookSelect.value) {
+                            await filterSubsidiaryDropdownByAccountingBook(bookSelect.value);
+                        }
+                    });
+                    
+                    // Also filter on click (for better compatibility)
+                    subSelect.addEventListener('click', async function() {
+                        const bookSelect = document.getElementById('accountingBookSelect');
+                        if (bookSelect && bookSelect.value) {
+                            await filterSubsidiaryDropdownByAccountingBook(bookSelect.value);
+                        }
+                    });
                 }
                 
                 // Populate currency dropdown (initially with all valid currencies)
