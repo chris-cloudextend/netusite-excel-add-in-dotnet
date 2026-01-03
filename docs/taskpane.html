@@ -18675,18 +18675,67 @@ export default {
                 
                 if (accountingBook && accountingBook !== '1' && currentSubsidiary) {
                     try {
+                        console.log(`🔍 Validating: Subsidiary="${currentSubsidiary}", Accounting Book="${accountingBook}"`);
+                        
                         // Check if current subsidiary is valid for this accounting book
                         const subResponse = await fetch(`${getServerUrl()}/lookups/accountingbook/${accountingBook}/subsidiaries`);
                         if (subResponse.ok) {
                             const subData = await subResponse.json();
                             
+                            console.log(`📊 Validation response:`, subData);
+                            
                             if (subData.allSubsidiaries) {
                                 // All subsidiaries are valid (shouldn't happen for non-primary books, but handle it)
                                 isValidCombination = true;
+                                console.log(`✅ All subsidiaries are valid for accounting book ${accountingBook}`);
                             } else {
                                 // Check if current subsidiary is in the valid list
+                                // Handle both regular names and "(Consolidated)" variants
                                 validSubsidiaries = (subData.subsidiaries || []).map(s => s.name);
-                                isValidCombination = validSubsidiaries.includes(currentSubsidiary);
+                                const subsidiariesWithValidChildren = (subData.subsidiariesWithValidChildren || []).map(s => s.name);
+                                
+                                console.log(`📊 Valid subsidiaries: ${validSubsidiaries.join(', ')}`);
+                                console.log(`📊 Subsidiaries with valid children: ${subsidiariesWithValidChildren.join(', ')}`);
+                                
+                                // Check exact match
+                                let isExactMatch = validSubsidiaries.includes(currentSubsidiary);
+                                console.log(`🔍 Exact match: ${isExactMatch}`);
+                                
+                                // Check base name (without "(Consolidated)") match
+                                const baseName = currentSubsidiary.replace(/\s*\(Consolidated\)\s*$/i, '').trim();
+                                const isBaseMatch = validSubsidiaries.includes(baseName);
+                                console.log(`🔍 Base name match (${baseName}): ${isBaseMatch}`);
+                                
+                                // Check if it's a consolidated subsidiary with valid children
+                                // For consolidated subsidiaries, check if the base name matches any subsidiary with valid children
+                                const isConsolidated = currentSubsidiary.toLowerCase().includes('consolidated');
+                                let isConsolidatedWithValidChildren = false;
+                                
+                                if (isConsolidated) {
+                                    // Check if base name matches any subsidiary that has valid children
+                                    isConsolidatedWithValidChildren = subsidiariesWithValidChildren.some(s => {
+                                        const sBase = s.replace(/\s*\(Consolidated\)\s*$/i, '').trim();
+                                        const match = sBase === baseName || s === baseName || s === currentSubsidiary;
+                                        if (match) {
+                                            console.log(`✅ Consolidated subsidiary "${currentSubsidiary}" (base: "${baseName}") matches "${s}" which has valid children`);
+                                        }
+                                        return match;
+                                    });
+                                    
+                                    // Also check if any valid subsidiary is a child of this consolidated subsidiary
+                                    // We need to check the hierarchy - but for now, if the base name matches a valid subsidiary,
+                                    // and it's consolidated, we assume it might have valid children
+                                    if (!isConsolidatedWithValidChildren && isBaseMatch) {
+                                        console.log(`⚠️ Consolidated subsidiary "${currentSubsidiary}" base name matches a valid subsidiary, but no explicit valid children found`);
+                                        // Don't assume valid - require explicit match
+                                    }
+                                }
+                                
+                                console.log(`🔍 Consolidated with valid children: ${isConsolidatedWithValidChildren}`);
+                                
+                                isValidCombination = isExactMatch || isBaseMatch || isConsolidatedWithValidChildren;
+                                
+                                console.log(`🔍 Final validation result: ${isValidCombination ? 'VALID' : 'INVALID'}`);
                                 
                                 if (!isValidCombination) {
                                     // Show persistent warning in task pane
@@ -18705,17 +18754,31 @@ export default {
                                     }
                                     
                                     console.warn(`⚠️ Invalid combination: Subsidiary "${currentSubsidiary}" is not valid for accounting book ${accountingBook}`);
+                                    console.warn(`   Valid subsidiaries: ${validSubsidiaries.join(', ')}`);
+                                    if (subsidiariesWithValidChildren.length > 0) {
+                                        console.warn(`   Subsidiaries with valid children: ${subsidiariesWithValidChildren.join(', ')}`);
+                                    }
                                 } else {
                                     // Valid combination - clear any previous warnings
                                     if (statusEl) {
                                         statusEl.innerHTML = '';
                                     }
+                                    if (isConsolidatedWithValidChildren) {
+                                        console.log(`✅ Consolidated subsidiary "${currentSubsidiary}" is valid because it has valid children in accounting book ${accountingBook}`);
+                                    } else if (isBaseMatch && isConsolidated) {
+                                        console.log(`✅ Consolidated subsidiary "${currentSubsidiary}" base name matches a valid subsidiary in accounting book ${accountingBook}`);
+                                    }
                                 }
                             }
+                        } else {
+                            console.warn(`⚠️ Failed to fetch valid subsidiaries for accounting book ${accountingBook}: ${subResponse.status}`);
                         }
                     } catch (e) {
-                        console.warn('Could not validate subsidiary/accounting book combination:', e.message);
+                        console.error('❌ Error validating subsidiary/accounting book combination:', e.message);
+                        console.error(e);
                     }
+                } else {
+                    console.log(`ℹ️ Skipping validation: accountingBook="${accountingBook}", currentSubsidiary="${currentSubsidiary}"`);
                 }
                 
                 // ============================================

@@ -240,10 +240,42 @@ public class LookupController : ControllerBase
                 })
                 .ToList();
             
+            // Also include child subsidiaries for each valid subsidiary
+            // This allows consolidated subsidiaries to be considered valid if any child is valid
+            var validSubsidiaryIdsWithChildren = new HashSet<string>(subsidiaryIds);
+            foreach (var validSubId in subsidiaryIds)
+            {
+                try
+                {
+                    var hierarchy = await _lookupService.GetSubsidiaryHierarchyAsync(validSubId);
+                    foreach (var childId in hierarchy)
+                    {
+                        validSubsidiaryIdsWithChildren.Add(childId);
+                    }
+                }
+                catch
+                {
+                    // If hierarchy lookup fails, continue without it
+                }
+            }
+            
+            // Now include subsidiaries that have a valid child (for consolidated validation)
+            var subsidiariesWithValidChildren = allSubsidiaries
+                .Where(s => !subsidiaryIds.Contains(s.Id) && validSubsidiaryIdsWithChildren.Contains(s.Id))
+                .Select(s => new
+                {
+                    id = s.Id,
+                    name = s.Name,
+                    fullName = s.FullName,
+                    hasValidChildren = true // Flag to indicate this is valid because it has valid children
+                })
+                .ToList();
+            
             return Ok(new 
             { 
                 allSubsidiaries = false,
-                subsidiaries = validSubsidiaries
+                subsidiaries = validSubsidiaries,
+                subsidiariesWithValidChildren = subsidiariesWithValidChildren
             });
         }
         catch (Exception ex)
