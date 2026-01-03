@@ -10895,7 +10895,8 @@ For licensing inquiries, contact: legal@celigo.com
                                     // Key format must match TYPEBALANCE function exactly:
                                     // typebalance:${type}:${from}:${to}:${sub}:${dept}:${loc}:${class}:${book}:${special}
                                     // Include accounting book in cache key to match formula parameters
-                                    const cacheKey = `typebalance:${accountType}:${period}:${period}:${(defaultSubsidiary || '').trim()}:::${(accountingBook || '1').trim()}:${specialFlag}`;
+                                    // CRITICAL: Use currentSubsidiary (from Q3) not defaultSubsidiary (cached)
+                                    const cacheKey = `typebalance:${accountType}:${period}:${period}:${(currentSubsidiary || '').trim()}:::${(accountingBook || '1').trim()}:${specialFlag}`;
                                     cacheEntries[cacheKey] = value;
                                 }
                             }
@@ -10903,7 +10904,7 @@ For licensing inquiries, contact: legal@celigo.com
                             const storageData = {
                                 balances: cacheEntries,
                                 year: currentYear,
-                                subsidiary: defaultSubsidiary,
+                                subsidiary: currentSubsidiary,  // Use current value from Q3
                                 timestamp: Date.now()
                             };
                             
@@ -10911,6 +10912,7 @@ For licensing inquiries, contact: legal@celigo.com
                             localStorage.setItem('netsuite_typebalance_cache_timestamp', Date.now().toString());
                             
                             console.log(`✅ CFO Flash: Saved ${Object.keys(cacheEntries).length} cache entries to localStorage`);
+                            console.log(`   Filters: sub="${currentSubsidiary}", book="${accountingBook}"`);
                             
                             // Log sample keys for debugging
                             const sampleKeys = Object.keys(cacheEntries).slice(0, 3);
@@ -10923,7 +10925,7 @@ For licensing inquiries, contact: legal@celigo.com
                         
                         // Also try to call setTypeBalanceCache if available (for in-memory cache)
                         if (typeof window.setTypeBalanceCache === 'function') {
-                            window.setTypeBalanceCache(balances, currentYear, defaultSubsidiary, '', '', '', accountingBook || '1', false);
+                            window.setTypeBalanceCache(balances, currentYear, currentSubsidiary, '', '', '', accountingBook || '1', false);
                         }
                         
                         // CRITICAL FIX: Signal preload complete IMMEDIATELY after saving cache
