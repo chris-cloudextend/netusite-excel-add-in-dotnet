@@ -198,20 +198,72 @@ public class LookupService : ILookupService
     {
         return await _netSuiteService.GetOrSetCacheAsync("lookups:accountingbooks", async () =>
         {
+            // Try direct AccountingBook table query first (without isinactive filter - field doesn't exist)
             var query = @"
                 SELECT id, name, isprimary
-                FROM accountingbook
-                WHERE isinactive = 'F'
+                FROM AccountingBook
                 ORDER BY isprimary DESC, name";
 
             var result = await _netSuiteService.QueryRawWithErrorAsync(query);
+            
+            // If direct query fails, fall back to getting distinct books from transactions
             if (!result.Success)
             {
-                _logger.LogError("Failed to query accounting books: {Error}", result.ErrorCode);
-                throw new Exception($"Accounting books query failed: {result.ErrorCode}");
+                _logger.LogWarning("Direct AccountingBook query failed: {Error}, trying fallback approach", result.ErrorCode);
+                
+                // Fallback: Get distinct accounting books from TransactionAccountingLine
+                var fallbackQuery = @"
+                    SELECT DISTINCT tal.accountingbook AS id
+                    FROM TransactionAccountingLine tal
+                    WHERE tal.accountingbook IS NOT NULL";
+                
+                var fallbackResult = await _netSuiteService.QueryRawWithErrorAsync(fallbackQuery);
+                if (!fallbackResult.Success)
+                {
+                    _logger.LogError("Fallback accounting books query also failed: {Error}", fallbackResult.ErrorCode);
+                    // Return at least Primary Book (ID 1) as default
+                    return new List<AccountingBookItem>
+                    {
+                        new AccountingBookItem { Id = "1", Name = "Primary Book (Primary)", IsPrimary = true }
+                    };
+                }
+                
+                // Build book list from transaction data
+                var books = new List<AccountingBookItem>();
+                foreach (var r in fallbackResult.Items ?? new List<JsonElement>())
+                {
+                    var bookId = r.TryGetProperty("id", out var idProp) ? idProp.ToString() : "";
+                    if (string.IsNullOrEmpty(bookId)) continue;
+                    
+                    // ID 1 is always Primary Book in NetSuite
+                    var isPrimary = bookId == "1";
+                    var bookName = isPrimary ? "Primary Book" : $"Book {bookId}";
+                    
+                    books.Add(new AccountingBookItem
+                    {
+                        Id = bookId,
+                        Name = isPrimary ? $"{bookName} (Primary)" : bookName,
+                        IsPrimary = isPrimary
+                    });
+                }
+                
+                // Ensure Primary Book is included
+                if (!books.Any(b => b.Id == "1"))
+                {
+                    books.Insert(0, new AccountingBookItem 
+                    { 
+                        Id = "1", 
+                        Name = "Primary Book (Primary)", 
+                        IsPrimary = true 
+                    });
+                }
+                
+                _logger.LogInformation("Retrieved {Count} accounting books from transactions (fallback)", books.Count);
+                return books;
             }
 
-            var books = new List<AccountingBookItem>();
+            // Direct query succeeded - parse results
+            var directBooks = new List<AccountingBookItem>();
             foreach (var r in result.Items ?? new List<JsonElement>())
             {
                 var id = r.TryGetProperty("id", out var idProp) ? idProp.ToString() : "";
@@ -238,7 +290,7 @@ public class LookupService : ILookupService
                     displayName = $"{name} (Primary)";
                 }
 
-                books.Add(new AccountingBookItem
+                directBooks.Add(new AccountingBookItem
                 {
                     Id = id,
                     Name = displayName,
@@ -246,8 +298,8 @@ public class LookupService : ILookupService
                 });
             }
 
-            _logger.LogInformation("Retrieved {Count} accounting books", books.Count);
-            return books;
+            _logger.LogInformation("Retrieved {Count} accounting books", directBooks.Count);
+            return directBooks;
         }) ?? new List<AccountingBookItem>();
     }
 
