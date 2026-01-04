@@ -5926,7 +5926,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.68"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.69"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -20054,15 +20054,29 @@ export default {
                                 const columnCount = usedRange.columnCount;
                                 let typebalanceCount = 0;
                                 
+                                // CRITICAL FIX Issue 3: Force recalculation by clearing and re-setting formulas
+                                // This ensures Excel reads from the fresh localStorage cache
+                                // Store formulas first, then clear, then re-set to force recalculation
+                                const typebalanceCells = [];
                                 for (let row = 0; row < rowCount; row++) {
                                     for (let col = 0; col < columnCount; col++) {
                                         const formula = formulas[row][col];
                                         if (typeof formula === 'string' && formula.toUpperCase().includes('XAVI.TYPEBALANCE')) {
-                                            const cell = usedRange.getCell(row, col);
-                                            cell.calculate();
+                                            typebalanceCells.push({ row, col, formula, cell: usedRange.getCell(row, col) });
                                             typebalanceCount++;
                                         }
                                     }
+                                }
+                                
+                                // Clear all TYPEBALANCE formulas first
+                                for (const { cell } of typebalanceCells) {
+                                    cell.clear();
+                                }
+                                await context.sync();
+                                
+                                // Now re-set all formulas to trigger recalculation (Excel will read from cache)
+                                for (const { cell, formula } of typebalanceCells) {
+                                    cell.formulas = [[formula]];
                                 }
                                 await context.sync();
                                 const recalculationEndTime = Date.now();
@@ -20128,12 +20142,20 @@ export default {
                     console.warn('Currency format failed:', e.message);
                 }
                 
-                // Remove overlay
+                // Remove ALL overlays (both structureSyncOverlay and bookChangeOverlay)
                 const syncOverlayEl = document.getElementById('structureSyncOverlay');
                 if (syncOverlayEl) {
                     syncOverlayEl.style.opacity = '0';
                     syncOverlayEl.style.transition = 'opacity 0.3s ease';
                     setTimeout(() => syncOverlayEl.remove(), 300);
+                }
+                // CRITICAL FIX Issue 1: Also remove bookChangeOverlay if it exists
+                const bookChangeOverlayEl = document.getElementById('bookChangeOverlay');
+                if (bookChangeOverlayEl) {
+                    bookChangeOverlayEl.style.opacity = '0';
+                    bookChangeOverlayEl.style.transition = 'opacity 0.3s ease';
+                    setTimeout(() => bookChangeOverlayEl.remove(), 300);
+                    console.log('✅ Removed bookChangeOverlay after CFO Sync complete');
                 }
                 const syncStyle = document.getElementById('syncPulseStyle');
                 if (syncStyle) syncStyle.remove();
@@ -20142,8 +20164,10 @@ export default {
                 localStorage.removeItem('netsuite_status');
                 hideStatus();
                 
-                // Calculate elapsed time
-                const elapsedSeconds = ((Date.now() - syncStartTime) / 1000).toFixed(1);
+                // CRITICAL FIX Issue 2: Calculate elapsed time from actual sync start (syncStartTimestamp)
+                // syncStartTimestamp is set at the very beginning of performCFOSync
+                // syncStartTime might be set later, causing incorrect timing
+                const elapsedSeconds = ((Date.now() - syncStartTimestamp) / 1000).toFixed(1);
                 
                 // Show success overlay
                 showReportSuccessOverlay('CFO Flash Sync', {
