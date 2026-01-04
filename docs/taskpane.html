@@ -5926,7 +5926,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.70"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.71"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -11372,9 +11372,26 @@ For licensing inquiries, contact: legal@celigo.com
                     
                     // Release the sync lock after currency formatting is done
                     // Reduced delay (was 1000ms) - user can change subsidiary sooner
-                    setTimeout(() => {
+                    setTimeout(async () => {
                         isSyncInProgress = false;
                         console.log('🔓 CFO Flash: Filter change handlers unblocked - report generation complete');
+                        
+                        // CRITICAL FIX: Initialize lastU3Value after CFO Flash Report completes
+                        // This prevents false "U3 changed" detection when Excel fires change events
+                        // even though the value hasn't actually changed
+                        try {
+                            await Excel.run(async (context) => {
+                                const sheet = context.workbook.worksheets.getActiveWorksheet();
+                                const bookCell = sheet.getRange("U3");
+                                bookCell.load("values");
+                                await context.sync();
+                                const u3Value = String(bookCell.values[0][0] || '').trim();
+                                lastU3Value = u3Value;
+                                console.log(`✅ [OVERLAY DEBUG] Initialized lastU3Value after CFO Flash complete: "${u3Value}"`);
+                            });
+                        } catch (e) {
+                            console.warn('⚠️ Could not initialize lastU3Value after CFO Flash:', e.message);
+                        }
                     }, 500);
                 }, 500); // Reduced from 2000ms - formulas start immediately
                 
@@ -17853,10 +17870,22 @@ export default {
                         console.warn('⚠️ Could not read U3 value:', e.message);
                     }
                     
-                    // Only proceed if value actually changed (not initial load)
-                    // CRITICAL: lastU3Value starts as null, so first change should always proceed
-                    if (lastU3Value !== null && currentU3Value === lastU3Value) {
-                        console.log(`📚 U3 value unchanged (${currentU3Value}) - skipping overlay (likely initial load)`);
+                    // CRITICAL FIX: Check if U3 actually changed
+                    // If lastU3Value is null, this might be the first read after CFO Flash completes
+                    // In that case, initialize it without showing overlay
+                    if (lastU3Value === null) {
+                        console.log(`📚 [OVERLAY DEBUG] lastU3Value is null - initializing to "${currentU3Value}" without showing overlay`);
+                        lastU3Value = currentU3Value;
+                        // Still filter dropdown but don't show overlay
+                        if (window.filterSubsidiaryDropdownByAccountingBook) {
+                            await window.filterSubsidiaryDropdownByAccountingBook(currentU3Value);
+                        }
+                        return; // Exit early - this is initialization, not a change
+                    }
+                    
+                    // Only proceed if value actually changed
+                    if (currentU3Value === lastU3Value) {
+                        console.log(`📚 [OVERLAY DEBUG] U3 value unchanged (${currentU3Value}) - skipping overlay`);
                         // Still filter dropdown but don't show overlay
                         if (window.filterSubsidiaryDropdownByAccountingBook) {
                             await window.filterSubsidiaryDropdownByAccountingBook(currentU3Value);
