@@ -156,3 +156,35 @@ public class AccountingPeriod
     public bool IsYear { get; set; }
 }
 
+/// <summary>Subsidiary display item with consolidation eligibility</summary>
+public class SubsidiaryDisplayItem
+{
+    [JsonPropertyName("id")]
+    public string Id { get; set; } = string.Empty;
+    
+    [JsonPropertyName("name")]
+    public string Name { get; set; } = string.Empty;
+    
+    [JsonPropertyName("fullName")]
+    public string? FullName { get; set; }
+    
+    [JsonPropertyName("canConsolidate")]
+    public bool CanConsolidate { get; set; }
+    
+    [JsonPropertyName("isLeaf")]
+    public bool IsLeaf { get; set; }
+}
+
+/// <summary>Response for book-scoped subsidiaries following NetSuite rules</summary>
+public class BookScopedSubsidiariesResponse
+{
+    [JsonPropertyName("allSubsidiaries")]
+    public bool AllSubsidiaries { get; set; }
+    
+    [JsonPropertyName("subsidiaries")]
+    public List<SubsidiaryDisplayItem> Subsidiaries { get; set; } = new();
+    
+    [JsonPropertyName("isSingleSubsidiaryBook")]
+    public bool IsSingleSubsidiaryBook { get; set; }
+}
+

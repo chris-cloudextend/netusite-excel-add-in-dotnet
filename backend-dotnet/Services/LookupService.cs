@@ -294,6 +294,140 @@ public class LookupService : ILookupService
     }
 
     /// <summary>
+    /// Get book-scoped subsidiaries following NetSuite's deterministic rules.
+    /// Only subsidiaries explicitly enabled for the book are returned.
+    /// Hierarchy is recomputed using only enabled subsidiaries.
+    /// Consolidation eligibility is determined based on whether parent and children are both enabled.
+    /// </summary>
+    public async Task<BookScopedSubsidiariesResponse> GetBookScopedSubsidiariesAsync(string accountingBookId)
+    {
+        if (string.IsNullOrEmpty(accountingBookId) || accountingBookId == "1")
+        {
+            // Primary Book - all subsidiaries are valid
+            return new BookScopedSubsidiariesResponse
+            {
+                AllSubsidiaries = true,
+                Subsidiaries = new List<SubsidiaryDisplayItem>(),
+                IsSingleSubsidiaryBook = false
+            };
+        }
+
+        var cacheKey = $"lookups:accountingbook:{accountingBookId}:bookscoped";
+        return await _netSuiteService.GetOrSetCacheAsync(cacheKey, async () =>
+        {
+            // Step 1: Get enabled subsidiaries for this book
+            var enabledSubsidiaryIds = await GetSubsidiariesForAccountingBookAsync(accountingBookId);
+            
+            if (enabledSubsidiaryIds == null || enabledSubsidiaryIds.Count == 0)
+            {
+                // No subsidiaries enabled - return empty response
+                _logger.LogWarning("No subsidiaries enabled for accounting book {BookId}", accountingBookId);
+                return new BookScopedSubsidiariesResponse
+                {
+                    AllSubsidiaries = false,
+                    Subsidiaries = new List<SubsidiaryDisplayItem>(),
+                    IsSingleSubsidiaryBook = false
+                };
+            }
+            
+            // Step 2: Get all subsidiaries (for hierarchy lookup)
+            var allSubsidiaries = await GetSubsidiariesAsync();
+            
+            // Step 3: Filter to ONLY enabled subsidiaries
+            var enabledSubsidiaries = allSubsidiaries
+                .Where(s => enabledSubsidiaryIds.Contains(s.Id))
+                .ToList();
+            
+            if (enabledSubsidiaries.Count == 0)
+            {
+                _logger.LogWarning("No matching subsidiaries found for enabled IDs");
+                return new BookScopedSubsidiariesResponse
+                {
+                    AllSubsidiaries = false,
+                    Subsidiaries = new List<SubsidiaryDisplayItem>(),
+                    IsSingleSubsidiaryBook = false
+                };
+            }
+            
+            // Step 4: Recompute hierarchy using ONLY enabled subsidiaries
+            // Build parent-child relationships within the enabled set
+            var enabledSubsidiarySet = new HashSet<string>(enabledSubsidiaryIds);
+            var childrenMap = new Dictionary<string, List<SubsidiaryItem>>();
+            
+            foreach (var sub in enabledSubsidiaries)
+            {
+                // Find parent, but only if parent is also enabled
+                if (!string.IsNullOrEmpty(sub.Parent) && enabledSubsidiarySet.Contains(sub.Parent))
+                {
+                    if (!childrenMap.ContainsKey(sub.Parent))
+                    {
+                        childrenMap[sub.Parent] = new List<SubsidiaryItem>();
+                    }
+                    childrenMap[sub.Parent].Add(sub);
+                }
+            }
+            
+            // Step 5: Determine consolidation eligibility
+            // A subsidiary can be consolidated if:
+            // - It is enabled (already filtered)
+            // - It has at least one child in the enabled set
+            var consolidationEligible = new HashSet<string>();
+            foreach (var sub in enabledSubsidiaries)
+            {
+                if (childrenMap.ContainsKey(sub.Id) && childrenMap[sub.Id].Count > 0)
+                {
+                    consolidationEligible.Add(sub.Id);
+                }
+            }
+            
+            // Step 6: Handle single-subsidiary books (Rule 5)
+            if (enabledSubsidiaryIds.Count == 1)
+            {
+                var singleSub = enabledSubsidiaries.First();
+                var hasChildren = childrenMap.ContainsKey(singleSub.Id) && childrenMap[singleSub.Id].Count > 0;
+                
+                if (!hasChildren)
+                {
+                    // Leaf node - return only this subsidiary, no consolidation
+                    return new BookScopedSubsidiariesResponse
+                    {
+                        AllSubsidiaries = false,
+                        Subsidiaries = new List<SubsidiaryDisplayItem>
+                        {
+                            new SubsidiaryDisplayItem
+                            {
+                                Id = singleSub.Id,
+                                Name = singleSub.Name,
+                                FullName = singleSub.FullName,
+                                CanConsolidate = false,
+                                IsLeaf = true
+                            }
+                        },
+                        IsSingleSubsidiaryBook = true
+                    };
+                }
+            }
+            
+            // Step 7: Build response with consolidation flags
+            var displayItems = enabledSubsidiaries.Select(s => new SubsidiaryDisplayItem
+            {
+                Id = s.Id,
+                Name = s.Name,
+                FullName = s.FullName,
+                CanConsolidate = consolidationEligible.Contains(s.Id),
+                IsLeaf = !childrenMap.ContainsKey(s.Id) || childrenMap[s.Id].Count == 0
+            }).OrderBy(s => s.Name).ToList();
+            
+            return new BookScopedSubsidiariesResponse
+            {
+                AllSubsidiaries = false,
+                Subsidiaries = displayItems,
+                IsSingleSubsidiaryBook = enabledSubsidiaryIds.Count == 1 && !consolidationEligible.Any()
+            };
+        }, TimeSpan.FromHours(24)); // Cache for 24 hours
+    }
+
+    /// <summary>
     /// Get all accounting books.
     /// </summary>
     public async Task<List<AccountingBookItem>> GetAccountingBooksAsync()
@@ -996,5 +1130,6 @@ public interface ILookupService
     Task<List<string>> GetSubsidiaryHierarchyAsync(string subsidiaryId);
     Task<string?> ResolveDimensionIdAsync(string dimensionType, string? nameOrId);
     Task<List<string>?> GetSubsidiariesForAccountingBookAsync(string accountingBookId);
+    Task<BookScopedSubsidiariesResponse> GetBookScopedSubsidiariesAsync(string accountingBookId);
 }
 
