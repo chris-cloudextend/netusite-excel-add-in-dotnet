@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.44';  // Fix: Added accountingBook to cache keys for Multi-Book Accounting support
+const FUNCTIONS_VERSION = '4.0.6.53';  // Fix: Added immediate validation for accounting book changes and validation in all formula functions
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -112,6 +112,71 @@ class LRUCache {
         const newValue = valueFactory();
         this.set(key, newValue);
         return { exists: false, value: newValue };
+    }
+}
+
+// ============================================================================
+// VALIDATION: Check if subsidiary/accounting book combination is valid
+// Returns null if valid, error string if invalid
+// ============================================================================
+async function validateSubsidiaryAccountingBook(subsidiary, accountingBook) {
+    // Primary book or no subsidiary - always valid
+    if (!accountingBook || accountingBook === '1' || accountingBook === '' || !subsidiary || subsidiary === '') {
+        return null; // Valid
+    }
+    
+    try {
+        const response = await fetch(`${SERVER_URL}/lookups/accountingbook/${accountingBook}/subsidiaries`);
+        if (!response.ok) {
+            // On API error, allow the request to proceed (backend will validate)
+            return null;
+        }
+        
+        const data = await response.json();
+        
+        if (data.allSubsidiaries) {
+            return null; // Primary book - always valid
+        }
+        
+        const enabledSubs = data.subsidiaries || [];
+        if (enabledSubs.length === 0) {
+            return 'INVALID_BOOK'; // No subsidiaries enabled for this book
+        }
+        
+        // Check if subsidiary is valid (base name or consolidated)
+        const baseName = String(subsidiary).replace(/\s*\(Consolidated\)\s*$/i, '').trim();
+        const isConsolidated = String(subsidiary).toLowerCase().includes('consolidated');
+        
+        const isValid = enabledSubs.some(s => {
+            // Exact match (including consolidated)
+            if (s.name === subsidiary) {
+                return true;
+            }
+            // Base name match
+            if (s.name === baseName) {
+                // If looking for consolidated version, check canConsolidate flag
+                if (isConsolidated) {
+                    return s.canConsolidate === true;
+                }
+                // Base subsidiary is always valid if in list
+                return true;
+            }
+            // Check consolidated version name
+            if (`${s.name} (Consolidated)` === subsidiary && s.canConsolidate) {
+                return true;
+            }
+            return false;
+        });
+        
+        if (!isValid) {
+            return 'INVALID_COMBINATION'; // Subsidiary not enabled for this book
+        }
+        
+        return null; // Valid
+    } catch (e) {
+        // On error, allow request to proceed (backend will validate)
+        console.warn('⚠️ Validation error (allowing request):', e.message);
+        return null;
     }
 }
 
@@ -6129,6 +6194,16 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
             console.log(`🔍 BALANCE DEBUG: account=${account}, subsidiary="${subsidiary}", hasConsolidated=${subsidiary.includes('(Consolidated)')}`);
         }
         
+        // VALIDATION: Check subsidiary/accounting book combination
+        const validationError = await validateSubsidiaryAccountingBook(subsidiary, accountingBook);
+        if (validationError === 'INVALID_COMBINATION') {
+            console.error(`❌ BALANCE: Invalid combination - subsidiary "${subsidiary}" not enabled for accounting book ${accountingBook}`);
+            throw new Error('INVALID_COMBINATION');
+        } else if (validationError === 'INVALID_BOOK') {
+            console.error(`❌ BALANCE: Accounting book ${accountingBook} has no enabled subsidiaries`);
+            throw new Error('INVALID_BOOK');
+        }
+        
         const params = { account, fromPeriod, toPeriod, subsidiary, department, location, classId, accountingBook };
         const cacheKey = getCacheKey('balance', params);
         
@@ -7554,6 +7629,16 @@ async function BUDGET(account, fromPeriod, toPeriod, subsidiary, department, loc
         classId = String(classId || '').trim();
         accountingBook = String(accountingBook || '').trim();
         budgetCategory = String(budgetCategory || '').trim();
+        
+        // VALIDATION: Check subsidiary/accounting book combination
+        const validationError = await validateSubsidiaryAccountingBook(subsidiary, accountingBook);
+        if (validationError === 'INVALID_COMBINATION') {
+            console.error(`❌ BUDGET: Invalid combination - subsidiary "${subsidiary}" not enabled for accounting book ${accountingBook}`);
+            throw new Error('INVALID_COMBINATION');
+        } else if (validationError === 'INVALID_BOOK') {
+            console.error(`❌ BUDGET: Accounting book ${accountingBook} has no enabled subsidiaries`);
+            throw new Error('INVALID_BOOK');
+        }
         
         // CRITICAL: Convert "All Categories" to empty string (backend expects empty string for all categories)
         if (budgetCategory.toLowerCase() === 'all categories') {
@@ -9661,6 +9746,16 @@ async function RETAINEDEARNINGS(period, subsidiary, accountingBook, classId, dep
         department = String(department || '').trim();
         location = String(location || '').trim();
         
+        // VALIDATION: Check subsidiary/accounting book combination
+        const validationError = await validateSubsidiaryAccountingBook(subsidiary, accountingBook);
+        if (validationError === 'INVALID_COMBINATION') {
+            console.error(`❌ RETAINEDEARNINGS: Invalid combination - subsidiary "${subsidiary}" not enabled for accounting book ${accountingBook}`);
+            throw new Error('INVALID_COMBINATION');
+        } else if (validationError === 'INVALID_BOOK') {
+            console.error(`❌ RETAINEDEARNINGS: Accounting book ${accountingBook} has no enabled subsidiaries`);
+            throw new Error('INVALID_BOOK');
+        }
+        
         // Build cache key
         const cacheKey = `retainedearnings:${period}:${subsidiary}:${accountingBook}:${classId}:${department}:${location}`;
         
@@ -9916,6 +10011,16 @@ async function NETINCOME(fromPeriod, toPeriod, subsidiary, accountingBook, class
         const classIdStr = String(classId || '').trim();
         const departmentStr = String(department || '').trim();
         const locationStr = String(location || '').trim();
+        
+        // VALIDATION: Check subsidiary/accounting book combination
+        const validationError = await validateSubsidiaryAccountingBook(subsidiaryStr, accountingBookStr);
+        if (validationError === 'INVALID_COMBINATION') {
+            console.error(`❌ NETINCOME: Invalid combination - subsidiary "${subsidiaryStr}" not enabled for accounting book ${accountingBookStr}`);
+            throw new Error('INVALID_COMBINATION');
+        } else if (validationError === 'INVALID_BOOK') {
+            console.error(`❌ NETINCOME: Accounting book ${accountingBookStr} has no enabled subsidiaries`);
+            throw new Error('INVALID_BOOK');
+        }
         
         console.log(`📊 NETINCOME: ${rawFromPeriod} → ${rawToPeriod}`);
         console.log(`   Range: ${convertedFromPeriod} through ${convertedToPeriod}`);
@@ -10213,6 +10318,16 @@ async function TYPEBALANCE(accountType, fromPeriod, toPeriod, subsidiary, depart
         const locationStr = String(location || '').trim();
         const classStr = String(classId || '').trim();
         const bookStr = String(accountingBook || '').trim();
+        
+        // VALIDATION: Check subsidiary/accounting book combination
+        const validationError = await validateSubsidiaryAccountingBook(subsidiaryStr, bookStr);
+        if (validationError === 'INVALID_COMBINATION') {
+            console.error(`❌ TYPEBALANCE: Invalid combination - subsidiary "${subsidiaryStr}" not enabled for accounting book ${bookStr}`);
+            throw new Error('INVALID_COMBINATION');
+        } else if (validationError === 'INVALID_BOOK') {
+            console.error(`❌ TYPEBALANCE: Accounting book ${bookStr} has no enabled subsidiaries`);
+            throw new Error('INVALID_BOOK');
+        }
         const specialFlag = useSpecial ? '1' : '0';
         const cacheKey = `typebalance:${normalizedType}:${convertedFromPeriod}:${convertedToPeriod}:${subsidiaryStr}:${departmentStr}:${locationStr}:${classStr}:${bookStr}:${specialFlag}`;
         

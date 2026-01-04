@@ -16991,8 +16991,23 @@ export default {
                                 return true; // All subsidiaries valid
                             }
                             
-                            const validSubNames = (data.subsidiaries || []).map(s => s.name);
-                            const isValid = validSubNames.includes(subsidiaryName);
+                            // Check if subsidiary is valid (base name or consolidated)
+                            const baseName = subsidiaryName.replace(/\s*\(Consolidated\)\s*$/i, '').trim();
+                            const isConsolidated = subsidiaryName.toLowerCase().includes('consolidated');
+                            
+                            const isValid = (data.subsidiaries || []).some(s => {
+                                if (s.name === subsidiaryName) {
+                                    return true; // Exact match
+                                }
+                                if (s.name === baseName) {
+                                    // Base name matches - check if consolidated version is allowed
+                                    if (isConsolidated) {
+                                        return s.canConsolidate === true;
+                                    }
+                                    return true; // Base subsidiary is always valid if in list
+                                }
+                                return false;
+                            });
                             
                             if (!isValid) {
                                 showToast({
@@ -17701,40 +17716,88 @@ export default {
                 localStorage.removeItem('netsuite_status');
                 hideStatus();
                 
-                if (window.filterChangeTimer) {
-                    console.log('🔧 Clearing previous filter timer');
-                    clearTimeout(window.filterChangeTimer);
-                }
-                console.log('🔧 Setting 500ms debounce timer for handleFilterChange()...');
-                window.filterChangeTimer = setTimeout(async () => {
-                    console.log('🔧 Filter debounce complete - calling handleFilterChange() NOW');
-                    
-                    suppressStatusBar = true;
-                    localStorage.removeItem('netsuite_status');
-                    hideStatus();
-                    
-                    // If accounting book changed, handle it specially
-                    if (isAccountingBookChange) {
-                        try {
-                            await handleAccountingBookChange();
-                        } catch (e) {
-                            console.error('❌ handleAccountingBookChange() threw error:', e.message);
-                            // Fall back to regular filter change handler
-                            try {
-                                await handleFilterChange();
-                            } catch (e2) {
-                                console.error('❌ handleFilterChange() also threw error:', e2.message);
+                // CRITICAL: For U3 changes, validate and update Q3 IMMEDIATELY (no debounce)
+                // This prevents Excel formulas from firing with invalid combinations
+                if (isAccountingBookChange) {
+                    console.log('📚 U3 (Accounting Book) changed - validating and updating Q3 IMMEDIATELY...');
+                    try {
+                        // Read U3 and Q3 immediately
+                        let accountingBook = '';
+                        let currentSubsidiary = '';
+                        await Excel.run(async (context) => {
+                            const sheet = context.workbook.worksheets.getActiveWorksheet();
+                            const bookCell = sheet.getRange("U3");
+                            const subCell = sheet.getRange("Q3");
+                            bookCell.load("values");
+                            subCell.load("values");
+                            await context.sync();
+                            accountingBook = String(bookCell.values[0][0] || '').trim();
+                            currentSubsidiary = String(subCell.values[0][0] || '').trim();
+                        });
+                        
+                        // If not primary book, validate and update immediately
+                        if (accountingBook && accountingBook !== '1') {
+                            console.log(`📚 Validating "${currentSubsidiary}" for accounting book ${accountingBook}...`);
+                            const validatedSub = await validateAndUpdateSubsidiary(accountingBook, currentSubsidiary);
+                            if (validatedSub && validatedSub !== currentSubsidiary) {
+                                console.log(`✅ Q3 updated from "${currentSubsidiary}" to "${validatedSub}"`);
+                                // Filter dropdown immediately
+                                await filterSubsidiaryDropdownByAccountingBook(accountingBook);
+                            } else if (validatedSub) {
+                                // Valid, just filter dropdown
+                                await filterSubsidiaryDropdownByAccountingBook(accountingBook);
                             }
+                        } else {
+                            // Primary book - just filter dropdown
+                            await filterSubsidiaryDropdownByAccountingBook('1');
                         }
-                    } else {
-                        // Regular filter change (department, location, class)
+                        
+                        // Then call full handler (with debounce for sync)
+                        if (window.filterChangeTimer) {
+                            clearTimeout(window.filterChangeTimer);
+                        }
+                        window.filterChangeTimer = setTimeout(async () => {
+                            try {
+                                await handleAccountingBookChange();
+                            } catch (e) {
+                                console.error('❌ handleAccountingBookChange() threw error:', e.message);
+                            }
+                        }, 500);
+                    } catch (e) {
+                        console.error('❌ Immediate U3 validation error:', e.message);
+                        // Fall through to debounced handler
+                        if (window.filterChangeTimer) {
+                            clearTimeout(window.filterChangeTimer);
+                        }
+                        window.filterChangeTimer = setTimeout(async () => {
+                            try {
+                                await handleAccountingBookChange();
+                            } catch (e2) {
+                                console.error('❌ handleAccountingBookChange() threw error:', e2.message);
+                            }
+                        }, 500);
+                    }
+                } else {
+                    // Regular filter change (department, location, class) - use debounce
+                    if (window.filterChangeTimer) {
+                        console.log('🔧 Clearing previous filter timer');
+                        clearTimeout(window.filterChangeTimer);
+                    }
+                    console.log('🔧 Setting 500ms debounce timer for handleFilterChange()...');
+                    window.filterChangeTimer = setTimeout(async () => {
+                        console.log('🔧 Filter debounce complete - calling handleFilterChange() NOW');
+                        
+                        suppressStatusBar = true;
+                        localStorage.removeItem('netsuite_status');
+                        hideStatus();
+                        
                         try {
                             await handleFilterChange();
                         } catch (e) {
                             console.error('❌ handleFilterChange() threw error:', e.message);
                         }
-                    }
-                }, 500);
+                    }, 500);
+                }
             }
             
             // ============================================
