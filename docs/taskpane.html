@@ -5926,7 +5926,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.44"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.57"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -10896,7 +10896,8 @@ For licensing inquiries, contact: legal@celigo.com
                                     // typebalance:${type}:${from}:${to}:${sub}:${dept}:${loc}:${class}:${book}:${special}
                                     // Include accounting book in cache key to match formula parameters
                                     // CRITICAL: Use currentSubsidiary (from Q3) not defaultSubsidiary (cached)
-                                    const cacheKey = `typebalance:${accountType}:${period}:${period}:${(currentSubsidiary || '').trim()}:::${(accountingBook || '1').trim()}:${specialFlag}`;
+                                    // Convert accountingBook to string first (it might be a number)
+                                    const cacheKey = `typebalance:${accountType}:${period}:${period}:${(currentSubsidiary || '').trim()}:::${String(accountingBook || '1').trim()}:${specialFlag}`;
                                     cacheEntries[cacheKey] = value;
                                 }
                             }
@@ -16908,7 +16909,8 @@ export default {
                 }
                 
                 // Filter subsidiary dropdown based on selected accounting book
-                async function filterSubsidiaryDropdownByAccountingBook(accountingBookId) {
+                // Make it globally accessible for use in immediate U3 validation
+                window.filterSubsidiaryDropdownByAccountingBook = async function(accountingBookId) {
                     if (!accountingBookId || accountingBookId === '1') {
                         // Primary Book (ID 1) - show all subsidiaries
                         if (window.allSubsidiaries) {
@@ -17039,7 +17041,11 @@ export default {
                             return isValid;
                         }
                     } catch (e) {
-                        console.warn('Could not validate subsidiary/accounting book combination:', e.message);
+                        if (e.message && (e.message.includes('500') || e.message.includes('Internal Server Error'))) {
+                            console.warn('⚠️ Server error validating subsidiary/accounting book (cache may not be initialized yet):', e.message);
+                        } else {
+                            console.warn('⚠️ Could not validate subsidiary/accounting book combination:', e.message);
+                        }
                         return true; // On error, assume valid
                     }
                     
@@ -17094,7 +17100,9 @@ export default {
                         
                         if (accountingBookId) {
                             console.log(`📚 Filtering subsidiary dropdown for accounting book ${accountingBookId} (on focus)`);
-                            await filterSubsidiaryDropdownByAccountingBook(accountingBookId);
+                            if (window.filterSubsidiaryDropdownByAccountingBook) {
+                                await window.filterSubsidiaryDropdownByAccountingBook(accountingBookId);
+                            }
                         } else {
                             // No accounting book selected - show all subsidiaries
                             console.log('📚 No accounting book selected - showing all subsidiaries');
@@ -17135,7 +17143,9 @@ export default {
                         
                         if (accountingBookId) {
                             console.log(`📚 Filtering subsidiary dropdown for accounting book ${accountingBookId} (on click)`);
-                            await filterSubsidiaryDropdownByAccountingBook(accountingBookId);
+                            if (window.filterSubsidiaryDropdownByAccountingBook) {
+                                await window.filterSubsidiaryDropdownByAccountingBook(accountingBookId);
+                            }
                         } else {
                             // No accounting book selected - show all subsidiaries
                             if (window.allSubsidiaries) {
@@ -17203,11 +17213,15 @@ export default {
                 
                 // Add onchange handler to filter subsidiary dropdown when accounting book changes
                 bookSelect.onchange = async function() {
-                    await filterSubsidiaryDropdownByAccountingBook(bookSelect.value);
+                    if (window.filterSubsidiaryDropdownByAccountingBook) {
+                        await window.filterSubsidiaryDropdownByAccountingBook(bookSelect.value);
+                    }
                 };
                 
                 // Initial filter based on default accounting book
-                await filterSubsidiaryDropdownByAccountingBook(bookSelect.value);
+                if (window.filterSubsidiaryDropdownByAccountingBook) {
+                    await window.filterSubsidiaryDropdownByAccountingBook(bookSelect.value);
+                }
                 
                 // Populate budget category dropdown - Show NAMES (backend accepts name or ID)
                 // Used with XAVI.BUDGET formula to filter by budget version
@@ -17821,18 +17835,30 @@ export default {
                         // If not primary book, validate and update immediately
                         if (accountingBook && accountingBook !== '1') {
                             console.log(`📚 Validating "${currentSubsidiary}" for accounting book ${accountingBook}...`);
-                            const validatedSub = await validateAndUpdateSubsidiary(accountingBook, currentSubsidiary);
+                            let validatedSub;
+                            try {
+                                validatedSub = await validateAndUpdateSubsidiary(accountingBook, currentSubsidiary);
+                            } catch (e) {
+                                console.warn('⚠️ Error validating subsidiary (may retry):', e.message);
+                                validatedSub = currentSubsidiary; // Keep current on error
+                            }
                             if (validatedSub && validatedSub !== currentSubsidiary) {
                                 console.log(`✅ Q3 updated from "${currentSubsidiary}" to "${validatedSub}"`);
                                 // Filter dropdown immediately
-                                await filterSubsidiaryDropdownByAccountingBook(accountingBook);
+                                if (window.filterSubsidiaryDropdownByAccountingBook) {
+                                    await window.filterSubsidiaryDropdownByAccountingBook(accountingBook);
+                                }
                             } else if (validatedSub) {
                                 // Valid, just filter dropdown
-                                await filterSubsidiaryDropdownByAccountingBook(accountingBook);
+                                if (window.filterSubsidiaryDropdownByAccountingBook) {
+                                    await window.filterSubsidiaryDropdownByAccountingBook(accountingBook);
+                                }
                             }
                         } else {
                             // Primary book - just filter dropdown
-                            await filterSubsidiaryDropdownByAccountingBook('1');
+                            if (window.filterSubsidiaryDropdownByAccountingBook) {
+                                await window.filterSubsidiaryDropdownByAccountingBook('1');
+                            }
                         }
                         
                         // Then call full handler (with debounce for sync)
@@ -18346,7 +18372,8 @@ export default {
                                     // Format: typebalance:${type}:${from}:${to}:${sub}:${dept}:${loc}:${class}:${book}:${special}
                                     // NOTE: We include all filter values to match what the formulas will generate
                                     // IMPORTANT: Must trim all values - TYPEBALANCE function uses .trim() on all parameters
-                                    const key = `typebalance:${accountType}:${period}:${period}:${(subsidiary || '').trim()}:${(department || '').trim()}:${(location || '').trim()}:${(classId || '').trim()}:${(accountingBook || '').trim()}:0`;
+                                    // Convert accountingBook to string first (it might be a number)
+                                    const key = `typebalance:${accountType}:${period}:${period}:${(subsidiary || '').trim()}:${(department || '').trim()}:${(location || '').trim()}:${(classId || '').trim()}:${String(accountingBook || '').trim()}:0`;
                                     cacheEntries[key] = monthData[period];
                                 }
                             }
@@ -18486,7 +18513,7 @@ export default {
                     department = deptCell.values[0][0] || '';
                     location = locCell.values[0][0] || '';
                     classId = classCell.values[0][0] || '';
-                    accountingBook = bookCell.values[0][0] || '';
+                    accountingBook = String(bookCell.values[0][0] || '').trim();
                     
                     // Check for CFO Flash Report marker
                     if (marker.includes('cfo sync') || marker.includes('cfo')) {
@@ -18591,7 +18618,7 @@ export default {
                     department = deptCell.values[0][0] || '';
                     location = locCell.values[0][0] || '';
                     classId = classCell.values[0][0] || '';
-                    accountingBook = bookCell.values[0][0] || '';
+                    accountingBook = String(bookCell.values[0][0] || '').trim();
                     
                     // Check for CFO Flash Report marker
                     if (marker.includes('cfo sync') || marker.includes('cfo')) {
@@ -18809,7 +18836,7 @@ export default {
                     department = deptCell.values[0][0] || '';
                     location = locCell.values[0][0] || '';
                     classId = classCell.values[0][0] || '';
-                    accountingBook = bookCell.values[0][0] || '';
+                    accountingBook = String(bookCell.values[0][0] || '').trim();
                     
                     console.log(`🔧 Filter values: year=${year}, sub="${subsidiary}", dept="${department}", loc="${location}", class="${classId}", book="${accountingBook}"`);
                     
@@ -18869,7 +18896,57 @@ export default {
         // Find best replacement subsidiary when current one is invalid for the accounting book
         async function findBestReplacementSubsidiary(accountingBookId, currentSubsidiary) {
             try {
-                // Get book-scoped subsidiaries
+                // Use the default-subsidiary endpoint which implements NetSuite-compatible rules
+                // The endpoint accepts currentSubsidiaryId as a query param to check if it's still valid
+                const currentSubId = currentSubsidiary ? await resolveSubsidiaryNameToId(currentSubsidiary) : null;
+                const url = `${getServerUrl()}/lookups/accountingbook/${accountingBookId}/default-subsidiary${currentSubId ? `?currentSubsidiaryId=${encodeURIComponent(currentSubId)}` : ''}`;
+                
+                const response = await fetch(url);
+                
+                if (!response.ok) {
+                    console.warn('Could not fetch default subsidiary for replacement, using fallback');
+                    // Fallback to old logic
+                    return await findBestReplacementSubsidiaryFallback(accountingBookId, currentSubsidiary);
+                }
+                
+                const data = await response.json();
+                
+                if (data.defaultSubsidiaryId && data.defaultSubsidiaryName) {
+                    // Return the name (not ID) as that's what Q3 expects
+                    console.log(`✅ Default subsidiary for book ${accountingBookId}: ${data.defaultSubsidiaryName} (ID: ${data.defaultSubsidiaryId})`);
+                    return data.defaultSubsidiaryName;
+                }
+                
+                // No default found - this is an error state
+                console.error('No default subsidiary found for accounting book', accountingBookId);
+                return null;
+            } catch (e) {
+                console.error('Error fetching default subsidiary:', e);
+                // Fallback to old logic
+                return await findBestReplacementSubsidiaryFallback(accountingBookId, currentSubsidiary);
+            }
+        }
+        
+        // Helper to resolve subsidiary name to ID (for passing to default-subsidiary endpoint)
+        async function resolveSubsidiaryNameToId(subsidiaryName) {
+            try {
+                const response = await fetch(`${getServerUrl()}/subsidiaries`);
+                if (response.ok) {
+                    const data = await response.json();
+                    const subs = data.subsidiaries || [];
+                    const baseName = subsidiaryName.replace(/\s*\(Consolidated\)\s*$/i, '').trim();
+                    const sub = subs.find(s => s.name === baseName || s.name === subsidiaryName);
+                    return sub ? sub.id : null;
+                }
+            } catch (e) {
+                console.warn('Could not resolve subsidiary name to ID:', e);
+            }
+            return null;
+        }
+        
+        async function findBestReplacementSubsidiaryFallback(accountingBookId, currentSubsidiary) {
+            try {
+                // Get book-scoped subsidiaries (fallback method)
                 const response = await fetch(`${getServerUrl()}/lookups/accountingbook/${accountingBookId}/subsidiaries`);
                 if (!response.ok) {
                     console.warn('Could not fetch book-scoped subsidiaries for replacement');
@@ -19012,7 +19089,11 @@ export default {
                 // Validate current subsidiary
                 const response = await fetch(`${getServerUrl()}/lookups/accountingbook/${accountingBookId}/subsidiaries`);
                 if (!response.ok) {
-                    console.warn('Could not validate subsidiary');
+                    if (response.status === 500) {
+                        console.warn('⚠️ Server error validating subsidiary (cache may not be initialized yet)');
+                    } else {
+                        console.warn('⚠️ Could not validate subsidiary:', response.status, response.statusText);
+                    }
                     return currentSubsidiary; // Assume valid on error
                 }
                 
@@ -19185,7 +19266,9 @@ export default {
                 if (!accountingBook || accountingBook === '1') {
                     // Primary Book - no validation needed
                     console.log('📚 Primary Book selected - no validation needed');
-                    await filterSubsidiaryDropdownByAccountingBook('1');
+                    if (window.filterSubsidiaryDropdownByAccountingBook) {
+                        await window.filterSubsidiaryDropdownByAccountingBook('1');
+                    }
                     return;
                 }
                 
@@ -19206,7 +19289,9 @@ export default {
                 }
                 
                 // Filter subsidiary dropdown
-                await filterSubsidiaryDropdownByAccountingBook(accountingBook);
+                if (window.filterSubsidiaryDropdownByAccountingBook) {
+                    await window.filterSubsidiaryDropdownByAccountingBook(accountingBook);
+                }
                 
                 // Clear all caches
                 console.log('🗑️ Clearing all caches due to accounting book change...');
@@ -19383,21 +19468,20 @@ export default {
                             const cacheEntries = {};
                             const specialFlag = '0';
                             
-                            // Month name mapping
-                            const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 
-                                               'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-                            
+                            // Use actual period names from the balances data (not hardcoded months)
+                            // The backend returns period names like "Jan 2025", "Feb 2025", etc.
+                            // We need to iterate over the actual periods in the data
                             for (const [acctType, monthData] of Object.entries(balances)) {
-                                for (let month = 0; month < 12; month++) {
-                                    const period = `${monthNames[month]} ${targetYear}`;
-                                    const value = monthData[period] || 0;
-                                    
+                                // monthData is a dictionary: { "Jan 2025": value, "Feb 2025": value, ... }
+                                // Use the actual period names from the data
+                                for (const [period, value] of Object.entries(monthData)) {
                                     // CRITICAL: Cache key format must match TYPEBALANCE function exactly!
                                     // Format: typebalance:${type}:${fromPeriod}:${toPeriod}:${subsidiary}:${dept}:${loc}:${class}:${book}:${specialFlag}
                                     // IMPORTANT: Must trim all values - TYPEBALANCE function uses .trim() on all parameters
-                                    const cacheKey = `typebalance:${acctType}:${period}:${period}:${(currentSubsidiary || '').trim()}:${(department || '').trim()}:${(location || '').trim()}:${(classId || '').trim()}:${(accountingBook || '').trim()}:${specialFlag}`;
+                                    // Convert accountingBook to string first (it might be a number)
+                                    const cacheKey = `typebalance:${acctType}:${period}:${period}:${(currentSubsidiary || '').trim()}:${(department || '').trim()}:${(location || '').trim()}:${(classId || '').trim()}:${String(accountingBook || '').trim()}:${specialFlag}`;
                                     
-                                    cacheEntries[cacheKey] = value;
+                                    cacheEntries[cacheKey] = value || 0;
                                 }
                             }
                             
