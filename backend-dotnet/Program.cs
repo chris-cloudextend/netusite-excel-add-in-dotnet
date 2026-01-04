@@ -122,6 +122,35 @@ else
     app.Logger.LogInformation("✅ NetSuite configuration loaded for account: {AccountId}", netSuiteConfig.AccountId);
 }
 
+// Initialize accounting book to subsidiaries cache on startup (non-blocking)
+_ = Task.Run(async () =>
+{
+    try
+    {
+        app.Logger.LogInformation("⏳ Starting book-subsidiary cache initialization in background...");
+        // Wait a bit for services to be fully ready
+        await Task.Delay(2000);
+        
+        app.Logger.LogInformation("🔧 Creating service scope for cache initialization...");
+        using var scope = app.Services.CreateScope();
+        var lookupService = scope.ServiceProvider.GetRequiredService<ILookupService>();
+        if (lookupService is XaviApi.Services.LookupService service)
+        {
+            app.Logger.LogInformation("🚀 Calling InitializeBookSubsidiaryCacheAsync...");
+            await service.InitializeBookSubsidiaryCacheAsync();
+            app.Logger.LogInformation("✅ Cache initialization task completed");
+        }
+        else
+        {
+            app.Logger.LogWarning("⚠️ LookupService is not the expected type, cannot initialize cache");
+        }
+    }
+    catch (Exception ex)
+    {
+        app.Logger.LogError(ex, "❌ Error initializing book-subsidiary cache on startup: {Message}", ex.Message);
+    }
+});
+
 // =============================================================================
 // Middleware Pipeline
 // =============================================================================

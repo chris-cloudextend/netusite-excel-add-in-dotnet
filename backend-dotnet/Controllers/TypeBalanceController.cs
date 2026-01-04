@@ -191,6 +191,7 @@ public class TypeBalanceController : ControllerBase
                 WHERE t.posting = 'T'
                   AND tal.posting = 'T'
                   AND a.accttype IN ('Income', 'COGS', 'Expense', 'OthIncome', 'OthExpense')
+                  AND a.isinactive = 'F'
                   AND t.postingperiod IN ({periodFilter})
                   AND tal.accountingbook = {accountingBook}
                   AND {segmentWhere}
@@ -217,22 +218,26 @@ public class TypeBalanceController : ControllerBase
             var elapsed = (DateTime.UtcNow - startTime).TotalSeconds;
             _logger.LogDebug("Query time: {Elapsed:F2} seconds, {Count} account type rows", elapsed, rows.Count);
 
-            // Month column mapping
-            var monthMapping = new Dictionary<string, string>
+            // Build month column mapping dynamically from actual periods (not hardcoded)
+            // This ensures period names match exactly between query columns and result mapping
+            var monthMapping = new Dictionary<string, string>();
+            foreach (var period in periods)
             {
-                { "jan", $"Jan {fiscalYear}" },
-                { "feb", $"Feb {fiscalYear}" },
-                { "mar", $"Mar {fiscalYear}" },
-                { "apr", $"Apr {fiscalYear}" },
-                { "may", $"May {fiscalYear}" },
-                { "jun", $"Jun {fiscalYear}" },
-                { "jul", $"Jul {fiscalYear}" },
-                { "aug", $"Aug {fiscalYear}" },
-                { "sep", $"Sep {fiscalYear}" },
-                { "oct", $"Oct {fiscalYear}" },
-                { "nov", $"Nov {fiscalYear}" },
-                { "dec_month", $"Dec {fiscalYear}" }
-            };
+                var periodId = period.TryGetProperty("id", out var idProp) ? idProp.ToString() : "";
+                var periodName = period.TryGetProperty("periodname", out var nameProp) ? nameProp.GetString() ?? "" : "";
+                
+                if (string.IsNullOrEmpty(periodId) || string.IsNullOrEmpty(periodName))
+                    continue;
+
+                // Extract month abbreviation (e.g., "Jan 2025" -> "jan")
+                var monthAbbr = periodName.Split(' ').FirstOrDefault()?.ToLower() ?? "";
+                if (string.IsNullOrEmpty(monthAbbr))
+                    continue;
+
+                // Handle 'dec' specially since it might be reserved
+                var colName = monthAbbr == "dec" ? "dec_month" : monthAbbr;
+                monthMapping[colName] = periodName; // Use actual period name from NetSuite
+            }
 
             // Transform results to nested dict: { accountType: { period: value } }
             var balances = new Dictionary<string, Dictionary<string, decimal>>();

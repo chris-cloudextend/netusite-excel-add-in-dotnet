@@ -5926,7 +5926,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.57"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.59"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -17818,6 +17818,20 @@ export default {
                 if (isAccountingBookChange) {
                     console.log('📚 U3 (Accounting Book) changed - validating and updating Q3 IMMEDIATELY...');
                     try {
+                        // CRITICAL: Clear caches FIRST to prevent formulas from using stale data
+                        console.log('🗑️ Clearing all caches BEFORE subsidiary update to prevent #VALUE errors...');
+                        localStorage.removeItem('netsuite_balance_cache');
+                        localStorage.removeItem('netsuite_balance_cache_timestamp');
+                        localStorage.removeItem('netsuite_typebalance_cache');
+                        localStorage.removeItem('netsuite_typebalance_cache_timestamp');
+                        localStorage.removeItem('netsuite_preload_status');
+                        localStorage.removeItem('netsuite_preload_timestamp');
+                        // Signal functions.js to clear in-memory cache IMMEDIATELY
+                        localStorage.setItem('netsuite_cache_clear_signal', JSON.stringify({
+                            timestamp: Date.now(),
+                            reason: 'accounting_book_change'
+                        }));
+                        
                         // Read U3 and Q3 immediately
                         let accountingBook = '';
                         let currentSubsidiary = '';
@@ -17832,24 +17846,87 @@ export default {
                             currentSubsidiary = String(subCell.values[0][0] || '').trim();
                         });
                         
-                        // If not primary book, validate and update immediately
+                        // If not primary book, validate and update IMMEDIATELY in same Excel.run() batch
                         if (accountingBook && accountingBook !== '1') {
                             console.log(`📚 Validating "${currentSubsidiary}" for accounting book ${accountingBook}...`);
-                            let validatedSub;
+                            
+                            // CRITICAL FIX: Pre-fetch replacement subsidiary BEFORE Excel recalculates
+                            // Then update Q3 in a SINGLE Excel.run() batch to prevent race condition
+                            let replacementSub = null;
                             try {
-                                validatedSub = await validateAndUpdateSubsidiary(accountingBook, currentSubsidiary);
+                                // First, quickly check if current subsidiary is valid
+                                const response = await fetch(`${getServerUrl()}/lookups/accountingbook/${accountingBook}/subsidiaries`);
+                                if (response.ok) {
+                                    const data = await response.json();
+                                    if (!data.allSubsidiaries) {
+                                        const enabledSubs = data.subsidiaries || [];
+                                        const baseName = currentSubsidiary.replace(/\s*\(Consolidated\)\s*$/i, '').trim();
+                                        const isConsolidated = currentSubsidiary.toLowerCase().includes('consolidated');
+                                        
+                                        const isValid = enabledSubs.some(s => {
+                                            if (s.name === currentSubsidiary) return true;
+                                            if (s.name === baseName) {
+                                                return isConsolidated ? s.canConsolidate : true;
+                                            }
+                                            return false;
+                                        });
+                                        
+                                        if (!isValid && enabledSubs.length > 0) {
+                                            // Invalid - get replacement NOW (before Excel recalculates)
+                                            console.log(`⚠️ Subsidiary "${currentSubsidiary}" is not valid, fetching replacement...`);
+                                            const defaultResponse = await fetch(`${getServerUrl()}/lookups/accountingbook/${accountingBook}/default-subsidiary`);
+                                            if (defaultResponse.ok) {
+                                                const defaultData = await defaultResponse.json();
+                                                if (defaultData.defaultSubsidiaryName) {
+                                                    replacementSub = defaultData.defaultSubsidiaryName;
+                                                    console.log(`✅ Found replacement: "${replacementSub}"`);
+                                                }
+                                            }
+                                            // Fallback: use first enabled subsidiary
+                                            if (!replacementSub && enabledSubs.length > 0) {
+                                                replacementSub = enabledSubs[0].name;
+                                                console.log(`✅ Using fallback replacement: "${replacementSub}"`);
+                                            }
+                                        }
+                                    }
+                                }
                             } catch (e) {
-                                console.warn('⚠️ Error validating subsidiary (may retry):', e.message);
-                                validatedSub = currentSubsidiary; // Keep current on error
+                                console.warn('⚠️ Error pre-fetching replacement subsidiary:', e.message);
                             }
-                            if (validatedSub && validatedSub !== currentSubsidiary) {
-                                console.log(`✅ Q3 updated from "${currentSubsidiary}" to "${validatedSub}"`);
+                            
+                            // CRITICAL: Update Q3 IMMEDIATELY in same batch to prevent Excel recalculation with invalid combo
+                            if (replacementSub && replacementSub !== currentSubsidiary) {
+                                console.log(`🚀 Updating Q3 from "${currentSubsidiary}" to "${replacementSub}" in SAME batch...`);
+                                await Excel.run(async (context) => {
+                                    const sheet = context.workbook.worksheets.getActiveWorksheet();
+                                    const q3Cell = sheet.getRange("Q3");
+                                    q3Cell.values = [[replacementSub]];
+                                    await context.sync(); // This sync happens BEFORE Excel recalculates formulas
+                                });
+                                console.log(`✅ Q3 updated to "${replacementSub}" - formulas will now use valid combination`);
+                                
                                 // Filter dropdown immediately
                                 if (window.filterSubsidiaryDropdownByAccountingBook) {
                                     await window.filterSubsidiaryDropdownByAccountingBook(accountingBook);
                                 }
-                            } else if (validatedSub) {
-                                // Valid, just filter dropdown
+                                
+                                // Show notification (async, non-blocking)
+                                setTimeout(async () => {
+                                    try {
+                                        let accountingBookName = `Accounting Book ${accountingBook}`;
+                                        const bookResponse = await fetch(`${getServerUrl()}/lookups/all`);
+                                        if (bookResponse.ok) {
+                                            const bookData = await bookResponse.json();
+                                            const book = (bookData.accountingbooks || []).find(b => b.id === accountingBook);
+                                            if (book) accountingBookName = book.name;
+                                        }
+                                        await showSubsidiaryAutoUpdateNotification(currentSubsidiary, replacementSub, accountingBook, accountingBookName);
+                                    } catch (e) {
+                                        // Ignore notification errors
+                                    }
+                                }, 100);
+                            } else {
+                                // Valid subsidiary - just filter dropdown
                                 if (window.filterSubsidiaryDropdownByAccountingBook) {
                                     await window.filterSubsidiaryDropdownByAccountingBook(accountingBook);
                                 }

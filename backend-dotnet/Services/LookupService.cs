@@ -21,11 +21,135 @@ public class LookupService : ILookupService
 {
     private readonly INetSuiteService _netSuiteService;
     private readonly ILogger<LookupService> _logger;
+    
+    // Cache mapping accountingBookId -> list of valid subsidiary IDs
+    // Built on startup from transaction data
+    private readonly Dictionary<string, List<string>> _bookSubsidiaryCache = new();
+    private readonly SemaphoreSlim _cacheLock = new(1, 1);
+    private bool _cacheInitialized = false;
 
     public LookupService(INetSuiteService netSuiteService, ILogger<LookupService> logger)
     {
         _netSuiteService = netSuiteService;
         _logger = logger;
+    }
+    
+    /// <summary>
+    /// Initialize the accounting book to subsidiaries cache on startup.
+    /// This builds a mapping from accountingBookId to valid subsidiary IDs
+    /// based on transaction data (TransactionAccountingLine + Transaction).
+    /// </summary>
+    public async Task InitializeBookSubsidiaryCacheAsync()
+    {
+        await _cacheLock.WaitAsync();
+        try
+        {
+            if (_cacheInitialized)
+            {
+                return; // Already initialized
+            }
+            
+            _logger.LogInformation("Building accounting book to subsidiaries cache from transaction data...");
+            
+            // Query all distinct (accountingbook, subsidiary) pairs from accounting lines
+            // This is an existence lookup - we only care about which combinations exist
+            // Note: We use TransactionLine.subsidiary (not Transaction.subsidiary) because
+            // TransactionLine has the correct subsidiary for each accounting line.
+            // We include names via BUILTIN.DF for potential future use, but only use IDs for caching.
+            // No ORDER BY needed - we sort in C# after building the cache for better performance.
+            var query = @"
+                SELECT DISTINCT
+                    tal.accountingbook                     AS accountingbook_id,
+                    BUILTIN.DF(tal.accountingbook)         AS accountingbook_name,
+                    tl.subsidiary                          AS subsidiary_id,
+                    BUILTIN.DF(tl.subsidiary)              AS subsidiary_name
+                FROM
+                    TransactionAccountingLine tal
+                JOIN
+                    TransactionLine tl
+                        ON tl.transaction = tal.transaction
+                       AND tl.id = tal.transactionline
+                WHERE
+                    tal.accountingbook IS NOT NULL
+                    AND tl.subsidiary IS NOT NULL";
+            
+            _logger.LogInformation("📊 Executing cache query (timeout: 60s)...");
+            var result = await _netSuiteService.QueryRawWithErrorAsync(query, timeout: 60);
+            
+            if (!result.Success)
+            {
+                _logger.LogError("❌ Failed to build book-subsidiary cache: {ErrorCode} - {ErrorDetails}", 
+                    result.ErrorCode ?? "Unknown", 
+                    result.ErrorDetails ?? "Unknown error");
+                _cacheInitialized = true; // Mark as initialized to prevent retries
+                return;
+            }
+            
+            _logger.LogInformation("📊 Query returned {Count} rows", result.Items?.Count ?? 0);
+            
+            // Build the cache dictionary
+            foreach (var item in result.Items)
+            {
+                // Use the new field names: accountingbook_id and subsidiary_id
+                if (item.TryGetProperty("accountingbook_id", out var bookProp) &&
+                    item.TryGetProperty("subsidiary_id", out var subProp))
+                {
+                    var bookId = bookProp.ToString();
+                    var subId = subProp.ToString();
+                    
+                    if (!string.IsNullOrEmpty(bookId) && !string.IsNullOrEmpty(subId))
+                    {
+                        if (!_bookSubsidiaryCache.ContainsKey(bookId))
+                        {
+                            _bookSubsidiaryCache[bookId] = new List<string>();
+                        }
+                        
+                        if (!_bookSubsidiaryCache[bookId].Contains(subId))
+                        {
+                            _bookSubsidiaryCache[bookId].Add(subId);
+                        }
+                    }
+                }
+            }
+            
+            // Sort subsidiary lists for consistency
+            foreach (var bookId in _bookSubsidiaryCache.Keys.ToList())
+            {
+                _bookSubsidiaryCache[bookId] = _bookSubsidiaryCache[bookId]
+                    .OrderBy(id => id)
+                    .ToList();
+            }
+            
+            var totalBooks = _bookSubsidiaryCache.Count;
+            var totalMappings = _bookSubsidiaryCache.Values.Sum(list => list.Count);
+            
+            _logger.LogInformation("✅ Book-subsidiary cache built: {BookCount} books, {MappingCount} book-subsidiary mappings", 
+                totalBooks, totalMappings);
+            
+            // Lightweight health log per book for debugging
+            var healthLog = new List<string>();
+            foreach (var kvp in _bookSubsidiaryCache.OrderBy(k => k.Key))
+            {
+                var subList = string.Join(", ", kvp.Value);
+                healthLog.Add($"Book {kvp.Key} -> [{subList}]");
+                _logger.LogDebug("  Book {BookId}: {Count} subsidiaries ({Subsidiaries})", 
+                    kvp.Key, kvp.Value.Count, subList);
+            }
+            
+            // Log health summary in a single line for easy scanning
+            _logger.LogInformation("📊 Book-Subsidiary Health: {HealthSummary}", string.Join(" | ", healthLog));
+            
+            _cacheInitialized = true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error building book-subsidiary cache");
+            _cacheInitialized = true; // Mark as initialized to prevent retries
+        }
+        finally
+        {
+            _cacheLock.Release();
+        }
     }
 
     /// <summary>
@@ -194,6 +318,9 @@ public class LookupService : ILookupService
     /// <summary>
     /// Get all subsidiaries that have transactions in the given accounting book.
     /// Returns a list of subsidiary IDs. For Primary Book (ID 1), returns null to indicate all subsidiaries.
+    /// 
+    /// This method uses the pre-built cache from transaction data (built on startup).
+    /// A subsidiary is valid for a book if at least one accounting line exists for that (book, subsidiary) pair.
     /// </summary>
     public async Task<List<string>?> GetSubsidiariesForAccountingBookAsync(string accountingBookId)
     {
@@ -204,127 +331,34 @@ public class LookupService : ILookupService
             return null;
         }
 
-        var cacheKey = $"lookups:accountingbook:{accountingBookId}:subsidiaries";
-        return await _netSuiteService.GetOrSetCacheAsync(cacheKey, async () =>
+        // Ensure cache is initialized
+        if (!_cacheInitialized)
         {
-            var subsidiaryIds = new HashSet<string>();
-            bool foundFromConfig = false;
-            
-            // Try multiple approaches to find enabled subsidiaries
-            // Approach 1: Query AccountingBookSubsidiaryMapping table (if it exists)
-            try
+            await InitializeBookSubsidiaryCacheAsync();
+        }
+        
+        // Look up in cache (thread-safe read)
+        await _cacheLock.WaitAsync();
+        try
+        {
+            if (_bookSubsidiaryCache.TryGetValue(accountingBookId, out var subsidiaries))
             {
-                var configQuery = $@"
-                    SELECT subsidiary AS id
-                    FROM AccountingBookSubsidiaryMapping
-                    WHERE accountingbook = {NetSuiteService.EscapeSql(accountingBookId)}
-                    ORDER BY subsidiary";
-
-                var configResult = await _netSuiteService.QueryRawWithErrorAsync(configQuery);
-                
-                if (configResult.Success && configResult.Items.Any())
-                {
-                    foreach (var item in configResult.Items)
-                    {
-                        if (item.TryGetProperty("id", out var idProp))
-                        {
-                            var id = idProp.ToString();
-                            if (!string.IsNullOrEmpty(id))
-                            {
-                                subsidiaryIds.Add(id);
-                            }
-                        }
-                    }
-                    if (subsidiaryIds.Count > 0)
-                    {
-                        foundFromConfig = true;
-                        _logger.LogInformation("Accounting book {BookId} has {Count} enabled subsidiaries from AccountingBookSubsidiaryMapping", 
-                            accountingBookId, subsidiaryIds.Count);
-                    }
-                }
+                _logger.LogDebug("Book {BookId} has {Count} valid subsidiaries from cache: {Subsidiaries}", 
+                    accountingBookId, subsidiaries.Count, string.Join(", ", subsidiaries));
+                return new List<string>(subsidiaries); // Return a copy
             }
-            catch (Exception ex)
+            else
             {
-                _logger.LogDebug("AccountingBookSubsidiaryMapping query failed (may not exist): {Error}", ex.Message);
+                // Book has no subsidiaries with postings
+                _logger.LogWarning("No subsidiaries found for accounting book {BookId} (no transactions exist for this book)", 
+                    accountingBookId);
+                return new List<string>(); // Return empty list
             }
-            
-            // Approach 2: Query AccountingBook record's subsidiaries field directly
-            // This might work if subsidiaries are stored as a multi-select field
-            if (!foundFromConfig)
-            {
-                try
-                {
-                    var bookQuery = $@"
-                        SELECT id, subsidiaries
-                        FROM AccountingBook
-                        WHERE id = {NetSuiteService.EscapeSql(accountingBookId)}";
-                    
-                    var bookResult = await _netSuiteService.QueryRawWithErrorAsync(bookQuery);
-                    
-                    if (bookResult.Success && bookResult.Items.Any())
-                    {
-                        var book = bookResult.Items.First();
-                        // Try to get subsidiaries field - might be an array or comma-separated
-                        if (book.TryGetProperty("subsidiaries", out var subsidiariesProp))
-                        {
-                            // subsidiariesProp is always a JsonElement from TryGetProperty
-                            var jsonElement = subsidiariesProp;
-                            
-                            if (jsonElement.ValueKind == JsonValueKind.Array)
-                            {
-                                foreach (var sub in jsonElement.EnumerateArray())
-                                {
-                                    var id = sub.GetString();
-                                    if (!string.IsNullOrEmpty(id))
-                                    {
-                                        subsidiaryIds.Add(id);
-                                    }
-                                }
-                            }
-                            else if (jsonElement.ValueKind == JsonValueKind.String)
-                            {
-                                var ids = jsonElement.GetString()?.Split(',');
-                                if (ids != null)
-                                {
-                                    foreach (var id in ids)
-                                    {
-                                        var trimmed = id.Trim();
-                                        if (!string.IsNullOrEmpty(trimmed))
-                                        {
-                                            subsidiaryIds.Add(trimmed);
-                                        }
-                                    }
-                                }
-                            }
-                            
-                            if (subsidiaryIds.Count > 0)
-                            {
-                                foundFromConfig = true;
-                                _logger.LogInformation("Accounting book {BookId} has {Count} enabled subsidiaries from AccountingBook.subsidiaries field", 
-                                    accountingBookId, subsidiaryIds.Count);
-                            }
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogDebug("AccountingBook.subsidiaries query failed: {Error}", ex.Message);
-                }
-            }
-            
-            if (subsidiaryIds.Count == 0)
-            {
-                _logger.LogWarning("Could not find subsidiaries for accounting book {BookId} (tried configuration tables). " +
-                    "Please verify the book has enabled subsidiaries in NetSuite.", accountingBookId);
-                return new List<string>(); // Return empty list if no subsidiaries found
-            }
-
-            var sortedIds = subsidiaryIds.OrderBy(id => id).ToList();
-            _logger.LogInformation("Accounting book {BookId} has {Count} enabled subsidiaries (found via configuration)", 
-                accountingBookId, sortedIds.Count);
-
-            return sortedIds;
-        }, TimeSpan.FromHours(24)); // Cache for 24 hours since this relationship rarely changes
+        }
+        finally
+        {
+            _cacheLock.Release();
+        }
     }
 
     /// <summary>

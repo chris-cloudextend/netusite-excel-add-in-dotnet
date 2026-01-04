@@ -232,6 +232,29 @@ public class LookupController : ControllerBase
     }
 
     /// <summary>
+    /// Manually trigger cache initialization (for debugging/admin use).
+    /// </summary>
+    [HttpPost("/lookups/cache/initialize")]
+    public async Task<IActionResult> InitializeCache()
+    {
+        try
+        {
+            if (_lookupService is XaviApi.Services.LookupService service)
+            {
+                _logger.LogInformation("🔄 Manual cache initialization triggered");
+                await service.InitializeBookSubsidiaryCacheAsync();
+                return Ok(new { message = "Cache initialization completed", timestamp = DateTime.UtcNow });
+            }
+            return BadRequest(new { error = "LookupService is not the expected type" });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error during manual cache initialization");
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
     /// Get the default subsidiary for an accounting book based on NetSuite-compatible rules.
     /// Optionally accepts a current subsidiary ID - if it's enabled for the book, it will be returned.
     /// </summary>
