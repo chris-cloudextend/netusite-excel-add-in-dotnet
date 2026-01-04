@@ -5926,7 +5926,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.67"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.68"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -17741,6 +17741,9 @@ export default {
         let currentSheetChangeHandler = null;
         let currentSheetName = null;
         
+        // Track previous U3 value to detect actual changes (not just initial load)
+        let lastU3Value = null;
+        
         // The actual change handler - extracted so it can be re-used when switching sheets
         async function handleSheetChange(event) {
             // Normalize the event address - strip sheet prefix and dollar signs
@@ -17851,7 +17854,8 @@ export default {
                     }
                     
                     // Only proceed if value actually changed (not initial load)
-                    if (currentU3Value !== null && currentU3Value === lastU3Value) {
+                    // CRITICAL: lastU3Value starts as null, so first change should always proceed
+                    if (lastU3Value !== null && currentU3Value === lastU3Value) {
                         console.log(`📚 U3 value unchanged (${currentU3Value}) - skipping overlay (likely initial load)`);
                         // Still filter dropdown but don't show overlay
                         if (window.filterSubsidiaryDropdownByAccountingBook) {
@@ -17861,8 +17865,9 @@ export default {
                     }
                     
                     // Value changed - update tracking and show overlay
+                    const previousU3Value = lastU3Value; // Store previous for logging
                     lastU3Value = currentU3Value;
-                    console.log(`📚 U3 (Accounting Book) changed from "${lastU3Value}" to "${currentU3Value}" - validating and updating Q3 IMMEDIATELY...`);
+                    console.log(`📚 U3 (Accounting Book) changed from "${previousU3Value || '(initial)'}" to "${currentU3Value}" - validating and updating Q3 IMMEDIATELY...`);
                     
                     // CRITICAL FIX Issue 1: Show progress overlay IMMEDIATELY (not after 30 second delay)
                     // This gives immediate visual feedback that something is happening

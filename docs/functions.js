@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.67';  // FIX: Period normalization in cache keys to match TYPEBALANCE function
+const FUNCTIONS_VERSION = '4.0.6.68';  // FIX: lastU3Value initialization and U3 change detection
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
