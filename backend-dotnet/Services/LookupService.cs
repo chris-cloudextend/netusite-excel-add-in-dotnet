@@ -207,32 +207,123 @@ public class LookupService : ILookupService
         var cacheKey = $"lookups:accountingbook:{accountingBookId}:subsidiaries";
         return await _netSuiteService.GetOrSetCacheAsync(cacheKey, async () =>
         {
-            // Query to find all subsidiaries that have transactions in this accounting book
-            var query = $@"
-                SELECT DISTINCT tl.subsidiary AS id
-                FROM TransactionAccountingLine tal
-                JOIN TransactionLine tl ON tal.transactionline = tl.id
-                WHERE tal.accountingbook = {NetSuiteService.EscapeSql(accountingBookId)}
-                  AND tl.subsidiary IS NOT NULL
-                ORDER BY tl.subsidiary";
-
-            var result = await _netSuiteService.QueryRawWithErrorAsync(query);
+            var subsidiaryIds = new HashSet<string>();
+            bool foundFromConfig = false;
             
-            if (!result.Success || !result.Items.Any())
+            // Try multiple approaches to find enabled subsidiaries
+            // Approach 1: Query AccountingBookSubsidiaryMapping table (if it exists)
+            try
             {
-                _logger.LogWarning("Could not find subsidiaries for accounting book {BookId}", accountingBookId);
+                var configQuery = $@"
+                    SELECT subsidiary AS id
+                    FROM AccountingBookSubsidiaryMapping
+                    WHERE accountingbook = {NetSuiteService.EscapeSql(accountingBookId)}
+                    ORDER BY subsidiary";
+
+                var configResult = await _netSuiteService.QueryRawWithErrorAsync(configQuery);
+                
+                if (configResult.Success && configResult.Items.Any())
+                {
+                    foreach (var item in configResult.Items)
+                    {
+                        if (item.TryGetProperty("id", out var idProp))
+                        {
+                            var id = idProp.ToString();
+                            if (!string.IsNullOrEmpty(id))
+                            {
+                                subsidiaryIds.Add(id);
+                            }
+                        }
+                    }
+                    if (subsidiaryIds.Count > 0)
+                    {
+                        foundFromConfig = true;
+                        _logger.LogInformation("Accounting book {BookId} has {Count} enabled subsidiaries from AccountingBookSubsidiaryMapping", 
+                            accountingBookId, subsidiaryIds.Count);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug("AccountingBookSubsidiaryMapping query failed (may not exist): {Error}", ex.Message);
+            }
+            
+            // Approach 2: Query AccountingBook record's subsidiaries field directly
+            // This might work if subsidiaries are stored as a multi-select field
+            if (!foundFromConfig)
+            {
+                try
+                {
+                    var bookQuery = $@"
+                        SELECT id, subsidiaries
+                        FROM AccountingBook
+                        WHERE id = {NetSuiteService.EscapeSql(accountingBookId)}";
+                    
+                    var bookResult = await _netSuiteService.QueryRawWithErrorAsync(bookQuery);
+                    
+                    if (bookResult.Success && bookResult.Items.Any())
+                    {
+                        var book = bookResult.Items.First();
+                        // Try to get subsidiaries field - might be an array or comma-separated
+                        if (book.TryGetProperty("subsidiaries", out var subsidiariesProp))
+                        {
+                            // subsidiariesProp is always a JsonElement from TryGetProperty
+                            var jsonElement = subsidiariesProp;
+                            
+                            if (jsonElement.ValueKind == JsonValueKind.Array)
+                            {
+                                foreach (var sub in jsonElement.EnumerateArray())
+                                {
+                                    var id = sub.GetString();
+                                    if (!string.IsNullOrEmpty(id))
+                                    {
+                                        subsidiaryIds.Add(id);
+                                    }
+                                }
+                            }
+                            else if (jsonElement.ValueKind == JsonValueKind.String)
+                            {
+                                var ids = jsonElement.GetString()?.Split(',');
+                                if (ids != null)
+                                {
+                                    foreach (var id in ids)
+                                    {
+                                        var trimmed = id.Trim();
+                                        if (!string.IsNullOrEmpty(trimmed))
+                                        {
+                                            subsidiaryIds.Add(trimmed);
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            if (subsidiaryIds.Count > 0)
+                            {
+                                foundFromConfig = true;
+                                _logger.LogInformation("Accounting book {BookId} has {Count} enabled subsidiaries from AccountingBook.subsidiaries field", 
+                                    accountingBookId, subsidiaryIds.Count);
+                            }
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug("AccountingBook.subsidiaries query failed: {Error}", ex.Message);
+                }
+            }
+            
+            if (subsidiaryIds.Count == 0)
+            {
+                _logger.LogWarning("Could not find subsidiaries for accounting book {BookId} (tried configuration tables). " +
+                    "Please verify the book has enabled subsidiaries in NetSuite.", accountingBookId);
                 return new List<string>(); // Return empty list if no subsidiaries found
             }
 
-            var subsidiaryIds = result.Items
-                .Select(r => r.TryGetProperty("id", out var idProp) ? idProp.ToString() : null)
-                .Where(id => !string.IsNullOrEmpty(id))
-                .ToList()!;
+            var sortedIds = subsidiaryIds.OrderBy(id => id).ToList();
+            _logger.LogInformation("Accounting book {BookId} has {Count} enabled subsidiaries (found via configuration)", 
+                accountingBookId, sortedIds.Count);
 
-            _logger.LogInformation("Accounting book {BookId} has transactions for {Count} subsidiaries", 
-                accountingBookId, subsidiaryIds.Count);
-
-            return subsidiaryIds;
+            return sortedIds;
         }, TimeSpan.FromHours(24)); // Cache for 24 hours since this relationship rarely changes
     }
 
@@ -425,6 +516,106 @@ public class LookupService : ILookupService
                 IsSingleSubsidiaryBook = enabledSubsidiaryIds.Count == 1 && !consolidationEligible.Any()
             };
         }, TimeSpan.FromHours(24)); // Cache for 24 hours
+    }
+
+    /// <summary>
+    /// Get the default subsidiary for an accounting book based on NetSuite-compatible rules.
+    /// 
+    /// Rules:
+    /// 1. If current subsidiary is in enabled set S, keep it unchanged
+    /// 2. Otherwise, find all subsidiaries in S that have at least one child also in S
+    /// 3. Select the highest-level parent (closest to root) as default
+    /// 4. If no parent with children, select using deterministic ordering (lowest ID)
+    /// </summary>
+    public async Task<string?> GetDefaultSubsidiaryForAccountingBookAsync(string accountingBookId, string? currentSubsidiaryId = null)
+    {
+        if (string.IsNullOrEmpty(accountingBookId) || accountingBookId == "1")
+        {
+            // Primary Book - no default needed
+            return null;
+        }
+
+        // Step 1: Build set S of enabled subsidiaries
+        var enabledSubsidiaryIds = await GetSubsidiariesForAccountingBookAsync(accountingBookId);
+        
+        if (enabledSubsidiaryIds == null || enabledSubsidiaryIds.Count == 0)
+        {
+            _logger.LogWarning("No enabled subsidiaries for accounting book {BookId}, cannot determine default", accountingBookId);
+            return null;
+        }
+
+        var enabledSet = new HashSet<string>(enabledSubsidiaryIds);
+
+        // Step 2: If current subsidiary is in S, keep it unchanged
+        if (!string.IsNullOrEmpty(currentSubsidiaryId) && enabledSet.Contains(currentSubsidiaryId))
+        {
+            _logger.LogInformation("Current subsidiary {SubId} is enabled for book {BookId}, keeping it", 
+                currentSubsidiaryId, accountingBookId);
+            return currentSubsidiaryId;
+        }
+
+        // Step 3: Get all subsidiaries to build hierarchy
+        var allSubsidiaries = await GetSubsidiariesAsync();
+        var enabledSubsidiaries = allSubsidiaries
+            .Where(s => enabledSet.Contains(s.Id))
+            .ToList();
+
+        // Build parent-child map within enabled set only
+        var childrenMap = new Dictionary<string, List<SubsidiaryItem>>();
+        foreach (var sub in enabledSubsidiaries)
+        {
+            if (!string.IsNullOrEmpty(sub.Parent) && enabledSet.Contains(sub.Parent))
+            {
+                if (!childrenMap.ContainsKey(sub.Parent))
+                {
+                    childrenMap[sub.Parent] = new List<SubsidiaryItem>();
+                }
+                childrenMap[sub.Parent].Add(sub);
+            }
+        }
+
+        // Step 4: Find all subsidiaries in S that have at least one child also in S
+        var parentsWithChildren = enabledSubsidiaries
+            .Where(s => childrenMap.ContainsKey(s.Id) && childrenMap[s.Id].Count > 0)
+            .ToList();
+
+        if (parentsWithChildren.Count > 0)
+        {
+            // Step 5: Select highest-level parent (closest to root)
+            // Calculate depth for each parent (distance from root)
+            int GetDepth(string subId)
+            {
+                int depth = 0;
+                var current = enabledSubsidiaries.FirstOrDefault(s => s.Id == subId);
+                while (current != null && !string.IsNullOrEmpty(current.Parent) && enabledSet.Contains(current.Parent))
+                {
+                    depth++;
+                    current = enabledSubsidiaries.FirstOrDefault(s => s.Id == current.Parent);
+                }
+                return depth;
+            }
+
+            // Find parent with minimum depth (closest to root)
+            var highestLevelParent = parentsWithChildren
+                .OrderBy(s => GetDepth(s.Id))
+                .ThenBy(s => s.Id) // Deterministic tie-breaker
+                .First();
+
+            _logger.LogInformation("Selected highest-level parent subsidiary {SubId} ({SubName}) for book {BookId} (has {ChildCount} enabled children)", 
+                highestLevelParent.Id, highestLevelParent.Name, accountingBookId, childrenMap[highestLevelParent.Id].Count);
+            
+            return highestLevelParent.Id;
+        }
+
+        // Step 6: No parent with children - select using deterministic ordering (lowest ID)
+        var defaultSub = enabledSubsidiaries
+            .OrderBy(s => s.Id)
+            .First();
+
+        _logger.LogInformation("No parent with children found for book {BookId}, selected subsidiary {SubId} ({SubName}) using deterministic ordering", 
+            accountingBookId, defaultSub.Id, defaultSub.Name);
+
+        return defaultSub.Id;
     }
 
     /// <summary>
@@ -1131,5 +1322,10 @@ public interface ILookupService
     Task<string?> ResolveDimensionIdAsync(string dimensionType, string? nameOrId);
     Task<List<string>?> GetSubsidiariesForAccountingBookAsync(string accountingBookId);
     Task<BookScopedSubsidiariesResponse> GetBookScopedSubsidiariesAsync(string accountingBookId);
+    
+    /// <summary>
+    /// Get the default subsidiary for an accounting book based on NetSuite-compatible rules.
+    /// </summary>
+    Task<string?> GetDefaultSubsidiaryForAccountingBookAsync(string accountingBookId, string? currentSubsidiaryId = null);
 }
 

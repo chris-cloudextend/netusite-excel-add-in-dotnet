@@ -232,6 +232,47 @@ public class LookupController : ControllerBase
     }
 
     /// <summary>
+    /// Get the default subsidiary for an accounting book based on NetSuite-compatible rules.
+    /// Optionally accepts a current subsidiary ID - if it's enabled for the book, it will be returned.
+    /// </summary>
+    [HttpGet("/lookups/accountingbook/{bookId}/default-subsidiary")]
+    public async Task<IActionResult> GetDefaultSubsidiaryForAccountingBook(
+        [FromRoute] string bookId,
+        [FromQuery] string? currentSubsidiaryId = null)
+    {
+        try
+        {
+            var defaultSubsidiaryId = await _lookupService.GetDefaultSubsidiaryForAccountingBookAsync(bookId, currentSubsidiaryId);
+            
+            if (defaultSubsidiaryId == null)
+            {
+                return Ok(new 
+                { 
+                    subsidiaryId = (string?)null,
+                    message = "Primary Book or no enabled subsidiaries - no default needed"
+                });
+            }
+
+            // Get subsidiary name for response
+            var subsidiaries = await _lookupService.GetSubsidiariesAsync();
+            var subsidiary = subsidiaries.FirstOrDefault(s => s.Id == defaultSubsidiaryId);
+            
+            return Ok(new 
+            { 
+                subsidiaryId = defaultSubsidiaryId,
+                subsidiaryName = subsidiary?.Name ?? (string?)null,
+                subsidiaryFullName = subsidiary?.FullName ?? (string?)null,
+                message = $"Default subsidiary for accounting book {bookId}"
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting default subsidiary for accounting book {BookId}", bookId);
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
     /// Get budget categories.
     /// </summary>
     [HttpGet("/lookups/budget-categories")]

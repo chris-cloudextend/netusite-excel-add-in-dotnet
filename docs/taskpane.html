@@ -16920,58 +16920,75 @@ export default {
                     try {
                         console.log(`📚 Filtering subsidiaries for accounting book ${accountingBookId}...`);
                         const response = await fetch(`${getServerUrl()}/lookups/accountingbook/${accountingBookId}/subsidiaries`);
-                        if (response.ok) {
-                            const data = await response.json();
+                        
+                        if (!response.ok) {
+                            const errorText = await response.text();
+                            console.error(`❌ Failed to fetch subsidiaries for book ${accountingBookId}: ${response.status} ${errorText}`);
+                            // Don't fall back to all subsidiaries - keep current state or show error
+                            return;
+                        }
+                        
+                        const data = await response.json();
+                        console.log(`📚 API response for book ${accountingBookId}:`, data);
+                        
+                        if (data.allSubsidiaries) {
+                            // All subsidiaries are valid (shouldn't happen for non-primary books, but handle it)
+                            console.log(`   Primary book or all subsidiaries enabled - showing all`);
+                            if (window.allSubsidiaries) {
+                                await populateSubsidiaryDropdown(window.allSubsidiaries);
+                            }
+                            return;
+                        }
+                        
+                        // Build dropdown options from book-scoped subsidiaries
+                        const subSelect = document.getElementById('subsidiarySelect');
+                        if (!subSelect) {
+                            console.warn('⚠️ subsidiarySelect element not found - cannot filter dropdown');
+                            return;
+                        }
+                        
+                        // Check if we have subsidiaries
+                        if (!data.subsidiaries || data.subsidiaries.length === 0) {
+                            console.warn(`⚠️ No subsidiaries found for accounting book ${accountingBookId}`);
+                            subSelect.innerHTML = '<option value="">No subsidiaries available for this book</option>';
+                            return;
+                        }
+                        
+                        subSelect.innerHTML = '<option value="">Select Subsidiary...</option>';
+                        
+                        // Single-subsidiary book - no consolidation option
+                        if (data.isSingleSubsidiaryBook && data.subsidiaries.length === 1) {
+                            const sub = data.subsidiaries[0];
+                            const option = document.createElement('option');
+                            option.value = sub.name;
+                            option.textContent = sub.name;
+                            subSelect.appendChild(option);
+                            console.log(`   ✅ Single-subsidiary book: showing only "${sub.name}"`);
+                            return;
+                        }
+                        
+                        // Multiple subsidiaries - show with consolidation where applicable
+                        for (const sub of data.subsidiaries) {
+                            // Always show the base subsidiary
+                            const baseOption = document.createElement('option');
+                            baseOption.value = sub.name;
+                            baseOption.textContent = sub.name;
+                            subSelect.appendChild(baseOption);
                             
-                            if (data.allSubsidiaries) {
-                                // All subsidiaries are valid (shouldn't happen for non-primary books, but handle it)
-                                if (window.allSubsidiaries) {
-                                    await populateSubsidiaryDropdown(window.allSubsidiaries);
-                                }
-                            } else {
-                                // Build dropdown options from book-scoped subsidiaries
-                                const subSelect = document.getElementById('subsidiarySelect');
-                                if (subSelect) {
-                                    subSelect.innerHTML = '<option value="">Select Subsidiary...</option>';
-                                    
-                                    // Single-subsidiary book - no consolidation option
-                                    if (data.isSingleSubsidiaryBook && data.subsidiaries.length === 1) {
-                                        const sub = data.subsidiaries[0];
-                                        const option = document.createElement('option');
-                                        option.value = sub.name;
-                                        option.textContent = sub.name;
-                                        subSelect.appendChild(option);
-                                        console.log(`   Single-subsidiary book: showing only "${sub.name}"`);
-                                        return;
-                                    }
-                                    
-                                    // Multiple subsidiaries - show with consolidation where applicable
-                                    for (const sub of data.subsidiaries) {
-                                        // Always show the base subsidiary
-                                        const baseOption = document.createElement('option');
-                                        baseOption.value = sub.name;
-                                        baseOption.textContent = sub.name;
-                                        subSelect.appendChild(baseOption);
-                                        
-                                        // Show consolidated version only if canConsolidate is true
-                                        if (sub.canConsolidate) {
-                                            const consolidatedOption = document.createElement('option');
-                                            consolidatedOption.value = `${sub.name} (Consolidated)`;
-                                            consolidatedOption.textContent = `${sub.name} (Consolidated)`;
-                                            subSelect.appendChild(consolidatedOption);
-                                        }
-                                    }
-                                    
-                                    console.log(`   Filtered to ${data.subsidiaries.length} valid subsidiaries (with ${data.subsidiaries.filter(s => s.canConsolidate).length} consolidation options)`);
-                                }
+                            // Show consolidated version only if canConsolidate is true
+                            if (sub.canConsolidate) {
+                                const consolidatedOption = document.createElement('option');
+                                consolidatedOption.value = `${sub.name} (Consolidated)`;
+                                consolidatedOption.textContent = `${sub.name} (Consolidated)`;
+                                subSelect.appendChild(consolidatedOption);
                             }
                         }
+                        
+                        console.log(`   ✅ Filtered to ${data.subsidiaries.length} valid subsidiaries (with ${data.subsidiaries.filter(s => s.canConsolidate).length} consolidation options)`);
                     } catch (e) {
-                        console.warn('Could not filter subsidiaries by accounting book:', e.message);
-                        // On error, show all subsidiaries
-                        if (window.allSubsidiaries) {
-                            await populateSubsidiaryDropdown(window.allSubsidiaries);
-                        }
+                        console.error('❌ Error filtering subsidiaries by accounting book:', e.message, e);
+                        // On error, don't show all subsidiaries - keep current state
+                        // This prevents showing invalid options
                     }
                 }
                 
@@ -17047,17 +17064,83 @@ export default {
                     // Filter dropdown when user clicks/focuses on it
                     // This ensures the dropdown always shows only valid subsidiaries for the current accounting book
                     subSelect.addEventListener('focus', async function() {
+                        let accountingBookId = null;
+                        
+                        // First, try to get accounting book from task pane dropdown
                         const bookSelect = document.getElementById('accountingBookSelect');
                         if (bookSelect && bookSelect.value) {
-                            await filterSubsidiaryDropdownByAccountingBook(bookSelect.value);
+                            accountingBookId = bookSelect.value;
+                        }
+                        
+                        // Also check Excel sheet (U3) for CFO Flash Report and Income Statement
+                        // This is the source of truth for those reports
+                        try {
+                            await Excel.run(async (context) => {
+                                const sheet = context.workbook.worksheets.getActiveWorksheet();
+                                const bookCell = sheet.getRange("U3");
+                                bookCell.load("values");
+                                await context.sync();
+                                
+                                const bookValue = String(bookCell.values[0][0] || '').trim();
+                                if (bookValue && bookValue !== '1') {
+                                    accountingBookId = bookValue;
+                                    console.log(`📚 Focus handler: Found accounting book ${accountingBookId} from Excel U3`);
+                                }
+                            });
+                        } catch (e) {
+                            // Excel might not be available or U3 might not exist - that's okay
+                            console.debug('Could not read U3 from Excel:', e.message);
+                        }
+                        
+                        if (accountingBookId) {
+                            console.log(`📚 Filtering subsidiary dropdown for accounting book ${accountingBookId} (on focus)`);
+                            await filterSubsidiaryDropdownByAccountingBook(accountingBookId);
+                        } else {
+                            // No accounting book selected - show all subsidiaries
+                            console.log('📚 No accounting book selected - showing all subsidiaries');
+                            if (window.allSubsidiaries) {
+                                await populateSubsidiaryDropdown(window.allSubsidiaries);
+                            }
                         }
                     });
                     
                     // Also filter on click (for better compatibility)
                     subSelect.addEventListener('click', async function() {
+                        let accountingBookId = null;
+                        
+                        // First, try to get accounting book from task pane dropdown
                         const bookSelect = document.getElementById('accountingBookSelect');
                         if (bookSelect && bookSelect.value) {
-                            await filterSubsidiaryDropdownByAccountingBook(bookSelect.value);
+                            accountingBookId = bookSelect.value;
+                        }
+                        
+                        // Also check Excel sheet (U3) for CFO Flash Report and Income Statement
+                        try {
+                            await Excel.run(async (context) => {
+                                const sheet = context.workbook.worksheets.getActiveWorksheet();
+                                const bookCell = sheet.getRange("U3");
+                                bookCell.load("values");
+                                await context.sync();
+                                
+                                const bookValue = String(bookCell.values[0][0] || '').trim();
+                                if (bookValue && bookValue !== '1') {
+                                    accountingBookId = bookValue;
+                                    console.log(`📚 Click handler: Found accounting book ${accountingBookId} from Excel U3`);
+                                }
+                            });
+                        } catch (e) {
+                            // Excel might not be available or U3 might not exist - that's okay
+                            console.debug('Could not read U3 from Excel:', e.message);
+                        }
+                        
+                        if (accountingBookId) {
+                            console.log(`📚 Filtering subsidiary dropdown for accounting book ${accountingBookId} (on click)`);
+                            await filterSubsidiaryDropdownByAccountingBook(accountingBookId);
+                        } else {
+                            // No accounting book selected - show all subsidiaries
+                            if (window.allSubsidiaries) {
+                                await populateSubsidiaryDropdown(window.allSubsidiaries);
+                            }
                         }
                     });
                 }
