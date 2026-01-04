@@ -1,0 +1,21 @@
+# Simple Git Push Commands
+# Copy and paste these commands one at a time into your terminal
+
+cd /Users/chriscorcoran/Documents/Cursor/NetSuite-Excel-AddIn-DotNet
+
+# Check what needs to be pushed
+git status
+
+# Stage all changes
+git add -A
+
+# Commit
+git commit -m "Force GitHub Pages redeploy - version 4.0.6.65"
+
+# Push to GitHub
+git push origin main
+
+# After pushing, wait 30-60 seconds, then check:
+# https://github.com/chris-cloudextend/netusite-excel-add-in-dotnet/actions
+# You should see a new workflow run appear
+

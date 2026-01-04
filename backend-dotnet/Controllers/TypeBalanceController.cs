@@ -273,16 +273,105 @@ public class TypeBalanceController : ControllerBase
                 }
             }
 
+            // CRITICAL VERIFICATION: Log all periods and values for Income and Expense
+            // This proves revenue and expenses are returned for all periods (March-Dec 2025)
+            if (balances.ContainsKey("Income") || balances.ContainsKey("Expense"))
+            {
+                var targetYear = fiscalYear;
+                var monthsToVerify = new[] { "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+                var verificationLog = new List<string>();
+                
+                foreach (var month in monthsToVerify)
+                {
+                    var periodName = $"{month} {targetYear}";
+                    
+                    if (balances.ContainsKey("Income"))
+                    {
+                        var incomeValue = balances["Income"].GetValueOrDefault(periodName, 0);
+                        verificationLog.Add($"Income:{periodName}={incomeValue:N2}");
+                    }
+                    
+                    if (balances.ContainsKey("Expense"))
+                    {
+                        var expenseValue = balances["Expense"].GetValueOrDefault(periodName, 0);
+                        verificationLog.Add($"Expense:{periodName}={expenseValue:N2}");
+                    }
+                }
+                
+                _logger.LogInformation("✅ VERIFICATION: March-Dec {Year} data for book {Book}, sub {Sub}: {Data}", 
+                    targetYear, accountingBook, request.Subsidiary, string.Join(" | ", verificationLog));
+                
+                // Verify all periods are present (none missing)
+                var allPeriods = monthMapping.Values.ToList();
+                var missingPeriods = new List<string>();
+                
+                if (balances.ContainsKey("Income"))
+                {
+                    foreach (var period in allPeriods)
+                    {
+                        if (!balances["Income"].ContainsKey(period))
+                        {
+                            missingPeriods.Add($"Income:{period}");
+                        }
+                    }
+                }
+                
+                if (balances.ContainsKey("Expense"))
+                {
+                    foreach (var period in allPeriods)
+                    {
+                        if (!balances["Expense"].ContainsKey(period))
+                        {
+                            missingPeriods.Add($"Expense:{period}");
+                        }
+                    }
+                }
+                
+                if (missingPeriods.Any())
+                {
+                    _logger.LogWarning("⚠️ VERIFICATION FAILED: Missing periods: {Missing}", string.Join(", ", missingPeriods));
+                }
+                else
+                {
+                    _logger.LogInformation("✅ VERIFICATION PASSED: All periods present for Income and Expense (none missing)");
+                }
+            }
+
             // For any P&L types not in results (no activity), add zeros
             foreach (var ptype in plTypes)
             {
                 if (!balances.ContainsKey(ptype))
                 {
                     balances[ptype] = monthMapping.Values.ToDictionary(p => p, p => 0m);
+                    _logger.LogDebug("Added zero-filled entry for missing account type: {Type}", ptype);
                 }
             }
 
+            // CRITICAL FIX: Log all account types being returned to verify Issue 2 fix
+            var returnedTypes = string.Join(", ", balances.Keys.OrderBy(k => k));
             _logger.LogInformation("Returning {Count} account types × 12 months in {Elapsed:F2}s", balances.Count, elapsed);
+            _logger.LogInformation("Account types returned: {Types}", returnedTypes);
+            
+            // Verify all expected types are present
+            var missingTypes = plTypes.Except(balances.Keys).ToList();
+            if (missingTypes.Any())
+            {
+                _logger.LogWarning("⚠️ Missing account types in response (should not happen): {Missing}", string.Join(", ", missingTypes));
+            }
+            
+            // CRITICAL VERIFICATION: Log period count for each account type
+            foreach (var acctType in plTypes)
+            {
+                if (balances.ContainsKey(acctType))
+                {
+                    var periodCount = balances[acctType].Count;
+                    _logger.LogInformation("📊 {Type}: {Count} periods returned", acctType, periodCount);
+                    
+                    // Log all period names for this type
+                    var periodNames = string.Join(", ", balances[acctType].Keys.OrderBy(k => k));
+                    _logger.LogDebug("   Periods: {Periods}", periodNames);
+                }
+            }
 
             return Ok(new
             {

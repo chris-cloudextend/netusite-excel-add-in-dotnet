@@ -102,6 +102,64 @@ for group_dir in "${OFFICE_GROUP_DIRS[@]}"; do
     fi
 done
 
+# CRITICAL: Office.js Web Host Cache (OsfWebHost) - This is where Office.js caches add-in resources
+echo ""
+echo "🌐 Clearing Office.js Web Host Cache (OsfWebHost) - CRITICAL for add-in updates..."
+OSFWEBHOST_DIRS=(
+    "$HOME/Library/Containers/com.Microsoft.OsfWebHost"
+    "$HOME/Library/Containers/com.microsoft.OsfWebHost"
+)
+
+for osf_dir in "${OSFWEBHOST_DIRS[@]}"; do
+    if [ -d "$osf_dir" ]; then
+        echo "   Removing: $osf_dir"
+        rm -rf "$osf_dir" 2>/dev/null || {
+            echo "   ⚠️  Permission denied for some files (this is normal on macOS)"
+            echo "   Clearing accessible files only..."
+            # Try to clear Data folder specifically (contains cached resources)
+            if [ -d "$osf_dir/Data" ]; then
+                rm -rf "$osf_dir/Data"/* 2>/dev/null || true
+            fi
+        }
+    fi
+done
+
+# Excel Container - Additional cache locations
+echo ""
+echo "📦 Clearing Excel Container caches (add-in metadata and resources)..."
+EXCEL_CONTAINER_CACHES=(
+    "$HOME/Library/Containers/com.microsoft.Excel/Data/Library/Caches"
+    "$HOME/Library/Containers/com.microsoft.Excel/Data/Library/Application Support/Microsoft/Office/16.0/Wef"
+    "$HOME/Library/Containers/com.microsoft.Excel/Data/Library/Application Support/Microsoft/Office/16.0/Wef/CustomFunctions"
+    "$HOME/Library/Containers/com.microsoft.Excel/Data/Library/Application Support/Microsoft/Office/16.0/Wef/AppCommands"
+)
+
+for cache_path in "${EXCEL_CONTAINER_CACHES[@]}"; do
+    if [ -d "$cache_path" ]; then
+        echo "   Removing: $cache_path"
+        rm -rf "$cache_path" 2>/dev/null || {
+            echo "   ⚠️  Permission denied (this is normal on macOS)"
+        }
+    fi
+done
+
+# Office 365 Service Cache
+echo ""
+echo "☁️  Clearing Office 365 Service Cache..."
+OFFICE365_CACHES=(
+    "$HOME/Library/Containers/com.microsoft.Office365ServiceV2/Data/Caches/com.microsoft.Office365ServiceV2"
+    "$HOME/Library/Containers/com.microsoft.Office365ServiceV2/Data/Caches"
+)
+
+for cache_path in "${OFFICE365_CACHES[@]}"; do
+    if [ -d "$cache_path" ]; then
+        echo "   Removing: $cache_path"
+        rm -rf "$cache_path" 2>/dev/null || {
+            echo "   ⚠️  Permission denied (this is normal on macOS)"
+        }
+    fi
+done
+
 # Excel Preferences (optional - only if you want to reset all Excel settings)
 echo ""
 echo "⚙️  Note: Excel preferences are NOT cleared (to preserve your settings)"
@@ -110,18 +168,28 @@ echo "   ~/Library/Preferences/com.microsoft.Excel.plist"
 
 echo ""
 echo "=========================================="
-echo "✅ Excel Cache Clear Complete!"
+echo "✅ Cache clearing complete!"
 echo "=========================================="
 echo ""
-echo "Cleared:"
-echo "  - Excel caches"
-echo "  - Excel containers (including add-in data and WEF folder)"
-echo "  - Excel saved application state"
-echo "  - Office group containers (shared add-in data)"
+echo "📋 Summary of cleared locations:"
+echo "   ✅ Excel caches"
+echo "   ✅ Excel containers (including WEF folder)"
+echo "   ✅ Excel saved application state"
+echo "   ✅ Office group containers"
+echo "   ✅ Office.js Web Host Cache (OsfWebHost) - CRITICAL"
+echo "   ✅ Excel container caches (WEF metadata)"
+echo "   ✅ Office 365 Service Cache"
 echo ""
-echo "Next steps:"
-echo "  1. Restart Excel (if it was running, close and reopen)"
-echo "  2. Re-add your Excel add-in from the manifest"
-echo "  3. Test the new version (4.0.2.3)"
+echo "⚠️  IMPORTANT: If Excel is running, you MUST:"
+echo "   1. Quit Excel completely (Cmd+Q, not just close window)"
+echo "   2. Wait 5 seconds"
+echo "   3. Reopen Excel"
+echo "   4. Re-add your add-in from the manifest"
+echo ""
+echo "💡 If the version still shows incorrectly:"
+echo "   1. Remove the add-in from Excel (Insert > My Add-ins > ... > Remove)"
+echo "   2. Copy manifest.xml to: ~/Library/Containers/com.microsoft.Excel/Data/Documents/wef/"
+echo "   3. Restart Excel"
+echo "   4. Insert > My Add-ins > Developer > Add from File"
 echo ""
 

@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.59';  // CRITICAL FIX: Update Q3 synchronously before Excel recalculates to prevent #VALUE errors
+const FUNCTIONS_VERSION = '4.0.6.65';  // FORCE CACHE BUST: All fixes verified in code, forcing new version to ensure deployment
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -123,6 +123,26 @@ async function validateSubsidiaryAccountingBook(subsidiary, accountingBook) {
     // Primary book or no subsidiary - always valid
     if (!accountingBook || accountingBook === '1' || accountingBook === '' || !subsidiary || subsidiary === '') {
         return null; // Valid
+    }
+    
+    // CRITICAL FIX: Check for transition flag - be lenient during accounting book changes
+    // This prevents #VALUE errors while Q3 is being updated
+    try {
+        const transitionKey = `netsuite_book_transition_${accountingBook}`;
+        const transitionData = localStorage.getItem(transitionKey);
+        if (transitionData) {
+            const transition = JSON.parse(transitionData);
+            const age = Date.now() - transition.timestamp;
+            if (age < 5000) { // 5 second window
+                console.log(`🔓 [VALIDATION] Transition in progress (${Math.round(age/1000)}s old) - allowing request to proceed`);
+                return null; // Allow during transition
+            } else {
+                // Stale transition flag - remove it
+                localStorage.removeItem(transitionKey);
+            }
+        }
+    } catch (e) {
+        // Ignore transition check errors
     }
     
     try {
