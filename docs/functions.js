@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.69';  // FIX: Overlay dismissal, timing calculation, revenue write-back
+const FUNCTIONS_VERSION = '4.0.6.70';  // DEBUG: Added comprehensive logging for overlay, timing, and revenue issues
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -10387,13 +10387,41 @@ async function TYPEBALANCE(accountType, fromPeriod, toPeriod, subsidiary, depart
                 cacheKeyFound = false;
                 
                 // CRITICAL DEBUG: Log sample keys to help diagnose cache key mismatches
-                const sampleKeys = Object.keys(storedBalances).filter(k => k.includes(normalizedType)).slice(0, 5);
-                console.log(`🔍 TYPEBALANCE cache MISS: Looking for "${cacheKey}"`);
+                console.log('╔══════════════════════════════════════════════════════════════╗');
+                console.log('║  [REVENUE DEBUG] TYPEBALANCE cache MISS                      ║');
+                console.log('╚══════════════════════════════════════════════════════════════╝');
+                console.log(`   Looking for key: "${cacheKey}"`);
+                console.log(`   Account type: "${normalizedType}"`);
+                console.log(`   From period: "${convertedFromPeriod}"`);
+                console.log(`   To period: "${convertedToPeriod}"`);
+                console.log(`   Subsidiary: "${subsidiaryStr}"`);
+                console.log(`   Book: "${bookStr}"`);
+                console.log(`   Total keys in cache: ${localStorageKeyCount}`);
+                
+                const sampleKeys = Object.keys(storedBalances).filter(k => k.includes(normalizedType)).slice(0, 10);
                 console.log(`   Sample keys in cache (filtered by "${normalizedType}"):`, sampleKeys);
                 if (sampleKeys.length > 0) {
                     console.log(`   First sample key: "${sampleKeys[0]}"`);
                     console.log(`   Our key:          "${cacheKey}"`);
                     console.log(`   Match: ${sampleKeys[0] === cacheKey ? 'YES ✅' : 'NO ❌'}`);
+                    
+                    // Show character-by-character comparison for first key
+                    if (sampleKeys[0] !== cacheKey) {
+                        console.log(`   Character comparison:`);
+                        const sample = sampleKeys[0];
+                        const ours = cacheKey;
+                        const minLen = Math.min(sample.length, ours.length);
+                        for (let i = 0; i < minLen; i++) {
+                            if (sample[i] !== ours[i]) {
+                                console.log(`     First diff at position ${i}: sample="${sample[i]}" (${sample.charCodeAt(i)}), ours="${ours[i]}" (${ours.charCodeAt(i)})`);
+                                console.log(`     Sample context: "${sample.substring(Math.max(0, i-10), i+10)}"`);
+                                console.log(`     Our context:    "${ours.substring(Math.max(0, i-10), i+10)}"`);
+                                break;
+                            }
+                        }
+                    }
+                } else {
+                    console.log(`   ⚠️ No keys found for account type "${normalizedType}" in cache!`);
                 }
                 
                 localStorageStatus = `has ${localStorageKeyCount} keys but NOT our key`;

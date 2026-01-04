@@ -5926,7 +5926,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.69"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.70"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -17871,6 +17871,13 @@ export default {
                     
                     // CRITICAL FIX Issue 1: Show progress overlay IMMEDIATELY (not after 30 second delay)
                     // This gives immediate visual feedback that something is happening
+                    console.log('╔══════════════════════════════════════════════════════════════╗');
+                    console.log('║  [OVERLAY DEBUG] Creating bookChangeOverlay                   ║');
+                    console.log('╚══════════════════════════════════════════════════════════════╝');
+                    console.log(`   Timestamp: ${new Date().toISOString()}`);
+                    console.log(`   Previous U3: "${previousU3Value || '(initial)'}"`);
+                    console.log(`   Current U3: "${currentU3Value}"`);
+                    
                     const syncOverlay = document.createElement('div');
                     syncOverlay.id = 'bookChangeOverlay';
                     syncOverlay.className = 'guide-me-overlay';
@@ -17888,7 +17895,9 @@ export default {
                         </div>
                     `;
                     document.body.appendChild(syncOverlay);
-                    console.log('✅ [FIX] Progress overlay shown IMMEDIATELY');
+                    console.log('✅ [OVERLAY DEBUG] bookChangeOverlay CREATED and appended to DOM');
+                    console.log(`   Element ID: ${syncOverlay.id}`);
+                    console.log(`   Element exists in DOM: ${document.getElementById('bookChangeOverlay') !== null}`);
                     
                     try {
                         // CRITICAL: Clear caches FIRST to prevent formulas from using stale data
@@ -19811,11 +19820,13 @@ export default {
                                     
                                     cacheEntries[cacheKey] = value || 0;
                                     
-                                    // DEBUG: Log first Income key for verification
-                                    if (acctType === 'Income' && normalizedPeriod === 'Jan 2025') {
-                                        console.log(`🔍 [DEBUG] First Income cache key: "${cacheKey}"`);
-                                        console.log(`   Original period: "${period}", Normalized: "${normalizedPeriod}"`);
-                                        console.log(`   Subsidiary: "${(currentSubsidiary || '').trim()}", Book: "${String(accountingBook || '').trim()}"`);
+                                    // CRITICAL DEBUG: Log ALL Income keys for revenue debugging
+                                    if (acctType === 'Income') {
+                                        console.log(`🔍 [REVENUE DEBUG] Income cache key: "${cacheKey}" = ${value || 0}`);
+                                        console.log(`   Period: "${period}" → "${normalizedPeriod}"`);
+                                        console.log(`   Subsidiary: "${(currentSubsidiary || '').trim()}"`);
+                                        console.log(`   Book: "${String(accountingBook || '').trim()}"`);
+                                        console.log(`   Value: ${value || 0}`);
                                     }
                                 }
                             }
@@ -20042,6 +20053,14 @@ export default {
                         const recalculationStartTime = Date.now();
                         const timeSinceCacheReady = recalculationStartTime - cacheReadyTime;
                         console.log(`   ⏱️ Time from cache ready to recalculation: ${timeSinceCacheReady}ms`);
+                        
+                        console.log('╔══════════════════════════════════════════════════════════════╗');
+                        console.log('║  [REVENUE DEBUG] Starting formula recalculation               ║');
+                        console.log('╚══════════════════════════════════════════════════════════════╝');
+                        console.log(`   Timestamp: ${new Date().toISOString()}`);
+                        console.log(`   Cache entries: ${Object.keys(cacheEntries).length}`);
+                        console.log(`   Income cache keys: ${Object.keys(cacheEntries).filter(k => k.includes(':Income:')).length}`);
+                        
                         try {
                             await Excel.run(async (context) => {
                                 const sheet = context.workbook.worksheets.getActiveWorksheet();
@@ -20068,17 +20087,25 @@ export default {
                                     }
                                 }
                                 
+                                console.log(`✅ [REVENUE DEBUG] Found ${typebalanceCount} TYPEBALANCE formulas`);
+                                console.log(`   Sample formulas (first 3):`, typebalanceCells.slice(0, 3).map(c => c.formula.substring(0, 50) + '...'));
+                                
                                 // Clear all TYPEBALANCE formulas first
+                                console.log(`🔄 [REVENUE DEBUG] Clearing ${typebalanceCount} formulas...`);
                                 for (const { cell } of typebalanceCells) {
                                     cell.clear();
                                 }
                                 await context.sync();
+                                console.log(`✅ [REVENUE DEBUG] All formulas CLEARED`);
                                 
                                 // Now re-set all formulas to trigger recalculation (Excel will read from cache)
+                                console.log(`🔄 [REVENUE DEBUG] Re-setting ${typebalanceCount} formulas...`);
                                 for (const { cell, formula } of typebalanceCells) {
                                     cell.formulas = [[formula]];
                                 }
                                 await context.sync();
+                                console.log(`✅ [REVENUE DEBUG] All formulas RE-SET - Excel should now recalculate`);
+                                
                                 const recalculationEndTime = Date.now();
                                 const recalculationDuration = recalculationEndTime - recalculationStartTime;
                                 
@@ -20143,33 +20170,78 @@ export default {
                 }
                 
                 // Remove ALL overlays (both structureSyncOverlay and bookChangeOverlay)
+                console.log('╔══════════════════════════════════════════════════════════════╗');
+                console.log('║  [OVERLAY DEBUG] CFO Sync complete - removing overlays         ║');
+                console.log('╚══════════════════════════════════════════════════════════════╝');
+                console.log(`   Timestamp: ${new Date().toISOString()}`);
+                
                 const syncOverlayEl = document.getElementById('structureSyncOverlay');
                 if (syncOverlayEl) {
+                    console.log('✅ [OVERLAY DEBUG] Found structureSyncOverlay - removing...');
                     syncOverlayEl.style.opacity = '0';
                     syncOverlayEl.style.transition = 'opacity 0.3s ease';
-                    setTimeout(() => syncOverlayEl.remove(), 300);
+                    setTimeout(() => {
+                        syncOverlayEl.remove();
+                        console.log('✅ [OVERLAY DEBUG] structureSyncOverlay REMOVED from DOM');
+                    }, 300);
+                } else {
+                    console.log('⚠️ [OVERLAY DEBUG] structureSyncOverlay NOT FOUND in DOM');
                 }
+                
                 // CRITICAL FIX Issue 1: Also remove bookChangeOverlay if it exists
                 const bookChangeOverlayEl = document.getElementById('bookChangeOverlay');
                 if (bookChangeOverlayEl) {
+                    console.log('✅ [OVERLAY DEBUG] Found bookChangeOverlay - removing...');
                     bookChangeOverlayEl.style.opacity = '0';
                     bookChangeOverlayEl.style.transition = 'opacity 0.3s ease';
-                    setTimeout(() => bookChangeOverlayEl.remove(), 300);
-                    console.log('✅ Removed bookChangeOverlay after CFO Sync complete');
+                    setTimeout(() => {
+                        bookChangeOverlayEl.remove();
+                        console.log('✅ [OVERLAY DEBUG] bookChangeOverlay REMOVED from DOM');
+                        // Verify it's actually gone
+                        const verify = document.getElementById('bookChangeOverlay');
+                        if (verify) {
+                            console.error('❌ [OVERLAY DEBUG] bookChangeOverlay STILL EXISTS after removal!');
+                        } else {
+                            console.log('✅ [OVERLAY DEBUG] Verified: bookChangeOverlay is GONE from DOM');
+                        }
+                    }, 300);
+                } else {
+                    console.log('ℹ️ [OVERLAY DEBUG] bookChangeOverlay NOT FOUND (may have been removed already)');
                 }
+                
                 const syncStyle = document.getElementById('syncPulseStyle');
-                if (syncStyle) syncStyle.remove();
+                if (syncStyle) {
+                    syncStyle.remove();
+                    console.log('✅ [OVERLAY DEBUG] syncPulseStyle removed');
+                }
                 
                 // Keep suppressStatusBar true - dismissReportSuccess will handle it
                 localStorage.removeItem('netsuite_status');
                 hideStatus();
                 
                 // CRITICAL FIX Issue 2: Calculate elapsed time from actual sync start (syncStartTimestamp)
-                // syncStartTimestamp is set at the very beginning of performCFOSync
+                // syncStartTimestamp is set at the very beginning of performCFOSync (line 19603)
                 // syncStartTime might be set later, causing incorrect timing
                 const elapsedSeconds = ((Date.now() - syncStartTimestamp) / 1000).toFixed(1);
+                console.log('╔══════════════════════════════════════════════════════════════╗');
+                console.log('║  [TIMING DEBUG] Calculating elapsed time                     ║');
+                console.log('╚══════════════════════════════════════════════════════════════╝');
+                console.log(`   syncStartTimestamp: ${new Date(syncStartTimestamp).toISOString()}`);
+                console.log(`   Current time: ${new Date().toISOString()}`);
+                console.log(`   Elapsed: ${elapsedSeconds} seconds`);
+                console.log(`   syncStartTimestamp value: ${syncStartTimestamp}`);
+                console.log(`   Date.now() value: ${Date.now()}`);
+                console.log(`   Difference: ${Date.now() - syncStartTimestamp}ms`);
                 
                 // Show success overlay
+                console.log('╔══════════════════════════════════════════════════════════════╗');
+                console.log('║  [SUCCESS DEBUG] Showing success overlay                     ║');
+                console.log('╚══════════════════════════════════════════════════════════════╝');
+                console.log(`   Elapsed time: ${elapsedSeconds} seconds`);
+                console.log(`   Year: ${targetYear}`);
+                console.log(`   Subsidiary: "${currentSubsidiary}"`);
+                console.log(`   Accounting Book: "${accountingBook || '1'}"`);
+                
                 showReportSuccessOverlay('CFO Flash Sync', {
                     totalAccounts: 5,
                     elapsedTime: elapsedSeconds,
@@ -20189,7 +20261,22 @@ export default {
                     customHeader: `${currencyFlag} ${currentSubsidiary || 'All Subsidiaries'}`
                 });
                 
+                console.log(`✅ [SUCCESS DEBUG] Success overlay shown`);
                 console.log(`✅ CFO Sync complete for ${targetYear}`);
+                
+                // CRITICAL DEBUG: Verify overlays are gone
+                setTimeout(() => {
+                    const checkStructure = document.getElementById('structureSyncOverlay');
+                    const checkBook = document.getElementById('bookChangeOverlay');
+                    console.log('╔══════════════════════════════════════════════════════════════╗');
+                    console.log('║  [OVERLAY DEBUG] Post-success overlay check (2 seconds later) ║');
+                    console.log('╚══════════════════════════════════════════════════════════════╝');
+                    console.log(`   structureSyncOverlay exists: ${checkStructure !== null ? '❌ YES (SHOULD BE GONE!)' : '✅ NO (correct)'}`);
+                    console.log(`   bookChangeOverlay exists: ${checkBook !== null ? '❌ YES (SHOULD BE GONE!)' : '✅ NO (correct)'}`);
+                    if (checkStructure || checkBook) {
+                        console.error('❌ [OVERLAY DEBUG] OVERLAYS STILL EXIST - THIS IS THE BUG!');
+                    }
+                }, 2000);
                 
                 // Double-tap auto-fit after currency formatting to ensure widths apply on Mac
                 try {

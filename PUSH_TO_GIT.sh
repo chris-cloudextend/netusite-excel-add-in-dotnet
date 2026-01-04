@@ -18,7 +18,7 @@ git add -A
 
 echo ""
 echo "3. Committing changes..."
-git commit -m "FIX: Progress overlay dismissal, timing calculation, revenue write-back - v4.0.6.69"
+git commit -m "DEBUG: Added comprehensive logging for overlay, timing, and revenue issues - v4.0.6.70"
 
 echo ""
 echo "4. Pushing to GitHub..."
