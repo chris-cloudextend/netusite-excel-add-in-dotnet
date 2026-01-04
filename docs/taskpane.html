@@ -5926,7 +5926,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.65"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.67"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -17836,7 +17836,33 @@ export default {
                 // CRITICAL: For U3 changes, validate and update Q3 IMMEDIATELY (no debounce)
                 // This prevents Excel formulas from firing with invalid combinations
                 if (isAccountingBookChange) {
-                    console.log('📚 U3 (Accounting Book) changed - validating and updating Q3 IMMEDIATELY...');
+                    // CRITICAL FIX Issue 1: Only show overlay if value actually changed (not on initial load)
+                    let currentU3Value = null;
+                    try {
+                        await Excel.run(async (context) => {
+                            const sheet = context.workbook.worksheets.getActiveWorksheet();
+                            const bookCell = sheet.getRange("U3");
+                            bookCell.load("values");
+                            await context.sync();
+                            currentU3Value = String(bookCell.values[0][0] || '').trim();
+                        });
+                    } catch (e) {
+                        console.warn('⚠️ Could not read U3 value:', e.message);
+                    }
+                    
+                    // Only proceed if value actually changed (not initial load)
+                    if (currentU3Value !== null && currentU3Value === lastU3Value) {
+                        console.log(`📚 U3 value unchanged (${currentU3Value}) - skipping overlay (likely initial load)`);
+                        // Still filter dropdown but don't show overlay
+                        if (window.filterSubsidiaryDropdownByAccountingBook) {
+                            await window.filterSubsidiaryDropdownByAccountingBook(currentU3Value);
+                        }
+                        return; // Exit early - no actual change
+                    }
+                    
+                    // Value changed - update tracking and show overlay
+                    lastU3Value = currentU3Value;
+                    console.log(`📚 U3 (Accounting Book) changed from "${lastU3Value}" to "${currentU3Value}" - validating and updating Q3 IMMEDIATELY...`);
                     
                     // CRITICAL FIX Issue 1: Show progress overlay IMMEDIATELY (not after 30 second delay)
                     // This gives immediate visual feedback that something is happening
@@ -19535,6 +19561,13 @@ export default {
                         if (refreshStatus) {
                             refreshStatus.innerHTML = '';
                         }
+                        // CRITICAL FIX Issue 1: Remove overlay if it still exists
+                        const overlay = document.getElementById('bookChangeOverlay');
+                        if (overlay) {
+                            overlay.style.opacity = '0';
+                            overlay.style.transition = 'opacity 0.3s ease';
+                            setTimeout(() => overlay.remove(), 300);
+                        }
                     }
                 } else {
                     // No sync needed - still clear any stale status
@@ -19733,8 +19766,10 @@ export default {
                         console.log(`\n✅ CFO Sync: Pre-fetched ${typesLoaded} account types`);
                         
                         // Save to localStorage for functions.js to use
+                        // CRITICAL FIX: Declare cacheEntries outside try block so it's accessible for simulation proof
+                        let cacheEntries = {};
                         try {
-                            const cacheEntries = {};
+                            cacheEntries = {}; // Re-initialize inside try
                             const specialFlag = '0';
                             
                             // Use actual period names from the balances data (not hardcoded months)
@@ -19753,9 +19788,30 @@ export default {
                                     // Format: typebalance:${type}:${fromPeriod}:${toPeriod}:${subsidiary}:${dept}:${loc}:${class}:${book}:${specialFlag}
                                     // IMPORTANT: Must trim all values - TYPEBALANCE function uses .trim() on all parameters
                                     // Convert accountingBook to string first (it might be a number)
-                                    const cacheKey = `typebalance:${acctType}:${period}:${period}:${(currentSubsidiary || '').trim()}:${(department || '').trim()}:${(location || '').trim()}:${(classId || '').trim()}:${String(accountingBook || '').trim()}:${specialFlag}`;
+                                    // CRITICAL FIX: Normalize period to match TYPEBALANCE function normalization
+                                    // TYPEBALANCE uses normalizePeriodKey which normalizes case: "JAN 2025" → "Jan 2025"
+                                    // We must do the same normalization here to ensure cache keys match!
+                                    let normalizedPeriod = period.trim();
+                                    // Normalize month case: "JAN 2025" → "Jan 2025", "jan 2025" → "Jan 2025"
+                                    if (/^[A-Za-z]{3}\s+\d{4}$/.test(normalizedPeriod)) {
+                                        const parts = normalizedPeriod.split(/\s+/);
+                                        if (parts.length === 2) {
+                                            const month = parts[0];
+                                            const year = parts[1];
+                                            const normalizedMonth = month.charAt(0).toUpperCase() + month.slice(1).toLowerCase();
+                                            normalizedPeriod = `${normalizedMonth} ${year}`;
+                                        }
+                                    }
+                                    const cacheKey = `typebalance:${acctType}:${normalizedPeriod}:${normalizedPeriod}:${(currentSubsidiary || '').trim()}:${(department || '').trim()}:${(location || '').trim()}:${(classId || '').trim()}:${String(accountingBook || '').trim()}:${specialFlag}`;
                                     
                                     cacheEntries[cacheKey] = value || 0;
+                                    
+                                    // DEBUG: Log first Income key for verification
+                                    if (acctType === 'Income' && normalizedPeriod === 'Jan 2025') {
+                                        console.log(`🔍 [DEBUG] First Income cache key: "${cacheKey}"`);
+                                        console.log(`   Original period: "${period}", Normalized: "${normalizedPeriod}"`);
+                                        console.log(`   Subsidiary: "${(currentSubsidiary || '').trim()}", Book: "${String(accountingBook || '').trim()}"`);
+                                    }
                                 }
                             }
                             
@@ -19910,6 +19966,21 @@ export default {
                         const cacheReadyTime = Date.now();
                         await new Promise(resolve => setTimeout(resolve, 200));
                         const cacheWaitTime = Date.now() - cacheReadyTime;
+                        
+                        // CRITICAL FIX: Read cacheEntries from localStorage if not in scope (fallback)
+                        if (!cacheEntries || Object.keys(cacheEntries).length === 0) {
+                            try {
+                                const cachedData = localStorage.getItem('netsuite_typebalance_cache');
+                                if (cachedData) {
+                                    const parsed = JSON.parse(cachedData);
+                                    cacheEntries = parsed.balances || {};
+                                    console.log(`📦 Loaded cacheEntries from localStorage: ${Object.keys(cacheEntries).length} entries`);
+                                }
+                            } catch (e) {
+                                console.warn('⚠️ Could not load cacheEntries from localStorage:', e.message);
+                                cacheEntries = {}; // Fallback to empty object
+                            }
+                        }
                         
                         // SIMULATION PROOF: Log detailed cache state for Revenue (Income) for all 2025 periods
                         console.log(`╔══════════════════════════════════════════════════════════════╗`);

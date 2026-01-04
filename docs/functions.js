@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.65';  // FORCE CACHE BUST: All fixes verified in code, forcing new version to ensure deployment
+const FUNCTIONS_VERSION = '4.0.6.67';  // FIX: Period normalization in cache keys to match TYPEBALANCE function
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -10385,6 +10385,17 @@ async function TYPEBALANCE(accountType, fromPeriod, toPeriod, subsidiary, depart
                     return storedBalances[cacheKey];
                 }
                 cacheKeyFound = false;
+                
+                // CRITICAL DEBUG: Log sample keys to help diagnose cache key mismatches
+                const sampleKeys = Object.keys(storedBalances).filter(k => k.includes(normalizedType)).slice(0, 5);
+                console.log(`🔍 TYPEBALANCE cache MISS: Looking for "${cacheKey}"`);
+                console.log(`   Sample keys in cache (filtered by "${normalizedType}"):`, sampleKeys);
+                if (sampleKeys.length > 0) {
+                    console.log(`   First sample key: "${sampleKeys[0]}"`);
+                    console.log(`   Our key:          "${cacheKey}"`);
+                    console.log(`   Match: ${sampleKeys[0] === cacheKey ? 'YES ✅' : 'NO ❌'}`);
+                }
+                
                 localStorageStatus = `has ${localStorageKeyCount} keys but NOT our key`;
             } else {
                 localStorageStatus = 'EMPTY (no data from taskpane)';
