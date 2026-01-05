@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.77';  // FIX: Guard clause with state-based logic to prevent poisoned cache during book changes
+const FUNCTIONS_VERSION = '4.0.6.79';  // FIX: User-driven modal dialog for subsidiary selection (eliminates timing issues)
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================

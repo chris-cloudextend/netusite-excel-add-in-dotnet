@@ -159,12 +159,13 @@ public class TypeBalanceController : ControllerBase
                 var colName = monthAbbr == "dec" ? "dec_month" : monthAbbr;
                 
                 // CRITICAL FIX: Handle NULL from BUILTIN.CONSOLIDATE (can return NULL for single subsidiary)
-                // Use COALESCE to default to TO_NUMBER(tal.amount) if consolidation returns NULL
+                // Use COALESCE to default to tal.amount (not TO_NUMBER) if consolidation returns NULL
+                // Note: tal.amount is already a number, so we don't need TO_NUMBER on the fallback
                 monthCases.Add($@"
                     SUM(CASE WHEN t.postingperiod = {periodId} THEN 
                         COALESCE(
                             TO_NUMBER(BUILTIN.CONSOLIDATE(tal.amount, 'LEDGER', 'DEFAULT', 'DEFAULT', {targetSub}, t.postingperiod, 'DEFAULT')),
-                            TO_NUMBER(tal.amount)
+                            tal.amount
                         )
                         * CASE WHEN a.accttype IN ({incomeTypesSql}) THEN -1 ELSE 1 END
                     ELSE 0 END) AS {colName}");

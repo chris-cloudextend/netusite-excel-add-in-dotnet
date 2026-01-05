@@ -3919,6 +3919,136 @@ For licensing inquiries, contact: legal@celigo.com
         }
 
         /* ================================================================
+           SUBSIDIARY SELECTION MODAL - User-driven approach
+           ================================================================ */
+        .subsidiary-selection-modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.75);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 10000;
+            animation: fadeIn 0.2s ease-out;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+
+        .subsidiary-selection-dialog {
+            background: var(--deep-dive);
+            border-radius: 12px;
+            padding: 28px 32px;
+            max-width: 500px;
+            width: 90%;
+            text-align: left;
+            border: 1px solid rgba(59, 130, 246, 0.2);
+            box-shadow: 0 12px 32px rgba(0, 0, 0, 0.3), 0 4px 12px rgba(0, 0, 0, 0.2);
+            animation: dialogSlideIn 0.2s ease-out;
+        }
+
+        .subsidiary-selection-dialog h3 {
+            color: white;
+            margin: 0 0 8px 0;
+            font-size: 18px;
+            font-weight: 600;
+            line-height: 1.4;
+        }
+
+        .subsidiary-selection-dialog p {
+            color: var(--chrome);
+            font-size: 13px;
+            line-height: 1.6;
+            margin: 0 0 20px 0;
+        }
+
+        .subsidiary-selection-dialog .book-name {
+            color: var(--anenome);
+            font-weight: 600;
+        }
+
+        .subsidiary-selection-dialog select {
+            width: 100%;
+            padding: 10px 12px;
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            border-radius: 6px;
+            color: white;
+            font-size: 14px;
+            margin-bottom: 20px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .subsidiary-selection-dialog select:hover {
+            background: rgba(255, 255, 255, 0.12);
+            border-color: rgba(255, 255, 255, 0.25);
+        }
+
+        .subsidiary-selection-dialog select:focus {
+            outline: none;
+            border-color: var(--anenome);
+            background: rgba(255, 255, 255, 0.12);
+        }
+
+        .subsidiary-selection-dialog select option {
+            background: var(--deep-dive);
+            color: white;
+            padding: 8px;
+        }
+
+        .subsidiary-selection-buttons {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+        }
+
+        .subsidiary-selection-btn {
+            padding: 10px 24px;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            border: none;
+            transition: all 0.2s;
+            min-width: 100px;
+        }
+
+        .subsidiary-selection-btn.cancel {
+            background: rgba(255, 255, 255, 0.08);
+            color: var(--chrome);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+        }
+
+        .subsidiary-selection-btn.cancel:hover {
+            background: rgba(255, 255, 255, 0.12);
+            color: white;
+        }
+
+        .subsidiary-selection-btn.continue {
+            background: var(--anenome);
+            color: var(--deep-dive);
+        }
+
+        .subsidiary-selection-btn.continue:hover {
+            background: #0ae2c1;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(10, 226, 193, 0.25);
+        }
+
+        .subsidiary-selection-btn.continue:disabled {
+            background: rgba(10, 226, 193, 0.3);
+            color: rgba(0, 0, 0, 0.5);
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        /* ================================================================
            VIEW MODE TOGGLE - Progressive Disclosure
            ================================================================ */
         .view-mode-toggle {
@@ -5926,7 +6056,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.77"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.79"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -16925,6 +17055,111 @@ export default {
                     });
                 }
                 
+                // ================================================================
+                // SUBSIDIARY SELECTION MODAL - User-driven approach
+                // ================================================================
+                /**
+                 * Show a modal dialog asking user to select a subsidiary for the accounting book.
+                 * This replaces the automatic update approach to avoid timing issues.
+                 * 
+                 * @param {string} accountingBookId - The accounting book ID
+                 * @param {string} accountingBookName - The accounting book display name
+                 * @param {string} currentSubsidiary - The current subsidiary (may be invalid)
+                 * @param {Array} enabledSubsidiaries - List of subsidiaries valid for this book
+                 * @returns {Promise<string|null>} - Selected subsidiary name, or null if cancelled
+                 */
+                async function showSubsidiarySelectionModal(accountingBookId, accountingBookName, currentSubsidiary, enabledSubsidiaries) {
+                    return new Promise((resolve) => {
+                        console.log('╔══════════════════════════════════════════════════════════════╗');
+                        console.log('║  📚 Showing Subsidiary Selection Modal                       ║');
+                        console.log('╚══════════════════════════════════════════════════════════════╝');
+                        console.log(`   Accounting Book: ${accountingBookId} (${accountingBookName})`);
+                        console.log(`   Current Subsidiary: "${currentSubsidiary}"`);
+                        console.log(`   Enabled Subsidiaries: ${enabledSubsidiaries.length}`);
+                        
+                        // Create modal overlay
+                        const modal = document.createElement('div');
+                        modal.className = 'subsidiary-selection-modal';
+                        modal.id = 'subsidiarySelectionModal';
+                        
+                        // Build dropdown options
+                        let dropdownOptions = '<option value="">-- Select Subsidiary --</option>';
+                        if (enabledSubsidiaries.length === 0) {
+                            dropdownOptions = '<option value="">No subsidiaries available for this book</option>';
+                        } else {
+                            for (const sub of enabledSubsidiaries) {
+                                // Always show the base subsidiary
+                                const isCurrent = sub.name === currentSubsidiary || 
+                                                 (currentSubsidiary && currentSubsidiary.replace(/\s*\(Consolidated\)\s*$/i, '').trim() === sub.name);
+                                dropdownOptions += `<option value="${sub.name}" ${isCurrent ? 'selected' : ''}>${sub.name}</option>`;
+                                
+                                // Show consolidated version only if canConsolidate is true
+                                if (sub.canConsolidate) {
+                                    const consolidatedName = `${sub.name} (Consolidated)`;
+                                    const isCurrentConsolidated = consolidatedName === currentSubsidiary;
+                                    dropdownOptions += `<option value="${consolidatedName}" ${isCurrentConsolidated ? 'selected' : ''}>${consolidatedName}</option>`;
+                                }
+                            }
+                        }
+                        
+                        // Create dialog content
+                        modal.innerHTML = `
+                            <div class="subsidiary-selection-dialog" onclick="event.stopPropagation()">
+                                <h3>📚 Select Subsidiary</h3>
+                                <p>
+                                    Please select a subsidiary that is enabled for <span class="book-name">${accountingBookName}</span>.
+                                    ${currentSubsidiary ? `<br><br><em>Current selection "${currentSubsidiary}" may not be valid for this accounting book.</em>` : ''}
+                                </p>
+                                <select id="modalSubsidiarySelect" class="subsidiary-select">
+                                    ${dropdownOptions}
+                                </select>
+                                <div class="subsidiary-selection-buttons">
+                                    <button class="subsidiary-selection-btn cancel" onclick="window.closeSubsidiarySelectionModal(null)">Cancel</button>
+                                    <button class="subsidiary-selection-btn continue" id="modalContinueBtn" onclick="window.closeSubsidiarySelectionModal(document.getElementById('modalSubsidiarySelect').value)" disabled>Continue</button>
+                                </div>
+                            </div>
+                        `;
+                        
+                        // Add to DOM
+                        document.body.appendChild(modal);
+                        
+                        // Enable/disable Continue button based on selection
+                        const selectEl = document.getElementById('modalSubsidiarySelect');
+                        const continueBtn = document.getElementById('modalContinueBtn');
+                        
+                        selectEl.addEventListener('change', function() {
+                            continueBtn.disabled = !this.value || this.value === '';
+                        });
+                        
+                        // Auto-enable if current subsidiary is pre-selected
+                        if (selectEl.value) {
+                            continueBtn.disabled = false;
+                        }
+                        
+                        // Close on overlay click (cancel)
+                        modal.addEventListener('click', function(e) {
+                            if (e.target === modal) {
+                                window.closeSubsidiarySelectionModal(null);
+                            }
+                        });
+                        
+                        // Global function to close modal and resolve promise
+                        window.closeSubsidiarySelectionModal = function(selectedSubsidiary) {
+                            console.log(`📚 Modal closed - Selected: "${selectedSubsidiary || '(cancelled)'}"`);
+                            const modalEl = document.getElementById('subsidiarySelectionModal');
+                            if (modalEl) {
+                                modalEl.style.opacity = '0';
+                                modalEl.style.transition = 'opacity 0.2s ease-out';
+                                setTimeout(() => {
+                                    modalEl.remove();
+                                    delete window.closeSubsidiarySelectionModal;
+                                }, 200);
+                            }
+                            resolve(selectedSubsidiary);
+                        };
+                    });
+                }
+                
                 // Filter subsidiary dropdown based on selected accounting book
                 // Make it globally accessible for use in immediate U3 validation
                 window.filterSubsidiaryDropdownByAccountingBook = async function(accountingBookId) {
@@ -16937,6 +17172,9 @@ export default {
                     }
                     
                     try {
+                        console.log(`╔══════════════════════════════════════════════════════════════╗`);
+                        console.log(`║  📚 FILTER DROPDOWN PROOF - Accounting Book ${accountingBookId}  ║`);
+                        console.log(`╚══════════════════════════════════════════════════════════════╝`);
                         console.log(`📚 Filtering subsidiaries for accounting book ${accountingBookId}...`);
                         const response = await fetch(`${getServerUrl()}/lookups/accountingbook/${accountingBookId}/subsidiaries`);
                         
@@ -16987,12 +17225,14 @@ export default {
                         }
                         
                         // Multiple subsidiaries - show with consolidation where applicable
+                        const addedSubsidiaries = [];
                         for (const sub of data.subsidiaries) {
                             // Always show the base subsidiary
                             const baseOption = document.createElement('option');
                             baseOption.value = sub.name;
                             baseOption.textContent = sub.name;
                             subSelect.appendChild(baseOption);
+                            addedSubsidiaries.push(sub.name);
                             
                             // Show consolidated version only if canConsolidate is true
                             if (sub.canConsolidate) {
@@ -17000,10 +17240,12 @@ export default {
                                 consolidatedOption.value = `${sub.name} (Consolidated)`;
                                 consolidatedOption.textContent = `${sub.name} (Consolidated)`;
                                 subSelect.appendChild(consolidatedOption);
+                                addedSubsidiaries.push(`${sub.name} (Consolidated)`);
                             }
                         }
                         
                         console.log(`   ✅ Filtered to ${data.subsidiaries.length} valid subsidiaries (with ${data.subsidiaries.filter(s => s.canConsolidate).length} consolidation options)`);
+                        console.log(`   ✅ PROOF: Dropdown now contains ONLY eligible subsidiaries for book ${accountingBookId}: ${addedSubsidiaries.join(', ')}`);
                     } catch (e) {
                         console.error('❌ Error filtering subsidiaries by accounting book:', e.message, e);
                         // On error, don't show all subsidiaries - keep current state
@@ -17902,58 +18144,12 @@ export default {
                         return; // Exit early - no actual change
                     }
                     
-                    // Value changed - update tracking and show overlay
+                    // Value changed - update tracking and show modal dialog
                     const previousU3Value = lastU3Value; // Store previous for logging
                     lastU3Value = currentU3Value;
-                    console.log(`📚 U3 (Accounting Book) changed from "${previousU3Value || '(initial)'}" to "${currentU3Value}" - validating and updating Q3 IMMEDIATELY...`);
-                    
-                    // CRITICAL FIX Issue 1: Show progress overlay IMMEDIATELY (not after 30 second delay)
-                    // This gives immediate visual feedback that something is happening
-                    // CRITICAL FIX Issue 2: Capture overlay start time for accurate timing
-                    const overlayStartTimestamp = Date.now();
-                    console.log('╔══════════════════════════════════════════════════════════════╗');
-                    console.log('║  [OVERLAY DEBUG] Creating bookChangeOverlay                   ║');
-                    console.log('╚══════════════════════════════════════════════════════════════╝');
-                    console.log(`   Timestamp: ${new Date().toISOString()}`);
-                    console.log(`   Overlay start timestamp: ${overlayStartTimestamp}`);
-                    console.log(`   Previous U3: "${previousU3Value || '(initial)'}"`);
-                    console.log(`   Current U3: "${currentU3Value}"`);
-                    
-                    // Store overlay start time in overlay element for later use
-                    const syncOverlay = document.createElement('div');
-                    syncOverlay.id = 'bookChangeOverlay';
-                    syncOverlay.className = 'guide-me-overlay';
-                    syncOverlay.setAttribute('data-overlay-start', overlayStartTimestamp.toString());
-                    syncOverlay.innerHTML = `
-                        <div class="loading-spinner"></div>
-                        <h2>🔄 Updating Accounting Book</h2>
-                        <div class="loading-subtitle">
-                            Validating subsidiary and updating report...
-                        </div>
-                        <div class="progress-container">
-                            <div class="progress-bar-bg">
-                                <div class="progress-bar-fill" id="bookChangeProgressBar" style="width: 10%;"></div>
-                            </div>
-                            <div class="progress-text">Initializing...</div>
-                        </div>
-                    `;
-                    document.body.appendChild(syncOverlay);
-                    console.log('✅ [OVERLAY DEBUG] bookChangeOverlay CREATED and appended to DOM');
-                    console.log(`   Element ID: ${syncOverlay.id}`);
-                    console.log(`   Element exists in DOM: ${document.getElementById('bookChangeOverlay') !== null}`);
+                    console.log(`📚 U3 (Accounting Book) changed from "${previousU3Value || '(initial)'}" to "${currentU3Value}" - showing modal dialog...`);
                     
                     try {
-                        // CRITICAL FIX: Don't clear cache here - it's too early and causes formulas to see empty cache
-                        // The cache will be cleared in performCFOSync AFTER Q3 is updated and we have the correct subsidiary
-                        // This prevents a race condition where formulas read empty cache before Q3 is updated
-                        console.log('📚 U3 changed - will clear cache in performCFOSync after Q3 is updated...');
-                        
-                        // Update progress
-                        const progressBar = document.getElementById('bookChangeProgressBar');
-                        const progressText = syncOverlay.querySelector('.progress-text');
-                        if (progressBar) progressBar.style.width = '20%';
-                        if (progressText) progressText.textContent = 'Validating subsidiary...';
-                        
                         // Read U3 and Q3 immediately
                         let accountingBook = '';
                         let currentSubsidiary = '';
@@ -17968,198 +18164,164 @@ export default {
                             currentSubsidiary = String(subCell.values[0][0] || '').trim();
                         });
                         
-                        // If not primary book, validate and update IMMEDIATELY in same Excel.run() batch
-                        if (accountingBook && accountingBook !== '1') {
-                            console.log(`📚 [CRITICAL FIX] Validating "${currentSubsidiary}" for accounting book ${accountingBook}...`);
-                            
-                            // CRITICAL FIX: Set transition flag FIRST with state information
-                            // This allows guard clause to check if current subsidiary is OLD (invalid) or NEW (valid)
-                            const transitionKey = `netsuite_book_transition_${accountingBook}`;
-                            const transitionData = {
-                                timestamp: Date.now(),
-                                oldSubsidiary: currentSubsidiary,
-                                newBook: accountingBook,
-                                newSubsidiary: null // Will be set when we get replacement
-                            };
-                            localStorage.setItem(transitionKey, JSON.stringify(transitionData));
-                            console.log(`🔒 [GUARD CLAUSE] Set transition flag - oldSub: "${currentSubsidiary}", newBook: ${accountingBook}`);
-                            
-                            // CRITICAL: Fetch enabled subsidiaries FIRST to get immediate replacement
-                            let replacementSub = null;
-                            let needsUpdate = false;
-                            let enabledSubs = [];
-                            
-                            try {
-                                console.log(`🔍 [CRITICAL FIX] Fetching subsidiaries for book ${accountingBook}...`);
-                                const response = await fetch(`${getServerUrl()}/lookups/accountingbook/${accountingBook}/subsidiaries`);
-                                if (response.ok) {
-                                    const data = await response.json();
-                                    console.log(`🔍 [CRITICAL FIX] Response: allSubsidiaries=${data.allSubsidiaries}, count=${data.subsidiaries?.length || 0}`);
-                                    
-                                    if (!data.allSubsidiaries) {
-                                        enabledSubs = data.subsidiaries || [];
-                                        
-                                        if (enabledSubs.length > 0) {
-                                            // Get first enabled subsidiary IMMEDIATELY as safe default
-                                            replacementSub = enabledSubs[0].name;
-                                            console.log(`✅ [CRITICAL FIX] Got first enabled subsidiary: "${replacementSub}"`);
-                                            
-                                            // Check if current subsidiary is valid
-                                            const baseName = currentSubsidiary.replace(/\s*\(Consolidated\)\s*$/i, '').trim();
-                                            const isConsolidated = currentSubsidiary.toLowerCase().includes('consolidated');
-                                            
-                                            const isValid = enabledSubs.some(s => {
-                                                if (s.name === currentSubsidiary) return true;
-                                                if (s.name === baseName) {
-                                                    return isConsolidated ? s.canConsolidate : true;
-                                                }
-                                                return false;
-                                            });
-                                            
-                                            console.log(`🔍 [CRITICAL FIX] Validation result: isValid=${isValid}`);
-                                            
-                                            if (!isValid) {
-                                                needsUpdate = true;
-                                                // Try to get better replacement (consolidated parent if available)
-                                                try {
-                                                    const defaultResponse = await fetch(`${getServerUrl()}/lookups/accountingbook/${accountingBook}/default-subsidiary`);
-                                                    if (defaultResponse.ok) {
-                                                        const defaultData = await defaultResponse.json();
-                                                        if (defaultData.defaultSubsidiaryName) {
-                                                            replacementSub = defaultData.defaultSubsidiaryName;
-                                                            console.log(`✅ [CRITICAL FIX] Got better replacement: "${replacementSub}"`);
-                                                        }
-                                                    }
-                                                } catch (e) {
-                                                    console.warn(`⚠️ [CRITICAL FIX] Error fetching default subsidiary, using first:`, e.message);
-                                                }
-                                                
-                                                // Update transition flag with new subsidiary (state-based guard)
-                                                if (replacementSub) {
-                                                    transitionData.newSubsidiary = replacementSub;
-                                                    localStorage.setItem(transitionKey, JSON.stringify(transitionData));
-                                                    console.log(`🔒 [GUARD CLAUSE] Updated transition flag - newSub: "${replacementSub}"`);
-                                                }
-                                            } else {
-                                                // Current subsidiary is valid - update transition flag to mark as complete
-                                                transitionData.newSubsidiary = currentSubsidiary;
-                                                localStorage.setItem(transitionKey, JSON.stringify(transitionData));
-                                                console.log(`✅ [GUARD CLAUSE] Current subsidiary is valid - transition complete`);
-                                            }
-                                        }
-                                    }
-                                } else {
-                                    console.warn(`⚠️ [CRITICAL FIX] Failed to fetch subsidiaries: ${response.status}`);
-                                }
-                            } catch (e) {
-                                console.error(`❌ [CRITICAL FIX] Error fetching subsidiaries:`, e.message);
-                            }
-                            
-                            // CRITICAL: Update Q3 IMMEDIATELY in SAME Excel.run() batch BEFORE any formulas can execute
-                            // This must happen synchronously, not after async operations
-                            if (needsUpdate && replacementSub && replacementSub !== currentSubsidiary) {
-                                console.log(`🚀 [CRITICAL FIX] Updating Q3 from "${currentSubsidiary}" to "${replacementSub}" IMMEDIATELY...`);
-                                
-                                // Update progress
-                                const progressBar = document.getElementById('bookChangeProgressBar');
-                                const progressText = syncOverlay.querySelector('.progress-text');
-                                if (progressBar) progressBar.style.width = '40%';
-                                if (progressText) progressText.textContent = 'Updating subsidiary...';
-                                
-                                // Update Q3 in the SAME Excel.run() batch - this is atomic
-                                await Excel.run(async (context) => {
-                                    const sheet = context.workbook.worksheets.getActiveWorksheet();
-                                    const q3Cell = sheet.getRange("Q3");
-                                    q3Cell.values = [[replacementSub]];
-                                    await context.sync(); // CRITICAL: This sync happens BEFORE Excel can recalculate formulas
-                                });
-                                
-                                console.log(`✅ [CRITICAL FIX] Q3 updated to "${replacementSub}" - formulas will use valid combination`);
-                                
-                                // Update transition flag - newSubsidiary is now set, guard will allow execution
-                                // The guard clause will detect newSubsidiary match and clear the flag automatically
-                                // No timeout needed - state-based check handles it
-                                console.log(`🔓 [GUARD CLAUSE] Q3 updated - guard will unlock on next formula evaluation`);
-                                
-                                // Filter dropdown immediately
-                                if (window.filterSubsidiaryDropdownByAccountingBook) {
-                                    await window.filterSubsidiaryDropdownByAccountingBook(accountingBook);
-                                }
-                                
-                                // Show notification (async, non-blocking)
-                                setTimeout(async () => {
-                                    try {
-                                        let accountingBookName = `Accounting Book ${accountingBook}`;
-                                        const bookResponse = await fetch(`${getServerUrl()}/lookups/all`);
-                                        if (bookResponse.ok) {
-                                            const bookData = await bookResponse.json();
-                                            const book = (bookData.accountingbooks || []).find(b => b.id === accountingBook);
-                                            if (book) accountingBookName = book.name;
-                                        }
-                                        await showSubsidiaryAutoUpdateNotification(currentSubsidiary, replacementSub, accountingBook, accountingBookName);
-                                    } catch (e) {
-                                        // Ignore notification errors
-                                    }
-                                }, 100);
-                            } else if (!needsUpdate) {
-                                // Valid subsidiary - clear transition flag and filter dropdown
-                                localStorage.removeItem(transitionKey);
-                                console.log(`✅ [CRITICAL FIX] Subsidiary "${currentSubsidiary}" is valid for book ${accountingBook}`);
-                                if (window.filterSubsidiaryDropdownByAccountingBook) {
-                                    await window.filterSubsidiaryDropdownByAccountingBook(accountingBook);
-                                }
-                            } else {
-                                // Could not find replacement - clear flag anyway
-                                localStorage.removeItem(transitionKey);
-                                console.warn(`⚠️ [CRITICAL FIX] Could not find replacement subsidiary for book ${accountingBook}`);
-                            }
-                            
-                            // Update progress - ready for sync
-                            const progressBar = document.getElementById('bookChangeProgressBar');
-                            const progressText = syncOverlay.querySelector('.progress-text');
-                            if (progressBar) progressBar.style.width = '60%';
-                            if (progressText) progressText.textContent = 'Preparing to sync data...';
-                            
-                            // Remove the immediate overlay - performCFOSync will show its own
-                            setTimeout(() => {
-                                const overlay = document.getElementById('bookChangeOverlay');
-                                if (overlay) {
-                                    overlay.style.opacity = '0';
-                                    overlay.style.transition = 'opacity 0.3s ease';
-                                    setTimeout(() => overlay.remove(), 300);
-                                }
-                            }, 500);
-                        } else {
-                            // Primary book - just filter dropdown
+                        // If primary book, just filter dropdown and continue
+                        if (!accountingBook || accountingBook === '1') {
+                            console.log('📚 Primary Book selected - no modal needed');
                             if (window.filterSubsidiaryDropdownByAccountingBook) {
                                 await window.filterSubsidiaryDropdownByAccountingBook('1');
                             }
+                            return;
                         }
                         
-                        // Then call full handler (with debounce for sync)
-                        if (window.filterChangeTimer) {
-                            clearTimeout(window.filterChangeTimer);
-                        }
-                        window.filterChangeTimer = setTimeout(async () => {
-                            try {
-                                await handleAccountingBookChange();
-                            } catch (e) {
-                                console.error('❌ handleAccountingBookChange() threw error:', e.message);
+                        // CRITICAL: Set transition flag FIRST - this makes formulas show #N/A immediately
+                        const transitionKey = `netsuite_book_transition_${accountingBook}`;
+                        const transitionData = {
+                            timestamp: Date.now(),
+                            oldSubsidiary: currentSubsidiary,
+                            newBook: accountingBook,
+                            newSubsidiary: null // Will be set when user selects
+                        };
+                        localStorage.setItem(transitionKey, JSON.stringify(transitionData));
+                        console.log(`🔒 [GUARD CLAUSE] Set transition flag - formulas will show #N/A until user selects subsidiary`);
+                        
+                        // Fetch enabled subsidiaries and accounting book name
+                        let enabledSubs = [];
+                        let accountingBookName = `Accounting Book ${accountingBook}`;
+                        
+                        try {
+                            // Get accounting book name
+                            const bookResponse = await fetch(`${getServerUrl()}/lookups/all`);
+                            if (bookResponse.ok) {
+                                const bookData = await bookResponse.json();
+                                const book = (bookData.accountingbooks || []).find(b => b.id === accountingBook);
+                                if (book) accountingBookName = book.name;
                             }
-                        }, 500);
+                            
+                            // Get enabled subsidiaries
+                            console.log(`🔍 Fetching subsidiaries for book ${accountingBook}...`);
+                            const response = await fetch(`${getServerUrl()}/lookups/accountingbook/${accountingBook}/subsidiaries`);
+                            if (response.ok) {
+                                const data = await response.json();
+                                console.log(`🔍 Response: allSubsidiaries=${data.allSubsidiaries}, count=${data.subsidiaries?.length || 0}`);
+                                
+                                if (!data.allSubsidiaries) {
+                                    enabledSubs = data.subsidiaries || [];
+                                } else {
+                                    // All subsidiaries valid (shouldn't happen for non-primary, but handle it)
+                                    console.log('⚠️ All subsidiaries valid for non-primary book - this is unexpected');
+                                    // Clear transition flag and continue
+                                    localStorage.removeItem(transitionKey);
+                                    if (window.filterSubsidiaryDropdownByAccountingBook) {
+                                        await window.filterSubsidiaryDropdownByAccountingBook(accountingBook);
+                                    }
+                                    return;
+                                }
+                            } else {
+                                console.error(`❌ Failed to fetch subsidiaries: ${response.status}`);
+                                // Clear transition flag on error
+                                localStorage.removeItem(transitionKey);
+                                showToast({
+                                    title: '❌ Error',
+                                    message: `Failed to fetch subsidiaries for accounting book ${accountingBook}`,
+                                    type: 'error',
+                                    duration: 5000
+                                });
+                                return;
+                            }
+                        } catch (e) {
+                            console.error(`❌ Error fetching subsidiaries:`, e.message);
+                            // Clear transition flag on error
+                            localStorage.removeItem(transitionKey);
+                            showToast({
+                                title: '❌ Error',
+                                message: `Error fetching subsidiaries: ${e.message}`,
+                                type: 'error',
+                                duration: 5000
+                            });
+                            return;
+                        }
+                        
+                        // Check if we have any enabled subsidiaries
+                        if (enabledSubs.length === 0) {
+                            console.error(`❌ No subsidiaries available for accounting book ${accountingBook}`);
+                            // Clear transition flag
+                            localStorage.removeItem(transitionKey);
+                            showToast({
+                                title: '❌ No Subsidiaries',
+                                message: `No subsidiaries are enabled for ${accountingBookName}`,
+                                type: 'error',
+                                duration: 5000
+                            });
+                            return;
+                        }
+                        
+                        // Show modal dialog and wait for user selection
+                        console.log(`📚 Showing modal dialog with ${enabledSubs.length} enabled subsidiaries...`);
+                        const selectedSubsidiary = await showSubsidiarySelectionModal(
+                            accountingBook,
+                            accountingBookName,
+                            currentSubsidiary,
+                            enabledSubs
+                        );
+                        
+                        // User cancelled - clear transition flag and restore previous state
+                        if (!selectedSubsidiary) {
+                            console.log('📚 User cancelled subsidiary selection - clearing transition flag');
+                            localStorage.removeItem(transitionKey);
+                            // Optionally revert U3 to previous value
+                            // For now, just clear the flag so formulas can work with current state
+                            return;
+                        }
+                        
+                        // User selected a subsidiary - update Q3 and clear transition flag
+                        console.log(`📚 User selected subsidiary: "${selectedSubsidiary}" - updating Q3...`);
+                        
+                        // Update Q3 with selected subsidiary
+                        await Excel.run(async (context) => {
+                            const sheet = context.workbook.worksheets.getActiveWorksheet();
+                            const q3Cell = sheet.getRange("Q3");
+                            q3Cell.values = [[selectedSubsidiary]];
+                            await context.sync();
+                        });
+                        
+                        console.log(`✅ Q3 updated to "${selectedSubsidiary}"`);
+                        
+                        // Update transition flag with selected subsidiary (guard will unlock)
+                        transitionData.newSubsidiary = selectedSubsidiary;
+                        localStorage.setItem(transitionKey, JSON.stringify(transitionData));
+                        console.log(`🔒 [GUARD CLAUSE] Updated transition flag - newSub: "${selectedSubsidiary}"`);
+                        
+                        // Filter dropdown to show only valid subsidiaries
+                        if (window.filterSubsidiaryDropdownByAccountingBook) {
+                            await window.filterSubsidiaryDropdownByAccountingBook(accountingBook);
+                        }
+                        
+                        // Clear transition flag after a short delay (guard will detect newSub match and clear it)
+                        // But also clear it here to be safe
+                        setTimeout(() => {
+                            localStorage.removeItem(transitionKey);
+                            console.log(`🔓 [GUARD CLAUSE] Transition flag cleared - formulas can now execute`);
+                        }, 1000);
+                        
+                        // Trigger sync if report is configured for it
+                        console.log('🚀 Triggering sync after subsidiary selection...');
+                        try {
+                            await handleAccountingBookChange();
+                        } catch (e) {
+                            console.error('❌ handleAccountingBookChange() threw error:', e.message);
+                        }
+                        
                     } catch (e) {
-                        console.error('❌ Immediate U3 validation error:', e.message);
-                        // Fall through to debounced handler
-                        if (window.filterChangeTimer) {
-                            clearTimeout(window.filterChangeTimer);
-                        }
-                        window.filterChangeTimer = setTimeout(async () => {
-                            try {
-                                await handleAccountingBookChange();
-                            } catch (e2) {
-                                console.error('❌ handleAccountingBookChange() threw error:', e2.message);
-                            }
-                        }, 500);
+                        console.error('❌ Error in U3 change handler:', e.message);
+                        // Clear transition flag on error
+                        const transitionKey = `netsuite_book_transition_${currentU3Value}`;
+                        localStorage.removeItem(transitionKey);
+                        showToast({
+                            title: '❌ Error',
+                            message: `Error handling accounting book change: ${e.message}`,
+                            type: 'error',
+                            duration: 5000
+                        });
                     }
                 } else {
                     // Regular filter change (department, location, class) - use debounce
@@ -20263,15 +20425,21 @@ export default {
                 console.log('╚══════════════════════════════════════════════════════════════╝');
                 console.log(`   Timestamp: ${new Date().toISOString()}`);
                 
+                // CRITICAL FIX: Force immediate removal of structureSyncOverlay
                 const syncOverlayEl = document.getElementById('structureSyncOverlay');
                 if (syncOverlayEl) {
-                    console.log('✅ [OVERLAY DEBUG] Found structureSyncOverlay - removing...');
-                    syncOverlayEl.style.opacity = '0';
-                    syncOverlayEl.style.transition = 'opacity 0.3s ease';
-                    setTimeout(() => {
-                        syncOverlayEl.remove();
-                        console.log('✅ [OVERLAY DEBUG] structureSyncOverlay REMOVED from DOM');
-                    }, 300);
+                    console.log('✅ [OVERLAY DEBUG] Found structureSyncOverlay - removing IMMEDIATELY...');
+                    // Remove from DOM immediately (no fade-out delay)
+                    syncOverlayEl.remove();
+                    console.log('✅ [OVERLAY DEBUG] structureSyncOverlay REMOVED from DOM');
+                    // Verify it's actually gone
+                    const verify = document.getElementById('structureSyncOverlay');
+                    if (verify) {
+                        console.error('❌ [OVERLAY DEBUG] structureSyncOverlay STILL EXISTS after remove()! Forcing removal...');
+                        verify.remove();
+                    } else {
+                        console.log('✅ [OVERLAY DEBUG] Verified: structureSyncOverlay is GONE from DOM');
+                    }
                 } else {
                     console.log('⚠️ [OVERLAY DEBUG] structureSyncOverlay NOT FOUND in DOM');
                 }
@@ -20352,17 +20520,37 @@ export default {
                 console.log(`✅ [SUCCESS DEBUG] Success overlay shown`);
                 console.log(`✅ CFO Sync complete for ${targetYear}`);
                 
-                // CRITICAL DEBUG: Verify overlays are gone
+                // CRITICAL DEBUG: Verify overlays are gone (immediate check, no delay)
+                // Check immediately and again after a short delay to catch any recreation
+                const checkStructure = document.getElementById('structureSyncOverlay');
+                const checkBook = document.getElementById('bookChangeOverlay');
+                if (checkStructure || checkBook) {
+                    console.error('❌ [OVERLAY DEBUG] OVERLAYS STILL EXIST immediately after removal!');
+                    // Force remove again
+                    if (checkStructure) {
+                        console.log('🔧 [OVERLAY DEBUG] Force-removing structureSyncOverlay again...');
+                        checkStructure.remove();
+                    }
+                    if (checkBook) {
+                        console.log('🔧 [OVERLAY DEBUG] Force-removing bookChangeOverlay again...');
+                        checkBook.remove();
+                    }
+                }
+                
+                // Also check after delay to catch any recreation
                 setTimeout(() => {
-                    const checkStructure = document.getElementById('structureSyncOverlay');
-                    const checkBook = document.getElementById('bookChangeOverlay');
+                    const checkStructure2 = document.getElementById('structureSyncOverlay');
+                    const checkBook2 = document.getElementById('bookChangeOverlay');
                     console.log('╔══════════════════════════════════════════════════════════════╗');
                     console.log('║  [OVERLAY DEBUG] Post-success overlay check (2 seconds later) ║');
                     console.log('╚══════════════════════════════════════════════════════════════╝');
-                    console.log(`   structureSyncOverlay exists: ${checkStructure !== null ? '❌ YES (SHOULD BE GONE!)' : '✅ NO (correct)'}`);
-                    console.log(`   bookChangeOverlay exists: ${checkBook !== null ? '❌ YES (SHOULD BE GONE!)' : '✅ NO (correct)'}`);
-                    if (checkStructure || checkBook) {
-                        console.error('❌ [OVERLAY DEBUG] OVERLAYS STILL EXIST - THIS IS THE BUG!');
+                    console.log(`   structureSyncOverlay exists: ${checkStructure2 !== null ? '❌ YES (SHOULD BE GONE!)' : '✅ NO (correct)'}`);
+                    console.log(`   bookChangeOverlay exists: ${checkBook2 !== null ? '❌ YES (SHOULD BE GONE!)' : '✅ NO (correct)'}`);
+                    if (checkStructure2 || checkBook2) {
+                        console.error('❌ [OVERLAY DEBUG] OVERLAYS RECREATED - THIS IS THE BUG!');
+                        // Force remove again
+                        if (checkStructure2) checkStructure2.remove();
+                        if (checkBook2) checkBook2.remove();
                     }
                 }, 2000);
                 
