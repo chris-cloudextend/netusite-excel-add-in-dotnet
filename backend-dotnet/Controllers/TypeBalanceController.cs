@@ -198,8 +198,13 @@ public class TypeBalanceController : ControllerBase
                 GROUP BY a.accttype
                 ORDER BY a.accttype";
 
-            _logger.LogDebug("Executing batch query...");
-
+            // CRITICAL DEBUG: Log query details for revenue investigation
+            _logger.LogInformation("🔍 [REVENUE DEBUG] Executing batch query for book {Book}, sub {Sub}", accountingBook, request.Subsidiary);
+            _logger.LogDebug("   Target subsidiary ID: {TargetSub}", targetSub);
+            _logger.LogDebug("   Subsidiary hierarchy: {Hierarchy}", subFilter);
+            _logger.LogDebug("   Segment WHERE: {SegmentWhere}", segmentWhere);
+            _logger.LogDebug("   Period filter: {PeriodFilter}", periodFilter);
+            
             var result = await _netSuiteService.QueryRawWithErrorAsync(query);
             
             // Check for query errors - fail loudly instead of returning empty results
@@ -217,6 +222,48 @@ public class TypeBalanceController : ControllerBase
             var rows = result.Items;
             var elapsed = (DateTime.UtcNow - startTime).TotalSeconds;
             _logger.LogDebug("Query time: {Elapsed:F2} seconds, {Count} account type rows", elapsed, rows.Count);
+            
+            // CRITICAL DEBUG: Log what account types were returned
+            var returnedTypes = rows.Select(r => r.TryGetProperty("account_type", out var t) ? t.GetString() : "").Where(t => !string.IsNullOrEmpty(t));
+            _logger.LogInformation("🔍 [REVENUE DEBUG] Query returned {Count} rows: {Types}", rows.Count, string.Join(", ", returnedTypes));
+            
+            // CRITICAL DEBUG: Check if Income row exists
+            var incomeRow = rows.FirstOrDefault(r => {
+                if (r.TryGetProperty("account_type", out var typeProp))
+                {
+                    var type = typeProp.GetString() ?? "";
+                    return type.Equals("Income", StringComparison.OrdinalIgnoreCase);
+                }
+                return false;
+            });
+            
+            if (incomeRow != null)
+            {
+                _logger.LogInformation("🔍 [REVENUE DEBUG] Income row found - checking values...");
+                // Log first few month values
+                var sampleMonths = new[] { "jan", "feb", "mar", "apr", "may", "jun" };
+                foreach (var month in sampleMonths)
+                {
+                    if (incomeRow.TryGetProperty(month, out var valProp))
+                    {
+                        decimal val = 0;
+                        if (valProp.ValueKind == JsonValueKind.Number)
+                            val = valProp.GetDecimal();
+                        else if (valProp.ValueKind == JsonValueKind.String)
+                            decimal.TryParse(valProp.GetString(), out val);
+                        _logger.LogInformation("   Income {Month}: {Value:N2}", month, val);
+                    }
+                }
+            }
+            else
+            {
+                _logger.LogWarning("⚠️ [REVENUE DEBUG] Income row NOT FOUND in query results!");
+                _logger.LogWarning("   This means the query returned no Income account type data");
+                _logger.LogWarning("   Possible causes:");
+                _logger.LogWarning("   1. No Income transactions for book {Book} + sub {Sub}", accountingBook, request.Subsidiary);
+                _logger.LogWarning("   2. Query filter too restrictive (segmentWhere: {SegmentWhere})", segmentWhere);
+                _logger.LogWarning("   3. BUILTIN.CONSOLIDATE returning NULL for all Income amounts");
+            }
 
             // Build month column mapping dynamically from actual periods (not hardcoded)
             // This ensures period names match exactly between query columns and result mapping

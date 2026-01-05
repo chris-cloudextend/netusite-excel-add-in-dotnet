@@ -5926,7 +5926,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.71"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.72"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -17900,16 +17900,21 @@ export default {
                     
                     // CRITICAL FIX Issue 1: Show progress overlay IMMEDIATELY (not after 30 second delay)
                     // This gives immediate visual feedback that something is happening
+                    // CRITICAL FIX Issue 2: Capture overlay start time for accurate timing
+                    const overlayStartTimestamp = Date.now();
                     console.log('╔══════════════════════════════════════════════════════════════╗');
                     console.log('║  [OVERLAY DEBUG] Creating bookChangeOverlay                   ║');
                     console.log('╚══════════════════════════════════════════════════════════════╝');
                     console.log(`   Timestamp: ${new Date().toISOString()}`);
+                    console.log(`   Overlay start timestamp: ${overlayStartTimestamp}`);
                     console.log(`   Previous U3: "${previousU3Value || '(initial)'}"`);
                     console.log(`   Current U3: "${currentU3Value}"`);
                     
+                    // Store overlay start time in overlay element for later use
                     const syncOverlay = document.createElement('div');
                     syncOverlay.id = 'bookChangeOverlay';
                     syncOverlay.className = 'guide-me-overlay';
+                    syncOverlay.setAttribute('data-overlay-start', overlayStartTimestamp.toString());
                     syncOverlay.innerHTML = `
                         <div class="loading-spinner"></div>
                         <h2>🔄 Updating Accounting Book</h2>
@@ -19638,7 +19643,18 @@ export default {
         
         // Perform CFO Flash sync - simpler than full Structure Sync (no row rebuilding needed)
         async function performCFOSync(targetYear, currentSubsidiary, department = '', location = '', classId = '', accountingBook = '') {
-            const syncStartTimestamp = Date.now();
+            // CRITICAL FIX Issue 2: Use overlay start time if available, otherwise use current time
+            // This ensures timing includes the full user experience from overlay appearance
+            let syncStartTimestamp = Date.now();
+            const bookChangeOverlay = document.getElementById('bookChangeOverlay');
+            if (bookChangeOverlay && bookChangeOverlay.getAttribute('data-overlay-start')) {
+                const overlayStart = parseInt(bookChangeOverlay.getAttribute('data-overlay-start') || '0');
+                if (overlayStart > 0) {
+                    syncStartTimestamp = overlayStart;
+                    console.log(`✅ [TIMING DEBUG] Using overlay start time: ${new Date(syncStartTimestamp).toISOString()}`);
+                    console.log(`   Overlay appeared ${((Date.now() - overlayStart) / 1000).toFixed(1)}s before sync started`);
+                }
+            }
             console.log(`╔══════════════════════════════════════════════════════════════╗`);
             console.log(`║  📈 CFO SYNC SIMULATION - Issue 2 Fix Verification           ║`);
             console.log(`╚══════════════════════════════════════════════════════════════╝`);

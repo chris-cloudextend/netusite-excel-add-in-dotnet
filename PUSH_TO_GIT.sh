@@ -18,7 +18,7 @@ git add -A
 
 echo ""
 echo "3. Committing changes..."
-git commit -m "FIX: Initialize lastU3Value after CFO Flash to prevent false overlay - v4.0.6.71"
+git commit -m "FIX: Timing from overlay start, backend revenue debug logging - v4.0.6.72"
 
 echo ""
 echo "4. Pushing to GitHub..."
