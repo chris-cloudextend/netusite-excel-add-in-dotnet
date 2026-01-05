@@ -232,6 +232,33 @@ public class LookupController : ControllerBase
     }
 
     /// <summary>
+    /// Check if the book-subsidiary cache is initialized and ready.
+    /// </summary>
+    [HttpGet("/lookups/cache/status")]
+    public async Task<IActionResult> GetCacheStatus()
+    {
+        try
+        {
+            if (_lookupService is XaviApi.Services.LookupService service)
+            {
+                var isReady = await service.IsBookSubsidiaryCacheReadyAsync();
+                return Ok(new 
+                { 
+                    ready = isReady,
+                    message = isReady ? "Cache is ready" : "Cache is still initializing",
+                    timestamp = DateTime.UtcNow
+                });
+            }
+            return BadRequest(new { error = "LookupService is not the expected type" });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error checking cache status");
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
     /// Manually trigger cache initialization (for debugging/admin use).
     /// </summary>
     [HttpPost("/lookups/cache/initialize")]

@@ -153,6 +153,22 @@ public class LookupService : ILookupService
     }
 
     /// <summary>
+    /// Check if the book-subsidiary cache is ready.
+    /// </summary>
+    public async Task<bool> IsBookSubsidiaryCacheReadyAsync()
+    {
+        await _cacheLock.WaitAsync();
+        try
+        {
+            return _cacheInitialized;
+        }
+        finally
+        {
+            _cacheLock.Release();
+        }
+    }
+
+    /// <summary>
     /// Get all subsidiaries.
     /// For parent subsidiaries (those with children), also adds "(Consolidated)" versions.
     /// </summary>

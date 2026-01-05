@@ -6056,7 +6056,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.86"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.87"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -18249,8 +18249,79 @@ export default {
                                 if (book) accountingBookName = book.name;
                             }
                             
-                            // Get enabled subsidiaries
+                            // STEP 1: Wait for book-subsidiary cache to be ready
+                            console.log(`⏳ Checking if book-subsidiary cache is ready...`);
+                            
+                            // Show progress overlay
+                            const progressOverlay = document.createElement('div');
+                            progressOverlay.id = 'bookSubsidiaryCacheProgress';
+                            progressOverlay.style.cssText = 'position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); z-index: 10000; display: flex; align-items: center; justify-content: center;';
+                            progressOverlay.innerHTML = `
+                                <div style="background: white; padding: 30px; border-radius: 8px; max-width: 400px; text-align: center; box-shadow: 0 4px 20px rgba(0,0,0,0.3);">
+                                    <div style="font-size: 24px; margin-bottom: 15px;">⏳</div>
+                                    <div style="font-size: 18px; font-weight: bold; margin-bottom: 10px; color: #1f2937;">Establishing Book-Subsidiary Relationships</div>
+                                    <div style="font-size: 14px; color: #6b7280; margin-bottom: 20px;" id="cacheProgressMessage">This may take a moment on first use...</div>
+                                    <div style="width: 100%; height: 4px; background: #e5e7eb; border-radius: 2px; overflow: hidden;">
+                                        <div id="cacheProgressBar" style="height: 100%; background: #3b82f6; width: 0%; transition: width 0.3s;"></div>
+                                    </div>
+                                </div>
+                            `;
+                            document.body.appendChild(progressOverlay);
+                            
+                            let cacheReady = false;
+                            const maxCacheWait = 60; // Maximum 60 seconds
+                            const cacheCheckInterval = 500; // Check every 500ms
+                            let cacheWaitTime = 0;
+                            
+                            const updateCacheProgress = (message) => {
+                                const msgEl = document.getElementById('cacheProgressMessage');
+                                const barEl = document.getElementById('cacheProgressBar');
+                                if (msgEl) msgEl.textContent = message;
+                                // Animate progress bar (pulsing effect)
+                                if (barEl) {
+                                    const progress = Math.min(90, (cacheWaitTime / (maxCacheWait * 1000)) * 90);
+                                    barEl.style.width = progress + '%';
+                                }
+                            };
+                            
+                            updateCacheProgress('Checking cache status...');
+                            
+                            while (!cacheReady && cacheWaitTime < maxCacheWait * 1000) {
+                                try {
+                                    const cacheStatusResponse = await fetch(`${getServerUrl()}/lookups/cache/status`);
+                                    if (cacheStatusResponse.ok) {
+                                        const cacheStatus = await cacheStatusResponse.json();
+                                        if (cacheStatus.ready) {
+                                            cacheReady = true;
+                                            console.log(`✅ Book-subsidiary cache is ready (waited ${(cacheWaitTime / 1000).toFixed(1)}s)`);
+                                            break;
+                                        }
+                                    }
+                                } catch (e) {
+                                    console.warn(`⚠️ Error checking cache status: ${e.message}`);
+                                }
+                                
+                                // Wait before next check
+                                await new Promise(resolve => setTimeout(resolve, cacheCheckInterval));
+                                cacheWaitTime += cacheCheckInterval;
+                                
+                                // Update progress message periodically
+                                if (cacheWaitTime % 1000 === 0) {
+                                    const waitSeconds = (cacheWaitTime / 1000).toFixed(0);
+                                    updateCacheProgress(`Please wait... (${waitSeconds}s)`);
+                                }
+                            }
+                            
+                            if (!cacheReady) {
+                                console.warn(`⚠️ Cache not ready after ${maxCacheWait}s, proceeding anyway...`);
+                                updateCacheProgress('Cache may still be initializing, fetching subsidiaries...');
+                            } else {
+                                updateCacheProgress('Cache ready! Fetching subsidiaries...');
+                            }
+                            
+                            // STEP 2: Get enabled subsidiaries (now cache should be ready)
                             console.log(`🔍 Fetching subsidiaries for book ${accountingBook}...`);
+                            updateCacheProgress('Fetching subsidiaries...');
                             const fetchStartTime = Date.now();
                             const response = await fetch(`${getServerUrl()}/lookups/accountingbook/${accountingBook}/subsidiaries`);
                             const fetchDuration = Date.now() - fetchStartTime;
@@ -18266,6 +18337,9 @@ export default {
                                     console.log('⚠️ All subsidiaries valid for non-primary book - this is unexpected');
                                     // Clear transition flag and continue
                                     localStorage.removeItem(transitionKey);
+                                    if (progressOverlay && progressOverlay.parentNode) {
+                                        progressOverlay.parentNode.removeChild(progressOverlay);
+                                    }
                                     if (window.filterSubsidiaryDropdownByAccountingBook) {
                                         await window.filterSubsidiaryDropdownByAccountingBook(accountingBook);
                                     }
@@ -18275,6 +18349,9 @@ export default {
                                 console.error(`❌ Failed to fetch subsidiaries: ${response.status}`);
                                 // Clear transition flag on error
                                 localStorage.removeItem(transitionKey);
+                                if (progressOverlay && progressOverlay.parentNode) {
+                                    progressOverlay.parentNode.removeChild(progressOverlay);
+                                }
                                 showToast({
                                     title: '❌ Error',
                                     message: `Failed to fetch subsidiaries for accounting book ${accountingBook}`,
@@ -18287,6 +18364,9 @@ export default {
                             console.error(`❌ Error fetching subsidiaries:`, e.message);
                             // Clear transition flag on error
                             localStorage.removeItem(transitionKey);
+                            if (progressOverlay && progressOverlay.parentNode) {
+                                progressOverlay.parentNode.removeChild(progressOverlay);
+                            }
                             showToast({
                                 title: '❌ Error',
                                 message: `Error fetching subsidiaries: ${e.message}`,
@@ -18301,6 +18381,9 @@ export default {
                             console.error(`❌ No subsidiaries available for accounting book ${accountingBook}`);
                             // Clear transition flag
                             localStorage.removeItem(transitionKey);
+                            if (progressOverlay && progressOverlay.parentNode) {
+                                progressOverlay.parentNode.removeChild(progressOverlay);
+                            }
                             showToast({
                                 title: '❌ No Subsidiaries',
                                 message: `No subsidiaries are enabled for ${accountingBookName}`,
@@ -18310,7 +18393,10 @@ export default {
                             return;
                         }
                         
-                        // Show modal dialog and wait for user selection
+                        // STEP 3: Cache is ready and subsidiaries fetched - now show modal
+                        if (progressOverlay && progressOverlay.parentNode) {
+                            progressOverlay.parentNode.removeChild(progressOverlay);
+                        }
                         console.log(`📚 Showing modal dialog with ${enabledSubs.length} enabled subsidiaries...`);
                         const selectedSubsidiary = await window.showSubsidiarySelectionModal(
                             accountingBook,
