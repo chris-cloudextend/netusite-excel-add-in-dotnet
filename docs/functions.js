@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.79';  // FIX: User-driven modal dialog for subsidiary selection (eliminates timing issues)
+const FUNCTIONS_VERSION = '4.0.6.80';  // FIX: Make showSubsidiarySelectionModal globally accessible
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
