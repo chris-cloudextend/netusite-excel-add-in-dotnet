@@ -6056,7 +6056,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.80"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.81"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -18185,6 +18185,23 @@ export default {
                         localStorage.setItem(transitionKey, JSON.stringify(transitionData));
                         console.log(`🔒 [GUARD CLAUSE] Set transition flag - formulas will show #N/A until user selects subsidiary`);
                         
+                        // CRITICAL: Clear ALL typebalance cache immediately when book changes
+                        // Old cache has wrong book/subsidiary keys and will cause mismatches
+                        console.log(`🗑️ Clearing typebalance cache (book changed from old to ${accountingBook})...`);
+                        localStorage.removeItem('netsuite_typebalance_cache');
+                        localStorage.removeItem('netsuite_typebalance_cache_timestamp');
+                        // Also clear in-memory cache if available
+                        if (typeof window.clearAllCaches === 'function') {
+                            window.clearAllCaches();
+                            console.log(`   ✅ Cleared in-memory cache`);
+                        }
+                        // Signal to functions.js to clear its in-memory cache
+                        localStorage.setItem('netsuite_cache_clear_signal', JSON.stringify({
+                            timestamp: Date.now(),
+                            reason: 'Accounting book changed'
+                        }));
+                        console.log(`   ✅ Cleared localStorage cache and sent clear signal to functions.js`);
+                        
                         // Fetch enabled subsidiaries and accounting book name
                         let enabledSubs = [];
                         let accountingBookName = `Accounting Book ${accountingBook}`;
@@ -18276,6 +18293,23 @@ export default {
                         
                         // User selected a subsidiary - update Q3 and clear transition flag
                         console.log(`📚 User selected subsidiary: "${selectedSubsidiary}" - updating Q3...`);
+                        
+                        // CRITICAL: Clear cache AGAIN after subsidiary selection (in case any old cache was written)
+                        // This ensures formulas will fetch fresh data with the new book+subsidiary combination
+                        console.log(`🗑️ Clearing typebalance cache (subsidiary changed to "${selectedSubsidiary}")...`);
+                        localStorage.removeItem('netsuite_typebalance_cache');
+                        localStorage.removeItem('netsuite_typebalance_cache_timestamp');
+                        // Also clear in-memory cache if available
+                        if (typeof window.clearAllCaches === 'function') {
+                            window.clearAllCaches();
+                            console.log(`   ✅ Cleared in-memory cache`);
+                        }
+                        // Signal to functions.js to clear its in-memory cache
+                        localStorage.setItem('netsuite_cache_clear_signal', JSON.stringify({
+                            timestamp: Date.now(),
+                            reason: 'Subsidiary changed after book change'
+                        }));
+                        console.log(`   ✅ Cleared localStorage cache and sent clear signal to functions.js`);
                         
                         // Update Q3 with selected subsidiary
                         await Excel.run(async (context) => {

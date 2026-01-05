@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.80';  // FIX: Make showSubsidiarySelectionModal globally accessible
+const FUNCTIONS_VERSION = '4.0.6.81';  // FIX: Clear typebalance cache when book/subsidiary changes
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
