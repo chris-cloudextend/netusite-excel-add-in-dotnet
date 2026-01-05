@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.91';  // FIX: Don't show modal for Primary Book on first load, move progress bar to top, fix overlay not closing
+const FUNCTIONS_VERSION = '4.0.6.92';  // FIX: Add timeout to cache check, validate book-subsidiary combinations and show alert
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================

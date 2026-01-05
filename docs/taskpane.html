@@ -6056,7 +6056,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.91"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.92"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -18069,24 +18069,87 @@ export default {
             if (eventAddr === 'Q3') {
                 console.log('🏢 SUBSIDIARY cell (Q3) changed - raw address: ' + event.address);
                 
-                // CRITICAL FIX: Filter dropdown based on current accounting book when Q3 changes
-                // This ensures only valid subsidiaries are shown in the dropdown
+                // CRITICAL FIX: Validate subsidiary/book combination when Q3 changes
+                // This ensures user is alerted if they select an invalid combination
                 try {
                     let currentBook = '';
+                    let currentSubsidiary = '';
                     await Excel.run(async (context) => {
                         const sheet = context.workbook.worksheets.getActiveWorksheet();
                         const bookCell = sheet.getRange("U3");
+                        const subCell = sheet.getRange("Q3");
                         bookCell.load("values");
+                        subCell.load("values");
                         await context.sync();
                         currentBook = String(bookCell.values[0][0] || '').trim();
+                        currentSubsidiary = String(subCell.values[0][0] || '').trim();
                     });
                     
+                    // Validate combination if both book and subsidiary are set
+                    if (currentBook && currentSubsidiary && currentBook !== '1') {
+                        console.log(`🔍 Validating subsidiary "${currentSubsidiary}" for book ${currentBook}...`);
+                        try {
+                            const validationResponse = await fetch(`${getServerUrl()}/lookups/accountingbook/${currentBook}/subsidiaries`);
+                            if (validationResponse.ok) {
+                                const validationData = await validationResponse.json();
+                                if (!validationData.allSubsidiaries) {
+                                    const enabledSubs = validationData.subsidiaries || [];
+                                    // Check if current subsidiary is in the enabled list
+                                    const isValid = enabledSubs.some(s => {
+                                        const subName = s.name || s.fullName || '';
+                                        return subName === currentSubsidiary || 
+                                               subName.replace(/\s*\(Consolidated\)\s*$/i, '') === currentSubsidiary.replace(/\s*\(Consolidated\)\s*$/i, '');
+                                    });
+                                    
+                                    if (!isValid) {
+                                        console.error(`❌ Invalid combination: "${currentSubsidiary}" is not enabled for book ${currentBook}`);
+                                        // Show alert in task pane
+                                        const refreshStatus = document.getElementById('refreshStatus');
+                                        if (refreshStatus) {
+                                            refreshStatus.innerHTML = `
+                                                <div style="background: #fee2e2; border: 2px solid #dc2626; padding: 16px; border-radius: 8px; margin: 10px 0; position: relative;">
+                                                    <button onclick="this.parentElement.remove()" style="position: absolute; top: 8px; right: 8px; background: none; border: none; color: #991b1b; font-size: 20px; font-weight: bold; cursor: pointer; padding: 0; width: 24px; height: 24px; line-height: 1; opacity: 0.7; transition: opacity 0.2s;" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.7'" title="Dismiss">×</button>
+                                                    <strong style="color: #991b1b; display: block; margin-bottom: 8px; font-size: 16px;">❌ Invalid Book-Subsidiary Combination</strong>
+                                                    <div style="font-size: 14px; color: #7f1d1d; line-height: 1.6;">
+                                                        The subsidiary "<strong>${currentSubsidiary}</strong>" is not enabled for Accounting Book <strong>${currentBook}</strong>.<br>
+                                                        <br>
+                                                        <strong>What to do:</strong><br>
+                                                        1. Change the Accounting Book (U3) to one that supports this subsidiary, OR<br>
+                                                        2. Change the Subsidiary (Q3) to one that is enabled for this book.<br>
+                                                        <br>
+                                                        <em>Formulas will show #N/A until a valid combination is selected.</em>
+                                                    </div>
+                                                </div>
+                                            `;
+                                        }
+                                        // Also show toast
+                                        showToast({
+                                            title: '❌ Invalid Combination',
+                                            message: `"${currentSubsidiary}" is not enabled for Book ${currentBook}`,
+                                            type: 'error',
+                                            duration: 8000
+                                        });
+                                    } else {
+                                        // Valid combination - clear any previous error
+                                        const refreshStatus = document.getElementById('refreshStatus');
+                                        if (refreshStatus) {
+                                            refreshStatus.innerHTML = '';
+                                        }
+                                    }
+                                }
+                            }
+                        } catch (e) {
+                            console.warn('⚠️ Error validating combination:', e.message);
+                        }
+                    }
+                    
+                    // Filter dropdown based on current accounting book
                     if (currentBook && window.filterSubsidiaryDropdownByAccountingBook) {
                         console.log(`🔍 Filtering subsidiary dropdown for accounting book ${currentBook}...`);
                         await window.filterSubsidiaryDropdownByAccountingBook(currentBook);
                     }
                 } catch (e) {
-                    console.warn('⚠️ Error filtering dropdown on Q3 change:', e.message);
+                    console.warn('⚠️ Error validating/filtering on Q3 change:', e.message);
                 }
                 
                 // CRITICAL: Suppress and HIDE statusBar IMMEDIATELY (not after debounce!)
@@ -18357,29 +18420,62 @@ export default {
                                 updateCacheProgress();
                             }, 50);
                             
-                            // Wait indefinitely for cache (no time limit)
-                            while (!cacheReady) {
+                            // Wait for cache with timeout (max 120 seconds)
+                            const maxCacheWait = 120000; // 120 seconds
+                            console.log(`⏳ Starting cache check loop (max wait: ${maxCacheWait / 1000}s)...`);
+                            
+                            while (!cacheReady && cacheWaitTime < maxCacheWait) {
                                 try {
                                     const cacheStatusResponse = await fetch(`${getServerUrl()}/lookups/cache/status`);
                                     if (cacheStatusResponse.ok) {
                                         const cacheStatus = await cacheStatusResponse.json();
                                         if (cacheStatus.ready) {
+                                            // CACHE IS READY - BREAK IMMEDIATELY
                                             cacheReady = true;
                                             if (pulseInterval) {
                                                 clearInterval(pulseInterval);
                                                 pulseInterval = null;
                                             }
-                                            console.log(`✅ Book-subsidiary cache is ready (waited ${(cacheWaitTime / 1000).toFixed(1)}s)`);
-                                            break;
+                                            console.log(`✅✅✅ CACHE READY - Breaking loop immediately (waited ${(cacheWaitTime / 1000).toFixed(1)}s)`);
+                                            console.log(`✅✅✅ This proves modal will appear right away once cache is ready`);
+                                            break; // Exit loop immediately - no waiting for timeout
+                                        } else {
+                                            // Cache not ready yet - continue checking
+                                            if (cacheWaitTime % 5000 === 0) { // Log every 5 seconds
+                                                console.log(`⏳ Cache not ready yet (waited ${(cacheWaitTime / 1000).toFixed(0)}s)...`);
+                                            }
                                         }
+                                    } else {
+                                        console.warn(`⚠️ Cache status check returned ${cacheStatusResponse.status}`);
                                     }
                                 } catch (e) {
                                     console.warn(`⚠️ Error checking cache status: ${e.message}`);
+                                    // If we can't reach the server, proceed anyway after reasonable wait
+                                    if (cacheWaitTime > 10000) { // After 10 seconds of errors
+                                        console.warn(`⚠️ Proceeding despite cache check errors (waited ${(cacheWaitTime / 1000).toFixed(1)}s)`);
+                                        cacheReady = true;
+                                        if (pulseInterval) {
+                                            clearInterval(pulseInterval);
+                                            pulseInterval = null;
+                                        }
+                                        break;
+                                    }
                                 }
                                 
                                 // Wait before next check
                                 await new Promise(resolve => setTimeout(resolve, cacheCheckInterval));
                                 cacheWaitTime += cacheCheckInterval;
+                            }
+                            
+                            // If cache still not ready after timeout, proceed anyway
+                            if (!cacheReady) {
+                                console.warn(`⚠️⚠️⚠️ TIMEOUT: Cache not ready after ${(maxCacheWait / 1000).toFixed(0)}s timeout - proceeding anyway`);
+                                console.warn(`⚠️⚠️⚠️ This means: Overlay will close, we'll try to fetch subsidiaries (may fail), then show modal`);
+                                if (pulseInterval) {
+                                    clearInterval(pulseInterval);
+                                    pulseInterval = null;
+                                }
+                                cacheReady = true; // Force proceed
                             }
                             
                             // Update message when cache is ready
@@ -18404,6 +18500,7 @@ export default {
                             // CRITICAL: Remove progress overlay BEFORE fetching subsidiaries
                             // This ensures it's gone before we show the modal
                             console.log(`🗑️ Removing progress overlay before fetching subsidiaries...`);
+                            console.log(`✅✅✅ PROOF: Overlay removed immediately after cache ready - modal will appear next`);
                             removeProgressOverlay();
                             
                             const fetchStartTime = Date.now();
@@ -18472,6 +18569,8 @@ export default {
                         // STEP 3: Cache is ready and subsidiaries fetched - now show modal
                         // Progress overlay should already be removed above, but ensure it's gone
                         removeProgressOverlay();
+                        console.log(`✅✅✅ PROOF: About to show subsidiary selection modal NOW`);
+                        console.log(`✅✅✅ PROOF: This confirms modal appears immediately after cache is ready (NOT waiting for 120s timeout)`);
                         console.log(`📚 Showing modal dialog with ${enabledSubs.length} enabled subsidiaries...`);
                         const selectedSubsidiary = await window.showSubsidiarySelectionModal(
                             accountingBook,
