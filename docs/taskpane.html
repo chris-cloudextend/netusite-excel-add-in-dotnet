@@ -5926,7 +5926,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.73"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.75"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -17943,25 +17943,16 @@ export default {
                     console.log(`   Element exists in DOM: ${document.getElementById('bookChangeOverlay') !== null}`);
                     
                     try {
-                        // CRITICAL: Clear caches FIRST to prevent formulas from using stale data
-                        console.log('🗑️ Clearing all caches BEFORE subsidiary update to prevent #VALUE errors...');
-                        localStorage.removeItem('netsuite_balance_cache');
-                        localStorage.removeItem('netsuite_balance_cache_timestamp');
-                        localStorage.removeItem('netsuite_typebalance_cache');
-                        localStorage.removeItem('netsuite_typebalance_cache_timestamp');
-                        localStorage.removeItem('netsuite_preload_status');
-                        localStorage.removeItem('netsuite_preload_timestamp');
-                        // Signal functions.js to clear in-memory cache IMMEDIATELY
-                        localStorage.setItem('netsuite_cache_clear_signal', JSON.stringify({
-                            timestamp: Date.now(),
-                            reason: 'accounting_book_change'
-                        }));
+                        // CRITICAL FIX: Don't clear cache here - it's too early and causes formulas to see empty cache
+                        // The cache will be cleared in performCFOSync AFTER Q3 is updated and we have the correct subsidiary
+                        // This prevents a race condition where formulas read empty cache before Q3 is updated
+                        console.log('📚 U3 changed - will clear cache in performCFOSync after Q3 is updated...');
                         
                         // Update progress
                         const progressBar = document.getElementById('bookChangeProgressBar');
                         const progressText = syncOverlay.querySelector('.progress-text');
                         if (progressBar) progressBar.style.width = '20%';
-                        if (progressText) progressText.textContent = 'Clearing caches...';
+                        if (progressText) progressText.textContent = 'Validating subsidiary...';
                         
                         // Read U3 and Q3 immediately
                         let accountingBook = '';
@@ -19769,8 +19760,17 @@ export default {
                 
                 console.log(`📊 Pre-fetching TYPEBALANCE data for ${targetYear}...`);
                 console.log(`   Filters: sub="${typeBalancePayload.subsidiary}", dept="${typeBalancePayload.department}", loc="${typeBalancePayload.location}", class="${typeBalancePayload.class}", book="${typeBalancePayload.accountingBook}"`);
+                console.log(`🔍 [REVENUE DEBUG] performCFOSync called with:`);
+                console.log(`   Year: ${targetYear}`);
+                console.log(`   Subsidiary: "${currentSubsidiary}"`);
+                console.log(`   Accounting Book: "${accountingBook}"`);
+                console.log(`   Department: "${department || '(none)'}"`);
+                console.log(`   Location: "${location || '(none)'}"`);
+                console.log(`   Class: "${classId || '(none)'}"`);
                 
-                // Clear ALL caches (balance, typebalance, etc.) to ensure fresh data
+                // CRITICAL FIX: Clear ALL caches (balance, typebalance, etc.) to ensure fresh data
+                // This happens AFTER Q3 is updated, so formulas will see the correct subsidiary
+                console.log(`🗑️ [REVENUE DEBUG] Clearing caches in performCFOSync (after Q3 update)...`);
                 localStorage.removeItem('netsuite_balance_cache');
                 localStorage.removeItem('netsuite_balance_cache_timestamp');
                 localStorage.removeItem('netsuite_typebalance_cache');
@@ -19784,6 +19784,7 @@ export default {
                     timestamp: Date.now(),
                     reason: 'cfo_filter_change'
                 }));
+                console.log(`✅ [REVENUE DEBUG] Cache clear signal set - functions.js will clear in-memory cache`);
                 
                 try {
                     const typeBalanceResponse = await fetch(`${getServerUrl()}/batch/typebalance_refresh`, {
@@ -19851,6 +19852,14 @@ export default {
                             const expectedTypes = ['Income', 'COGS', 'Expense', 'OthIncome', 'OthExpense'];
                             const processedTypes = new Set();
                             
+                            // CRITICAL DEBUG: Log the exact values being used for cache key construction
+                            console.log(`🔍 [REVENUE DEBUG] Constructing cache keys with:`);
+                            console.log(`   currentSubsidiary: "${currentSubsidiary}" (type: ${typeof currentSubsidiary})`);
+                            console.log(`   accountingBook: "${accountingBook}" (type: ${typeof accountingBook})`);
+                            console.log(`   department: "${department}"`);
+                            console.log(`   location: "${location}"`);
+                            console.log(`   classId: "${classId}"`);
+                            
                             for (const [acctType, monthData] of Object.entries(balances)) {
                                 processedTypes.add(acctType);
                                 // monthData is a dictionary: { "Jan 2025": value, "Feb 2025": value, ... }
@@ -19874,7 +19883,15 @@ export default {
                                             normalizedPeriod = `${normalizedMonth} ${year}`;
                                         }
                                     }
-                                    const cacheKey = `typebalance:${acctType}:${normalizedPeriod}:${normalizedPeriod}:${(currentSubsidiary || '').trim()}:${(department || '').trim()}:${(location || '').trim()}:${(classId || '').trim()}:${String(accountingBook || '').trim()}:${specialFlag}`;
+                                    
+                                    // CRITICAL: Ensure all values are trimmed and converted to strings exactly as TYPEBALANCE does
+                                    const subsidiaryStr = (currentSubsidiary || '').trim();
+                                    const deptStr = (department || '').trim();
+                                    const locStr = (location || '').trim();
+                                    const classStr = (classId || '').trim();
+                                    const bookStr = String(accountingBook || '').trim();
+                                    
+                                    const cacheKey = `typebalance:${acctType}:${normalizedPeriod}:${normalizedPeriod}:${subsidiaryStr}:${deptStr}:${locStr}:${classStr}:${bookStr}:${specialFlag}`;
                                     
                                     cacheEntries[cacheKey] = value || 0;
                                     
@@ -19882,8 +19899,8 @@ export default {
                                     if (acctType === 'Income') {
                                         console.log(`🔍 [REVENUE DEBUG] Income cache key: "${cacheKey}" = ${value || 0}`);
                                         console.log(`   Period: "${period}" → "${normalizedPeriod}"`);
-                                        console.log(`   Subsidiary: "${(currentSubsidiary || '').trim()}"`);
-                                        console.log(`   Book: "${String(accountingBook || '').trim()}"`);
+                                        console.log(`   Subsidiary: "${subsidiaryStr}"`);
+                                        console.log(`   Book: "${bookStr}"`);
                                         console.log(`   Value: ${value || 0}`);
                                     }
                                 }

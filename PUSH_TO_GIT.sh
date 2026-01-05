@@ -18,7 +18,7 @@ git add -A
 
 echo ""
 echo "3. Committing changes..."
-git commit -m "DEBUG: Added logging to handleSheetChange to diagnose why it's not firing - v4.0.6.73"
+git commit -m "FIX: Added COALESCE to handle NULL from BUILTIN.CONSOLIDATE for single subsidiary - v4.0.6.74"
 
 echo ""
 echo "4. Pushing to GitHub..."

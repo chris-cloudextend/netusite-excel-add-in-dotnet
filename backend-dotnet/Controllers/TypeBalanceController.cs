@@ -158,9 +158,14 @@ public class TypeBalanceController : ControllerBase
                 // Handle 'dec' specially since it might be reserved
                 var colName = monthAbbr == "dec" ? "dec_month" : monthAbbr;
                 
+                // CRITICAL FIX: Handle NULL from BUILTIN.CONSOLIDATE (can return NULL for single subsidiary)
+                // Use COALESCE to default to tal.amount if consolidation returns NULL
                 monthCases.Add($@"
                     SUM(CASE WHEN t.postingperiod = {periodId} THEN 
-                        TO_NUMBER(BUILTIN.CONSOLIDATE(tal.amount, 'LEDGER', 'DEFAULT', 'DEFAULT', {targetSub}, t.postingperiod, 'DEFAULT'))
+                        COALESCE(
+                            TO_NUMBER(BUILTIN.CONSOLIDATE(tal.amount, 'LEDGER', 'DEFAULT', 'DEFAULT', {targetSub}, t.postingperiod, 'DEFAULT')),
+                            tal.amount
+                        )
                         * CASE WHEN a.accttype IN ({incomeTypesSql}) THEN -1 ELSE 1 END
                     ELSE 0 END) AS {colName}");
             }
@@ -200,10 +205,11 @@ public class TypeBalanceController : ControllerBase
 
             // CRITICAL DEBUG: Log query details for revenue investigation
             _logger.LogInformation("🔍 [REVENUE DEBUG] Executing batch query for book {Book}, sub {Sub}", accountingBook, request.Subsidiary);
-            _logger.LogDebug("   Target subsidiary ID: {TargetSub}", targetSub);
-            _logger.LogDebug("   Subsidiary hierarchy: {Hierarchy}", subFilter);
-            _logger.LogDebug("   Segment WHERE: {SegmentWhere}", segmentWhere);
-            _logger.LogDebug("   Period filter: {PeriodFilter}", periodFilter);
+            _logger.LogInformation("   Target subsidiary ID: {TargetSub}", targetSub);
+            _logger.LogInformation("   Subsidiary hierarchy: {Hierarchy}", subFilter);
+            _logger.LogInformation("   Segment WHERE: {SegmentWhere}", segmentWhere);
+            _logger.LogInformation("   Period filter: {PeriodFilter}", periodFilter);
+            _logger.LogInformation("🔍 [REVENUE DEBUG] Full SQL Query:\n{Query}", query);
             
             var result = await _netSuiteService.QueryRawWithErrorAsync(query);
             
@@ -240,9 +246,11 @@ public class TypeBalanceController : ControllerBase
             if (incomeRow != null)
             {
                 _logger.LogInformation("🔍 [REVENUE DEBUG] Income row found - checking values...");
-                // Log first few month values
-                var sampleMonths = new[] { "jan", "feb", "mar", "apr", "may", "jun" };
-                foreach (var month in sampleMonths)
+                // Log ALL month values (not just first 6) to see the full picture
+                var allMonths = new[] { "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec_month" };
+                decimal totalIncome = 0;
+                int monthsWithData = 0;
+                foreach (var month in allMonths)
                 {
                     if (incomeRow.TryGetProperty(month, out var valProp))
                     {
@@ -252,8 +260,14 @@ public class TypeBalanceController : ControllerBase
                         else if (valProp.ValueKind == JsonValueKind.String)
                             decimal.TryParse(valProp.GetString(), out val);
                         _logger.LogInformation("   Income {Month}: {Value:N2}", month, val);
+                        if (val != 0)
+                        {
+                            totalIncome += val;
+                            monthsWithData++;
+                        }
                     }
                 }
+                _logger.LogInformation("   Income summary: {MonthsWithData}/12 months have data, total: {Total:N2}", monthsWithData, totalIncome);
             }
             else
             {
