@@ -6056,7 +6056,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.82"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.83"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -18737,32 +18737,37 @@ export default {
                 console.log('💱 Running smart currency format update...');
                 
                 // ============================================
-                // CRITICAL: Clear ALL caches when subsidiary changes!
-                // The taskpane and custom functions run in SEPARATE JavaScript
-                // contexts, so we can't directly call window.clearAllCaches().
-                // Instead, we use localStorage as a cross-context signal.
+                // CRITICAL FIX: Don't clear cache if sync is in progress!
+                // When accounting book changes, performCFOSync populates the cache,
+                // but then Q3 change triggers this function which clears it.
+                // We should NOT clear cache if we're in the middle of a sync.
                 // ============================================
-                console.log('🧹 Clearing caches for subsidiary change');
-                
-                // Clear localStorage cache
-                try {
-                    localStorage.removeItem('netsuite_balance_cache');
-                    localStorage.removeItem('netsuite_balance_cache_timestamp');
-                    localStorage.removeItem('netsuite_typebalance_cache');
-                    localStorage.removeItem('netsuite_typebalance_cache_timestamp');
-                } catch (e) {
-                    console.warn('   ⚠️ localStorage clear failed:', e.message);
-                }
-                
-                // CRITICAL: Signal to functions.js to clear its in-memory cache
-                // The BALANCE function will check this flag and clear cache if needed
-                try {
-                    localStorage.setItem('netsuite_cache_clear_signal', JSON.stringify({
-                        timestamp: Date.now(),
-                        reason: 'subsidiary_change'
-                    }));
-                } catch (e) {
-                    console.warn('   ⚠️ Cache signal failed:', e.message);
+                if (isSyncInProgress) {
+                    console.log('⏸️ Sync in progress - skipping cache clear in smartCurrencyFormatUpdate');
+                    console.log('   Cache was just populated by performCFOSync - preserving it');
+                } else {
+                    console.log('🧹 Clearing caches for subsidiary change');
+                    
+                    // Clear localStorage cache
+                    try {
+                        localStorage.removeItem('netsuite_balance_cache');
+                        localStorage.removeItem('netsuite_balance_cache_timestamp');
+                        localStorage.removeItem('netsuite_typebalance_cache');
+                        localStorage.removeItem('netsuite_typebalance_cache_timestamp');
+                    } catch (e) {
+                        console.warn('   ⚠️ localStorage clear failed:', e.message);
+                    }
+                    
+                    // CRITICAL: Signal to functions.js to clear its in-memory cache
+                    // The BALANCE function will check this flag and clear cache if needed
+                    try {
+                        localStorage.setItem('netsuite_cache_clear_signal', JSON.stringify({
+                            timestamp: Date.now(),
+                            reason: 'subsidiary_change'
+                        }));
+                    } catch (e) {
+                        console.warn('   ⚠️ Cache signal failed:', e.message);
+                    }
                 }
                 
                 // Get year, subsidiary, and other filters from the sheet

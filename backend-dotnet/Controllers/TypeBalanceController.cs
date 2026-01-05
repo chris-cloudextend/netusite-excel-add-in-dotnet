@@ -159,15 +159,21 @@ public class TypeBalanceController : ControllerBase
                 var colName = monthAbbr == "dec" ? "dec_month" : monthAbbr;
                 
                 // CRITICAL FIX: Handle NULL from BUILTIN.CONSOLIDATE (can return NULL for single subsidiary)
-                // Use COALESCE to default to tal.amount (not TO_NUMBER) if consolidation returns NULL
-                // Note: tal.amount is already a number, so we don't need TO_NUMBER on the fallback
+                // IMPORTANT: Apply sign flip INSIDE COALESCE to ensure NULL handling works correctly
+                // For Income accounts, we need negative values. The sign flip must happen on the COALESCE result.
                 monthCases.Add($@"
                     SUM(CASE WHEN t.postingperiod = {periodId} THEN 
-                        COALESCE(
-                            TO_NUMBER(BUILTIN.CONSOLIDATE(tal.amount, 'LEDGER', 'DEFAULT', 'DEFAULT', {targetSub}, t.postingperiod, 'DEFAULT')),
-                            tal.amount
-                        )
-                        * CASE WHEN a.accttype IN ({incomeTypesSql}) THEN -1 ELSE 1 END
+                        CASE WHEN a.accttype IN ({incomeTypesSql}) THEN 
+                            -COALESCE(
+                                TO_NUMBER(BUILTIN.CONSOLIDATE(tal.amount, 'LEDGER', 'DEFAULT', 'DEFAULT', {targetSub}, t.postingperiod, 'DEFAULT')),
+                                tal.amount
+                            )
+                        ELSE 
+                            COALESCE(
+                                TO_NUMBER(BUILTIN.CONSOLIDATE(tal.amount, 'LEDGER', 'DEFAULT', 'DEFAULT', {targetSub}, t.postingperiod, 'DEFAULT')),
+                                tal.amount
+                            )
+                        END
                     ELSE 0 END) AS {colName}");
             }
 
@@ -252,6 +258,7 @@ public class TypeBalanceController : ControllerBase
                 var allMonths = new[] { "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec_month" };
                 decimal totalIncome = 0;
                 int monthsWithData = 0;
+                int monthsWithNull = 0;
                 foreach (var month in allMonths)
                 {
                     if (incomeRow.TryGetProperty(month, out var valProp))
@@ -260,16 +267,79 @@ public class TypeBalanceController : ControllerBase
                         if (valProp.ValueKind == JsonValueKind.Number)
                             val = valProp.GetDecimal();
                         else if (valProp.ValueKind == JsonValueKind.String)
-                            decimal.TryParse(valProp.GetString(), out val);
-                        _logger.LogInformation("   Income {Month}: {Value:N2}", month, val);
+                        {
+                            var strVal = valProp.GetString();
+                            if (string.IsNullOrEmpty(strVal) || strVal == "NULL")
+                            {
+                                monthsWithNull++;
+                                _logger.LogWarning("   Income {Month}: NULL (COALESCE should have handled this!)", month);
+                            }
+                            else
+                            {
+                                decimal.TryParse(strVal, out val);
+                            }
+                        }
+                        else if (valProp.ValueKind == JsonValueKind.Null)
+                        {
+                            monthsWithNull++;
+                            _logger.LogWarning("   Income {Month}: NULL (COALESCE should have handled this!)", month);
+                        }
+                        _logger.LogInformation("   Income {Month}: {Value:N2} (ValueKind: {Kind})", month, val, valProp.ValueKind);
                         if (val != 0)
                         {
                             totalIncome += val;
                             monthsWithData++;
                         }
                     }
+                    else
+                    {
+                        _logger.LogWarning("   Income {Month}: Property not found in result row", month);
+                    }
                 }
-                _logger.LogInformation("   Income summary: {MonthsWithData}/12 months have data, total: {Total:N2}", monthsWithData, totalIncome);
+                _logger.LogInformation("   Income summary: {MonthsWithData}/12 months have data, {MonthsWithNull} NULL values, total: {Total:N2}", monthsWithData, monthsWithNull, totalIncome);
+                
+                // CRITICAL DEBUG: If all values are 0, check if there are Income transactions at all
+                if (monthsWithData == 0 && monthsWithNull == 0)
+                {
+                    _logger.LogWarning("⚠️ [REVENUE DEBUG] All Income values are 0 - checking if Income transactions exist...");
+                    // Run a diagnostic query to see if Income transactions exist
+                    var diagnosticQuery = $@"
+                        SELECT COUNT(*) as transaction_count,
+                               SUM(ABS(tal.amount)) as total_amount
+                        FROM transactionaccountingline tal
+                        JOIN transaction t ON t.id = tal.transaction
+                        JOIN account a ON a.id = tal.account
+                        JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id
+                        WHERE t.posting = 'T'
+                          AND tal.posting = 'T'
+                          AND a.accttype = 'Income'
+                          AND a.isinactive = 'F'
+                          AND t.postingperiod IN ({periodFilter})
+                          AND tal.accountingbook = {accountingBook}
+                          AND {segmentWhere}";
+                    
+                    try
+                    {
+                        var diagResult = await _netSuiteService.QueryRawWithErrorAsync(diagnosticQuery);
+                        if (diagResult.Success && diagResult.Items.Any())
+                        {
+                            var diagRow = diagResult.Items[0];
+                            var count = diagRow.TryGetProperty("transaction_count", out var cProp) ? cProp.GetInt32() : 0;
+                            var total = diagRow.TryGetProperty("total_amount", out var aProp) ? 
+                                (aProp.ValueKind == JsonValueKind.Number ? aProp.GetDecimal() : 0) : 0;
+                            _logger.LogInformation("   Diagnostic: {Count} Income transactions found, total absolute amount: {Total:N2}", count, total);
+                            
+                            if (count > 0 && total > 0)
+                            {
+                                _logger.LogError("❌ [REVENUE DEBUG] Income transactions EXIST but query returned 0 - COALESCE/BUILTIN.CONSOLIDATE issue!");
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning("   Could not run diagnostic query: {Error}", ex.Message);
+                    }
+                }
             }
             else
             {
