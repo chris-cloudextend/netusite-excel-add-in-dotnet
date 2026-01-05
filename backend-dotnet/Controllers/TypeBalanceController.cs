@@ -158,22 +158,25 @@ public class TypeBalanceController : ControllerBase
                 // Handle 'dec' specially since it might be reserved
                 var colName = monthAbbr == "dec" ? "dec_month" : monthAbbr;
                 
-                // CRITICAL FIX: Handle NULL from BUILTIN.CONSOLIDATE (can return NULL for single subsidiary)
-                // IMPORTANT: Apply sign flip INSIDE COALESCE to ensure NULL handling works correctly
-                // For Income accounts, we need negative values. The sign flip must happen on the COALESCE result.
+                // CRITICAL FIX: Match individual query structure exactly!
+                // Individual query does: TO_NUMBER(BUILTIN.CONSOLIDATE(...)) * signFlip
+                // We must do the same: apply sign flip AFTER TO_NUMBER, not inside COALESCE
+                // Note: If BUILTIN.CONSOLIDATE returns NULL, TO_NUMBER(NULL) = NULL, and NULL * -1 = NULL (SUM ignores it)
+                // This matches the individual query behavior exactly
+                var signFlip = $"CASE WHEN a.accttype IN ({incomeTypesSql}) THEN -1 ELSE 1 END";
                 monthCases.Add($@"
                     SUM(CASE WHEN t.postingperiod = {periodId} THEN 
-                        CASE WHEN a.accttype IN ({incomeTypesSql}) THEN 
-                            -COALESCE(
-                                TO_NUMBER(BUILTIN.CONSOLIDATE(tal.amount, 'LEDGER', 'DEFAULT', 'DEFAULT', {targetSub}, t.postingperiod, 'DEFAULT')),
-                                tal.amount
+                        TO_NUMBER(
+                            BUILTIN.CONSOLIDATE(
+                                tal.amount, 
+                                'LEDGER', 
+                                'DEFAULT', 
+                                'DEFAULT', 
+                                {targetSub}, 
+                                t.postingperiod, 
+                                'DEFAULT'
                             )
-                        ELSE 
-                            COALESCE(
-                                TO_NUMBER(BUILTIN.CONSOLIDATE(tal.amount, 'LEDGER', 'DEFAULT', 'DEFAULT', {targetSub}, t.postingperiod, 'DEFAULT')),
-                                tal.amount
-                            )
-                        END
+                        ) * {signFlip}
                     ELSE 0 END) AS {colName}");
             }
 
@@ -272,7 +275,7 @@ public class TypeBalanceController : ControllerBase
                             if (string.IsNullOrEmpty(strVal) || strVal == "NULL")
                             {
                                 monthsWithNull++;
-                                _logger.LogWarning("   Income {Month}: NULL (COALESCE should have handled this!)", month);
+                                _logger.LogWarning("   Income {Month}: NULL (TO_NUMBER returned NULL)", month);
                             }
                             else
                             {
@@ -282,7 +285,7 @@ public class TypeBalanceController : ControllerBase
                         else if (valProp.ValueKind == JsonValueKind.Null)
                         {
                             monthsWithNull++;
-                            _logger.LogWarning("   Income {Month}: NULL (COALESCE should have handled this!)", month);
+                            _logger.LogWarning("   Income {Month}: NULL (TO_NUMBER returned NULL)", month);
                         }
                         _logger.LogInformation("   Income {Month}: {Value:N2} (ValueKind: {Kind})", month, val, valProp.ValueKind);
                         if (val != 0)
@@ -331,7 +334,55 @@ public class TypeBalanceController : ControllerBase
                             
                             if (count > 0 && total > 0)
                             {
-                                _logger.LogError("❌ [REVENUE DEBUG] Income transactions EXIST but query returned 0 - COALESCE/BUILTIN.CONSOLIDATE issue!");
+                                _logger.LogError("❌ [REVENUE DEBUG] Income transactions EXIST ({Count} transactions, {Total:N2} absolute) but batch query returned 0!", count, total);
+                                _logger.LogError("   This indicates BUILTIN.CONSOLIDATE is returning NULL for all Income amounts");
+                                
+                                // Test BUILTIN.CONSOLIDATE directly for one period
+                                if (periodIds.Any())
+                                {
+                                    var testPeriodId = periodIds.First();
+                                    var testQuery = $@"
+                                        SELECT 
+                                            COUNT(*) as count,
+                                            SUM(TO_NUMBER(BUILTIN.CONSOLIDATE(tal.amount, 'LEDGER', 'DEFAULT', 'DEFAULT', {targetSub}, {testPeriodId}, 'DEFAULT'))) as consolidated_sum,
+                                            SUM(tal.amount) as raw_sum
+                                        FROM transactionaccountingline tal
+                                        JOIN transaction t ON t.id = tal.transaction
+                                        JOIN account a ON a.id = tal.account
+                                        JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id
+                                        WHERE t.posting = 'T'
+                                          AND tal.posting = 'T'
+                                          AND a.accttype = 'Income'
+                                          AND a.isinactive = 'F'
+                                          AND t.postingperiod = {testPeriodId}
+                                          AND tal.accountingbook = {accountingBook}
+                                          AND {segmentWhere}";
+                                    
+                                    try
+                                    {
+                                        var testResult = await _netSuiteService.QueryRawWithErrorAsync(testQuery);
+                                        if (testResult.Success && testResult.Items.Any())
+                                        {
+                                            var testRow = testResult.Items[0];
+                                            var testCount = testRow.TryGetProperty("count", out var tcProp) ? tcProp.GetInt32() : 0;
+                                            var consolidatedSum = testRow.TryGetProperty("consolidated_sum", out var csProp) ? 
+                                                (csProp.ValueKind == JsonValueKind.Number ? csProp.GetDecimal() : 0) : 0;
+                                            var rawSum = testRow.TryGetProperty("raw_sum", out var rsProp) ? 
+                                                (rsProp.ValueKind == JsonValueKind.Number ? rsProp.GetDecimal() : 0) : 0;
+                                            _logger.LogInformation("   Test query (period {PeriodId}): {Count} transactions, consolidated_sum: {Consolidated:N2}, raw_sum: {Raw:N2}", 
+                                                testPeriodId, testCount, consolidatedSum, rawSum);
+                                            
+                                            if (testCount > 0 && rawSum != 0 && consolidatedSum == 0)
+                                            {
+                                                _logger.LogError("   ❌ CONFIRMED: BUILTIN.CONSOLIDATE returns NULL/0 for Income! Raw sum: {Raw:N2}, Consolidated: {Consolidated:N2}", rawSum, consolidatedSum);
+                                            }
+                                        }
+                                    }
+                                    catch (Exception testEx)
+                                    {
+                                        _logger.LogWarning("   Could not run test query: {Error}", testEx.Message);
+                                    }
+                                }
                             }
                         }
                     }
