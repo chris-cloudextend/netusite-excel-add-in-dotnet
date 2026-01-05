@@ -98,14 +98,9 @@ public class TypeBalanceController : ControllerBase
             // Get subsidiary hierarchy (all children for consolidated view)
             var hierarchySubs = await _lookupService.GetSubsidiaryHierarchyAsync(targetSub);
             var subFilter = string.Join(", ", hierarchySubs);
-            
-            // CRITICAL FIX: For single-subsidiary books, BUILTIN.CONSOLIDATE returns NULL
-            // Skip consolidation and use tal.amount directly for better performance and correctness
-            var isSingleSubsidiary = hierarchySubs.Count == 1;
-            var useConsolidation = !isSingleSubsidiary;
 
-            _logger.LogDebug("Subsidiary: '{Sub}' → ID {Id}, hierarchy: {Hierarchy}, single={Single}, useConsolidation={UseConsolidation}", 
-                request.Subsidiary, targetSub, subFilter, isSingleSubsidiary, useConsolidation);
+            _logger.LogDebug("Subsidiary: '{Sub}' → ID {Id}, hierarchy: {Hierarchy}", 
+                request.Subsidiary, targetSub, subFilter);
 
             // Resolve other dimensions
             var departmentId = await _lookupService.ResolveDimensionIdAsync("department", request.Department);
@@ -163,26 +158,14 @@ public class TypeBalanceController : ControllerBase
                 // Handle 'dec' specially since it might be reserved
                 var colName = monthAbbr == "dec" ? "dec_month" : monthAbbr;
                 
-                // CRITICAL FIX: For single subsidiaries, BUILTIN.CONSOLIDATE returns NULL
-                // Use tal.amount directly for single subsidiaries, BUILTIN.CONSOLIDATE for consolidated
-                string amountExpression;
-                if (useConsolidation)
-                {
-                    // Multi-subsidiary: Use BUILTIN.CONSOLIDATE with COALESCE fallback
-                    amountExpression = $@"COALESCE(
-                            TO_NUMBER(BUILTIN.CONSOLIDATE(tal.amount, 'LEDGER', 'DEFAULT', 'DEFAULT', {targetSub}, t.postingperiod, 'DEFAULT')),
-                            TO_NUMBER(tal.amount)
-                        )";
-                }
-                else
-                {
-                    // Single subsidiary: Use tal.amount directly (no consolidation needed)
-                    amountExpression = "TO_NUMBER(tal.amount)";
-                }
-                
+                // CRITICAL FIX: Handle NULL from BUILTIN.CONSOLIDATE (can return NULL for single subsidiary)
+                // Use COALESCE to default to TO_NUMBER(tal.amount) if consolidation returns NULL
                 monthCases.Add($@"
                     SUM(CASE WHEN t.postingperiod = {periodId} THEN 
-                        {amountExpression}
+                        COALESCE(
+                            TO_NUMBER(BUILTIN.CONSOLIDATE(tal.amount, 'LEDGER', 'DEFAULT', 'DEFAULT', {targetSub}, t.postingperiod, 'DEFAULT')),
+                            TO_NUMBER(tal.amount)
+                        )
                         * CASE WHEN a.accttype IN ({incomeTypesSql}) THEN -1 ELSE 1 END
                     ELSE 0 END) AS {colName}");
             }
@@ -260,7 +243,8 @@ public class TypeBalanceController : ControllerBase
                 return false;
             });
             
-            if (incomeRow != null)
+            // Check if incomeRow is not default (JsonElement default is empty object)
+            if (incomeRow.ValueKind != JsonValueKind.Undefined && incomeRow.ValueKind != JsonValueKind.Null)
             {
                 _logger.LogInformation("🔍 [REVENUE DEBUG] Income row found - checking values...");
                 // Log ALL month values (not just first 6) to see the full picture
@@ -426,9 +410,9 @@ public class TypeBalanceController : ControllerBase
             }
 
             // CRITICAL FIX: Log all account types being returned to verify Issue 2 fix
-            var returnedTypes = string.Join(", ", balances.Keys.OrderBy(k => k));
+            var returnedTypesList = string.Join(", ", balances.Keys.OrderBy(k => k));
             _logger.LogInformation("Returning {Count} account types × 12 months in {Elapsed:F2}s", balances.Count, elapsed);
-            _logger.LogInformation("Account types returned: {Types}", returnedTypes);
+            _logger.LogInformation("Account types returned: {Types}", returnedTypesList);
             
             // Verify all expected types are present
             var missingTypes = plTypes.Except(balances.Keys).ToList();

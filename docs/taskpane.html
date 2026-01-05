@@ -5926,7 +5926,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.76"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.77"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -17972,15 +17972,17 @@ export default {
                         if (accountingBook && accountingBook !== '1') {
                             console.log(`📚 [CRITICAL FIX] Validating "${currentSubsidiary}" for accounting book ${accountingBook}...`);
                             
-                            // CRITICAL FIX: Set transition flag FIRST to make validation lenient during update
-                            // This prevents formulas from throwing #VALUE errors while Q3 is being updated
+                            // CRITICAL FIX: Set transition flag FIRST with state information
+                            // This allows guard clause to check if current subsidiary is OLD (invalid) or NEW (valid)
                             const transitionKey = `netsuite_book_transition_${accountingBook}`;
-                            localStorage.setItem(transitionKey, JSON.stringify({
+                            const transitionData = {
                                 timestamp: Date.now(),
                                 oldSubsidiary: currentSubsidiary,
-                                newBook: accountingBook
-                            }));
-                            console.log(`🔒 [CRITICAL FIX] Set transition flag - validation will be lenient for 5 seconds`);
+                                newBook: accountingBook,
+                                newSubsidiary: null // Will be set when we get replacement
+                            };
+                            localStorage.setItem(transitionKey, JSON.stringify(transitionData));
+                            console.log(`🔒 [GUARD CLAUSE] Set transition flag - oldSub: "${currentSubsidiary}", newBook: ${accountingBook}`);
                             
                             // CRITICAL: Fetch enabled subsidiaries FIRST to get immediate replacement
                             let replacementSub = null;
@@ -18031,6 +18033,18 @@ export default {
                                                 } catch (e) {
                                                     console.warn(`⚠️ [CRITICAL FIX] Error fetching default subsidiary, using first:`, e.message);
                                                 }
+                                                
+                                                // Update transition flag with new subsidiary (state-based guard)
+                                                if (replacementSub) {
+                                                    transitionData.newSubsidiary = replacementSub;
+                                                    localStorage.setItem(transitionKey, JSON.stringify(transitionData));
+                                                    console.log(`🔒 [GUARD CLAUSE] Updated transition flag - newSub: "${replacementSub}"`);
+                                                }
+                                            } else {
+                                                // Current subsidiary is valid - update transition flag to mark as complete
+                                                transitionData.newSubsidiary = currentSubsidiary;
+                                                localStorage.setItem(transitionKey, JSON.stringify(transitionData));
+                                                console.log(`✅ [GUARD CLAUSE] Current subsidiary is valid - transition complete`);
                                             }
                                         }
                                     }
@@ -18062,11 +18076,10 @@ export default {
                                 
                                 console.log(`✅ [CRITICAL FIX] Q3 updated to "${replacementSub}" - formulas will use valid combination`);
                                 
-                                // Clear transition flag after a short delay (allow formulas to see the new value)
-                                setTimeout(() => {
-                                    localStorage.removeItem(transitionKey);
-                                    console.log(`🔓 [CRITICAL FIX] Transition flag cleared`);
-                                }, 5000);
+                                // Update transition flag - newSubsidiary is now set, guard will allow execution
+                                // The guard clause will detect newSubsidiary match and clear the flag automatically
+                                // No timeout needed - state-based check handles it
+                                console.log(`🔓 [GUARD CLAUSE] Q3 updated - guard will unlock on next formula evaluation`);
                                 
                                 // Filter dropdown immediately
                                 if (window.filterSubsidiaryDropdownByAccountingBook) {

@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.76';  // FIX: Revenue $0.00 in batch query - skip BUILTIN.CONSOLIDATE for single subsidiaries
+const FUNCTIONS_VERSION = '4.0.6.77';  // FIX: Guard clause with state-based logic to prevent poisoned cache during book changes
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -10339,14 +10339,78 @@ async function TYPEBALANCE(accountType, fromPeriod, toPeriod, subsidiary, depart
         const classStr = String(classId || '').trim();
         const bookStr = String(accountingBook || '').trim();
         
+        // ============================================================================
+        // GUARD CLAUSE: Check transition state BEFORE validation, cache, or API calls
+        // This prevents execution during invalid parameter states (book changed, Q3 not updated)
+        // State-based check: If current subsidiary matches OLD subsidiary from transition,
+        // we're in an invalid state. Guard unlocks when subsidiary matches NEW subsidiary.
+        // ============================================================================
+        if (bookStr && bookStr !== '1') {
+            const transitionKey = `netsuite_book_transition_${bookStr}`;
+            try {
+                const transitionData = localStorage.getItem(transitionKey);
+                if (transitionData) {
+                    const transition = JSON.parse(transitionData);
+                    const age = Date.now() - transition.timestamp;
+                    
+                    // State-based check: Is current subsidiary the OLD (invalid) one?
+                    // If yes, we're in transition. If it matches NEW subsidiary, transition is complete.
+                    const isOldSubsidiary = subsidiaryStr === transition.oldSubsidiary;
+                    const isNewSubsidiary = transition.newSubsidiary && subsidiaryStr === transition.newSubsidiary;
+                    
+                    if (isOldSubsidiary && !isNewSubsidiary) {
+                        // We're in transition state - current subsidiary is invalid for new book
+                        console.log(`⏸️ TYPEBALANCE: Transition in progress - book ${bookStr} changed, subsidiary "${subsidiaryStr}" not yet updated`);
+                        
+                        // Use CustomFunctions.Error for proper #N/A display (Mac-safe)
+                        // Static message to avoid recalculation instability
+                        if (typeof CustomFunctions !== 'undefined' && CustomFunctions.Error && CustomFunctions.ErrorCode) {
+                            throw new CustomFunctions.Error(CustomFunctions.ErrorCode.notAvailable);
+                        } else {
+                            // Fallback: Return undefined instead of throwing Error (safer on Mac)
+                            // Excel will display #N/A for undefined in Promise<number> functions
+                            console.warn('⚠️ CustomFunctions.Error not available, returning undefined');
+                            return undefined;
+                        }
+                    } else if (isNewSubsidiary) {
+                        // Transition complete - clear the flag
+                        localStorage.removeItem(transitionKey);
+                        console.log(`✅ TYPEBALANCE: Transition complete - subsidiary updated to "${subsidiaryStr}"`);
+                    } else if (age > 10000) {
+                        // Stale transition flag (>10s) - remove it (failsafe)
+                        localStorage.removeItem(transitionKey);
+                        console.log(`🧹 TYPEBALANCE: Removed stale transition flag (${Math.round(age/1000)}s old)`);
+                    }
+                }
+            } catch (e) {
+                // Ignore transition check errors, proceed to validation
+                console.warn('⚠️ Transition check error:', e.message);
+            }
+        }
+        
         // VALIDATION: Check subsidiary/accounting book combination
         const validationError = await validateSubsidiaryAccountingBook(subsidiaryStr, bookStr);
         if (validationError === 'INVALID_COMBINATION') {
             console.error(`❌ TYPEBALANCE: Invalid combination - subsidiary "${subsidiaryStr}" not enabled for accounting book ${bookStr}`);
-            throw new Error('INVALID_COMBINATION');
+            // Use CustomFunctions.Error for proper #N/A display (Mac-safe)
+            // Static message (omitted) to avoid recalculation instability
+            if (typeof CustomFunctions !== 'undefined' && CustomFunctions.Error && CustomFunctions.ErrorCode) {
+                throw new CustomFunctions.Error(CustomFunctions.ErrorCode.notAvailable);
+            } else {
+                // Fallback: Return undefined instead of throwing Error (safer on Mac)
+                console.warn('⚠️ CustomFunctions.Error not available, returning undefined');
+                return undefined;
+            }
         } else if (validationError === 'INVALID_BOOK') {
             console.error(`❌ TYPEBALANCE: Accounting book ${bookStr} has no enabled subsidiaries`);
-            throw new Error('INVALID_BOOK');
+            // Use CustomFunctions.Error for proper #N/A display (Mac-safe)
+            if (typeof CustomFunctions !== 'undefined' && CustomFunctions.Error && CustomFunctions.ErrorCode) {
+                throw new CustomFunctions.Error(CustomFunctions.ErrorCode.notAvailable);
+            } else {
+                // Fallback: Return undefined instead of throwing Error (safer on Mac)
+                console.warn('⚠️ CustomFunctions.Error not available, returning undefined');
+                return undefined;
+            }
         }
         const specialFlag = useSpecial ? '1' : '0';
         const cacheKey = `typebalance:${normalizedType}:${convertedFromPeriod}:${convertedToPeriod}:${subsidiaryStr}:${departmentStr}:${locationStr}:${classStr}:${bookStr}:${specialFlag}`;
