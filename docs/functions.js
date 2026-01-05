@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.81';  // FIX: Clear typebalance cache when book/subsidiary changes
+const FUNCTIONS_VERSION = '4.0.6.82';  // FIX: Enhanced cache debugging and modal instruction update
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -10452,40 +10452,90 @@ async function TYPEBALANCE(accountType, fromPeriod, toPeriod, subsidiary, depart
                 
                 // CRITICAL DEBUG: Log sample keys to help diagnose cache key mismatches
                 console.log('╔══════════════════════════════════════════════════════════════╗');
-                console.log('║  [REVENUE DEBUG] TYPEBALANCE cache MISS                      ║');
+                console.log('║  [CACHE DEBUG] TYPEBALANCE cache MISS                        ║');
                 console.log('╚══════════════════════════════════════════════════════════════╝');
+                console.log(`   Timestamp: ${new Date().toISOString()}`);
                 console.log(`   Looking for key: "${cacheKey}"`);
                 console.log(`   Account type: "${normalizedType}"`);
                 console.log(`   From period: "${convertedFromPeriod}"`);
                 console.log(`   To period: "${convertedToPeriod}"`);
                 console.log(`   Subsidiary: "${subsidiaryStr}"`);
+                console.log(`   Department: "${departmentStr}"`);
+                console.log(`   Location: "${locationStr}"`);
+                console.log(`   Class: "${classStr}"`);
                 console.log(`   Book: "${bookStr}"`);
+                console.log(`   Special flag: "${specialFlag}"`);
                 console.log(`   Total keys in cache: ${localStorageKeyCount}`);
                 
-                const sampleKeys = Object.keys(storedBalances).filter(k => k.includes(normalizedType)).slice(0, 10);
-                console.log(`   Sample keys in cache (filtered by "${normalizedType}"):`, sampleKeys);
-                if (sampleKeys.length > 0) {
-                    console.log(`   First sample key: "${sampleKeys[0]}"`);
-                    console.log(`   Our key:          "${cacheKey}"`);
-                    console.log(`   Match: ${sampleKeys[0] === cacheKey ? 'YES ✅' : 'NO ❌'}`);
+                // Show ALL Income keys in cache for comparison
+                const allIncomeKeys = Object.keys(storedBalances).filter(k => k.includes(':Income:'));
+                console.log(`   Income keys in cache: ${allIncomeKeys.length}`);
+                if (allIncomeKeys.length > 0) {
+                    console.log(`   All Income keys:`);
+                    allIncomeKeys.slice(0, 12).forEach((key, idx) => {
+                        const parts = key.split(':');
+                        const keySub = parts[4] || '';
+                        const keyBook = parts[8] || '';
+                        const keyPeriod = parts[2] || '';
+                        console.log(`      [${idx+1}] "${key}"`);
+                        console.log(`          Period: "${keyPeriod}", Sub: "${keySub}", Book: "${keyBook}"`);
+                    });
+                    
+                    // Find closest match
+                    const ourParts = cacheKey.split(':');
+                    const ourSub = ourParts[4] || '';
+                    const ourBook = ourParts[8] || '';
+                    const ourPeriod = ourParts[2] || '';
+                    
+                    console.log(`\n   🔍 [CACHE DEBUG] Key component comparison:`);
+                    console.log(`      Our period: "${ourPeriod}"`);
+                    console.log(`      Our subsidiary: "${ourSub}"`);
+                    console.log(`      Our book: "${ourBook}"`);
+                    
+                    const periodMatches = allIncomeKeys.filter(k => k.includes(ourPeriod));
+                    const subMatches = allIncomeKeys.filter(k => k.includes(ourSub));
+                    const bookMatches = allIncomeKeys.filter(k => k.includes(`:${ourBook}:`));
+                    
+                    console.log(`      Keys with matching period: ${periodMatches.length}`);
+                    console.log(`      Keys with matching subsidiary: ${subMatches.length}`);
+                    console.log(`      Keys with matching book: ${bookMatches.length}`);
+                    
+                    if (periodMatches.length > 0 && periodMatches.length < allIncomeKeys.length) {
+                        console.log(`      Sample period match: "${periodMatches[0]}"`);
+                    }
+                    if (subMatches.length > 0 && subMatches.length < allIncomeKeys.length) {
+                        console.log(`      Sample sub match: "${subMatches[0]}"`);
+                    }
+                    if (bookMatches.length > 0 && bookMatches.length < allIncomeKeys.length) {
+                        console.log(`      Sample book match: "${bookMatches[0]}"`);
+                    }
                     
                     // Show character-by-character comparison for first key
-                    if (sampleKeys[0] !== cacheKey) {
-                        console.log(`   Character comparison:`);
-                        const sample = sampleKeys[0];
+                    const sampleKey = allIncomeKeys[0];
+                    console.log(`\n   🔍 [CACHE DEBUG] Character-by-character comparison:`);
+                    console.log(`      Cache key: "${sampleKey}"`);
+                    console.log(`      Our key:    "${cacheKey}"`);
+                    console.log(`      Match: ${sampleKey === cacheKey ? 'YES ✅' : 'NO ❌'}`);
+                    
+                    if (sampleKey !== cacheKey) {
+                        const sample = sampleKey;
                         const ours = cacheKey;
                         const minLen = Math.min(sample.length, ours.length);
                         for (let i = 0; i < minLen; i++) {
                             if (sample[i] !== ours[i]) {
-                                console.log(`     First diff at position ${i}: sample="${sample[i]}" (${sample.charCodeAt(i)}), ours="${ours[i]}" (${ours.charCodeAt(i)})`);
-                                console.log(`     Sample context: "${sample.substring(Math.max(0, i-10), i+10)}"`);
-                                console.log(`     Our context:    "${ours.substring(Math.max(0, i-10), i+10)}"`);
+                                console.log(`      First diff at position ${i}: cache="${sample[i]}" (${sample.charCodeAt(i)}), ours="${ours[i]}" (${ours.charCodeAt(i)})`);
+                                console.log(`      Cache context: "${sample.substring(Math.max(0, i-20), i+20)}"`);
+                                console.log(`      Our context:    "${ours.substring(Math.max(0, i-20), i+20)}"`);
                                 break;
                             }
                         }
+                        if (sample.length !== ours.length) {
+                            console.log(`      Length mismatch: cache=${sample.length}, ours=${ours.length}`);
+                        }
                     }
                 } else {
-                    console.log(`   ⚠️ No keys found for account type "${normalizedType}" in cache!`);
+                    console.log(`   ⚠️ No Income keys found in cache!`);
+                    console.log(`   Available account types in cache:`, [...new Set(Object.keys(storedBalances).map(k => k.split(':')[1]))].join(', '));
                 }
                 
                 localStorageStatus = `has ${localStorageKeyCount} keys but NOT our key`;

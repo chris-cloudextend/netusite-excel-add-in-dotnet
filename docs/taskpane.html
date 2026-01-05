@@ -6056,7 +6056,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.81"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.82"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -17108,7 +17108,9 @@ export default {
                             <div class="subsidiary-selection-dialog" onclick="event.stopPropagation()">
                                 <h3>📚 Select Subsidiary</h3>
                                 <p>
-                                    Please select a subsidiary that is enabled for <span class="book-name">${accountingBookName}</span>.
+                                    <strong>⚠️ Important:</strong> Before selecting a subsidiary, please position your cursor in cell <strong>Q3</strong> (the subsidiary cell) in the Excel sheet.
+                                    <br><br>
+                                    Then select a subsidiary that is enabled for <span class="book-name">${accountingBookName}</span>.
                                     ${currentSubsidiary ? `<br><br><em>Current selection "${currentSubsidiary}" may not be valid for this accounting book.</em>` : ''}
                                 </p>
                                 <select id="modalSubsidiarySelect" class="subsidiary-select">
@@ -19980,7 +19982,30 @@ export default {
                 
                 // CRITICAL FIX: Clear ALL caches (balance, typebalance, etc.) to ensure fresh data
                 // This happens AFTER Q3 is updated, so formulas will see the correct subsidiary
-                console.log(`🗑️ [REVENUE DEBUG] Clearing caches in performCFOSync (after Q3 update)...`);
+                console.log(`\n╔══════════════════════════════════════════════════════════════╗`);
+                console.log(`║  🗑️ [CACHE DEBUG] CLEARING CACHES                            ║`);
+                console.log(`╚══════════════════════════════════════════════════════════════╝`);
+                
+                // DEBUG: Show cache state BEFORE clearing
+                try {
+                    const oldCache = localStorage.getItem('netsuite_typebalance_cache');
+                    if (oldCache) {
+                        const oldData = JSON.parse(oldCache);
+                        const oldKeys = Object.keys(oldData.balances || {});
+                        console.log(`📦 Cache BEFORE clear: ${oldKeys.length} entries`);
+                        if (oldKeys.length > 0) {
+                            const sampleOldKeys = oldKeys.filter(k => k.includes(':Income:')).slice(0, 3);
+                            console.log(`   Sample Income keys (OLD):`, sampleOldKeys);
+                            console.log(`   First old key: "${oldKeys[0]}"`);
+                        }
+                    } else {
+                        console.log(`📦 Cache BEFORE clear: EMPTY`);
+                    }
+                } catch (e) {
+                    console.warn(`⚠️ Could not read old cache:`, e.message);
+                }
+                
+                console.log(`🗑️ [CACHE DEBUG] Clearing caches in performCFOSync (after Q3 update)...`);
                 localStorage.removeItem('netsuite_balance_cache');
                 localStorage.removeItem('netsuite_balance_cache_timestamp');
                 localStorage.removeItem('netsuite_typebalance_cache');
@@ -19988,13 +20013,23 @@ export default {
                 localStorage.removeItem('netsuite_preload_status');
                 localStorage.removeItem('netsuite_preload_timestamp');
                 
+                // DEBUG: Verify cache is cleared
+                const verifyCache = localStorage.getItem('netsuite_typebalance_cache');
+                if (verifyCache) {
+                    console.error(`❌ [CACHE DEBUG] ERROR: Cache still exists after clear!`);
+                } else {
+                    console.log(`✅ [CACHE DEBUG] Cache verified CLEARED`);
+                }
+                
                 // Signal functions.js to clear its in-memory cache
                 // CRITICAL: Must be JSON format with { timestamp, reason } that functions.js expects!
                 localStorage.setItem('netsuite_cache_clear_signal', JSON.stringify({
                     timestamp: Date.now(),
                     reason: 'cfo_filter_change'
                 }));
-                console.log(`✅ [REVENUE DEBUG] Cache clear signal set - functions.js will clear in-memory cache`);
+                console.log(`✅ [CACHE DEBUG] Cache clear signal set - functions.js will clear in-memory cache`);
+                console.log(`   Clear reason: cfo_filter_change`);
+                console.log(`   Timestamp: ${new Date().toISOString()}`);
                 
                 try {
                     const typeBalanceResponse = await fetch(`${getServerUrl()}/batch/typebalance_refresh`, {
@@ -20188,7 +20223,55 @@ export default {
                             localStorage.setItem('netsuite_typebalance_cache', JSON.stringify(storageData));
                             localStorage.setItem('netsuite_typebalance_cache_timestamp', Date.now().toString());
                             
+                            console.log(`\n╔══════════════════════════════════════════════════════════════╗`);
+                            console.log(`║  ✅ [CACHE DEBUG] CACHE POPULATED                              ║`);
+                            console.log(`╚══════════════════════════════════════════════════════════════╝`);
                             console.log(`✅ CFO Sync: Saved ${Object.keys(cacheEntries).length} cache entries`);
+                            
+                            // DEBUG: Show what keys were saved
+                            const incomeKeys = Object.keys(cacheEntries).filter(k => k.includes(':Income:'));
+                            console.log(`   Income keys in cache: ${incomeKeys.length}`);
+                            if (incomeKeys.length > 0) {
+                                console.log(`   Sample Income keys (NEW):`, incomeKeys.slice(0, 5));
+                                console.log(`   First Income key: "${incomeKeys[0]}"`);
+                                
+                                // Show the exact format of keys formulas will look for
+                                const samplePeriod = 'Sep 2025';
+                                const expectedKey = `typebalance:Income:${samplePeriod}:${samplePeriod}:${(currentSubsidiary || '').trim()}:${(department || '').trim()}:${(location || '').trim()}:${(classId || '').trim()}:${String(accountingBook || '').trim()}:0`;
+                                console.log(`\n   🔍 [CACHE DEBUG] Key format comparison:`);
+                                console.log(`      Formula will look for: "${expectedKey}"`);
+                                const matchingKey = incomeKeys.find(k => k.includes(samplePeriod));
+                                if (matchingKey) {
+                                    console.log(`      Found matching key: "${matchingKey}"`);
+                                    console.log(`      Match: ${matchingKey === expectedKey ? '✅ EXACT MATCH' : '❌ MISMATCH'}`);
+                                    if (matchingKey !== expectedKey) {
+                                        // Show character-by-character diff
+                                        const minLen = Math.min(matchingKey.length, expectedKey.length);
+                                        for (let i = 0; i < minLen; i++) {
+                                            if (matchingKey[i] !== expectedKey[i]) {
+                                                console.log(`      First diff at position ${i}: cache="${matchingKey[i]}" (${matchingKey.charCodeAt(i)}), expected="${expectedKey[i]}" (${expectedKey.charCodeAt(i)})`);
+                                                console.log(`      Cache context: "${matchingKey.substring(Math.max(0, i-20), i+20)}"`);
+                                                console.log(`      Expected context: "${expectedKey.substring(Math.max(0, i-20), i+20)}"`);
+                                                break;
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    console.log(`      ❌ No matching key found for period "${samplePeriod}"`);
+                                }
+                            } else {
+                                console.warn(`   ⚠️ WARNING: No Income keys in cache!`);
+                            }
+                            
+                            // DEBUG: Verify cache was written
+                            const verifyWritten = localStorage.getItem('netsuite_typebalance_cache');
+                            if (verifyWritten) {
+                                const verifyData = JSON.parse(verifyWritten);
+                                const verifyKeys = Object.keys(verifyData.balances || {});
+                                console.log(`   ✅ Cache verified in localStorage: ${verifyKeys.length} entries`);
+                            } else {
+                                console.error(`   ❌ ERROR: Cache not found in localStorage after write!`);
+                            }
                             
                             // SIMULATION PROOF: Show Revenue values in cache BEFORE recalculation
                             const periods2025 = ['Jan 2025', 'Feb 2025', 'Mar 2025', 'Apr 2025', 'May 2025', 'Jun 2025', 
