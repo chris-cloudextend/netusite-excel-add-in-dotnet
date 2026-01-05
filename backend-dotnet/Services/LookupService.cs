@@ -10,6 +10,9 @@
 
 using System;
 using System.Text.Json;
+using System.IO;
+using System.Linq;
+using System.Threading.Tasks;
 using XaviApi.Models;
 
 namespace XaviApi.Services;
@@ -24,14 +27,107 @@ public class LookupService : ILookupService
     
     // Cache mapping accountingBookId -> list of valid subsidiary IDs
     // Built on startup from transaction data
+    // PERSISTED to disk to survive server restarts
     private readonly Dictionary<string, List<string>> _bookSubsidiaryCache = new();
     private readonly SemaphoreSlim _cacheLock = new(1, 1);
     private bool _cacheInitialized = false;
+    
+    // Cache file path - persists cache to disk
+    private static readonly string CacheFilePath = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+        "XaviApi",
+        "book-subsidiary-cache.json"
+    );
 
     public LookupService(INetSuiteService netSuiteService, ILogger<LookupService> logger)
     {
         _netSuiteService = netSuiteService;
         _logger = logger;
+        
+        // Try to load cache from disk on startup (non-blocking)
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await LoadCacheFromDiskAsync();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Could not load book-subsidiary cache from disk, will rebuild from NetSuite");
+            }
+        });
+    }
+    
+    /// <summary>
+    /// Load cache from disk if it exists.
+    /// This allows the cache to survive server restarts.
+    /// </summary>
+    private async Task LoadCacheFromDiskAsync()
+    {
+        if (!File.Exists(CacheFilePath))
+        {
+            _logger.LogInformation("📁 No cached book-subsidiary data found on disk, will build from NetSuite");
+            return;
+        }
+        
+        await _cacheLock.WaitAsync();
+        try
+        {
+            var json = await File.ReadAllTextAsync(CacheFilePath);
+            var cacheData = JsonSerializer.Deserialize<Dictionary<string, List<string>>>(json);
+            
+            if (cacheData != null && cacheData.Count > 0)
+            {
+                foreach (var kvp in cacheData)
+                {
+                    _bookSubsidiaryCache[kvp.Key] = kvp.Value;
+                }
+                _cacheInitialized = true;
+                var totalBooks = _bookSubsidiaryCache.Count;
+                var totalMappings = _bookSubsidiaryCache.Values.Sum(list => list.Count);
+                _logger.LogInformation("✅ Loaded book-subsidiary cache from disk: {BookCount} books, {MappingCount} mappings", 
+                    totalBooks, totalMappings);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to load cache from disk, will rebuild from NetSuite");
+        }
+        finally
+        {
+            _cacheLock.Release();
+        }
+    }
+    
+    /// <summary>
+    /// Save cache to disk to survive server restarts.
+    /// </summary>
+    private async Task SaveCacheToDiskAsync()
+    {
+        await _cacheLock.WaitAsync();
+        try
+        {
+            var directory = Path.GetDirectoryName(CacheFilePath);
+            if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+            
+            var json = JsonSerializer.Serialize(_bookSubsidiaryCache, new JsonSerializerOptions 
+            { 
+                WriteIndented = true 
+            });
+            await File.WriteAllTextAsync(CacheFilePath, json);
+            _logger.LogInformation("💾 Saved book-subsidiary cache to disk: {FilePath}", CacheFilePath);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to save cache to disk: {Error}", ex.Message);
+        }
+        finally
+        {
+            _cacheLock.Release();
+        }
     }
     
     /// <summary>
@@ -140,6 +236,9 @@ public class LookupService : ILookupService
             _logger.LogInformation("📊 Book-Subsidiary Health: {HealthSummary}", string.Join(" | ", healthLog));
             
             _cacheInitialized = true;
+            
+            // Save cache to disk to survive server restarts
+            await SaveCacheToDiskAsync();
         }
         catch (Exception ex)
         {

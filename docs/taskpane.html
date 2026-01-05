@@ -6056,7 +6056,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.92"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.93"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -18246,7 +18246,8 @@ export default {
                     // CRITICAL: Set transition flag IMMEDIATELY (synchronously) before any async operations
                     // This prevents formulas from executing with invalid book/subsidiary combinations
                     // We'll update oldSubsidiary once we read Q3, but this blocks execution NOW
-                    if (accountingBook && accountingBook !== '1') {
+                    // Set transition flag for ALL book changes (including Primary Book)
+                    if (accountingBook) {
                         // Try to get last known subsidiary from localStorage or use placeholder
                         let lastKnownSubsidiary = '';
                         try {
@@ -18284,8 +18285,8 @@ export default {
                             currentSubsidiary = String(subCell.values[0][0] || '').trim();
                         });
                         
-                        // Update transition flag with actual current subsidiary
-                        if (accountingBook && accountingBook !== '1' && currentSubsidiary) {
+                        // Update transition flag with actual current subsidiary (for all books, including Primary)
+                        if (accountingBook && currentSubsidiary) {
                             const transitionKey = `netsuite_book_transition_${accountingBook}`;
                             try {
                                 const existingTransition = localStorage.getItem(transitionKey);
@@ -18300,13 +18301,71 @@ export default {
                             }
                         }
                         
-                        // If primary book, just filter dropdown and continue (no modal needed)
-                        // Only show modal if user is CHANGING TO a non-primary book
+                        // If primary book, show modal with ALL subsidiaries
+                        // User should be prompted to select a subsidiary even when changing TO Primary Book
                         if (!accountingBook || accountingBook === '1') {
-                            console.log('📚 Primary Book selected - no modal needed (Primary Book allows all subsidiaries)');
-                            // Just filter dropdown but don't show modal
-                            if (window.filterSubsidiaryDropdownByAccountingBook) {
-                                await window.filterSubsidiaryDropdownByAccountingBook('1');
+                            console.log('📚 Primary Book selected - showing modal with all subsidiaries');
+                            
+                            // Get all subsidiaries for Primary Book
+                            let allSubsidiaries = [];
+                            try {
+                                const allResponse = await fetch(`${getServerUrl()}/lookups/all`);
+                                if (allResponse.ok) {
+                                    const allData = await allResponse.json();
+                                    allSubsidiaries = (allData.subsidiaries || []).map(s => ({
+                                        id: s.id,
+                                        name: s.name,
+                                        fullName: s.fullName || s.name
+                                    }));
+                                }
+                            } catch (e) {
+                                console.error(`❌ Error fetching all subsidiaries:`, e.message);
+                            }
+                            
+                            if (allSubsidiaries.length > 0) {
+                                // Show modal with all subsidiaries for Primary Book
+                                const selectedSubsidiary = await window.showSubsidiarySelectionModal(
+                                    '1',
+                                    'Primary Book',
+                                    currentSubsidiary,
+                                    allSubsidiaries
+                                );
+                                
+                                if (selectedSubsidiary) {
+                                    // Update Q3 with selected subsidiary
+                                    await Excel.run(async (context) => {
+                                        const sheet = context.workbook.worksheets.getActiveWorksheet();
+                                        const q3Cell = sheet.getRange("Q3");
+                                        q3Cell.values = [[selectedSubsidiary]];
+                                        await context.sync();
+                                    });
+                                    console.log(`✅ Q3 updated to "${selectedSubsidiary}" for Primary Book`);
+                                    
+                                    // Clear transition flag - user has selected subsidiary
+                                    const transitionKey = `netsuite_book_transition_1`;
+                                    try {
+                                        const existingTransition = localStorage.getItem(transitionKey);
+                                        if (existingTransition) {
+                                            const transition = JSON.parse(existingTransition);
+                                            transition.newSubsidiary = selectedSubsidiary;
+                                            localStorage.setItem(transitionKey, JSON.stringify(transition));
+                                            console.log(`🔓 [GUARD CLAUSE] Updated transition flag with selected subsidiary: "${selectedSubsidiary}"`);
+                                            
+                                            // Clear transition flag after a short delay to allow formulas to see the update
+                                            setTimeout(() => {
+                                                localStorage.removeItem(transitionKey);
+                                                console.log(`🔓 [GUARD CLAUSE] Cleared transition flag for Primary Book`);
+                                            }, 1000);
+                                        }
+                                    } catch (e) {
+                                        console.warn('⚠️ Could not update transition flag:', e.message);
+                                    }
+                                }
+                            } else {
+                                // Fallback: just filter dropdown
+                                if (window.filterSubsidiaryDropdownByAccountingBook) {
+                                    await window.filterSubsidiaryDropdownByAccountingBook('1');
+                                }
                             }
                             return;
                         }

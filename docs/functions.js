@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.92';  // FIX: Add timeout to cache check, validate book-subsidiary combinations and show alert
+const FUNCTIONS_VERSION = '4.0.6.93';  // FIX: Add cache persistence, show modal for Primary Book when changing to it
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -10248,7 +10248,9 @@ async function TYPEBALANCE(accountType, fromPeriod, toPeriod, subsidiary, depart
     const bookStr = String(accountingBook || '').trim();
     const subsidiaryStr = String(subsidiary || '').trim();
     
-    if (bookStr && bookStr !== '1') {
+    // Check transition flag for ALL books (including Primary Book)
+    // This ensures formulas show #N/A while user is selecting a subsidiary
+    if (bookStr) {
         const transitionKey = `netsuite_book_transition_${bookStr}`;
         try {
             const transitionData = localStorage.getItem(transitionKey);
@@ -10258,6 +10260,7 @@ async function TYPEBALANCE(accountType, fromPeriod, toPeriod, subsidiary, depart
                 
                 // CRITICAL: If newSubsidiary is null, we're still waiting for user to select
                 // Block ALL executions until user selects a subsidiary
+                // This applies to both Primary Book and other books
                 if (!transition.newSubsidiary) {
                     // Still in transition - user hasn't selected subsidiary yet
                     console.log(`⏸️ TYPEBALANCE: [GUARD] Blocked - book ${bookStr} changed, waiting for subsidiary selection (${Math.round(age/1000)}s ago)`);
