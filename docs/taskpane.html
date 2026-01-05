@@ -6056,7 +6056,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.89"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.90"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -17850,6 +17850,10 @@ export default {
                 statusEl.style.color = '#dc2626';
             }
         }
+        
+        // Track last U3 (accounting book) value to detect changes
+        // Declared at module level so it persists across calls and is available in Office.onReady
+        let lastU3Value = null;
 
         Office.onReady(async (info) => {
             console.log('NetSuite Excel Add-in task pane loaded');
@@ -17956,10 +17960,6 @@ export default {
             initBSPeriodInput();
         });
         
-        // Track last U3 (accounting book) value to detect changes
-        // Declared outside handleSheetChange so it persists across calls
-        let lastU3Value = null;
-        
         // Tab Navigation - switch between Data Management, Analytics, and Financial Reporting
         function initializeTabNavigation() {
             const tabs = {
@@ -18025,8 +18025,7 @@ export default {
         let currentSheetChangeHandler = null;
         let currentSheetName = null;
         
-        // Track previous U3 value to detect actual changes (not just initial load)
-        let lastU3Value = null;
+        // lastU3Value is declared above (after Office.onReady) to persist across calls
         
         // The actual change handler - extracted so it can be re-used when switching sheets
         async function handleSheetChange(event) {
