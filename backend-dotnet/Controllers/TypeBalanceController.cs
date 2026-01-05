@@ -176,6 +176,8 @@ public class TypeBalanceController : ControllerBase
                 // We must do the same: apply sign flip AFTER TO_NUMBER, not inside COALESCE
                 // Note: If BUILTIN.CONSOLIDATE returns NULL, TO_NUMBER(NULL) = NULL, and NULL * -1 = NULL (SUM ignores it)
                 // This matches the individual query behavior exactly
+                // NOTE: BUILTIN.CONSOLIDATE 5th parameter is the consolidation root (subsidiary ID for currency conversion)
+                // The accounting book is specified in WHERE clause: tal.accountingbook = {accountingBook}
                 var signFlip = $"CASE WHEN a.accttype IN ({incomeTypesSql}) THEN -1 ELSE 1 END";
                 monthCases.Add($@"
                     SUM(CASE WHEN t.postingperiod = {periodId} THEN 
