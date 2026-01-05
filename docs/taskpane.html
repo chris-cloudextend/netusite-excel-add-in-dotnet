@@ -18323,10 +18323,45 @@ export default {
                         
                         console.log(`✅ Q3 updated to "${selectedSubsidiary}"`);
                         
+                        // CRITICAL TIMING FIX: Verify Q3 was actually updated before proceeding
+                        // Excel.run() sync() doesn't guarantee the value is immediately readable
+                        // We need to read it back to confirm it's updated
+                        let verifiedSubsidiary = selectedSubsidiary;
+                        try {
+                            await Excel.run(async (context) => {
+                                const sheet = context.workbook.worksheets.getActiveWorksheet();
+                                const q3Cell = sheet.getRange("Q3");
+                                q3Cell.load("values");
+                                await context.sync();
+                                const readValue = String(q3Cell.values[0][0] || '').trim();
+                                if (readValue !== selectedSubsidiary) {
+                                    console.warn(`⚠️ TIMING ISSUE: Q3 read back as "${readValue}" but we set it to "${selectedSubsidiary}"`);
+                                    console.warn(`   This indicates Excel hasn't synced yet - waiting 100ms and retrying...`);
+                                    // Wait a bit and try again
+                                    await new Promise(resolve => setTimeout(resolve, 100));
+                                    q3Cell.values = [[selectedSubsidiary]];
+                                    await context.sync();
+                                    q3Cell.load("values");
+                                    await context.sync();
+                                    verifiedSubsidiary = String(q3Cell.values[0][0] || '').trim();
+                                    if (verifiedSubsidiary !== selectedSubsidiary) {
+                                        console.error(`❌ TIMING ISSUE: Q3 still not updated after retry! Read: "${verifiedSubsidiary}", Expected: "${selectedSubsidiary}"`);
+                                    } else {
+                                        console.log(`✅ Q3 verified updated to "${verifiedSubsidiary}" after retry`);
+                                    }
+                                } else {
+                                    console.log(`✅ Q3 verified updated to "${verifiedSubsidiary}"`);
+                                }
+                            });
+                        } catch (verifyError) {
+                            console.warn(`⚠️ Could not verify Q3 update: ${verifyError.message}, using selected value "${selectedSubsidiary}"`);
+                            verifiedSubsidiary = selectedSubsidiary;
+                        }
+                        
                         // Update transition flag with selected subsidiary (guard will unlock)
-                        transitionData.newSubsidiary = selectedSubsidiary;
+                        transitionData.newSubsidiary = verifiedSubsidiary;
                         localStorage.setItem(transitionKey, JSON.stringify(transitionData));
-                        console.log(`🔒 [GUARD CLAUSE] Updated transition flag - newSub: "${selectedSubsidiary}"`);
+                        console.log(`🔒 [GUARD CLAUSE] Updated transition flag - newSub: "${verifiedSubsidiary}"`);
                         
                         // Filter dropdown to show only valid subsidiaries
                         if (window.filterSubsidiaryDropdownByAccountingBook) {
@@ -18340,12 +18375,25 @@ export default {
                             console.log(`🔓 [GUARD CLAUSE] Transition flag cleared - formulas can now execute`);
                         }, 1000);
                         
-                        // Trigger sync if report is configured for it
+                        // CRITICAL TIMING FIX: Pass the verified subsidiary directly to handleAccountingBookChange
+                        // instead of relying on it reading from Q3 (which might not be synced yet)
                         console.log('🚀 Triggering sync after subsidiary selection...');
+                        console.log(`   Using verified subsidiary: "${verifiedSubsidiary}"`);
                         try {
+                            // Store the verified subsidiary in a way that handleAccountingBookChange can use it
+                            // We'll modify handleAccountingBookChange to check for this first
+                            localStorage.setItem('netsuite_pending_subsidiary', verifiedSubsidiary);
+                            localStorage.setItem('netsuite_pending_subsidiary_timestamp', Date.now().toString());
+                            
                             await handleAccountingBookChange();
                         } catch (e) {
                             console.error('❌ handleAccountingBookChange() threw error:', e.message);
+                        } finally {
+                            // Clean up after a delay
+                            setTimeout(() => {
+                                localStorage.removeItem('netsuite_pending_subsidiary');
+                                localStorage.removeItem('netsuite_pending_subsidiary_timestamp');
+                            }, 5000);
                         }
                         
                     } catch (e) {
@@ -19719,7 +19767,35 @@ export default {
                     const sync = rawSync.toUpperCase().trim();
                     
                     year = parseInt(yearCell.values[0][0]) || new Date().getFullYear();
-                    currentSubsidiary = String(subCell.values[0][0] || '').trim();
+                    
+                    // CRITICAL TIMING FIX: Check for pending subsidiary update first
+                    // This handles the case where Q3 was just updated but Excel hasn't synced yet
+                    let pendingSubsidiary = null;
+                    try {
+                        const pendingSub = localStorage.getItem('netsuite_pending_subsidiary');
+                        const pendingTimestamp = localStorage.getItem('netsuite_pending_subsidiary_timestamp');
+                        if (pendingSub && pendingTimestamp) {
+                            const age = Date.now() - parseInt(pendingTimestamp);
+                            if (age < 10000) { // Only use if less than 10 seconds old
+                                pendingSubsidiary = pendingSub;
+                                console.log(`🔍 [TIMING FIX] Found pending subsidiary update: "${pendingSubsidiary}" (${age}ms old)`);
+                            }
+                        }
+                    } catch (e) {
+                        // Ignore
+                    }
+                    
+                    // Use pending subsidiary if available, otherwise read from Q3
+                    const readSubsidiary = String(subCell.values[0][0] || '').trim();
+                    currentSubsidiary = pendingSubsidiary || readSubsidiary;
+                    
+                    if (pendingSubsidiary && pendingSubsidiary !== readSubsidiary) {
+                        console.log(`⚠️ [TIMING FIX] Q3 read as "${readSubsidiary}" but pending update is "${pendingSubsidiary}" - using pending value`);
+                        console.log(`   This indicates Excel hasn't synced Q3 yet, but we'll use the correct value anyway`);
+                    } else if (pendingSubsidiary) {
+                        console.log(`✅ [TIMING FIX] Q3 matches pending update: "${currentSubsidiary}"`);
+                    }
+                    
                     department = String(deptCell.values[0][0] || '').trim();
                     location = String(locCell.values[0][0] || '').trim();
                     classId = String(classCell.values[0][0] || '').trim();

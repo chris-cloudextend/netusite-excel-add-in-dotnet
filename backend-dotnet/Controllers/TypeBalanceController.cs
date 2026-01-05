@@ -214,10 +214,13 @@ public class TypeBalanceController : ControllerBase
 
             // CRITICAL DEBUG: Log query details for revenue investigation
             _logger.LogInformation("🔍 [REVENUE DEBUG] Executing batch query for book {Book}, sub {Sub}", accountingBook, request.Subsidiary);
-            _logger.LogInformation("   Target subsidiary ID: {TargetSub}", targetSub);
-            _logger.LogInformation("   Subsidiary hierarchy: {Hierarchy}", subFilter);
+            _logger.LogInformation("   Subsidiary name: '{SubName}'", request.Subsidiary);
+            _logger.LogInformation("   Resolved subsidiary ID: {SubId}", subsidiaryId ?? "NULL");
+            _logger.LogInformation("   Target subsidiary ID (for BUILTIN.CONSOLIDATE): {TargetSub}", targetSub);
+            _logger.LogInformation("   Subsidiary hierarchy (for WHERE filter): {Hierarchy}", subFilter);
             _logger.LogInformation("   Segment WHERE: {SegmentWhere}", segmentWhere);
             _logger.LogInformation("   Period filter: {PeriodFilter}", periodFilter);
+            _logger.LogInformation("   Income types SQL: {IncomeTypes}", incomeTypesSql);
             _logger.LogInformation("🔍 [REVENUE DEBUG] Full SQL Query:\n{Query}", query);
             
             var result = await _netSuiteService.QueryRawWithErrorAsync(query);
@@ -241,6 +244,24 @@ public class TypeBalanceController : ControllerBase
             // CRITICAL DEBUG: Log what account types were returned
             var returnedTypes = rows.Select(r => r.TryGetProperty("account_type", out var t) ? t.GetString() : "").Where(t => !string.IsNullOrEmpty(t));
             _logger.LogInformation("🔍 [REVENUE DEBUG] Query returned {Count} rows: {Types}", rows.Count, string.Join(", ", returnedTypes));
+            
+            // CRITICAL DEBUG: Log ALL rows returned to see what we got
+            _logger.LogInformation("🔍 [REVENUE DEBUG] Query returned {Count} rows", rows.Count);
+            foreach (var row in rows)
+            {
+                if (row.TryGetProperty("account_type", out var typeProp))
+                {
+                    var type = typeProp.GetString() ?? "";
+                    _logger.LogInformation("   Row: account_type={Type}", type);
+                    
+                    // Log all properties in this row to see what columns exist
+                    if (type == "Income")
+                    {
+                        _logger.LogInformation("   Income row properties: {Props}", 
+                            string.Join(", ", row.EnumerateObject().Select(p => $"{p.Name}={p.Value}")));
+                    }
+                }
+            }
             
             // CRITICAL DEBUG: Check if Income row exists
             var incomeRow = rows.FirstOrDefault(r => {
@@ -325,9 +346,22 @@ public class TypeBalanceController : ControllerBase
                         if (diagResult.Success && diagResult.Items.Any())
                         {
                             var diagRow = diagResult.Items[0];
-                            var count = diagRow.TryGetProperty("transaction_count", out var cProp) ? cProp.GetInt32() : 0;
-                            var total = diagRow.TryGetProperty("total_amount", out var aProp) ? 
-                                (aProp.ValueKind == JsonValueKind.Number ? aProp.GetDecimal() : 0) : 0;
+                            var count = 0;
+                            var total = 0m;
+                            if (diagRow.TryGetProperty("transaction_count", out var cProp))
+                            {
+                                if (cProp.ValueKind == JsonValueKind.Number)
+                                    count = cProp.GetInt32();
+                                else if (cProp.ValueKind == JsonValueKind.String && int.TryParse(cProp.GetString(), out var parsedCount))
+                                    count = parsedCount;
+                            }
+                            if (diagRow.TryGetProperty("total_amount", out var aProp))
+                            {
+                                if (aProp.ValueKind == JsonValueKind.Number)
+                                    total = aProp.GetDecimal();
+                                else if (aProp.ValueKind == JsonValueKind.String && decimal.TryParse(aProp.GetString(), out var parsedTotal))
+                                    total = parsedTotal;
+                            }
                             _logger.LogInformation("   Diagnostic: {Count} Income transactions found, total absolute amount: {Total:N2}", count, total);
                             
                             if (count > 0 && total > 0)
@@ -361,11 +395,30 @@ public class TypeBalanceController : ControllerBase
                                         if (testResult.Success && testResult.Items.Any())
                                         {
                                             var testRow = testResult.Items[0];
-                                            var testCount = testRow.TryGetProperty("count", out var tcProp) ? tcProp.GetInt32() : 0;
-                                            var consolidatedSum = testRow.TryGetProperty("consolidated_sum", out var csProp) ? 
-                                                (csProp.ValueKind == JsonValueKind.Number ? csProp.GetDecimal() : 0) : 0;
-                                            var rawSum = testRow.TryGetProperty("raw_sum", out var rsProp) ? 
-                                                (rsProp.ValueKind == JsonValueKind.Number ? rsProp.GetDecimal() : 0) : 0;
+                                            var testCount = 0;
+                                            var consolidatedSum = 0m;
+                                            var rawSum = 0m;
+                                            if (testRow.TryGetProperty("count", out var tcProp))
+                                            {
+                                                if (tcProp.ValueKind == JsonValueKind.Number)
+                                                    testCount = tcProp.GetInt32();
+                                                else if (tcProp.ValueKind == JsonValueKind.String && int.TryParse(tcProp.GetString(), out var parsedCount))
+                                                    testCount = parsedCount;
+                                            }
+                                            if (testRow.TryGetProperty("consolidated_sum", out var csProp))
+                                            {
+                                                if (csProp.ValueKind == JsonValueKind.Number)
+                                                    consolidatedSum = csProp.GetDecimal();
+                                                else if (csProp.ValueKind == JsonValueKind.String && decimal.TryParse(csProp.GetString(), out var parsedSum))
+                                                    consolidatedSum = parsedSum;
+                                            }
+                                            if (testRow.TryGetProperty("raw_sum", out var rsProp))
+                                            {
+                                                if (rsProp.ValueKind == JsonValueKind.Number)
+                                                    rawSum = rsProp.GetDecimal();
+                                                else if (rsProp.ValueKind == JsonValueKind.String && decimal.TryParse(rsProp.GetString(), out var parsedRaw))
+                                                    rawSum = parsedRaw;
+                                            }
                                             _logger.LogInformation("   Test query (period {PeriodId}): {Count} transactions, consolidated_sum: {Consolidated:N2}, raw_sum: {Raw:N2}", 
                                                 testPeriodId, testCount, consolidatedSum, rawSum);
                                             
@@ -443,6 +496,13 @@ public class TypeBalanceController : ControllerBase
                             amount = amountProp.GetDecimal();
                     }
                     balances[acctType][periodName] = amount;
+                    
+                    // CRITICAL DEBUG: Log Income values as they're processed
+                    if (acctType == "Income" && periodName.Contains("Apr"))
+                    {
+                        _logger.LogInformation("🔍 [REVENUE DEBUG] Processing Income {Period}: colName={ColName}, ValueKind={Kind}, amount={Amount:N2}", 
+                            periodName, colName, amountProp.ValueKind, amount);
+                    }
                 }
 
                 // Log sample for debugging
