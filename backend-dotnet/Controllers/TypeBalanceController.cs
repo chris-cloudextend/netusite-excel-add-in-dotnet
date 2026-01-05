@@ -84,12 +84,25 @@ public class TypeBalanceController : ControllerBase
     {
         var startTime = DateTime.UtcNow;
         
+        // CRITICAL: Log immediately when endpoint is called
+        _logger.LogInformation("🚀 [BATCH ENDPOINT] /batch/typebalance_refresh called at {Time}", startTime);
+        _logger.LogInformation("   Request: Year={Year}, Subsidiary={Sub}, Book={Book}, Dept={Dept}, Loc={Loc}, Class={Class}", 
+            request?.Year ?? 0, request?.Subsidiary ?? "null", request?.Book?.ToString() ?? "null", 
+            request?.Department ?? "null", request?.Location ?? "null", request?.Class ?? "null");
+        
         try
         {
+            if (request == null)
+            {
+                _logger.LogError("❌ [BATCH ENDPOINT] Request is NULL!");
+                return BadRequest(new { error = "Request body is required" });
+            }
+            
             var fiscalYear = request.Year > 0 ? request.Year : DateTime.Now.Year;
-            var accountingBook = request.Book ?? DefaultAccountingBook;
+            var accountingBook = (request.Book ?? DefaultAccountingBook).ToString();
 
-            _logger.LogInformation("=== BATCH TYPEBALANCE REFRESH: Year {Year} ===", fiscalYear);
+            _logger.LogInformation("=== BATCH TYPEBALANCE REFRESH: Year {Year}, Book {Book}, Subsidiary {Sub} ===", 
+                fiscalYear, accountingBook, request.Subsidiary ?? "null");
 
             // Resolve subsidiary name to ID and get hierarchy
             var subsidiaryId = await _lookupService.ResolveSubsidiaryIdAsync(request.Subsidiary);
@@ -257,8 +270,38 @@ public class TypeBalanceController : ControllerBase
                     // Log all properties in this row to see what columns exist
                     if (type == "Income")
                     {
-                        _logger.LogInformation("   Income row properties: {Props}", 
-                            string.Join(", ", row.EnumerateObject().Select(p => $"{p.Name}={p.Value}")));
+                        var allProps = new List<string>();
+                        foreach (var prop in row.EnumerateObject())
+                        {
+                            var propValue = prop.Value.ValueKind == JsonValueKind.Number 
+                                ? prop.Value.GetDecimal().ToString("N2")
+                                : prop.Value.ValueKind == JsonValueKind.Null 
+                                    ? "NULL" 
+                                    : prop.Value.ToString();
+                            allProps.Add($"{prop.Name}={propValue}");
+                        }
+                        _logger.LogInformation("   Income row properties ({Count}): {Props}", 
+                            allProps.Count, string.Join(", ", allProps));
+                        
+                        // CRITICAL: Check if "apr" column exists and its value
+                        if (row.TryGetProperty("apr", out var aprProp))
+                        {
+                            var aprValue = aprProp.ValueKind == JsonValueKind.Number 
+                                ? aprProp.GetDecimal() 
+                                : 0;
+                            _logger.LogInformation("   ✅ Income 'apr' column found: {Value:N2} (ValueKind: {Kind})", 
+                                aprValue, aprProp.ValueKind);
+                        }
+                        else
+                        {
+                            _logger.LogWarning("   ❌ Income 'apr' column NOT FOUND in row!");
+                            // Check what month columns DO exist
+                            var monthCols = row.EnumerateObject()
+                                .Where(p => p.Name.Length <= 4 && !p.Name.Equals("account_type", StringComparison.OrdinalIgnoreCase))
+                                .Select(p => p.Name)
+                                .ToList();
+                            _logger.LogInformation("   Available month-like columns: {Cols}", string.Join(", ", monthCols));
+                        }
                     }
                 }
             }
@@ -488,20 +531,49 @@ public class TypeBalanceController : ControllerBase
                 foreach (var (colName, periodName) in monthMapping)
                 {
                     decimal amount = 0;
-                    if (row.TryGetProperty(colName, out var amountProp) && amountProp.ValueKind != JsonValueKind.Null)
+                    JsonElement amountProp = default;
+                    bool found = false;
+                    
+                    // Try exact match first (lowercase as we generate it)
+                    found = row.TryGetProperty(colName, out amountProp);
+                    
+                    // If not found, try case-insensitive lookup (NetSuite might return uppercase)
+                    if (!found)
+                    {
+                        foreach (var prop in row.EnumerateObject())
+                        {
+                            if (string.Equals(prop.Name, colName, StringComparison.OrdinalIgnoreCase))
+                            {
+                                amountProp = prop.Value;
+                                found = true;
+                                _logger.LogDebug("   Found column '{Actual}' (case-insensitive match for '{Expected}')", 
+                                    prop.Name, colName);
+                                break;
+                            }
+                        }
+                    }
+                    
+                    if (found && amountProp.ValueKind != JsonValueKind.Null)
                     {
                         if (amountProp.ValueKind == JsonValueKind.String)
-                            decimal.TryParse(amountProp.GetString(), out amount);
+                        {
+                            var strVal = amountProp.GetString();
+                            if (!string.IsNullOrEmpty(strVal) && decimal.TryParse(strVal, out var parsed))
+                                amount = parsed;
+                        }
                         else if (amountProp.ValueKind == JsonValueKind.Number)
+                        {
                             amount = amountProp.GetDecimal();
+                        }
                     }
+                    
                     balances[acctType][periodName] = amount;
                     
                     // CRITICAL DEBUG: Log Income values as they're processed
                     if (acctType == "Income" && periodName.Contains("Apr"))
                     {
-                        _logger.LogInformation("🔍 [REVENUE DEBUG] Processing Income {Period}: colName={ColName}, ValueKind={Kind}, amount={Amount:N2}", 
-                            periodName, colName, amountProp.ValueKind, amount);
+                        _logger.LogInformation("🔍 [REVENUE DEBUG] Processing Income {Period}: colName={ColName}, found={Found}, ValueKind={Kind}, amount={Amount:N2}", 
+                            periodName, colName, found, found ? amountProp.ValueKind : JsonValueKind.Undefined, amount);
                     }
                 }
 

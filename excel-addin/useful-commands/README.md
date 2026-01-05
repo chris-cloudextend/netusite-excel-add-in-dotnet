@@ -120,6 +120,46 @@ Creates the WEF folder where Excel stores manifest files for sideloaded add-ins,
 
 ---
 
+### 6. Check Backend Logs
+**File**: `check-backend-logs.sh`
+
+Views backend server logs with optional filtering.
+
+**Usage**:
+```bash
+# Show last 100 lines (default)
+bash ./useful-commands/check-backend-logs.sh
+
+# Filter by search term (case-insensitive)
+bash ./useful-commands/check-backend-logs.sh "REVENUE DEBUG"
+
+# Show more lines with filter
+bash ./useful-commands/check-backend-logs.sh "error" 200
+
+# Or run from within the useful-commands directory:
+cd excel-addin/useful-commands
+bash check-backend-logs.sh "REVENUE DEBUG"
+```
+
+**What it does**:
+- Reads from `/tmp/dotnet-server.log`
+- Shows last N lines (default: 100)
+- Optional case-insensitive filtering
+- Color-coded output for better readability
+
+**Common filters**:
+- `"REVENUE DEBUG"` - Income/revenue debugging logs
+- `"error"` - Error messages
+- `"Income"` - Income-related logs
+- `"subsidiary"` - Subsidiary-related logs
+
+**To watch logs live**:
+```bash
+tail -f /tmp/dotnet-server.log
+```
+
+---
+
 ## Quick Reference
 
 ```bash
@@ -137,6 +177,11 @@ Creates the WEF folder where Excel stores manifest files for sideloaded add-ins,
 
 # Create and open WEF folder (for sideloading add-ins)
 ./useful-commands/create-wef-folder.sh
+
+# Check backend server logs
+bash ./useful-commands/check-backend-logs.sh                    # Last 100 lines
+bash ./useful-commands/check-backend-logs.sh "REVENUE DEBUG"   # Filter by "REVENUE DEBUG"
+bash ./useful-commands/check-backend-logs.sh "error" 200        # Last 200 lines filtered by "error"
 ```
 
 ---

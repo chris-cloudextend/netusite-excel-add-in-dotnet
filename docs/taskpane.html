@@ -18219,7 +18219,10 @@ export default {
                             
                             // Get enabled subsidiaries
                             console.log(`🔍 Fetching subsidiaries for book ${accountingBook}...`);
+                            const fetchStartTime = Date.now();
                             const response = await fetch(`${getServerUrl()}/lookups/accountingbook/${accountingBook}/subsidiaries`);
+                            const fetchDuration = Date.now() - fetchStartTime;
+                            console.log(`   ⏱️ Subsidiary fetch took ${(fetchDuration / 1000).toFixed(2)}s`);
                             if (response.ok) {
                                 const data = await response.json();
                                 console.log(`🔍 Response: allSubsidiaries=${data.allSubsidiaries}, count=${data.subsidiaries?.length || 0}`);
@@ -20113,11 +20116,24 @@ export default {
                 console.log(`   Timestamp: ${new Date().toISOString()}`);
                 
                 try {
-                    const typeBalanceResponse = await fetch(`${getServerUrl()}/batch/typebalance_refresh`, {
+                    const batchUrl = `${getServerUrl()}/batch/typebalance_refresh`;
+                    console.log(`🚀 [BATCH DEBUG] Calling batch endpoint: ${batchUrl}`);
+                    console.log(`   Payload:`, JSON.stringify(typeBalancePayload, null, 2));
+                    
+                    const typeBalanceResponse = await fetch(batchUrl, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify(typeBalancePayload)
                     });
+                    
+                    console.log(`📡 [BATCH DEBUG] Response status: ${typeBalanceResponse.status} ${typeBalanceResponse.statusText}`);
+                    
+                    if (!typeBalanceResponse.ok) {
+                        const errorText = await typeBalanceResponse.text();
+                        console.error(`❌ [BATCH DEBUG] Batch endpoint failed: ${typeBalanceResponse.status}`);
+                        console.error(`   Error response:`, errorText);
+                        throw new Error(`Batch endpoint failed: ${typeBalanceResponse.status} - ${errorText}`);
+                    }
                     
                     if (typeBalanceResponse.ok) {
                         const fetchEndTime = Date.now();
