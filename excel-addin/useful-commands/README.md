@@ -182,6 +182,10 @@ tail -f /tmp/dotnet-server.log
 bash ./useful-commands/check-backend-logs.sh                    # Last 100 lines
 bash ./useful-commands/check-backend-logs.sh "REVENUE DEBUG"   # Filter by "REVENUE DEBUG"
 bash ./useful-commands/check-backend-logs.sh "error" 200        # Last 200 lines filtered by "error"
+
+# Copy backend log to Desktop
+bash ./useful-commands/copy-backend-log.sh                      # Copy to ~/Desktop/dotnet-server.log
+bash ./useful-commands/copy-backend-log.sh ~/Desktop/my-log.log  # Copy to custom location
 ```
 
 ---

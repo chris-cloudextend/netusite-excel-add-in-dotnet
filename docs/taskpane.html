@@ -6056,7 +6056,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.84"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.85"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -18150,22 +18150,65 @@ export default {
                     // Value changed - update tracking and show modal dialog
                     const previousU3Value = lastU3Value; // Store previous for logging
                     lastU3Value = currentU3Value;
-                    console.log(`📚 U3 (Accounting Book) changed from "${previousU3Value || '(initial)'}" to "${currentU3Value}" - showing modal dialog...`);
+                    const accountingBook = currentU3Value; // Use the value we just read
+                    console.log(`📚 U3 (Accounting Book) changed from "${previousU3Value || '(initial)'}" to "${accountingBook}" - showing modal dialog...`);
+                    
+                    // CRITICAL: Set transition flag IMMEDIATELY (synchronously) before any async operations
+                    // This prevents formulas from executing with invalid book/subsidiary combinations
+                    // We'll update oldSubsidiary once we read Q3, but this blocks execution NOW
+                    if (accountingBook && accountingBook !== '1') {
+                        // Try to get last known subsidiary from localStorage or use placeholder
+                        let lastKnownSubsidiary = '';
+                        try {
+                            // Try to get from localStorage cache
+                            const lastSub = localStorage.getItem('netsuite_last_subsidiary');
+                            if (lastSub) {
+                                lastKnownSubsidiary = lastSub;
+                            }
+                        } catch (e) { /* ignore */ }
+                        
+                        // If no cached value, use a placeholder - guard clause will catch any subsidiary
+                        if (!lastKnownSubsidiary) {
+                            lastKnownSubsidiary = 'PLACEHOLDER_ANY_SUBSIDIARY';
+                        }
+                        
+                        const transitionKey = `netsuite_book_transition_${accountingBook}`;
+                        const transitionData = {
+                            timestamp: Date.now(),
+                            oldSubsidiary: lastKnownSubsidiary,
+                            newBook: accountingBook,
+                            newSubsidiary: null // Will be set when user selects
+                        };
+                        localStorage.setItem(transitionKey, JSON.stringify(transitionData));
+                        console.log(`🔒 [GUARD CLAUSE] Set transition flag IMMEDIATELY - formulas will show #N/A (oldSub: "${lastKnownSubsidiary}")`);
+                    }
                     
                     try {
-                        // Read U3 and Q3 immediately
-                        let accountingBook = '';
+                        // Read Q3 to get actual current subsidiary (update transition flag if needed)
                         let currentSubsidiary = '';
                         await Excel.run(async (context) => {
                             const sheet = context.workbook.worksheets.getActiveWorksheet();
-                            const bookCell = sheet.getRange("U3");
                             const subCell = sheet.getRange("Q3");
-                            bookCell.load("values");
                             subCell.load("values");
                             await context.sync();
-                            accountingBook = String(bookCell.values[0][0] || '').trim();
                             currentSubsidiary = String(subCell.values[0][0] || '').trim();
                         });
+                        
+                        // Update transition flag with actual current subsidiary
+                        if (accountingBook && accountingBook !== '1' && currentSubsidiary) {
+                            const transitionKey = `netsuite_book_transition_${accountingBook}`;
+                            try {
+                                const existingTransition = localStorage.getItem(transitionKey);
+                                if (existingTransition) {
+                                    const transition = JSON.parse(existingTransition);
+                                    transition.oldSubsidiary = currentSubsidiary; // Update with actual value
+                                    localStorage.setItem(transitionKey, JSON.stringify(transition));
+                                    console.log(`🔒 [GUARD CLAUSE] Updated transition flag with actual subsidiary: "${currentSubsidiary}"`);
+                                }
+                            } catch (e) {
+                                console.warn('⚠️ Could not update transition flag:', e.message);
+                            }
+                        }
                         
                         // If primary book, just filter dropdown and continue
                         if (!accountingBook || accountingBook === '1') {
@@ -18175,17 +18218,6 @@ export default {
                             }
                             return;
                         }
-                        
-                        // CRITICAL: Set transition flag FIRST - this makes formulas show #N/A immediately
-                        const transitionKey = `netsuite_book_transition_${accountingBook}`;
-                        const transitionData = {
-                            timestamp: Date.now(),
-                            oldSubsidiary: currentSubsidiary,
-                            newBook: accountingBook,
-                            newSubsidiary: null // Will be set when user selects
-                        };
-                        localStorage.setItem(transitionKey, JSON.stringify(transitionData));
-                        console.log(`🔒 [GUARD CLAUSE] Set transition flag - formulas will show #N/A until user selects subsidiary`);
                         
                         // CRITICAL: Clear ALL typebalance cache immediately when book changes
                         // Old cache has wrong book/subsidiary keys and will cause mismatches

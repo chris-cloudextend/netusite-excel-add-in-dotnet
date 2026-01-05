@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.84';  // FIX: Removed a.isinactive filter to match individual query
+const FUNCTIONS_VERSION = '4.0.6.85';  // FIX: Guard clause moved to start, transition flag set synchronously
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -10240,6 +10240,71 @@ async function NETINCOME(fromPeriod, toPeriod, subsidiary, accountingBook, class
  */
 async function TYPEBALANCE(accountType, fromPeriod, toPeriod, subsidiary, department, location, classId, accountingBook, useSpecialAccount) {
     
+    // ============================================================================
+    // CRITICAL: GUARD CLAUSE MUST BE FIRST - Check transition state IMMEDIATELY
+    // This prevents ANY execution during invalid parameter states (book changed, Q3 not updated)
+    // Must check BEFORE any async operations, cache lookups, or validations
+    // ============================================================================
+    const bookStr = String(accountingBook || '').trim();
+    const subsidiaryStr = String(subsidiary || '').trim();
+    
+    if (bookStr && bookStr !== '1') {
+        const transitionKey = `netsuite_book_transition_${bookStr}`;
+        try {
+            const transitionData = localStorage.getItem(transitionKey);
+            if (transitionData) {
+                const transition = JSON.parse(transitionData);
+                const age = Date.now() - transition.timestamp;
+                
+                // CRITICAL: If newSubsidiary is null, we're still waiting for user to select
+                // Block ALL executions until user selects a subsidiary
+                if (!transition.newSubsidiary) {
+                    // Still in transition - user hasn't selected subsidiary yet
+                    console.log(`⏸️ TYPEBALANCE: [GUARD] Blocked - book ${bookStr} changed, waiting for subsidiary selection (${Math.round(age/1000)}s ago)`);
+                    
+                    // Use CustomFunctions.Error for proper #N/A display (Mac-safe)
+                    if (typeof CustomFunctions !== 'undefined' && CustomFunctions.Error && CustomFunctions.ErrorCode) {
+                        throw new CustomFunctions.Error(CustomFunctions.ErrorCode.notAvailable);
+                    } else {
+                        // Fallback: Return undefined instead of throwing Error (safer on Mac)
+                        console.warn('⚠️ CustomFunctions.Error not available, returning undefined');
+                        return undefined;
+                    }
+                }
+                
+                // State-based check: Is current subsidiary the OLD (invalid) one?
+                // If yes, we're in transition. If it matches NEW subsidiary, transition is complete.
+                const isOldSubsidiary = subsidiaryStr === transition.oldSubsidiary;
+                const isNewSubsidiary = transition.newSubsidiary && subsidiaryStr === transition.newSubsidiary;
+                
+                if (isOldSubsidiary && !isNewSubsidiary) {
+                    // We're in transition state - current subsidiary is invalid for new book
+                    console.log(`⏸️ TYPEBALANCE: [GUARD] Blocked - book ${bookStr} changed, subsidiary "${subsidiaryStr}" not yet updated (${Math.round(age/1000)}s ago)`);
+                    
+                    // Use CustomFunctions.Error for proper #N/A display (Mac-safe)
+                    if (typeof CustomFunctions !== 'undefined' && CustomFunctions.Error && CustomFunctions.ErrorCode) {
+                        throw new CustomFunctions.Error(CustomFunctions.ErrorCode.notAvailable);
+                    } else {
+                        // Fallback: Return undefined instead of throwing Error (safer on Mac)
+                        console.warn('⚠️ CustomFunctions.Error not available, returning undefined');
+                        return undefined;
+                    }
+                } else if (isNewSubsidiary) {
+                    // Transition complete - clear the flag
+                    localStorage.removeItem(transitionKey);
+                    console.log(`✅ TYPEBALANCE: [GUARD] Transition complete - subsidiary updated to "${subsidiaryStr}"`);
+                } else if (age > 10000) {
+                    // Stale transition flag (>10s) - remove it (failsafe)
+                    localStorage.removeItem(transitionKey);
+                    console.log(`🧹 TYPEBALANCE: [GUARD] Removed stale transition flag (${Math.round(age/1000)}s old)`);
+                }
+            }
+        } catch (e) {
+            // If guard clause fails, still proceed (but log it)
+            console.warn('⚠️ [GUARD] Transition check error:', e.message);
+        }
+    }
+    
     // Cross-context cache invalidation - taskpane signals via localStorage
     // This is CRITICAL for subsidiary changes - must clear in-memory cache to read fresh localStorage data
     try {
@@ -10333,60 +10398,9 @@ async function TYPEBALANCE(accountType, fromPeriod, toPeriod, subsidiary, depart
         }
         
         // Build cache key (include useSpecial flag)
-        const subsidiaryStr = String(subsidiary || '').trim();
         const departmentStr = String(department || '').trim();
         const locationStr = String(location || '').trim();
         const classStr = String(classId || '').trim();
-        const bookStr = String(accountingBook || '').trim();
-        
-        // ============================================================================
-        // GUARD CLAUSE: Check transition state BEFORE validation, cache, or API calls
-        // This prevents execution during invalid parameter states (book changed, Q3 not updated)
-        // State-based check: If current subsidiary matches OLD subsidiary from transition,
-        // we're in an invalid state. Guard unlocks when subsidiary matches NEW subsidiary.
-        // ============================================================================
-        if (bookStr && bookStr !== '1') {
-            const transitionKey = `netsuite_book_transition_${bookStr}`;
-            try {
-                const transitionData = localStorage.getItem(transitionKey);
-                if (transitionData) {
-                    const transition = JSON.parse(transitionData);
-                    const age = Date.now() - transition.timestamp;
-                    
-                    // State-based check: Is current subsidiary the OLD (invalid) one?
-                    // If yes, we're in transition. If it matches NEW subsidiary, transition is complete.
-                    const isOldSubsidiary = subsidiaryStr === transition.oldSubsidiary;
-                    const isNewSubsidiary = transition.newSubsidiary && subsidiaryStr === transition.newSubsidiary;
-                    
-                    if (isOldSubsidiary && !isNewSubsidiary) {
-                        // We're in transition state - current subsidiary is invalid for new book
-                        console.log(`⏸️ TYPEBALANCE: Transition in progress - book ${bookStr} changed, subsidiary "${subsidiaryStr}" not yet updated`);
-                        
-                        // Use CustomFunctions.Error for proper #N/A display (Mac-safe)
-                        // Static message to avoid recalculation instability
-                        if (typeof CustomFunctions !== 'undefined' && CustomFunctions.Error && CustomFunctions.ErrorCode) {
-                            throw new CustomFunctions.Error(CustomFunctions.ErrorCode.notAvailable);
-                        } else {
-                            // Fallback: Return undefined instead of throwing Error (safer on Mac)
-                            // Excel will display #N/A for undefined in Promise<number> functions
-                            console.warn('⚠️ CustomFunctions.Error not available, returning undefined');
-                            return undefined;
-                        }
-                    } else if (isNewSubsidiary) {
-                        // Transition complete - clear the flag
-                        localStorage.removeItem(transitionKey);
-                        console.log(`✅ TYPEBALANCE: Transition complete - subsidiary updated to "${subsidiaryStr}"`);
-                    } else if (age > 10000) {
-                        // Stale transition flag (>10s) - remove it (failsafe)
-                        localStorage.removeItem(transitionKey);
-                        console.log(`🧹 TYPEBALANCE: Removed stale transition flag (${Math.round(age/1000)}s old)`);
-                    }
-                }
-            } catch (e) {
-                // Ignore transition check errors, proceed to validation
-                console.warn('⚠️ Transition check error:', e.message);
-            }
-        }
         
         // VALIDATION: Check subsidiary/accounting book combination
         const validationError = await validateSubsidiaryAccountingBook(subsidiaryStr, bookStr);

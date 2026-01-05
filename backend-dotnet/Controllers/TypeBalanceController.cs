@@ -176,7 +176,9 @@ public class TypeBalanceController : ControllerBase
                 // We must do the same: apply sign flip AFTER TO_NUMBER, not inside COALESCE
                 // Note: If BUILTIN.CONSOLIDATE returns NULL, TO_NUMBER(NULL) = NULL, and NULL * -1 = NULL (SUM ignores it)
                 // This matches the individual query behavior exactly
-                // NOTE: BUILTIN.CONSOLIDATE 5th parameter is the consolidation root (subsidiary ID for currency conversion)
+                // CRITICAL: BUILTIN.CONSOLIDATE 6th parameter MUST be a literal period ID, not a column reference
+                // Since we're inside CASE WHEN t.postingperiod = {periodId}, we know the period, so use the literal {periodId}
+                // The 5th parameter is the consolidation root (subsidiary ID for currency conversion)
                 // The accounting book is specified in WHERE clause: tal.accountingbook = {accountingBook}
                 var signFlip = $"CASE WHEN a.accttype IN ({incomeTypesSql}) THEN -1 ELSE 1 END";
                 monthCases.Add($@"
@@ -188,7 +190,7 @@ public class TypeBalanceController : ControllerBase
                                 'DEFAULT', 
                                 'DEFAULT', 
                                 {targetSub}, 
-                                t.postingperiod, 
+                                {periodId}, 
                                 'DEFAULT'
                             )
                         ) * {signFlip}
@@ -377,9 +379,14 @@ public class TypeBalanceController : ControllerBase
                 {
                     _logger.LogWarning("⚠️ [REVENUE DEBUG] All Income values are 0 - checking if Income transactions exist...");
                     // Run a diagnostic query to see if Income transactions exist
+                    // CRITICAL: Diagnostic query must match batch query structure exactly
+                    // Use same filters, same joins, same everything - just count and sum raw amounts
                     var diagnosticQuery = $@"
                         SELECT COUNT(*) as transaction_count,
-                               SUM(ABS(tal.amount)) as total_amount
+                               SUM(ABS(tal.amount)) as total_amount,
+                               COUNT(DISTINCT tal.transaction) as distinct_transactions,
+                               MIN(tal.amount) as min_amount,
+                               MAX(tal.amount) as max_amount
                         FROM transactionaccountingline tal
                         JOIN transaction t ON t.id = tal.transaction
                         JOIN account a ON a.id = tal.account
@@ -406,6 +413,31 @@ public class TypeBalanceController : ControllerBase
                                 else if (cProp.ValueKind == JsonValueKind.String && int.TryParse(cProp.GetString(), out var parsedCount))
                                     count = parsedCount;
                             }
+                            // Log additional diagnostic fields
+                            var distinctTransactions = 0;
+                            var minAmount = 0m;
+                            var maxAmount = 0m;
+                            if (diagRow.TryGetProperty("distinct_transactions", out var dtProp))
+                            {
+                                if (dtProp.ValueKind == JsonValueKind.Number)
+                                    distinctTransactions = dtProp.GetInt32();
+                            }
+                            if (diagRow.TryGetProperty("min_amount", out var minProp))
+                            {
+                                if (minProp.ValueKind == JsonValueKind.Number)
+                                    minAmount = minProp.GetDecimal();
+                            }
+                            if (diagRow.TryGetProperty("max_amount", out var maxProp))
+                            {
+                                if (maxProp.ValueKind == JsonValueKind.Number)
+                                    maxAmount = maxProp.GetDecimal();
+                            }
+                            
+                            _logger.LogInformation("   🔍 [REVENUE DEBUG] Diagnostic query details:");
+                            _logger.LogInformation("      SQL: {DiagnosticQuery}", diagnosticQuery);
+                            _logger.LogInformation("      Filters: book={Book}, periodFilter={Periods}, segmentWhere={Segment}", 
+                                accountingBook, periodFilter, segmentWhere);
+                            
                             if (diagRow.TryGetProperty("total_amount", out var aProp))
                             {
                                 if (aProp.ValueKind == JsonValueKind.Number)
@@ -414,6 +446,15 @@ public class TypeBalanceController : ControllerBase
                                     total = parsedTotal;
                             }
                             _logger.LogInformation("   Diagnostic: {Count} Income transactions found, total absolute amount: {Total:N2}", count, total);
+                            _logger.LogInformation("      Distinct transactions: {Distinct}, Amount range: {Min:N2} to {Max:N2}", 
+                                distinctTransactions, minAmount, maxAmount);
+                            
+                            if (count > 0 && total == 0)
+                            {
+                                _logger.LogError("   ❌ [REVENUE DEBUG] CRITICAL: Found {Count} transactions but total is 0.00!", count);
+                                _logger.LogError("      This suggests the query is filtering incorrectly or amounts are actually 0");
+                                _logger.LogError("      Diagnostic SQL:\n{DiagnosticQuery}", diagnosticQuery);
+                            }
                             
                             if (count > 0 && total > 0)
                             {
