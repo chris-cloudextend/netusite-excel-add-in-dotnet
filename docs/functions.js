@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.75';  // FIX: Removed early cache clearing in handleSheetChange to fix revenue not showing on first book change
+const FUNCTIONS_VERSION = '4.0.6.76';  // FIX: Revenue $0.00 in batch query - skip BUILTIN.CONSOLIDATE for single subsidiaries
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================

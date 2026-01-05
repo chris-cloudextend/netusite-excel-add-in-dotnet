@@ -98,9 +98,14 @@ public class TypeBalanceController : ControllerBase
             // Get subsidiary hierarchy (all children for consolidated view)
             var hierarchySubs = await _lookupService.GetSubsidiaryHierarchyAsync(targetSub);
             var subFilter = string.Join(", ", hierarchySubs);
+            
+            // CRITICAL FIX: For single-subsidiary books, BUILTIN.CONSOLIDATE returns NULL
+            // Skip consolidation and use tal.amount directly for better performance and correctness
+            var isSingleSubsidiary = hierarchySubs.Count == 1;
+            var useConsolidation = !isSingleSubsidiary;
 
-            _logger.LogDebug("Subsidiary: '{Sub}' → ID {Id}, hierarchy: {Hierarchy}", 
-                request.Subsidiary, targetSub, subFilter);
+            _logger.LogDebug("Subsidiary: '{Sub}' → ID {Id}, hierarchy: {Hierarchy}, single={Single}, useConsolidation={UseConsolidation}", 
+                request.Subsidiary, targetSub, subFilter, isSingleSubsidiary, useConsolidation);
 
             // Resolve other dimensions
             var departmentId = await _lookupService.ResolveDimensionIdAsync("department", request.Department);
@@ -158,14 +163,26 @@ public class TypeBalanceController : ControllerBase
                 // Handle 'dec' specially since it might be reserved
                 var colName = monthAbbr == "dec" ? "dec_month" : monthAbbr;
                 
-                // CRITICAL FIX: Handle NULL from BUILTIN.CONSOLIDATE (can return NULL for single subsidiary)
-                // Use COALESCE to default to tal.amount if consolidation returns NULL
+                // CRITICAL FIX: For single subsidiaries, BUILTIN.CONSOLIDATE returns NULL
+                // Use tal.amount directly for single subsidiaries, BUILTIN.CONSOLIDATE for consolidated
+                string amountExpression;
+                if (useConsolidation)
+                {
+                    // Multi-subsidiary: Use BUILTIN.CONSOLIDATE with COALESCE fallback
+                    amountExpression = $@"COALESCE(
+                            TO_NUMBER(BUILTIN.CONSOLIDATE(tal.amount, 'LEDGER', 'DEFAULT', 'DEFAULT', {targetSub}, t.postingperiod, 'DEFAULT')),
+                            TO_NUMBER(tal.amount)
+                        )";
+                }
+                else
+                {
+                    // Single subsidiary: Use tal.amount directly (no consolidation needed)
+                    amountExpression = "TO_NUMBER(tal.amount)";
+                }
+                
                 monthCases.Add($@"
                     SUM(CASE WHEN t.postingperiod = {periodId} THEN 
-                        COALESCE(
-                            TO_NUMBER(BUILTIN.CONSOLIDATE(tal.amount, 'LEDGER', 'DEFAULT', 'DEFAULT', {targetSub}, t.postingperiod, 'DEFAULT')),
-                            tal.amount
-                        )
+                        {amountExpression}
                         * CASE WHEN a.accttype IN ({incomeTypesSql}) THEN -1 ELSE 1 END
                     ELSE 0 END) AS {colName}");
             }
