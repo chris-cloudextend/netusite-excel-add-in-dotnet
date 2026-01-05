@@ -18,7 +18,7 @@ git add -A
 
 echo ""
 echo "3. Committing changes..."
-git commit -m "FIX: Timing from overlay start, backend revenue debug logging - v4.0.6.72"
+git commit -m "DEBUG: Added logging to handleSheetChange to diagnose why it's not firing - v4.0.6.73"
 
 echo ""
 echo "4. Pushing to GitHub..."

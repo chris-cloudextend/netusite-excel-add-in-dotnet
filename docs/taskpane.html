@@ -5926,7 +5926,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.72"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.73"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -17763,6 +17763,13 @@ export default {
         
         // The actual change handler - extracted so it can be re-used when switching sheets
         async function handleSheetChange(event) {
+            // CRITICAL DEBUG: Log that handler was called
+            console.log('╔══════════════════════════════════════════════════════════════╗');
+            console.log('║  [EVENT DEBUG] handleSheetChange CALLED                     ║');
+            console.log('╚══════════════════════════════════════════════════════════════╝');
+            console.log(`   Event address: ${event.address}`);
+            console.log(`   Timestamp: ${new Date().toISOString()}`);
+            
             // Normalize the event address - strip sheet prefix and dollar signs
             let eventAddr = event.address;
             const rawAddr = eventAddr; // Keep for logging
@@ -17770,6 +17777,8 @@ export default {
                 eventAddr = eventAddr.split('!')[1];
             }
             eventAddr = eventAddr.replace(/\$/g, '').toUpperCase();
+            
+            console.log(`   Normalized address: ${eventAddr}`);
             
             // Debug: Log all cell changes to parameter row
             // REMOVED: Excessive logging (30,000+ messages) - can be re-enabled for debugging if needed
@@ -18218,11 +18227,15 @@ export default {
                     }
                     
                     // Register new listener
+                    console.log(`🔧 [EVENT DEBUG] Registering onChanged handler for sheet "${sheetName}"...`);
+                    console.log(`   Handler function type: ${typeof handleSheetChange}`);
+                    console.log(`   Handler function name: ${handleSheetChange?.name || 'anonymous'}`);
                     sheet.onChanged.add(handleSheetChange);
                     await context.sync();
                     
                     currentSheetName = sheetName;
-                    console.log(`✅ Change listener registered for sheet "${sheetName}"`);
+                    console.log(`✅ [EVENT DEBUG] Change listener registered for sheet "${sheetName}"`);
+                    console.log(`   Handler should now fire when cells change`);
                 });
             } catch (e) {
                 console.warn('Could not register sheet change listener:', e.message);
