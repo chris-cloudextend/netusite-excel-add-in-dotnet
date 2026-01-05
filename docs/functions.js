@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.85';  // FIX: Guard clause moved to start, transition flag set synchronously
+const FUNCTIONS_VERSION = '4.0.6.86';  // FIX: Parse scientific notation from NetSuite (e.g., "1.4348098856E8")
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================

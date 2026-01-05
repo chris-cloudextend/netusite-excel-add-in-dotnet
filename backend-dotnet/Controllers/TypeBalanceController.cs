@@ -6,6 +6,7 @@
  */
 
 using Microsoft.AspNetCore.Mvc;
+using System.Globalization;
 using System.Text.Json;
 using XaviApi.Models;
 using XaviApi.Services;
@@ -246,7 +247,49 @@ public class TypeBalanceController : ControllerBase
             _logger.LogInformation("🔍 [REVENUE DEBUG] Full SQL Query (first 2000 chars):\n{Query}", 
                 query.Length > 2000 ? query.Substring(0, 2000) + "..." : query);
             
+            // CRITICAL: Log the FULL query for April specifically
+            if (query.Contains("apr") || query.Contains("Apr"))
+            {
+                _logger.LogInformation("🔍 [REVENUE DEBUG] FULL QUERY FOR APRIL (complete):\n{FullQuery}", query);
+            }
+            
             var result = await _netSuiteService.QueryRawWithErrorAsync(query);
+            
+            // CRITICAL: Log the raw response for Income
+            _logger.LogInformation("🔍 [REVENUE DEBUG] Query returned {Count} rows", result.Items?.Count() ?? 0);
+            if (result.Items != null)
+            {
+                foreach (var row in result.Items)
+                {
+                    var acctType = row.TryGetProperty("account_type", out var typeProp) ? typeProp.GetString() ?? "" : "";
+                    if (acctType == "Income")
+                    {
+                        _logger.LogInformation("🔍 [REVENUE DEBUG] Income row found in response!");
+                        // Log ALL properties with raw values
+                        foreach (var prop in row.EnumerateObject())
+                        {
+                            string propValueStr;
+                            if (prop.Value.ValueKind == JsonValueKind.Number)
+                                propValueStr = prop.Value.GetDecimal().ToString("N2");
+                            else if (prop.Value.ValueKind == JsonValueKind.String)
+                                propValueStr = $"\"{prop.Value.GetString()}\"";
+                            else if (prop.Value.ValueKind == JsonValueKind.Null)
+                                propValueStr = "NULL";
+                            else
+                                propValueStr = prop.Value.ToString();
+                            
+                            _logger.LogInformation("   Income.{PropName} = {PropValue} (Kind: {Kind})", 
+                                prop.Name, propValueStr, prop.Value.ValueKind);
+                            
+                            // CRITICAL: For "apr" column, log the exact raw JSON
+                            if (prop.Name.Equals("apr", StringComparison.OrdinalIgnoreCase))
+                            {
+                                _logger.LogInformation("   ⚠️ [REVENUE DEBUG] APR COLUMN RAW JSON: {RawJson}", prop.Value.GetRawText());
+                            }
+                        }
+                    }
+                }
+            }
             
             // Check for query errors - fail loudly instead of returning empty results
             if (!result.Success)
@@ -352,7 +395,7 @@ public class TypeBalanceController : ControllerBase
                             }
                             else
                             {
-                                decimal.TryParse(strVal, out val);
+                                decimal.TryParse(strVal, NumberStyles.Float, CultureInfo.InvariantCulture, out val);
                             }
                         }
                         else if (valProp.ValueKind == JsonValueKind.Null)
@@ -442,7 +485,7 @@ public class TypeBalanceController : ControllerBase
                             {
                                 if (aProp.ValueKind == JsonValueKind.Number)
                                     total = aProp.GetDecimal();
-                                else if (aProp.ValueKind == JsonValueKind.String && decimal.TryParse(aProp.GetString(), out var parsedTotal))
+                                else if (aProp.ValueKind == JsonValueKind.String && decimal.TryParse(aProp.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var parsedTotal))
                                     total = parsedTotal;
                             }
                             _logger.LogInformation("   Diagnostic: {Count} Income transactions found, total absolute amount: {Total:N2}", count, total);
@@ -501,7 +544,7 @@ public class TypeBalanceController : ControllerBase
                                             {
                                                 if (csProp.ValueKind == JsonValueKind.Number)
                                                     consolidatedSum = csProp.GetDecimal();
-                                                else if (csProp.ValueKind == JsonValueKind.String && decimal.TryParse(csProp.GetString(), out var parsedSum))
+                                                else if (csProp.ValueKind == JsonValueKind.String && decimal.TryParse(csProp.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var parsedSum))
                                                     consolidatedSum = parsedSum;
                                             }
                                             if (testRow.TryGetProperty("raw_sum", out var rsProp))
@@ -617,8 +660,30 @@ public class TypeBalanceController : ControllerBase
                         if (amountProp.ValueKind == JsonValueKind.String)
                         {
                             var strVal = amountProp.GetString();
-                            if (!string.IsNullOrEmpty(strVal) && decimal.TryParse(strVal, out var parsed))
-                                amount = parsed;
+                            // CRITICAL: Log the raw string value for Income April
+                            if (acctType == "Income" && periodName.Contains("Apr"))
+                            {
+                                _logger.LogInformation("🔍 [REVENUE DEBUG] Income Apr - Raw string value: '{RawValue}' (length: {Length})", 
+                                    strVal ?? "NULL", strVal?.Length ?? 0);
+                            }
+                            if (!string.IsNullOrEmpty(strVal))
+                            {
+                                // CRITICAL FIX: NetSuite returns scientific notation (e.g., "1.4348098856E8")
+                                // decimal.TryParse doesn't handle scientific notation by default
+                                // Use NumberStyles.Float to parse scientific notation
+                                if (decimal.TryParse(strVal, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed))
+                                {
+                                    amount = parsed;
+                                    if (acctType == "Income" && periodName.Contains("Apr"))
+                                    {
+                                        _logger.LogInformation("✅ [REVENUE DEBUG] Income Apr - Successfully parsed '{RawValue}' as {Parsed:N2}", strVal, amount);
+                                    }
+                                }
+                                else if (acctType == "Income" && periodName.Contains("Apr"))
+                                {
+                                    _logger.LogWarning("🔍 [REVENUE DEBUG] Income Apr - Failed to parse string '{RawValue}' as decimal", strVal);
+                                }
+                            }
                         }
                         else if (amountProp.ValueKind == JsonValueKind.Number)
                         {
