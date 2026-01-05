@@ -206,7 +206,6 @@ public class TypeBalanceController : ControllerBase
                 WHERE t.posting = 'T'
                   AND tal.posting = 'T'
                   AND a.accttype IN ('Income', 'COGS', 'Expense', 'OthIncome', 'OthExpense')
-                  AND a.isinactive = 'F'
                   AND t.postingperiod IN ({periodFilter})
                   AND tal.accountingbook = {accountingBook}
                   AND {segmentWhere}
@@ -316,7 +315,6 @@ public class TypeBalanceController : ControllerBase
                         WHERE t.posting = 'T'
                           AND tal.posting = 'T'
                           AND a.accttype = 'Income'
-                          AND a.isinactive = 'F'
                           AND t.postingperiod IN ({periodFilter})
                           AND tal.accountingbook = {accountingBook}
                           AND {segmentWhere}";
@@ -353,7 +351,6 @@ public class TypeBalanceController : ControllerBase
                                         WHERE t.posting = 'T'
                                           AND tal.posting = 'T'
                                           AND a.accttype = 'Income'
-                                          AND a.isinactive = 'F'
                                           AND t.postingperiod = {testPeriodId}
                                           AND tal.accountingbook = {accountingBook}
                                           AND {segmentWhere}";

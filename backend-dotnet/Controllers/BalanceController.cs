@@ -3076,7 +3076,7 @@ public class BalanceController : ControllerBase
                 {
                     { "exception_type", ex.GetType().Name },
                     { "exception_message", ex.Message },
-                    { "stack_trace", ex.StackTrace }
+                    { "stack_trace", ex.StackTrace ?? "" }
                 }
             });
         }
@@ -3323,7 +3323,7 @@ public class BalanceController : ControllerBase
         
         // Safety limits
         const int MAX_ACCOUNTS = 200;
-        const int MAX_PERIODS = 36;
+        // const int MAX_PERIODS = 36; // Reserved for future use
         if (request.Accounts.Count > MAX_ACCOUNTS)
         {
             return BadRequest(new BsGridPeriodActivityResponse
