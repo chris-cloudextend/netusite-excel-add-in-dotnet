@@ -236,7 +236,13 @@ public class TypeBalanceController : ControllerBase
             _logger.LogInformation("   Segment WHERE: {SegmentWhere}", segmentWhere);
             _logger.LogInformation("   Period filter: {PeriodFilter}", periodFilter);
             _logger.LogInformation("   Income types SQL: {IncomeTypes}", incomeTypesSql);
-            _logger.LogInformation("🔍 [REVENUE DEBUG] Full SQL Query:\n{Query}", query);
+            _logger.LogInformation("   Accounting book: {Book} (type: {BookType})", accountingBook, accountingBook.GetType().Name);
+            if (periodIds.Any())
+            {
+                _logger.LogInformation("   Period IDs (first 5): {PeriodIds}", string.Join(", ", periodIds.Take(5)));
+            }
+            _logger.LogInformation("🔍 [REVENUE DEBUG] Full SQL Query (first 2000 chars):\n{Query}", 
+                query.Length > 2000 ? query.Substring(0, 2000) + "..." : query);
             
             var result = await _netSuiteService.QueryRawWithErrorAsync(query);
             
@@ -466,6 +472,16 @@ public class TypeBalanceController : ControllerBase
                                             }
                                             _logger.LogInformation("   Test query (period {PeriodId}): {Count} transactions, consolidated_sum: {Consolidated:N2}, raw_sum: {Raw:N2}", 
                                                 testPeriodId, testCount, consolidatedSum, rawSum);
+                                            _logger.LogInformation("   🔍 [REVENUE DEBUG] Test query SQL:\n{TestQuery}", testQuery);
+                                            
+                                            if (testCount > 0 && rawSum > 0 && consolidatedSum == 0)
+                                            {
+                                                _logger.LogError("   ❌ [REVENUE DEBUG] BUILTIN.CONSOLIDATE is returning NULL/0 for all {Count} transactions!", testCount);
+                                                _logger.LogError("   Raw sum: {Raw:N2} but consolidated sum: {Consolidated:N2}", rawSum, consolidatedSum);
+                                                _logger.LogError("   This means BUILTIN.CONSOLIDATE({targetSub}, {testPeriodId}) is failing!");
+                                                _logger.LogError("   targetSub={TargetSub}, testPeriodId={TestPeriodId}, accountingBook={Book}", 
+                                                    targetSub, testPeriodId, accountingBook);
+                                            }
                                             
                                             if (testCount > 0 && rawSum != 0 && consolidatedSum == 0)
                                             {
