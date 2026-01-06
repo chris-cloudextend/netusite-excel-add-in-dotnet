@@ -633,7 +633,12 @@ public class BalanceController : ControllerBase
         try
         {
             var fiscalYear = request.Year > 0 ? request.Year : DateTime.Now.Year;
-            var accountingBook = request.Book ?? DefaultAccountingBook;
+            // CRITICAL FIX: Convert accounting book to string (like all other methods)
+            var accountingBook = (request.Book ?? DefaultAccountingBook).ToString();
+            
+            // CRITICAL DEBUG: Log accounting book to verify it's being used
+            _logger.LogInformation("🔍 [FULL YEAR REFRESH DEBUG] Year={Year}, accountingBook={Book} (request.Book={RequestBook}, Default={Default})", 
+                fiscalYear, accountingBook, request.Book?.ToString() ?? "null", DefaultAccountingBook);
 
             _logger.LogInformation("=== FULL YEAR REFRESH (OPTIMIZED PIVOTED QUERY): {Year} ===", fiscalYear);
 

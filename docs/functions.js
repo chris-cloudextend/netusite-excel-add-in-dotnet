@@ -7954,6 +7954,8 @@ async function processFullRefresh() {
     console.log(`   Formulas: ${allRequests.length}`);
     console.log(`   Year: ${year}`);
     console.log(`   Filters:`, filters);
+    // CRITICAL DEBUG: Log accounting book to verify it's being passed
+    console.log(`   🔍 DEBUG: accountingBook="${filters.accountingBook || ''}" (from first request)`);
     console.log('');
     
     try {
@@ -7963,7 +7965,9 @@ async function processFullRefresh() {
             ...filters
         };
         
+        // CRITICAL DEBUG: Log payload to verify accounting book is included
         console.log('📤 Fetching ALL accounts for entire year...');
+        console.log(`   🔍 DEBUG: Payload includes accountingBook="${payload.accountingBook || ''}"`);
         const start = Date.now();
         
         const response = await fetch(`${SERVER_URL}/batch/full_year_refresh`, {

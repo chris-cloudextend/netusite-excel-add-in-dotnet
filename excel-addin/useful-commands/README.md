@@ -178,6 +178,9 @@ tail -f /tmp/dotnet-server.log
 # Create and open WEF folder (for sideloading add-ins)
 ./useful-commands/create-wef-folder.sh
 
+# Check BALANCE formula logs (for accounting book debugging)
+bash excel-addin/useful-commands/check-balance-logs.sh
+
 # Check book-subsidiary cache status
 bash ./useful-commands/check-cache-status.sh                    # Full cache status check
 
