@@ -17865,6 +17865,24 @@ export default {
             // if called too quickly during activation. Add small delay.
             await new Promise(r => setTimeout(r, 150));
             
+            // CRITICAL FIX: Initialize lastU3Value immediately on load to prevent false "change" detection
+            // This prevents the modal from appearing on first load
+            try {
+                await Excel.run(async (context) => {
+                    const sheet = context.workbook.worksheets.getActiveWorksheet();
+                    const bookCell = sheet.getRange("U3");
+                    bookCell.load("values");
+                    await context.sync();
+                    const u3Value = String(bookCell.values[0][0] || '').trim();
+                    lastU3Value = u3Value;
+                    console.log(`✅ [INIT] Initialized lastU3Value on load: "${u3Value}"`);
+                });
+            } catch (e) {
+                console.warn('⚠️ Could not initialize lastU3Value on load:', e.message);
+                // Set to empty string so it won't match any value
+                lastU3Value = '';
+            }
+            
             // Check for pending drilldown from sharedruntime.html (via localStorage)
             checkPendingDrilldown();
             
@@ -18209,22 +18227,16 @@ export default {
                     }
                     
                     // CRITICAL FIX: Check if U3 actually changed
-                    // If lastU3Value is null or undefined, initialize it but still show modal if it's a non-primary book
-                    // This handles the case where initialization didn't happen on load
+                    // If lastU3Value is null or undefined, this is the first load - initialize and exit
+                    // Do NOT treat null-to-value as a "change" - that's just initialization
                     if (lastU3Value === null || lastU3Value === undefined) {
-                        console.log(`📚 [OVERLAY DEBUG] lastU3Value is ${lastU3Value} - initializing to "${currentU3Value}"`);
-                        // If changing to a non-primary book, we should show the modal
-                        // Only skip if it's primary book (1) or empty
-                        if (!currentU3Value || currentU3Value === '1') {
-                            lastU3Value = currentU3Value;
-                            if (window.filterSubsidiaryDropdownByAccountingBook) {
-                                await window.filterSubsidiaryDropdownByAccountingBook(currentU3Value);
-                            }
-                            return; // Exit early - primary book or empty, no modal needed
+                        console.log(`📚 [INIT] lastU3Value is ${lastU3Value} - initializing to "${currentU3Value}" (first load, not a change)`);
+                        lastU3Value = currentU3Value;
+                        // Just filter dropdown but don't show modal - this is initialization, not a change
+                        if (window.filterSubsidiaryDropdownByAccountingBook) {
+                            await window.filterSubsidiaryDropdownByAccountingBook(currentU3Value);
                         }
-                        // For non-primary books, treat null as "unknown previous value" and show modal
-                        console.log(`📚 [OVERLAY DEBUG] lastU3Value was null, but changing to non-primary book "${currentU3Value}" - will show modal`);
-                        lastU3Value = ''; // Set to empty so change is detected below
+                        return; // Exit early - this is initialization, not a change
                     }
                     
                     // Only proceed if value actually changed
@@ -18242,6 +18254,9 @@ export default {
                     lastU3Value = currentU3Value;
                     const accountingBook = currentU3Value; // Use the value we just read
                     console.log(`📚 U3 (Accounting Book) changed from "${previousU3Value || '(initial)'}" to "${accountingBook}" - showing modal dialog...`);
+                    
+                    // CRITICAL: Declare transitionKey at function scope so it's accessible in error handlers
+                    let transitionKey = null;
                     
                     // CRITICAL: Set transition flag IMMEDIATELY (synchronously) before any async operations
                     // This prevents formulas from executing with invalid book/subsidiary combinations
@@ -18263,7 +18278,7 @@ export default {
                             lastKnownSubsidiary = 'PLACEHOLDER_ANY_SUBSIDIARY';
                         }
                         
-                        const transitionKey = `netsuite_book_transition_${accountingBook}`;
+                        transitionKey = `netsuite_book_transition_${accountingBook}`;
                         const transitionData = {
                             timestamp: Date.now(),
                             oldSubsidiary: lastKnownSubsidiary,
@@ -18286,8 +18301,7 @@ export default {
                         });
                         
                         // Update transition flag with actual current subsidiary (for all books, including Primary)
-                        if (accountingBook && currentSubsidiary) {
-                            const transitionKey = `netsuite_book_transition_${accountingBook}`;
+                        if (accountingBook && currentSubsidiary && transitionKey) {
                             try {
                                 const existingTransition = localStorage.getItem(transitionKey);
                                 if (existingTransition) {
@@ -18303,7 +18317,20 @@ export default {
                         
                         // If primary book, show modal with ALL subsidiaries
                         // User should be prompted to select a subsidiary even when changing TO Primary Book
+                        // BUT: Only if this is an actual change, not first load
                         if (!accountingBook || accountingBook === '1') {
+                            // On first load (previousU3Value is null/undefined), just filter dropdown, don't show modal
+                            if (previousU3Value === null || previousU3Value === undefined) {
+                                console.log('📚 Primary Book on first load - filtering dropdown only, no modal');
+                                if (window.filterSubsidiaryDropdownByAccountingBook) {
+                                    await window.filterSubsidiaryDropdownByAccountingBook('1');
+                                }
+                                // Clear transition flag if it was set
+                                if (transitionKey) {
+                                    localStorage.removeItem(transitionKey);
+                                }
+                                return; // Exit early - first load, no modal
+                            }
                             console.log('📚 Primary Book selected - showing modal with all subsidiaries');
                             
                             // Get all subsidiaries for Primary Book
@@ -18534,6 +18561,8 @@ export default {
                                     clearInterval(pulseInterval);
                                     pulseInterval = null;
                                 }
+                                // CRITICAL: Remove overlay immediately on timeout
+                                removeProgressOverlay();
                                 cacheReady = true; // Force proceed
                             }
                             
@@ -18576,7 +18605,9 @@ export default {
                                     // All subsidiaries valid (shouldn't happen for non-primary, but handle it)
                                     console.log('⚠️ All subsidiaries valid for non-primary book - this is unexpected');
                                     // Clear transition flag and continue
-                                    localStorage.removeItem(transitionKey);
+                                    if (transitionKey) {
+                                        localStorage.removeItem(transitionKey);
+                                    }
                                     removeProgressOverlay();
                                     if (window.filterSubsidiaryDropdownByAccountingBook) {
                                         await window.filterSubsidiaryDropdownByAccountingBook(accountingBook);
@@ -18586,7 +18617,9 @@ export default {
                             } else {
                                 console.error(`❌ Failed to fetch subsidiaries: ${response.status}`);
                                 // Clear transition flag on error
-                                localStorage.removeItem(transitionKey);
+                                if (transitionKey) {
+                                    localStorage.removeItem(transitionKey);
+                                }
                                 removeProgressOverlay();
                                 showToast({
                                     title: '❌ Error',
@@ -18599,7 +18632,9 @@ export default {
                         } catch (e) {
                             console.error(`❌ Error fetching subsidiaries:`, e.message);
                             // Clear transition flag on error
-                            localStorage.removeItem(transitionKey);
+                            if (transitionKey) {
+                                localStorage.removeItem(transitionKey);
+                            }
                             removeProgressOverlay();
                             showToast({
                                 title: '❌ Error',
@@ -18614,7 +18649,9 @@ export default {
                         if (enabledSubs.length === 0) {
                             console.error(`❌ No subsidiaries available for accounting book ${accountingBook}`);
                             // Clear transition flag
-                            localStorage.removeItem(transitionKey);
+                            if (transitionKey) {
+                                localStorage.removeItem(transitionKey);
+                            }
                             removeProgressOverlay();
                             showToast({
                                 title: '❌ No Subsidiaries',
@@ -18753,8 +18790,28 @@ export default {
                     } catch (e) {
                         console.error('❌ Error in U3 change handler:', e.message);
                         // Clear transition flag on error
-                        const transitionKey = `netsuite_book_transition_${currentU3Value}`;
-                        localStorage.removeItem(transitionKey);
+                        // Use accountingBook if available, otherwise try to get from currentU3Value
+                        let errorTransitionKey = null;
+                        try {
+                            if (typeof accountingBook !== 'undefined' && accountingBook) {
+                                errorTransitionKey = `netsuite_book_transition_${accountingBook}`;
+                            } else if (typeof currentU3Value !== 'undefined' && currentU3Value) {
+                                errorTransitionKey = `netsuite_book_transition_${currentU3Value}`;
+                            } else if (transitionKey) {
+                                errorTransitionKey = transitionKey;
+                            }
+                            if (errorTransitionKey) {
+                                localStorage.removeItem(errorTransitionKey);
+                            }
+                        } catch (clearError) {
+                            console.warn('⚠️ Could not clear transition flag on error:', clearError.message);
+                        }
+                        // Ensure overlay is removed
+                        try {
+                            removeProgressOverlay();
+                        } catch (overlayError) {
+                            console.warn('⚠️ Could not remove overlay on error:', overlayError.message);
+                        }
                         showToast({
                             title: '❌ Error',
                             message: `Error handling accounting book change: ${e.message}`,
