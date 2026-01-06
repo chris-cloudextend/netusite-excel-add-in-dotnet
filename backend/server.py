@@ -1290,13 +1290,27 @@ def search_accounts():
             
             # NetSuite account type mapping for better matching
             # Map common user inputs to actual NetSuite type values
+            # UX ENHANCEMENT: Add "BALANCE" and "INCOME" keywords for all BS/IS accounts
             type_mappings = {
-                'INCOME': ['Income', 'OthIncome'],
+                # Income Statement (P&L) - all revenue and expense accounts
+                # Includes: Income, Other Income, COGS, Cost of Goods Sold, Expense, Other Expense
+                'INCOME': ['Income', 'OthIncome', 'COGS', 'Cost of Goods Sold', 'Expense', 'OthExpense'],
+                # Balance Sheet - all asset, liability, and equity accounts
+                # Assets: Bank, AcctRec, OthCurrAsset, FixedAsset, OthAsset, DeferExpense, UnbilledRec
+                # Liabilities: AcctPay, CredCard, OthCurrLiab, LongTermLiab, DeferRevenue
+                # Equity: Equity, RetainedEarnings
+                'BALANCE': ['Bank', 'AcctRec', 'OthCurrAsset', 'FixedAsset', 'OthAsset', 'DeferExpense', 'UnbilledRec', 
+                           'AcctPay', 'CredCard', 'OthCurrLiab', 'LongTermLiab', 'DeferRevenue', 
+                           'Equity', 'RetainedEarnings'],
+                'BALANCESHEET': ['Bank', 'AcctRec', 'OthCurrAsset', 'FixedAsset', 'OthAsset', 'DeferExpense', 'UnbilledRec', 
+                                 'AcctPay', 'CredCard', 'OthCurrLiab', 'LongTermLiab', 'DeferRevenue', 
+                                 'Equity', 'RetainedEarnings'],
+                # Individual categories (for backward compatibility and granular searches)
                 'EXPENSE': ['Expense', 'OthExpense'],
                 'COGS': ['COGS', 'Cost of Goods Sold'],
-                'ASSET': ['Bank', 'AcctRec', 'OthCurrAsset', 'FixedAsset', 'OthAsset', 'DeferExpense', 'Unbilled'],
-                'LIABILITY': ['AcctPay', 'CreditCard', 'OthCurrLiab', 'LongTermLiab', 'DeferRevenue'],
-                'EQUITY': ['Equity']
+                'ASSET': ['Bank', 'AcctRec', 'OthCurrAsset', 'FixedAsset', 'OthAsset', 'DeferExpense', 'UnbilledRec'],
+                'LIABILITY': ['AcctPay', 'CredCard', 'OthCurrLiab', 'LongTermLiab', 'DeferRevenue'],
+                'EQUITY': ['Equity', 'RetainedEarnings']
             }
             
             # Check if pattern matches a category

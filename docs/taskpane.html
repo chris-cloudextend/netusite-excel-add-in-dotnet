@@ -5176,9 +5176,37 @@ For licensing inquiries, contact: legal@celigo.com
                             type="text" 
                             id="accountSearchInput" 
                             class="search-input"
-                            placeholder="e.g., 4*, *income, expense"
+                            placeholder="e.g., Balance, Income, 4*, Bank"
                             onkeypress="if(event.key === 'Enter') searchAccounts()"
                         />
+                        
+                        <!-- Quick Action Buttons for Common Searches -->
+                        <div style="margin-top: 10px; margin-bottom: 12px; padding: 12px; background: linear-gradient(135deg, rgba(59,130,246,0.05), rgba(16,185,129,0.05)); border-radius: 10px; border: 1px solid rgba(59,130,246,0.15);">
+                            <p style="color: var(--deep-sea); font-size: 11px; font-weight: 600; margin: 0 0 10px 0; display: flex; align-items: center; gap: 6px;">
+                                <span>⚡</span> Quick Add All Accounts
+                            </p>
+                            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                                <button 
+                                    onclick="document.getElementById('accountSearchInput').value='Balance'; searchAccounts();" 
+                                    style="flex: 1; min-width: 140px; padding: 10px 14px; background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); color: white; border: none; border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer; box-shadow: 0 2px 4px rgba(59,130,246,0.2); transition: all 0.2s;"
+                                    onmouseover="this.style.transform='translateY(-1px)'; this.style.boxShadow='0 4px 8px rgba(59,130,246,0.3)';"
+                                    onmouseout="this.style.transform=''; this.style.boxShadow='0 2px 4px rgba(59,130,246,0.2)';"
+                                    title="Add all Balance Sheet accounts: Assets (Bank, AR, Inventory, Fixed Assets), Liabilities (AP, Credit Cards, Loans), and Equity accounts">
+                                    📊 All Balance Sheet
+                                </button>
+                                <button 
+                                    onclick="document.getElementById('accountSearchInput').value='Income'; searchAccounts();" 
+                                    style="flex: 1; min-width: 140px; padding: 10px 14px; background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: white; border: none; border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer; box-shadow: 0 2px 4px rgba(16,185,129,0.2); transition: all 0.2s;"
+                                    onmouseover="this.style.transform='translateY(-1px)'; this.style.boxShadow='0 4px 8px rgba(16,185,129,0.3)';"
+                                    onmouseout="this.style.transform=''; this.style.boxShadow='0 2px 4px rgba(16,185,129,0.2)';"
+                                    title="Add all Income Statement accounts: Revenue (Income, Other Income), Expenses (Operating Expenses, Other Expenses), and COGS">
+                                    💰 All Income Statement
+                                </button>
+                            </div>
+                            <p style="color: #666; font-size: 10px; margin: 8px 0 0 0; line-height: 1.4;">
+                                💡 <strong>Tip:</strong> These buttons add <strong>all active accounts</strong> of each type. Perfect for building complete financial statements!
+                            </p>
+                        </div>
                         
                         <div class="search-hints">
                             <p style="color: var(--bottlenose); font-size: 11px; margin: 0; line-height: 1.6; margin-bottom: 8px;">
@@ -5186,7 +5214,8 @@ For licensing inquiries, contact: legal@celigo.com
                             </p>
                             <div style="margin-top: 8px;">
                                 <p style="color: var(--bottlenose); font-size: 11px; margin: 0; line-height: 1.6; margin-bottom: 4px;">
-                                    <strong>By Type:</strong> <code>Bank</code> <code>Income</code> <code>Expense</code> <code>Equity</code> <code>COGS</code>
+                                    <strong>Quick Keywords:</strong> <code style="background: rgba(59,130,246,0.1); padding: 2px 6px; border-radius: 4px; font-weight: 600;">Balance</code> <code style="background: rgba(16,185,129,0.1); padding: 2px 6px; border-radius: 4px; font-weight: 600;">Income</code> 
+                                    <span style="color: #666; font-size: 10px;">or specific types:</span> <code>Bank</code> <code>Expense</code> <code>Equity</code> <code>COGS</code>
                                 </p>
                                 <details style="margin-top: 4px;">
                                     <summary style="cursor: pointer; color: var(--bottlenose); font-size: 10px; font-weight: 400; margin-bottom: 6px; list-style: none;">
@@ -8826,7 +8855,7 @@ For licensing inquiries, contact: legal@celigo.com
                 const PRELOAD_LOCK_KEY = 'netsuite_preload_lock';
                 const PRELOAD_QUEUE_KEY = 'netsuite_preload_queue';
                 let triggerDebounceTimer = null;
-                const TRIGGER_DEBOUNCE_MS = 5000; // Wait 5s after last trigger before processing
+                const TRIGGER_DEBOUNCE_MS = 1000; // Wait 1s after last trigger before processing (reduced from 5s for faster response)
                 
                 // Check if preload is currently running
                 function isPreloadRunning() {
@@ -9621,9 +9650,24 @@ For licensing inquiries, contact: legal@celigo.com
                     }, TRIGGER_DEBOUNCE_MS);
                 }
                 
+                // CRITICAL FIX: Also listen for storage events to process triggers immediately when set
+                // This allows the preload screen to appear immediately when a formula sets the trigger
+                // instead of waiting for the polling interval
+                window.addEventListener('storage', (e) => {
+                    if (e.key && e.key.startsWith('netsuite_auto_preload_trigger_')) {
+                        console.log('🔔 Storage event detected for preload trigger - processing immediately');
+                        // Process immediately (no debounce) for faster response
+                        processAutoPreloadTriggers();
+                    } else if (e.key === 'netsuite_auto_preload_trigger') {
+                        console.log('🔔 Storage event detected for legacy preload trigger - processing immediately');
+                        processAutoPreloadTriggers();
+                    }
+                });
+                
                 // FIX #3: Set up polling to check for new triggers every 2 seconds
                 // FIX #2: Use debounced processing instead of immediate processing
                 // This ensures triggers are processed even if taskpane wasn't open when they were created
+                // NOTE: Storage events handle same-origin triggers, polling handles cross-origin (if needed)
                 let triggerPollInterval = setInterval(() => {
                     // Check if there are any triggers
                     let hasTriggers = false;
@@ -26694,8 +26738,12 @@ export default {
                 
                 // Call backend API
                 // Backend expects 'number' parameter for account number patterns (4*, 42*, etc.)
-                // or 'type' parameter for account types (income, expense, etc.)
-                const isTypeSearch = /^(income|expense|bank|asset|liability|equity|cogs|revenue)/i.test(pattern.toLowerCase());
+                // or 'type' parameter for account types (income, expense, FixedAsset, etc.)
+                // Check for common keywords OR exact NetSuite account type names
+                // UX ENHANCEMENT: Support "Balance" and "Income" keywords for all BS/IS accounts
+                const commonTypeKeywords = /^(income|expense|bank|asset|liability|equity|cogs|revenue|balance|balancesheet)/i;
+                const exactAccountTypes = /^(Bank|AcctRec|OthCurrAsset|FixedAsset|OthAsset|DeferExpense|UnbilledRec|AcctPay|CredCard|OthCurrLiab|LongTermLiab|DeferRevenue|Equity|RetainedEarnings|Income|OthIncome|COGS|Expense|OthExpense)$/i;
+                const isTypeSearch = commonTypeKeywords.test(pattern.toLowerCase()) || exactAccountTypes.test(pattern);
                 const paramName = isTypeSearch ? 'type' : 'number';
                 const url = `${getServerUrl()}/accounts/search?${paramName}=${encodeURIComponent(pattern)}`;
                 console.log('API URL:', url);

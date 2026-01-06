@@ -846,8 +846,11 @@ function isColumnBatchExecutionAllowed(accountType, gridDetection) {
     }
     
     // Condition 2: Must be Balance Sheet account
-    if (accountType !== 'Balance Sheet') {
-        return { allowed: false, reason: `Account type is ${accountType}, not Balance Sheet` };
+    // CRITICAL FIX: accountType can be a string (NetSuite type like "Bank") or an object with .type property
+    // Use isBalanceSheetType() to check if it's a Balance Sheet account type
+    const acctTypeStr = typeof accountType === 'string' ? accountType : (accountType?.type || accountType?.account || '');
+    if (!isBalanceSheetType(acctTypeStr)) {
+        return { allowed: false, reason: `Account type is ${acctTypeStr}, not a Balance Sheet type` };
     }
     
     // Condition 3: Grid detection must be eligible
@@ -6384,14 +6387,18 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         // One query per period (column), returns translated ending balances
         // No anchor math, no activity reconstruction
         // ================================================================
-        if (USE_COLUMN_BASED_BS_BATCHING && accountType === 'Balance Sheet') {
+        // CRITICAL FIX: Use isBalanceSheetType() instead of checking for 'Balance Sheet' string
+        // getAccountType() returns NetSuite account types like "Bank", "AcctRec", etc., not "Balance Sheet"
+        const isBalanceSheet = accountType && isBalanceSheetType(accountType);
+        if (USE_COLUMN_BASED_BS_BATCHING && isBalanceSheet) {
             const evaluatingRequests = Array.from(pendingEvaluation.balance.values());
-            console.log(`🔍 [BATCH DEBUG] Checking column-based batching: accountType=${accountType}, evaluatingRequests=${evaluatingRequests.length}, account=${account}, toPeriod=${toPeriod}`);
+            console.log(`🔍 [BATCH DEBUG] Checking column-based batching: accountType=${accountType}, isBalanceSheet=${isBalanceSheet}, evaluatingRequests=${evaluatingRequests.length}, account=${account}, toPeriod=${toPeriod}`);
             const columnBasedDetection = detectColumnBasedBSGrid(evaluatingRequests);
             
             if (columnBasedDetection.eligible) {
                 console.log(`✅ [BATCH DEBUG] Grid eligible for column-based batching: ${columnBasedDetection.allAccounts?.size || 0} accounts, ${columnBasedDetection.columns?.length || 0} periods`);
                 // Check execution eligibility (no validation/trust requirements)
+                // Pass accountType object for compatibility, but execution check should also use isBalanceSheetType
                 const executionCheck = isColumnBatchExecutionAllowed(accountType, columnBasedDetection);
                 
                 if (executionCheck.allowed) {
@@ -6452,8 +6459,9 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
             }
         } else {
             // Not Balance Sheet or batching disabled
-            if (accountType !== 'Balance Sheet') {
-                console.log(`⏸️ [BATCH DEBUG] Account type is ${accountType}, not Balance Sheet - skipping column-based batching`);
+            const acctTypeStr = typeof accountType === 'string' ? accountType : (accountType?.type || accountType?.account || '');
+            if (!isBalanceSheetType(acctTypeStr)) {
+                console.log(`⏸️ [BATCH DEBUG] Account type is ${acctTypeStr}, not a Balance Sheet type - skipping column-based batching`);
             }
         }
         
@@ -6990,10 +6998,10 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                                 console.log(`🔄 BS account: Period ${periodKey} not in manifest - triggering preload before queuing API calls`);
                                 addPeriodToRequestQueue(periodKey, { subsidiary, department, location, classId, accountingBook });
                                 
-                                // FIX #4: Also trigger auto-preload for BS accounts (if not subsidiary-filtered)
-                                if (!subsidiary) {
-                                    triggerAutoPreload(account, periodKey);
-                                }
+                                // CRITICAL FIX: Trigger auto-preload for ALL BS accounts, including those with subsidiary filters
+                                // Backend preload endpoints support subsidiary filters, so this check was incorrectly blocking preload
+                                // This was causing formulas with subsidiaries to wait 120s timeout instead of triggering preload
+                                triggerAutoPreload(account, periodKey);
                             } else {
                                 console.log(`⏸️ BS account: Period ${periodKey} preload already in progress (status: ${preloadStatus}) - skipping trigger`);
                             }
