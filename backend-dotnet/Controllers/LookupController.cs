@@ -282,6 +282,31 @@ public class LookupController : ControllerBase
     }
 
     /// <summary>
+    /// Rebuild the book-subsidiary cache from NetSuite (clears existing cache and rebuilds).
+    /// </summary>
+    [HttpPost("/lookups/accountingbook/rebuild-cache")]
+    public async Task<IActionResult> RebuildCache()
+    {
+        try
+        {
+            if (_lookupService is XaviApi.Services.LookupService service)
+            {
+                _logger.LogInformation("🔄 Cache rebuild triggered");
+                // Clear the existing cache and rebuild
+                await service.ClearBookSubsidiaryCacheAsync();
+                await service.InitializeBookSubsidiaryCacheAsync();
+                return Ok(new { message = "Cache rebuild completed", timestamp = DateTime.UtcNow });
+            }
+            return BadRequest(new { error = "LookupService is not the expected type" });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error during cache rebuild");
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
     /// Get the default subsidiary for an accounting book based on NetSuite-compatible rules.
     /// Optionally accepts a current subsidiary ID - if it's enabled for the book, it will be returned.
     /// </summary>

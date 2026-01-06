@@ -4540,6 +4540,42 @@ For licensing inquiries, contact: legal@celigo.com
                     <p style="font-size: 11px; color: #6b7280; margin-top: 8px; line-height: 1.4;">
                         Clears all preloaded Balance Sheet data. Formulas will need to reload from NetSuite.
                     </p>
+                    
+                    <!-- Book-Subsidiary Cache Status -->
+                    <details class="cache-details" style="margin-top: 16px; border-top: 1px solid #e5e7eb; padding-top: 16px;">
+                        <summary style="cursor: pointer; font-weight: 600; font-size: 13px; color: #374151; display: flex; align-items: center; gap: 8px; user-select: none;">
+                            <span style="transition: transform 0.2s; display: inline-block;">▶</span>
+                            <span>📚 Book-Subsidiary Relationships Cache</span>
+                        </summary>
+                        <div id="bookSubsidiaryCacheStatus" style="margin-top: 12px; font-size: 12px; color: #4b5563;">
+                            <div style="display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; background: #f9fafb; border-radius: 6px; margin-bottom: 8px;">
+                                <span style="font-weight: 500;">Cache Status</span>
+                                <div id="bookSubsidiaryCacheStatusIndicator" class="status-indicator checking" style="margin: 0; padding: 4px 10px; font-size: 11px;">
+                                    <span class="status-dot checking"></span>
+                                    Checking...
+                                </div>
+                            </div>
+                            <div id="bookSubsidiaryCacheDetails" style="font-size: 11px; color: #6b7280; line-height: 1.6;">
+                                <p id="cacheReadyStatus">-</p>
+                                <p id="cacheFileStatus" style="margin-top: 4px;">-</p>
+                                <p id="cacheBooksCount" style="margin-top: 4px;">-</p>
+                            </div>
+                            <button class="settings-btn-action" onclick="rebuildBookSubsidiaryCache()" style="width: 100%; margin-top: 12px; background: #3b82f6; color: white;">
+                                🔄 Rebuild Cache
+                            </button>
+                            <p style="font-size: 11px; color: #6b7280; margin-top: 8px; line-height: 1.4;">
+                                Rebuilds the book-subsidiary relationship cache from NetSuite. This may take 30-60 seconds.
+                            </p>
+                        </div>
+                    </details>
+                    <style>
+                        details.cache-details summary::-webkit-details-marker {
+                            display: none;
+                        }
+                        details.cache-details[open] summary span:first-child {
+                            transform: rotate(90deg);
+                        }
+                    </style>
                 </div>
 
                 <!-- Version Info -->
@@ -6056,7 +6092,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.94"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.95"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -9943,6 +9979,10 @@ For licensing inquiries, contact: legal@celigo.com
         // SETTINGS VIEW (inline, not modal)
         // ========================================================================
         function openSettings() {
+            // Check book-subsidiary cache status when settings opens
+            setTimeout(() => {
+                checkBookSubsidiaryCacheStatus();
+            }, 500);
             // Move settings content into the inline container
             const settingsContent = document.getElementById('settingsView');
             const settingsInline = document.getElementById('settingsViewInline');
@@ -11500,28 +11540,34 @@ For licensing inquiries, contact: legal@celigo.com
                         console.warn('Post-report currency format failed:', e.message);
                     }
                     
+                    // CRITICAL FIX: Initialize lastU3Value IMMEDIATELY after CFO Flash Report completes
+                    // This prevents false "U3 changed" detection when Excel fires change events
+                    // Do this BEFORE releasing the sync lock to ensure it happens first
+                    // Also set a flag to prevent modal from showing until initialization is complete
+                    try {
+                        await Excel.run(async (context) => {
+                            const sheet = context.workbook.worksheets.getActiveWorksheet();
+                            const bookCell = sheet.getRange("U3");
+                            bookCell.load("values");
+                            await context.sync();
+                            const u3Value = String(bookCell.values[0][0] || '').trim();
+                            lastU3Value = u3Value;
+                            // Set flag to indicate initialization is complete
+                            localStorage.setItem('netsuite_u3_initialized', 'true');
+                            console.log(`✅ [INIT] Initialized lastU3Value after CFO Flash complete: "${u3Value}"`);
+                        });
+                    } catch (e) {
+                        console.warn('⚠️ Could not initialize lastU3Value after CFO Flash:', e.message);
+                        // Set to empty string so it won't match any value
+                        lastU3Value = '';
+                        localStorage.setItem('netsuite_u3_initialized', 'true');
+                    }
+                    
                     // Release the sync lock after currency formatting is done
                     // Reduced delay (was 1000ms) - user can change subsidiary sooner
                     setTimeout(async () => {
                         isSyncInProgress = false;
                         console.log('🔓 CFO Flash: Filter change handlers unblocked - report generation complete');
-                        
-                        // CRITICAL FIX: Initialize lastU3Value after CFO Flash Report completes
-                        // This prevents false "U3 changed" detection when Excel fires change events
-                        // even though the value hasn't actually changed
-                        try {
-                            await Excel.run(async (context) => {
-                                const sheet = context.workbook.worksheets.getActiveWorksheet();
-                                const bookCell = sheet.getRange("U3");
-                                bookCell.load("values");
-                                await context.sync();
-                                const u3Value = String(bookCell.values[0][0] || '').trim();
-                                lastU3Value = u3Value;
-                                console.log(`✅ [OVERLAY DEBUG] Initialized lastU3Value after CFO Flash complete: "${u3Value}"`);
-                            });
-                        } catch (e) {
-                            console.warn('⚠️ Could not initialize lastU3Value after CFO Flash:', e.message);
-                        }
                     }, 500);
                 }, 500); // Reduced from 2000ms - formulas start immediately
                 
@@ -15994,6 +16040,141 @@ export default {
             });
         }
 
+        // Check book-subsidiary cache status
+        async function checkBookSubsidiaryCacheStatus() {
+            const statusIndicator = document.getElementById('bookSubsidiaryCacheStatusIndicator');
+            const readyStatus = document.getElementById('cacheReadyStatus');
+            const fileStatus = document.getElementById('cacheFileStatus');
+            const booksCount = document.getElementById('cacheBooksCount');
+            
+            if (!statusIndicator) return;
+            
+            statusIndicator.className = 'status-indicator checking';
+            statusIndicator.innerHTML = '<span class="status-dot checking"></span> Checking...';
+            
+            try {
+                const response = await fetch(`${getServerUrl()}/lookups/cache/status`);
+                if (!response.ok) throw new Error(`Status: ${response.status}`);
+                
+                const data = await response.json();
+                
+                if (data.ready) {
+                    statusIndicator.className = 'status-indicator connected';
+                    statusIndicator.innerHTML = '<span class="status-dot connected"></span> Ready ✓';
+                    readyStatus.textContent = `Status: Ready (${data.timestamp ? new Date(data.timestamp).toLocaleString() : 'N/A'})`;
+                } else {
+                    statusIndicator.className = 'status-indicator checking';
+                    statusIndicator.innerHTML = '<span class="status-dot checking"></span> Building...';
+                    readyStatus.textContent = `Status: ${data.message || 'Building cache...'}`;
+                }
+                
+                // Check cache file and book count
+                if (data.books && data.books > 0) {
+                    booksCount.textContent = `Cached books: ${data.books}`;
+                } else {
+                    booksCount.textContent = 'Cached books: 0';
+                }
+                
+                // Check if cache file exists (via backend response or separate check)
+                fileStatus.textContent = data.fileExists ? 'Cache file: Exists on disk' : 'Cache file: Not found';
+                
+            } catch (error) {
+                console.error('checkBookSubsidiaryCacheStatus error:', error);
+                statusIndicator.className = 'status-indicator error';
+                statusIndicator.innerHTML = `<span class="status-dot error"></span> Error`;
+                readyStatus.textContent = `Error: ${error.message || 'Connection failed'}`;
+            }
+        }
+        
+        // Rebuild book-subsidiary cache
+        async function rebuildBookSubsidiaryCache() {
+            const statusIndicator = document.getElementById('bookSubsidiaryCacheStatusIndicator');
+            const readyStatus = document.getElementById('cacheReadyStatus');
+            
+            if (!confirm('Rebuild the book-subsidiary relationship cache? This may take 30-60 seconds.')) {
+                return;
+            }
+            
+            if (statusIndicator) {
+                statusIndicator.className = 'status-indicator checking';
+                statusIndicator.innerHTML = '<span class="status-dot checking"></span> Rebuilding...';
+            }
+            if (readyStatus) {
+                readyStatus.textContent = 'Status: Rebuilding cache from NetSuite...';
+            }
+            
+            try {
+                // Call the backend endpoint to rebuild the cache
+                const response = await fetch(`${getServerUrl()}/lookups/accountingbook/rebuild-cache`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    throw new Error(errorText || `Status: ${response.status}`);
+                }
+                
+                // Wait a moment for the rebuild to start
+                await new Promise(resolve => setTimeout(resolve, 2000));
+                
+                // Poll for completion
+                let attempts = 0;
+                const maxAttempts = 60; // 60 seconds max
+                const pollInterval = setInterval(async () => {
+                    attempts++;
+                    try {
+                        const statusResponse = await fetch(`${getServerUrl()}/lookups/cache/status`);
+                        if (statusResponse.ok) {
+                            const statusData = await statusResponse.json();
+                            if (statusData.ready) {
+                                clearInterval(pollInterval);
+                                if (statusIndicator) {
+                                    statusIndicator.className = 'status-indicator connected';
+                                    statusIndicator.innerHTML = '<span class="status-dot connected"></span> Ready ✓';
+                                }
+                                if (readyStatus) {
+                                    readyStatus.textContent = `Status: Cache rebuilt successfully (${new Date().toLocaleString()})`;
+                                }
+                                // Refresh the cache status display
+                                await checkBookSubsidiaryCacheStatus();
+                            } else if (attempts >= maxAttempts) {
+                                clearInterval(pollInterval);
+                                if (statusIndicator) {
+                                    statusIndicator.className = 'status-indicator error';
+                                    statusIndicator.innerHTML = '<span class="status-dot error"></span> Timeout';
+                                }
+                                if (readyStatus) {
+                                    readyStatus.textContent = 'Status: Rebuild timed out after 60 seconds';
+                                }
+                            }
+                        }
+                    } catch (e) {
+                        if (attempts >= maxAttempts) {
+                            clearInterval(pollInterval);
+                            if (statusIndicator) {
+                                statusIndicator.className = 'status-indicator error';
+                                statusIndicator.innerHTML = '<span class="status-dot error"></span> Error';
+                            }
+                            if (readyStatus) {
+                                readyStatus.textContent = `Error: ${e.message}`;
+                            }
+                        }
+                    }
+                }, 1000);
+                
+            } catch (error) {
+                console.error('rebuildBookSubsidiaryCache error:', error);
+                if (statusIndicator) {
+                    statusIndicator.className = 'status-indicator error';
+                    statusIndicator.innerHTML = '<span class="status-dot error"></span> Error';
+                }
+                if (readyStatus) {
+                    readyStatus.textContent = `Error: ${error.message || 'Rebuild failed'}`;
+                }
+            }
+        }
+
         async function reloadLookups() {
             // Find the status element in the VISIBLE settings panel (inline view)
             const settingsInline = document.getElementById('settingsViewInline');
@@ -17108,7 +17289,7 @@ export default {
                             <div class="subsidiary-selection-dialog" onclick="event.stopPropagation()">
                                 <h3>📚 Select Subsidiary</h3>
                                 <p>
-                                    <strong>⚠️ Important:</strong> Before selecting a subsidiary, please position your cursor in cell <strong>Q3</strong> (the subsidiary cell) in the Excel sheet.
+                                    <strong>⚠️ Important:</strong> Before selecting a subsidiary, please position your cursor in the cell containing your subsidiary in the Excel sheet. The subsidiary you select will be added to the sheet and the sheet updated after you select Continue.
                                     <br><br>
                                     Then select a subsidiary that is enabled for <span class="book-name">${accountingBookName}</span>.
                                     ${currentSubsidiary ? `<br><br><em>Current selection "${currentSubsidiary}" may not be valid for this accounting book.</em>` : ''}
@@ -18229,9 +18410,12 @@ export default {
                     // CRITICAL FIX: Check if U3 actually changed
                     // If lastU3Value is null or undefined, this is the first load - initialize and exit
                     // Do NOT treat null-to-value as a "change" - that's just initialization
-                    if (lastU3Value === null || lastU3Value === undefined) {
-                        console.log(`📚 [INIT] lastU3Value is ${lastU3Value} - initializing to "${currentU3Value}" (first load, not a change)`);
+                    // Also check if initialization flag is set (prevents modal after CFO Flash completes)
+                    const isInitialized = localStorage.getItem('netsuite_u3_initialized') === 'true';
+                    if ((lastU3Value === null || lastU3Value === undefined) || !isInitialized) {
+                        console.log(`📚 [INIT] lastU3Value is ${lastU3Value}, initialized=${isInitialized} - initializing to "${currentU3Value}" (first load, not a change)`);
                         lastU3Value = currentU3Value;
+                        localStorage.setItem('netsuite_u3_initialized', 'true');
                         // Just filter dropdown but don't show modal - this is initialization, not a change
                         if (window.filterSubsidiaryDropdownByAccountingBook) {
                             await window.filterSubsidiaryDropdownByAccountingBook(currentU3Value);

@@ -310,6 +310,38 @@ public class LookupService : ILookupService
     }
 
     /// <summary>
+    /// Clear the book-subsidiary cache (for rebuild operations).
+    /// </summary>
+    public async Task ClearBookSubsidiaryCacheAsync()
+    {
+        await _cacheLock.WaitAsync();
+        try
+        {
+            _bookSubsidiaryCache.Clear();
+            _cacheInitialized = false;
+            _logger.LogInformation("🗑️ Cleared book-subsidiary cache");
+            
+            // Also delete the cache file if it exists
+            if (File.Exists(CacheFilePath))
+            {
+                try
+                {
+                    File.Delete(CacheFilePath);
+                    _logger.LogInformation("🗑️ Deleted cache file: {Path}", CacheFilePath);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Could not delete cache file: {Path}", CacheFilePath);
+                }
+            }
+        }
+        finally
+        {
+            _cacheLock.Release();
+        }
+    }
+
+    /// <summary>
     /// Check if the book-subsidiary cache is ready.
     /// </summary>
     public async Task<bool> IsBookSubsidiaryCacheReadyAsync()
