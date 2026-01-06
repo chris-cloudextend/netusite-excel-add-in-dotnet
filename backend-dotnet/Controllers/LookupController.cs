@@ -241,27 +241,48 @@ public class LookupController : ControllerBase
         {
             if (_lookupService is XaviApi.Services.LookupService service)
             {
-                var isReady = await service.IsBookSubsidiaryCacheReadyAsync();
+                bool isReady = false;
+                int bookCount = 0;
+                bool fileExists = false;
+                
+                try
+                {
+                    isReady = await service.IsBookSubsidiaryCacheReadyAsync();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Error checking if cache is ready");
+                    // Continue with isReady = false
+                }
+                
                 var cacheFilePath = Path.Combine(
                     Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
                     "XaviApi",
                     "book-subsidiary-cache.json"
                 );
-                var fileExists = System.IO.File.Exists(cacheFilePath);
+                
+                try
+                {
+                    fileExists = System.IO.File.Exists(cacheFilePath);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Error checking if cache file exists");
+                    // Continue with fileExists = false
+                }
                 
                 // Get book count from cache
-                var bookCount = 0;
                 if (isReady)
                 {
-                    // Try to get book count from cache
                     try
                     {
                         var cacheData = await service.GetBookSubsidiaryCacheDataAsync();
                         bookCount = cacheData?.Count ?? 0;
                     }
-                    catch
+                    catch (Exception ex)
                     {
-                        // Ignore errors getting book count
+                        _logger.LogWarning(ex, "Error getting book count from cache");
+                        // Continue with bookCount = 0
                     }
                 }
                 
@@ -279,7 +300,7 @@ public class LookupController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error checking cache status");
-            return StatusCode(500, new { error = ex.Message });
+            return StatusCode(500, new { error = ex.Message, details = ex.ToString() });
         }
     }
 

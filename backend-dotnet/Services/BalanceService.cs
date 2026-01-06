@@ -263,6 +263,10 @@ public class BalanceService : IBalanceService
         // CRITICAL FIX: Convert accounting book to string (like TYPEBALANCE does)
         // This ensures the SQL query uses the correct type for tal.accountingbook comparison
         var accountingBook = (request.Book ?? DefaultAccountingBook).ToString();
+        
+        // CRITICAL DEBUG: Log accounting book to verify it's being used correctly
+        _logger.LogInformation("🔍 [BALANCE DEBUG] GetBalanceAsync: account={Account}, accountingBook={Book} (request.Book={RequestBook}, DefaultAccountingBook={Default})", 
+            request.Account, accountingBook, request.Book?.ToString() ?? "null", DefaultAccountingBook);
 
         // ========================================================================
         // CACHE CHECK: For single non-wildcard accounts, check if we have a cached balance
@@ -375,6 +379,10 @@ public class BalanceService : IBalanceService
                       AND tal.accountingbook = {accountingBook}
                       {whereSegment}
                 ) x";
+            
+            // CRITICAL DEBUG: Log the actual SQL query to verify accounting book is included
+            _logger.LogInformation("🔍 [BALANCE DEBUG] Point-in-time query: account={Account}, accountingBook={Book}, SQL (first 500 chars): {Query}", 
+                request.Account, accountingBook, query.Length > 500 ? query.Substring(0, 500) + "..." : query);
         }
         else if (isPeriodActivity)
         {

@@ -174,6 +174,10 @@ public class BalanceController : ControllerBase
 
         try
         {
+            // CRITICAL DEBUG: Log the incoming request parameters
+            _logger.LogInformation("🔍 [BALANCE DEBUG] BalanceController.GetBalance: account={Account}, book={Book} (from query param), from_period={From}, to_period={To}", 
+                account, book?.ToString() ?? "null", from_period ?? "null", to_period ?? "null");
+            
             // For BS accounts, from_period can be empty (cumulative from inception)
             // For P&L accounts, from_period defaults to to_period if not provided
             var request = new BalanceRequest
@@ -190,6 +194,10 @@ public class BalanceController : ControllerBase
                 BatchMode = batch_mode,
                 IncludePeriodBreakdown = include_period_breakdown
             };
+            
+            // CRITICAL DEBUG: Log the request object
+            _logger.LogInformation("🔍 [BALANCE DEBUG] BalanceRequest created: Book={Book} (int?), Account={Account}", 
+                request.Book?.ToString() ?? "null", request.Account);
 
             var result = await _balanceService.GetBalanceAsync(request);
             return Ok(result);

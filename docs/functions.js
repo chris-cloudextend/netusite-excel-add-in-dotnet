@@ -6207,7 +6207,11 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         classId = String(classId || '').trim();
         
         // Multi-Book Accounting support - default to empty (uses Primary Book on backend)
+        const rawAccountingBook = accountingBook;
         accountingBook = String(accountingBook || '').trim();
+        
+        // CRITICAL DEBUG: Log accounting book to verify it's being read correctly
+        console.log(`🔍 BALANCE DEBUG: account=${account}, accountingBook="${accountingBook}" (raw: ${rawAccountingBook}, type: ${typeof rawAccountingBook})`);
         
         // DEBUG: Log subsidiary to trace (Consolidated) suffix handling
         if (subsidiary && subsidiary.toLowerCase().includes('europe')) {
@@ -8401,7 +8405,10 @@ async function processBatchQueue() {
                 
                 const waitingCount = requests.length > 1 ? ` (${requests.length} formulas waiting)` : '';
                 const currencyInfo = isBalanceCurrency && currency ? ` (currency: ${currency})` : '';
-                console.log(`   📤 Cumulative API: ${account} through ${toPeriod}${isWildcard ? ' (with breakdown)' : ''}${currencyInfo}${waitingCount}`);
+                // CRITICAL DEBUG: Log accounting book parameter to verify it's being sent
+                const bookInfo = accountingBook ? ` [BOOK: ${accountingBook}]` : ' [BOOK: empty/primary]';
+                console.log(`   📤 Cumulative API: ${account} through ${toPeriod}${isWildcard ? ' (with breakdown)' : ''}${currencyInfo}${bookInfo}${waitingCount}`);
+                console.log(`   🔍 DEBUG: API params - accountingbook="${accountingBook || ''}" (type: ${typeof accountingBook})`);
                 
                 // Rate limit: wait before making request if we've already made calls
                 // Prevents NetSuite 429 CONCURRENCY_LIMIT_EXCEEDED errors
@@ -8412,7 +8419,10 @@ async function processBatchQueue() {
                 
                 // Track query timing for slow query detection
                 const queryStartTime = Date.now();
-                const response = await fetch(`${SERVER_URL}${endpoint}?${apiParams.toString()}`);
+                const apiUrl = `${SERVER_URL}${endpoint}?${apiParams.toString()}`;
+                console.log(`   🔍 DEBUG: Full API URL: ${apiUrl}`);
+                console.log(`   🔍 DEBUG: All API params:`, Object.fromEntries(apiParams));
+                const response = await fetch(apiUrl);
                 
                 if (response.ok) {
                     const contentType = response.headers.get('content-type') || '';
