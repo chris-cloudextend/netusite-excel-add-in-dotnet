@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.100';  // FIX: Improved account type extraction from objects, normalized isBalanceSheetType check, Balance search uses pattern parameter
+const FUNCTIONS_VERSION = '4.0.6.101';  // FIX: Account type JSON string parsing, filtersHash in cache lookups, exact account type search in backend
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -3628,7 +3628,7 @@ async function runBuildModeBatch() {
             // This ensures build mode uses preloaded data instead of making redundant API calls
             // ================================================================
             if (!subsidiary) {  // Skip for subsidiary-filtered queries (localStorage not subsidiary-aware)
-                const localStorageValue = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary);
+                const localStorageValue = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
                 if (localStorageValue !== null) {
                     console.log(`   ✅ Preload cache hit (build mode - cumulative): ${account} for ${fromPeriod || '(cumulative)'} → ${toPeriod} = ${localStorageValue}`);
                     cache.balance.set(cacheKey, localStorageValue);
@@ -4469,7 +4469,9 @@ window.resolvePendingRequests = function() {
             const lookupPeriod = (fromPeriod && fromPeriod !== '') ? fromPeriod : toPeriod;
             
             // Try to get value from localStorage cache (skip if subsidiary filter)
-            value = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary);
+            // Build filtersHash for cache lookup
+            const filtersHash = getFilterKey({ subsidiary, department: '', location: '', classId: '', accountingBook: '' });
+            value = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
             
             // Fallback to fullYearCache (skip if subsidiary filter)
             if (value === null) {
@@ -6732,7 +6734,9 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                     return cachedValue;
                 }
                 
-                const localStorageValue = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary);
+                // Build filtersHash for cache lookup (should match preload cache key format)
+                const filtersHash = getFilterKey({ subsidiary, department, location, classId, accountingBook });
+                const localStorageValue = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
                 if (localStorageValue !== null) {
                     console.log(`✅ Post-preload cache hit (localStorage): ${account}`);
                     cacheStats.hits++;
@@ -8521,7 +8525,7 @@ async function processBatchQueue() {
             // This ensures batch mode uses preloaded data instead of making redundant API calls
             // ================================================================
             if (!subsidiary) {  // Skip for subsidiary-filtered queries (localStorage not subsidiary-aware)
-                const localStorageValue = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary);
+                const localStorageValue = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
                 if (localStorageValue !== null) {
                     // DEBUG: Track when data is ready vs when it's written (Balance Sheet only)
                     const isBS = isCumulativeRequest(fromPeriod);
