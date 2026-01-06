@@ -78,10 +78,13 @@ public class SpecialFormulaController : ControllerBase
                 segmentFilters.Add($"tl.location = {locationId}");
             var segmentWhere = string.Join(" AND ", segmentFilters);
 
-            var accountingBook = request.Book ?? DefaultAccountingBook;
+            // CRITICAL FIX: Convert accounting book to string (like TYPEBALANCE does)
+            // This ensures the SQL query uses the correct type for tal.accountingbook comparison
+            var accountingBook = (request.Book ?? DefaultAccountingBook).ToString();
 
-            // Get fiscal year info for the period
-            var fyInfo = await GetFiscalYearInfoAsync(request.Period, accountingBook);
+            // Get fiscal year info for the period (needs int for lookup)
+            var accountingBookInt = request.Book ?? DefaultAccountingBook;
+            var fyInfo = await GetFiscalYearInfoAsync(request.Period, accountingBookInt);
             if (fyInfo == null)
                 return BadRequest(new { error = $"Could not find fiscal year for period {request.Period}" });
 
@@ -227,10 +230,13 @@ public class SpecialFormulaController : ControllerBase
             var subsidiaryId = await _lookupService.ResolveSubsidiaryIdAsync(request.Subsidiary);
             var targetSub = subsidiaryId ?? "1";
 
-            var accountingBook = request.Book ?? DefaultAccountingBook;
+            // CRITICAL FIX: Convert accounting book to string (like TYPEBALANCE does)
+            // This ensures the SQL query uses the correct type for tal.accountingbook comparison
+            var accountingBook = (request.Book ?? DefaultAccountingBook).ToString();
 
-            // Get fiscal year info
-            var fyInfo = await GetFiscalYearInfoAsync(request.Period, accountingBook);
+            // Get fiscal year info (needs int for lookup)
+            var accountingBookInt = request.Book ?? DefaultAccountingBook;
+            var fyInfo = await GetFiscalYearInfoAsync(request.Period, accountingBookInt);
             if (fyInfo == null)
                 return BadRequest(new { error = $"Could not find fiscal year for period {request.Period}" });
 
@@ -514,10 +520,13 @@ public class SpecialFormulaController : ControllerBase
                 segmentFilters.Add($"tl.location = {locationId}");
             var segmentWhere = string.Join(" AND ", segmentFilters);
 
-            var accountingBook = request.Book ?? DefaultAccountingBook;
+            // CRITICAL FIX: Convert accounting book to string (like TYPEBALANCE does)
+            // This ensures the SQL query uses the correct type for tal.accountingbook comparison
+            var accountingBook = (request.Book ?? DefaultAccountingBook).ToString();
 
-            // Get fiscal year info for the period
-            var fyInfo = await GetFiscalYearInfoAsync(request.Period, accountingBook);
+            // Get fiscal year info for the period (needs int for lookup)
+            var accountingBookInt = request.Book ?? DefaultAccountingBook;
+            var fyInfo = await GetFiscalYearInfoAsync(request.Period, accountingBookInt);
             if (fyInfo == null)
                 return BadRequest(new { error = $"Could not find fiscal year for period {request.Period}" });
 

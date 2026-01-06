@@ -260,7 +260,9 @@ public class BalanceService : IBalanceService
         }
         var segmentWhere = segmentFilters.Any() ? string.Join(" AND ", segmentFilters) : "1=1";
 
-        var accountingBook = request.Book ?? DefaultAccountingBook;
+        // CRITICAL FIX: Convert accounting book to string (like TYPEBALANCE does)
+        // This ensures the SQL query uses the correct type for tal.accountingbook comparison
+        var accountingBook = (request.Book ?? DefaultAccountingBook).ToString();
 
         // ========================================================================
         // CACHE CHECK: For single non-wildcard accounts, check if we have a cached balance
@@ -822,7 +824,8 @@ public class BalanceService : IBalanceService
         var classId = await _lookupService.ResolveDimensionIdAsync("class", request.Class);
         var locationId = await _lookupService.ResolveDimensionIdAsync("location", request.Location);
 
-        var accountingBook = request.Book ?? DefaultAccountingBook;
+        // CRITICAL FIX: Convert accounting book to string (like TYPEBALANCE does)
+        var accountingBook = (request.Book ?? DefaultAccountingBook).ToString();
 
         // Build segment filters for subsidiary filtering
         // CRITICAL: When using BUILTIN.CONSOLIDATE with a currency consolidation root,
@@ -1307,7 +1310,8 @@ public class BalanceService : IBalanceService
             segmentFilters.Add($"tl.location = {locationId}");
         var segmentWhere = string.Join(" AND ", segmentFilters);
 
-        var accountingBook = request.Book ?? DefaultAccountingBook;
+        // CRITICAL FIX: Convert accounting book to string (like TYPEBALANCE does)
+        var accountingBook = (request.Book ?? DefaultAccountingBook).ToString();
         int queryCount = 0;
 
         // ===========================================================================
@@ -1910,7 +1914,8 @@ public class BalanceService : IBalanceService
 
         // Map user-friendly type names to NetSuite account types
         var typeFilter = MapAccountType(request.AccountType);
-        var accountingBook = request.Book ?? DefaultAccountingBook;
+        // CRITICAL FIX: Convert accounting book to string (like TYPEBALANCE does)
+        var accountingBook = (request.Book ?? DefaultAccountingBook).ToString();
 
         _logger.LogInformation("TypeBalance: type={Type}, isBalanceSheet={IsBS}, typeFilter={Filter}", 
             request.AccountType, isBalanceSheet, typeFilter);
@@ -2148,7 +2153,8 @@ public class BalanceService : IBalanceService
         var typeWhere = useSpecialAccountType
             ? $"a.sspecacct = '{NetSuiteService.EscapeSql(request.AccountType)}'"
             : $"a.accttype IN ({typeFilter})";
-        var accountingBook = request.Book ?? DefaultAccountingBook;
+        // CRITICAL FIX: Convert accounting book to string (like TYPEBALANCE does)
+        var accountingBook = (request.Book ?? DefaultAccountingBook).ToString();
 
         var isBalanceSheet = AccountType.BsTypes.Any(bt =>
             request.AccountType.Equals(bt, StringComparison.OrdinalIgnoreCase)) ||
@@ -2377,7 +2383,8 @@ public class BalanceService : IBalanceService
         var segmentWhere = segmentFilters.Any() ? string.Join(" AND ", segmentFilters) : "1=1";
         var whereSegment = needsTransactionLineJoin ? $"AND {segmentWhere}" : "";
         
-        var accountingBook = request.Book ?? DefaultAccountingBook;
+        // CRITICAL FIX: Convert accounting book to string (like TYPEBALANCE does)
+        var accountingBook = (request.Book ?? DefaultAccountingBook).ToString();
         var anchorDateStr = anchorDate.ToString("yyyy-MM-dd");
         
         // CRITICAL FIX: Find the accounting period that contains the anchor date
@@ -2565,7 +2572,8 @@ public class BalanceService : IBalanceService
         var segmentWhere = segmentFilters.Any() ? string.Join(" AND ", segmentFilters) : "1=1";
         var whereSegment = needsTransactionLineJoin ? $"AND {segmentWhere}" : "";
         
-        var accountingBook = request.Book ?? DefaultAccountingBook;
+        // CRITICAL FIX: Convert accounting book to string (like TYPEBALANCE does)
+        var accountingBook = (request.Book ?? DefaultAccountingBook).ToString();
         
         // Universal sign flip (single line to avoid SQL syntax issues in NetSuite)
         var signFlip = $"CASE WHEN a.accttype IN ({AccountType.SignFlipTypesSql}) THEN -1 WHEN a.accttype IN ({AccountType.IncomeTypesSql}) THEN -1 ELSE 1 END";
