@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.102';  // FIX: Manifest status updates for preload tracking, prevents waitForPeriodCompletion timeout  // FIX: Account type JSON string parsing, filtersHash in cache lookups, exact account type search in backend
+const FUNCTIONS_VERSION = '4.0.6.103';  // FIX: Extended wait for "requested" status when taskpane is slow to start processing triggers
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -6708,11 +6708,29 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                         console.log(`⏳ Cache not found after retries - proceeding to API path for ${periodKey}`);
                     }
                     
-                    // Check final status - if still running, proceed to API path
-                    // (transient state, API will handle gracefully)
+                    // Check final status - if still running/requested, extend wait
                     const finalStatus = getPeriodStatus(filtersHash, periodKey);
-                    if (finalStatus === "running" || finalStatus === "requested") {
-                        console.log(`⏳ Period ${periodKey} still ${finalStatus} - proceeding to API path`);
+                    if (finalStatus === "requested") {
+                        // CRITICAL FIX: If status is still "requested", taskpane hasn't started yet
+                        // Continue waiting with extended timeout (taskpane may be slow to start)
+                        console.log(`⏳ Period ${periodKey} still requested - taskpane hasn't started yet, waiting longer...`);
+                        const extendedWait = 180000; // 3 minutes - give taskpane more time to start
+                        const extendedWaited = await waitForPeriodCompletion(filtersHash, periodKey, extendedWait);
+                        if (extendedWaited) {
+                            // Preload completed - re-check cache
+                            let extendedRetryCache = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
+                            if (extendedRetryCache !== null) {
+                                console.log(`✅ Post-preload cache hit (after extended wait): ${account} for ${periodKey} = ${extendedRetryCache}`);
+                                cacheStats.hits++;
+                                cache.balance.set(cacheKey, extendedRetryCache);
+                                return extendedRetryCache;
+                            }
+                        }
+                        // If still not completed after extended wait, proceed to API
+                        console.log(`⏳ Period ${periodKey} still not completed after extended wait - proceeding to API path`);
+                    } else if (finalStatus === "running") {
+                        // ✅ Still running - proceed to API path (transient state)
+                        console.log(`⏳ Period ${periodKey} still running - proceeding to API path`);
                         // Continue to API path below (don't throw)
                     }
                 }
@@ -7184,9 +7202,27 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                                 
                                 // Still miss after wait - check if now running/retrying
                                 const finalStatus = getPeriodStatus(filtersHash, periodKey);
-                                if (finalStatus === "running" || finalStatus === "requested") {
+                                if (finalStatus === "requested") {
+                                    // CRITICAL FIX: If status is still "requested", taskpane hasn't started yet
+                                    // Continue waiting with extended timeout (taskpane may be slow to start)
+                                    console.log(`⏳ Period ${periodKey} still requested - taskpane hasn't started yet, waiting longer...`);
+                                    const extendedWait = 180000; // 3 minutes - give taskpane more time to start
+                                    const extendedWaited = await waitForPeriodCompletion(filtersHash, periodKey, extendedWait);
+                                    if (extendedWaited) {
+                                        // Preload completed - re-check cache
+                                        let extendedRetryCache = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
+                                        if (extendedRetryCache !== null) {
+                                            console.log(`✅ Post-preload cache hit (after extended wait): ${account} for ${periodKey} = ${extendedRetryCache}`);
+                                            cacheStats.hits++;
+                                            cache.balance.set(cacheKey, extendedRetryCache);
+                                            return extendedRetryCache;
+                                        }
+                                    }
+                                    // If still not completed after extended wait, proceed to API
+                                    console.log(`⏳ Period ${periodKey} still not completed after extended wait - proceeding to API path`);
+                                } else if (finalStatus === "running") {
                                     // ✅ Still running - proceed to API path (transient state)
-                                    console.log(`⏳ Period ${periodKey} still ${finalStatus} - proceeding to API path`);
+                                    console.log(`⏳ Period ${periodKey} still running - proceeding to API path`);
                                     // Continue to API path below (don't throw)
                                 }
                                 // If preload failed or timed out, continue to API call below
