@@ -602,12 +602,18 @@ function normalizeFiltersForColumnBatching(filters) {
     }
     
     // Normalize: null/undefined/empty all become empty string
+    // CRITICAL FIX: Normalize empty accountingBook to "1" (Primary Book) for consistent batching
+    // This ensures formulas with accountingBook="" and accountingBook="1" are batched together
+    let accountingBook = String(filters.accountingBook || '').trim();
+    if (accountingBook === '' || accountingBook === '1') {
+        accountingBook = '1'; // Normalize to "1" for Primary Book
+    }
     const normalized = {
         subsidiary: String(filters.subsidiary || '').trim(),
         department: String(filters.department || '').trim(),
         location: String(filters.location || '').trim(),
         classId: String(filters.classId || '').trim(),
-        accountingBook: String(filters.accountingBook || '').trim()
+        accountingBook: accountingBook
     };
     
     // Sort keys alphabetically for consistent JSON stringification
@@ -3382,12 +3388,19 @@ async function batchGetAccountTypes(accounts) {
 // Helper function to create a filter key for grouping
 // Helper function to create a filter key for grouping
 // ✅ Includes accounting book for manifest scoping
+// CRITICAL FIX: Normalize empty accountingBook to "1" (Primary Book) for consistent filtersHash
+// This ensures formulas with accountingBook="" and accountingBook="1" use the same manifest/cache
 function getFilterKey(params) {
     const sub = String(params.subsidiary || '').trim();
     const dept = String(params.department || '').trim();
     const loc = String(params.location || '').trim();
     const cls = String(params.classId || '').trim();
-    const book = String(params.accountingBook || '').trim();
+    // CRITICAL: Normalize empty accountingBook to "1" (Primary Book) for consistent filtersHash
+    // Backend defaults to Book 1 if book is null/omitted, so empty string and "1" should be treated the same
+    let book = String(params.accountingBook || '').trim();
+    if (book === '' || book === '1') {
+        book = '1'; // Normalize to "1" for Primary Book
+    }
     return `${sub}|${dept}|${loc}|${cls}|${book}`;
 }
 
@@ -5024,7 +5037,12 @@ window.populateFrontendCache = function(balances, filters = {}) {
     const department = filters.department || '';
     const location = filters.location || '';
     const classId = filters.class || '';
-    const accountingBook = filters.accountingBook || '';
+    // CRITICAL FIX: Normalize empty accountingBook to "1" (Primary Book) for consistent cache keys
+    // This ensures cache populated with accountingBook="" matches formulas with accountingBook="1"
+    let accountingBook = String(filters.accountingBook || '').trim();
+    if (accountingBook === '' || accountingBook === '1') {
+        accountingBook = '1'; // Normalize to "1" for Primary Book
+    }
     
     let cacheCount = 0;
     let resolvedCount = 0;
@@ -5432,6 +5450,13 @@ function getCacheKey(type, params) {
         // FIX: Account type cache key was missing! All accounts shared '' key!
         return `type:${normalizeAccountNumber(params.account)}`;
     } else if (type === 'balance' || type === 'budget') {
+        // CRITICAL FIX: Normalize empty accountingBook to "1" (Primary Book) for consistent cache keys
+        // This ensures formulas with accountingBook="" and accountingBook="1" use the same cache
+        // Backend defaults to Book 1 if book is null/omitted, so empty string and "1" should be treated the same
+        let book = String(params.accountingBook || '').trim();
+        if (book === '' || book === '1') {
+            book = '1'; // Normalize to "1" for Primary Book
+        }
         return JSON.stringify({
             type,
             account: normalizeAccountNumber(params.account),
@@ -5441,7 +5466,7 @@ function getCacheKey(type, params) {
             department: params.department || '',
             location: params.location || '',
             class: params.classId || '',
-            book: params.accountingBook || ''
+            book: book
         });
     }
     return '';
@@ -6245,8 +6270,14 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         classId = String(classId || '').trim();
         
         // Multi-Book Accounting support - default to empty (uses Primary Book on backend)
+        // CRITICAL FIX: Normalize empty accountingBook to "1" (Primary Book) for consistent cache keys and filtersHash
+        // This ensures formulas with accountingBook="" and accountingBook="1" use the same cache/manifest
+        // Note: API calls will still omit book parameter for "1" (handled in API call logic)
         const rawAccountingBook = accountingBook;
         accountingBook = String(accountingBook || '').trim();
+        if (accountingBook === '' || accountingBook === '1') {
+            accountingBook = '1'; // Normalize to "1" for Primary Book
+        }
         
         // CRITICAL DEBUG: Log accounting book to verify it's being read correctly
         console.log(`🔍 BALANCE DEBUG: account=${account}, accountingBook="${accountingBook}" (raw: ${rawAccountingBook}, type: ${typeof rawAccountingBook})`);
@@ -8448,21 +8479,20 @@ async function processBatchQueue() {
                     location: location || '',
                     class: classId || ''
                 });
-                // Only include book if it's not empty (convert string to number)
+                // Only include book if it's not empty and not "1" (convert string to number)
                 // Backend defaults to Book 1 if book is null/omitted, so we only need to send non-primary books
-                if (accountingBook && accountingBook !== '') {
+                // CRITICAL: accountingBook is now normalized to "1" for empty values, so check for "1" explicitly
+                if (accountingBook && accountingBook !== '' && accountingBook !== '1') {
                     const bookNum = parseInt(String(accountingBook));
                     if (!isNaN(bookNum) && bookNum > 1) {
                         // Only send if it's not Primary Book (1) - backend defaults to 1
                         apiParams.append('book', bookNum.toString());
                         console.log(`   🔍 DEBUG: Including book=${bookNum} in API params (converted from "${accountingBook}")`);
-                    } else if (bookNum === 1) {
-                        console.log(`   🔍 DEBUG: Skipping book=1 (Primary Book - backend default)`);
                     } else {
                         console.log(`   🔍 DEBUG: Invalid book value "${accountingBook}" - not including in API params`);
                     }
                 } else {
-                    console.log(`   🔍 DEBUG: No accountingBook - backend will default to Book 1`);
+                    console.log(`   🔍 DEBUG: No accountingBook or Primary Book (1) - backend will default to Book 1`);
                 }
                 
                 // Add currency parameter for BALANCECURRENCY
