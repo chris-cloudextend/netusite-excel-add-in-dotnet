@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.96';  // FIX: Cache status check timing, transitionData scope error
+const FUNCTIONS_VERSION = '4.0.6.97';  // FIX: Error handling in fetchOpeningBalance and fetchPeriodActivityBatch
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -1771,7 +1771,15 @@ async function fetchOpeningBalance(account, anchorDate, filters, retryCount = 0)
     if (filters.department) params.append('department', filters.department);
     if (filters.location) params.append('location', filters.location);
     if (filters.classId) params.append('class', filters.classId);
-    if (filters.accountingBook) params.append('accountingbook', filters.accountingBook);
+    // CRITICAL FIX: Backend expects "book" not "accountingbook", and it should be a number or omitted
+    if (filters.accountingBook && filters.accountingBook !== '') {
+        const bookNum = parseInt(String(filters.accountingBook));
+        if (!isNaN(bookNum) && bookNum > 1) {
+            // Only send if it's not Primary Book (1) - backend defaults to 1
+            params.append('book', bookNum.toString());
+        }
+        // For Book 1, we omit it (backend defaults to 1)
+    }
     
     const url = `${SERVER_URL}/balance?${params.toString()}`;
     
@@ -1797,6 +1805,13 @@ async function fetchOpeningBalance(account, anchorDate, filters, retryCount = 0)
         const contentType = response.headers.get('content-type') || '';
         if (contentType.includes('application/json')) {
             const data = await response.json();
+            
+            // CRITICAL: Check for error code before using balance
+            if (data.error) {
+                console.error(`❌ Opening balance error: ${data.error}`);
+                throw new Error(data.error);
+            }
+            
             const value = data.balance ?? 0;
             console.log(`📊 Opening balance result: ${value}`);
             return typeof value === 'number' ? value : parseFloat(value) || 0;
@@ -1837,7 +1852,15 @@ async function fetchPeriodActivityBatch(account, fromPeriod, toPeriod, filters, 
     if (filters.department) params.append('department', filters.department);
     if (filters.location) params.append('location', filters.location);
     if (filters.classId) params.append('class', filters.classId);
-    if (filters.accountingBook) params.append('accountingbook', filters.accountingBook);
+    // CRITICAL FIX: Backend expects "book" not "accountingbook", and it should be a number or omitted
+    if (filters.accountingBook && filters.accountingBook !== '') {
+        const bookNum = parseInt(String(filters.accountingBook));
+        if (!isNaN(bookNum) && bookNum > 1) {
+            // Only send if it's not Primary Book (1) - backend defaults to 1
+            params.append('book', bookNum.toString());
+        }
+        // For Book 1, we omit it (backend defaults to 1)
+    }
     
     const url = `${SERVER_URL}/balance?${params.toString()}`;
     
@@ -1863,6 +1886,12 @@ async function fetchPeriodActivityBatch(account, fromPeriod, toPeriod, filters, 
         const contentType = response.headers.get('content-type') || '';
         if (contentType.includes('application/json')) {
             const data = await response.json();
+            
+            // CRITICAL: Check for error code before using period_activity
+            if (data.error) {
+                console.error(`❌ Period activity error: ${data.error}`);
+                throw new Error(data.error);
+            }
             
             // Backend returns BalanceResponse with period_activity property for single-account queries
             // period_activity is {period: activity} dictionary
@@ -8409,6 +8438,7 @@ async function processBatchQueue() {
             // ================================================================
             try {
                 const isWildcard = account.includes('*');
+                // CRITICAL FIX: Backend expects "book" not "accountingbook", and it should be a number or omitted
                 const apiParams = new URLSearchParams({
                     account: account,
                     from_period: '',  // Empty = cumulative from inception
@@ -8416,9 +8446,24 @@ async function processBatchQueue() {
                     subsidiary: subsidiary || '',
                     department: department || '',
                     location: location || '',
-                    class: classId || '',
-                    accountingbook: accountingBook || ''
+                    class: classId || ''
                 });
+                // Only include book if it's not empty (convert string to number)
+                // Backend defaults to Book 1 if book is null/omitted, so we only need to send non-primary books
+                if (accountingBook && accountingBook !== '') {
+                    const bookNum = parseInt(String(accountingBook));
+                    if (!isNaN(bookNum) && bookNum > 1) {
+                        // Only send if it's not Primary Book (1) - backend defaults to 1
+                        apiParams.append('book', bookNum.toString());
+                        console.log(`   🔍 DEBUG: Including book=${bookNum} in API params (converted from "${accountingBook}")`);
+                    } else if (bookNum === 1) {
+                        console.log(`   🔍 DEBUG: Skipping book=1 (Primary Book - backend default)`);
+                    } else {
+                        console.log(`   🔍 DEBUG: Invalid book value "${accountingBook}" - not including in API params`);
+                    }
+                } else {
+                    console.log(`   🔍 DEBUG: No accountingBook - backend will default to Book 1`);
+                }
                 
                 // Add currency parameter for BALANCECURRENCY
                 if (isBalanceCurrency) {
@@ -8439,9 +8484,10 @@ async function processBatchQueue() {
                 const waitingCount = requests.length > 1 ? ` (${requests.length} formulas waiting)` : '';
                 const currencyInfo = isBalanceCurrency && currency ? ` (currency: ${currency})` : '';
                 // CRITICAL DEBUG: Log accounting book parameter to verify it's being sent
-                const bookInfo = accountingBook ? ` [BOOK: ${accountingBook}]` : ' [BOOK: empty/primary]';
+                const bookParam = apiParams.get('book');
+                const bookInfo = bookParam ? ` [BOOK: ${bookParam}]` : ' [BOOK: empty/primary]';
                 console.log(`   📤 Cumulative API: ${account} through ${toPeriod}${isWildcard ? ' (with breakdown)' : ''}${currencyInfo}${bookInfo}${waitingCount}`);
-                console.log(`   🔍 DEBUG: API params - accountingbook="${accountingBook || ''}" (type: ${typeof accountingBook})`);
+                console.log(`   🔍 DEBUG: API params - book=${bookParam || 'undefined'} (was accountingBook="${accountingBook || ''}", type: ${typeof accountingBook})`);
                 
                 // Rate limit: wait before making request if we've already made calls
                 // Prevents NetSuite 429 CONCURRENCY_LIMIT_EXCEEDED errors

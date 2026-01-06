@@ -868,9 +868,10 @@ public class BalanceController : ControllerBase
         try
         {
             var year = request.Year;
-            var accountingBook = request.Book ?? DefaultAccountingBook;
+            // CRITICAL FIX: Convert accounting book to string (consistent with other queries)
+            var accountingBook = (request.Book ?? DefaultAccountingBook).ToString();
 
-            _logger.LogInformation("📊 YEAR BALANCE: {Count} accounts for FY {Year}", request.Accounts.Count, year);
+            _logger.LogInformation("📊 YEAR BALANCE: {Count} accounts for FY {Year}, Book={Book}", request.Accounts.Count, year, accountingBook);
 
             // Resolve subsidiary
             var subsidiaryId = await _lookupService.ResolveSubsidiaryIdAsync(request.Subsidiary);
