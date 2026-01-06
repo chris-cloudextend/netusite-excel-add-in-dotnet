@@ -1317,24 +1317,43 @@ def search_accounts():
             pattern_upper = pattern_without_wildcards.upper()
             matched_types = []
             
-            # For exact category matches (BALANCE, INCOME, etc.), use exact matching
-            # This prevents matching account numbers or names that contain these words
-            if pattern_upper in type_mappings:
-                # Exact match for category keywords
+            # CRITICAL FIX: First check if pattern is an exact NetSuite account type
+            # Collect all valid NetSuite account types from type_mappings
+            all_valid_types = set()
+            for types_list in type_mappings.values():
+                all_valid_types.update(types_list)
+            
+            # Check if pattern (case-insensitive) matches an exact account type
+            pattern_normalized = pattern_without_wildcards.strip()
+            exact_type_match = None
+            for valid_type in all_valid_types:
+                if valid_type.upper() == pattern_upper:
+                    exact_type_match = valid_type
+                    break
+            
+            if exact_type_match:
+                # Pattern is an exact account type match (e.g., "Equity", "Bank", "FixedAsset")
+                # Use exact match - this ensures we ONLY get accounts of this specific type
+                where_conditions.append(f"accttype = '{escape_sql(exact_type_match)}'")
+                matched_types = [exact_type_match]
+            elif pattern_upper in type_mappings:
+                # Exact match for category keywords (BALANCE, INCOME, etc.)
                 matched_types = type_mappings[pattern_upper]
+                type_list = "','".join(matched_types)
+                where_conditions.append(f"accttype IN ('{type_list}')")
             else:
                 # Check for partial matches in category names
                 for category, types in type_mappings.items():
                     if category.startswith(pattern_upper) or pattern_upper in category:
                         matched_types.extend(types)
-            
-            if matched_types:
-                # Use exact match for mapped types - this ensures we ONLY get these account types
-                type_list = "','".join(matched_types)
-                where_conditions.append(f"accttype IN ('{type_list}')")
-            else:
-                # Use LIKE for direct type matching (only when no category match)
-                where_conditions.append(f"UPPER(accttype) LIKE '{sql_pattern}'")
+                
+                if matched_types:
+                    # Use exact match for mapped types - this ensures we ONLY get these account types
+                    type_list = "','".join(matched_types)
+                    where_conditions.append(f"accttype IN ('{type_list}')")
+                else:
+                    # Use LIKE for direct type matching (only when no category match)
+                    where_conditions.append(f"UPPER(accttype) LIKE '{sql_pattern}'")
             
             print(f"DEBUG - Type search: pattern='{pattern}', sql_pattern='{sql_pattern}', mapped_types={matched_types}", file=sys.stderr)
             

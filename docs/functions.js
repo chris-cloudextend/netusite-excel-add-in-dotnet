@@ -6419,20 +6419,35 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         // ================================================================
         // CRITICAL FIX: Use isBalanceSheetType() instead of checking for 'Balance Sheet' string
         // getAccountType() returns NetSuite account types like "Bank", "AcctRec", etc., not "Balance Sheet"
-        // Extract type string if accountType is an object
-        // The cache may store either strings ("Bank") or objects ({ type: "Bank", ... })
+        // The cache may store:
+        // 1. Plain string: "Bank"
+        // 2. JSON string: '{"account":"10010","type":"Bank","display_name":"Bank"}'
+        // 3. Object: { account: "10010", type: "Bank", display_name: "Bank" }
         // We need to extract the actual type string to check against isBalanceSheetType()
         let acctTypeStr = '';
-        if (typeof accountType === 'string') {
-            acctTypeStr = accountType.trim();
+        
+        if (!accountType) {
+            acctTypeStr = '';
+        } else if (typeof accountType === 'string') {
+            // Check if it's a JSON string first
+            const trimmed = accountType.trim();
+            if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+                try {
+                    const parsed = JSON.parse(trimmed);
+                    // Extract type from parsed object
+                    acctTypeStr = (parsed.type || parsed.accountType || '').toString().trim();
+                } catch (e) {
+                    // Not valid JSON, treat as plain string
+                    acctTypeStr = trimmed;
+                }
+            } else {
+                // Plain string type
+                acctTypeStr = trimmed;
+            }
         } else if (accountType && typeof accountType === 'object') {
             // Handle object format: { account: "10010", type: "Bank", display_name: "Bank" }
-            // Extract the 'type' property which contains the NetSuite account type string
             acctTypeStr = (accountType.type || accountType.accountType || '').toString().trim();
-            if (!acctTypeStr && accountType.toString && accountType.toString() !== '[object Object]') {
-                acctTypeStr = accountType.toString().trim();
-            }
-        } else if (accountType) {
+        } else {
             acctTypeStr = String(accountType).trim();
         }
         
@@ -6514,13 +6529,28 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
             // Not Balance Sheet or batching disabled
             // Extract type string consistently with the check above
             let acctTypeStr = '';
-            if (typeof accountType === 'string') {
-                acctTypeStr = accountType;
+            
+            if (!accountType) {
+                acctTypeStr = '';
+            } else if (typeof accountType === 'string') {
+                // Check if it's a JSON string first
+                const trimmed = accountType.trim();
+                if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+                    try {
+                        const parsed = JSON.parse(trimmed);
+                        acctTypeStr = (parsed.type || parsed.accountType || '').toString().trim();
+                    } catch (e) {
+                        acctTypeStr = trimmed;
+                    }
+                } else {
+                    acctTypeStr = trimmed;
+                }
             } else if (accountType && typeof accountType === 'object') {
-                acctTypeStr = accountType.type || accountType.accountType || String(accountType);
+                acctTypeStr = (accountType.type || accountType.accountType || '').toString().trim();
             } else {
-                acctTypeStr = String(accountType || '');
+                acctTypeStr = String(accountType).trim();
             }
+            
             if (!isBalanceSheetType(acctTypeStr)) {
                 console.log(`⏸️ [BATCH DEBUG] Account type is "${acctTypeStr}" (from:`, accountType, '), not a Balance Sheet type - skipping column-based batching');
             }
