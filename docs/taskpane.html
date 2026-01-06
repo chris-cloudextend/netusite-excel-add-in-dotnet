@@ -6093,7 +6093,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.103"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.104"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -9603,6 +9603,22 @@ For licensing inquiries, contact: legal@celigo.com
                                 chunkSize = Math.max(1, Math.floor(chunkSize / 2)); // Reduce chunk size by half
                                 remainingPeriods = stillMissing;
                                 console.log(`🔄 Retry ${retryCount}/${maxRetries}: Retrying ${stillMissing.length} periods with chunk size ${chunkSize}`);
+                            }
+                            
+                            // CRITICAL FIX: Update manifest status to "completed" for all successfully cached periods
+                            // This unblocks waiting formulas so they can check the cache and return values
+                            if (typeof window.updatePeriodStatus === 'function') {
+                                for (const period of allCompleted) {
+                                    window.updatePeriodStatus(preloadFiltersHash, period, { status: 'completed' });
+                                    console.log(`📋 Manifest updated: ${period} status = completed (filtersHash: ${preloadFiltersHash})`);
+                                }
+                                // Also mark failed periods
+                                for (const failedPeriod of allFailed) {
+                                    window.updatePeriodStatus(preloadFiltersHash, failedPeriod.period, { status: 'failed', error: failedPeriod.error });
+                                    console.log(`📋 Manifest updated: ${failedPeriod.period} status = failed (filtersHash: ${preloadFiltersHash})`);
+                                }
+                            } else {
+                                console.warn('⚠️ updatePeriodStatus function not available - manifest status not updated');
                             }
                             
                             // Final status

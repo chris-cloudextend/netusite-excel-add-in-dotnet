@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.103';  // FIX: Extended wait for "requested" status when taskpane is slow to start processing triggers
+const FUNCTIONS_VERSION = '4.0.6.104';  // FIX: Taskpane updates manifest status to "completed" after preload finishes, unblocking waiting formulas
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
