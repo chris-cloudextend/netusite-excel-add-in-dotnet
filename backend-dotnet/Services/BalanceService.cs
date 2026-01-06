@@ -2890,7 +2890,7 @@ public class BalanceService : IBalanceService
     /// This queries ALL P&L accounts × ALL 12 months in ONE query (like quick start).
     /// </summary>
     private async Task<Dictionary<string, Dictionary<string, decimal>>?> GetFullYearBalancesAsync(
-        int year, List<string> requestedAccounts, string targetSub, int accountingBook, string segmentWhere)
+        int year, List<string> requestedAccounts, string targetSub, string accountingBook, string segmentWhere)
     {
         try
         {
@@ -3034,7 +3034,7 @@ public class BalanceService : IBalanceService
     /// Build a period range query for P&L accounts.
     /// </summary>
     private string BuildPeriodRangeQuery(string plAccountFilter, string fromStartDate, string toEndDate, 
-        string targetSub, string signFlip, int accountingBook, string segmentWhere)
+        string targetSub, string signFlip, string accountingBook, string segmentWhere)
     {
         return $@"
             SELECT 
@@ -3073,7 +3073,7 @@ public class BalanceService : IBalanceService
     /// CRITICAL: Uses t.postingperiod IN (periodId1, periodId2, ...) to ensure identical period filtering.
     /// </summary>
     private string BuildPeriodRangeQueryByIds(string plAccountFilter, string periodIdList, 
-        string targetSub, string signFlip, int accountingBook, string segmentWhere)
+        string targetSub, string signFlip, string accountingBook, string segmentWhere)
     {
         return $@"
             SELECT 
