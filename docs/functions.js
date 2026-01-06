@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.93';  // FIX: Add cache persistence, show modal for Primary Book when changing to it
+const FUNCTIONS_VERSION = '4.0.6.94';  // FIX: Cache persistence working, fix first-load modal, fix book 2->1 change, fix transitionKey scope
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================

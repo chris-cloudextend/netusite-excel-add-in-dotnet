@@ -87,6 +87,11 @@ public class LookupService : ILookupService
                 var totalMappings = _bookSubsidiaryCache.Values.Sum(list => list.Count);
                 _logger.LogInformation("✅ Loaded book-subsidiary cache from disk: {BookCount} books, {MappingCount} mappings", 
                     totalBooks, totalMappings);
+                _logger.LogInformation("✅ Cache initialized flag set to TRUE after loading from disk");
+            }
+            else
+            {
+                _logger.LogWarning("⚠️ Cache file exists but contains no data or is empty");
             }
         }
         catch (Exception ex)
@@ -104,25 +109,63 @@ public class LookupService : ILookupService
     /// </summary>
     private async Task SaveCacheToDiskAsync()
     {
+        _logger.LogInformation("💾 SaveCacheToDiskAsync() called - entering method");
         await _cacheLock.WaitAsync();
+        _logger.LogInformation("💾 Acquired cache lock");
         try
         {
             var directory = Path.GetDirectoryName(CacheFilePath);
-            if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
-            {
-                Directory.CreateDirectory(directory);
-            }
+            _logger.LogInformation("💾 Attempting to save cache to: {FilePath}", CacheFilePath);
+            _logger.LogInformation("   Directory: {Directory}", directory);
             
-            var json = JsonSerializer.Serialize(_bookSubsidiaryCache, new JsonSerializerOptions 
-            { 
-                WriteIndented = true 
-            });
-            await File.WriteAllTextAsync(CacheFilePath, json);
-            _logger.LogInformation("💾 Saved book-subsidiary cache to disk: {FilePath}", CacheFilePath);
+            if (!string.IsNullOrEmpty(directory))
+            {
+                if (!Directory.Exists(directory))
+                {
+                    _logger.LogInformation("📁 Creating cache directory: {Directory}", directory);
+                    Directory.CreateDirectory(directory);
+                    _logger.LogInformation("   ✅ Directory created");
+                }
+                else
+                {
+                    _logger.LogInformation("   ✅ Directory already exists");
+                }
+                
+                var json = JsonSerializer.Serialize(_bookSubsidiaryCache, new JsonSerializerOptions 
+                { 
+                    WriteIndented = true 
+                });
+                _logger.LogInformation("   📝 Serialized cache: {Size} characters", json.Length);
+                
+                await File.WriteAllTextAsync(CacheFilePath, json);
+                _logger.LogInformation("💾 Saved book-subsidiary cache to disk: {FilePath}", CacheFilePath);
+                
+                // Verify file was actually written
+                if (File.Exists(CacheFilePath))
+                {
+                    var fileInfo = new FileInfo(CacheFilePath);
+                    _logger.LogInformation("✅ Cache file verified: {Size} bytes", fileInfo.Length);
+                }
+                else
+                {
+                    _logger.LogError("❌ Cache file was not created at: {FilePath}", CacheFilePath);
+                }
+            }
+            else
+            {
+                _logger.LogError("❌ Cannot save cache: directory path is null or empty");
+            }
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to save cache to disk: {Error}", ex.Message);
+            _logger.LogError(ex, "❌ Failed to save cache to disk: {Error}", ex.Message);
+            _logger.LogError("   Cache file path: {FilePath}", CacheFilePath);
+            _logger.LogError("   Directory: {Directory}", Path.GetDirectoryName(CacheFilePath));
+            _logger.LogError("   Exception type: {Type}", ex.GetType().Name);
+            if (ex.InnerException != null)
+            {
+                _logger.LogError("   Inner exception: {InnerError}", ex.InnerException.Message);
+            }
         }
         finally
         {
@@ -236,9 +279,12 @@ public class LookupService : ILookupService
             _logger.LogInformation("📊 Book-Subsidiary Health: {HealthSummary}", string.Join(" | ", healthLog));
             
             _cacheInitialized = true;
+            _logger.LogInformation("✅ Cache initialization complete - _cacheInitialized = true");
             
             // Save cache to disk to survive server restarts
-            await SaveCacheToDiskAsync();
+            // Do this AFTER releasing the lock to avoid deadlock
+            // We can safely save outside the lock since we've already set _cacheInitialized
+            _logger.LogInformation("💾 About to save cache to disk...");
         }
         catch (Exception ex)
         {
@@ -248,6 +294,18 @@ public class LookupService : ILookupService
         finally
         {
             _cacheLock.Release();
+        }
+        
+        // Save cache outside the lock to avoid deadlock
+        try
+        {
+            await SaveCacheToDiskAsync();
+            _logger.LogInformation("✅ SaveCacheToDiskAsync completed successfully");
+        }
+        catch (Exception saveEx)
+        {
+            _logger.LogError(saveEx, "❌ Exception in SaveCacheToDiskAsync: {Error}", saveEx.Message);
+            // Don't throw - cache is already initialized, saving is just a bonus
         }
     }
 
@@ -259,6 +317,31 @@ public class LookupService : ILookupService
         await _cacheLock.WaitAsync();
         try
         {
+            // If cache is not initialized but file exists, try loading it
+            if (!_cacheInitialized && File.Exists(CacheFilePath))
+            {
+                _logger.LogInformation("🔍 Cache not initialized but file exists - attempting to load...");
+                try
+                {
+                    var json = await File.ReadAllTextAsync(CacheFilePath);
+                    var cacheData = JsonSerializer.Deserialize<Dictionary<string, List<string>>>(json);
+                    
+                    if (cacheData != null && cacheData.Count > 0)
+                    {
+                        foreach (var kvp in cacheData)
+                        {
+                            _bookSubsidiaryCache[kvp.Key] = kvp.Value;
+                        }
+                        _cacheInitialized = true;
+                        _logger.LogInformation("✅ Loaded cache from disk in IsBookSubsidiaryCacheReadyAsync");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to load cache from disk in status check");
+                }
+            }
+            
             return _cacheInitialized;
         }
         finally
