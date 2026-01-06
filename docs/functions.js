@@ -4124,18 +4124,27 @@ async function runBuildModeBatch() {
                     for (const year of yearsArray) {
                         const yearStartTime = Date.now();
                         
+                        // CRITICAL FIX: Backend expects "book" not "accountingbook", and it should be a number or omitted
+                        const payload = {
+                            year: parseInt(year),
+                            subsidiary: filters.subsidiary,
+                            department: filters.department,
+                            location: filters.location,
+                            class: filters.classId,
+                            skip_bs: true
+                        };
+                        // Only include book if it's not empty (convert string to number)
+                        if (filters.accountingBook && filters.accountingBook !== '' && filters.accountingBook !== '1') {
+                            const bookNum = parseInt(filters.accountingBook);
+                            if (!isNaN(bookNum)) {
+                                payload.book = bookNum;
+                            }
+                        }
+                        
                         const response = await fetch(`${SERVER_URL}/batch/full_year_refresh`, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                year: parseInt(year),
-                                subsidiary: filters.subsidiary,
-                                department: filters.department,
-                                location: filters.location,
-                                class: filters.classId,
-                                skip_bs: true,
-                                accountingbook: filters.accountingBook || ''  // Multi-Book Accounting support
-                            })
+                            body: JSON.stringify(payload)
                         });
                         
                         if (response.ok) {
@@ -7960,19 +7969,34 @@ async function processFullRefresh() {
     
     try {
         // Call optimized backend endpoint
-        // CRITICAL FIX: Backend expects "book" not "accountingBook"
+        // CRITICAL FIX: Backend expects "book" not "accountingBook", and it should be a number or omitted
         const payload = {
             year: year,
             subsidiary: filters.subsidiary || '',
             department: filters.department || '',
             location: filters.location || '',
-            class: filters.class || '',
-            book: filters.accountingBook || ''  // Backend expects "book" property name
+            class: filters.class || ''
         };
+        // Only include book if it's not empty (convert string to number)
+        // Backend defaults to Book 1 if book is null/omitted, so we only need to send non-primary books
+        if (filters.accountingBook && filters.accountingBook !== '') {
+            const bookNum = parseInt(filters.accountingBook);
+            if (!isNaN(bookNum) && bookNum > 1) {
+                // Only send if it's not Primary Book (1) - backend defaults to 1
+                payload.book = bookNum;
+                console.log(`   🔍 DEBUG: Including book=${bookNum} in payload (converted from "${filters.accountingBook}")`);
+            } else if (bookNum === 1) {
+                console.log(`   🔍 DEBUG: Skipping book=1 (Primary Book - backend default)`);
+            } else {
+                console.log(`   🔍 DEBUG: Invalid book value "${filters.accountingBook}" - not including in payload`);
+            }
+        } else {
+            console.log(`   🔍 DEBUG: No accountingBook filter - backend will default to Book 1`);
+        }
         
         // CRITICAL DEBUG: Log payload to verify accounting book is included
         console.log('📤 Fetching ALL accounts for entire year...');
-        console.log(`   🔍 DEBUG: Payload includes book="${payload.book || ''}" (was accountingBook="${filters.accountingBook || ''}")`);
+        console.log(`   🔍 DEBUG: Payload includes book=${payload.book !== undefined ? payload.book : 'undefined'} (was accountingBook="${filters.accountingBook || ''}")`);
         const start = Date.now();
         
         const response = await fetch(`${SERVER_URL}/batch/full_year_refresh`, {
@@ -8974,18 +8998,27 @@ async function processBatchQueue() {
                 const fullYearStartTime = Date.now();
                 
                 try {
+                    // CRITICAL FIX: Backend expects "book" not "accountingbook", and it should be a number or omitted
+                    const payload = {
+                        year: parseInt(yearForOptimization),
+                        subsidiary: filters.subsidiary || '',
+                        department: filters.department || '',
+                        location: filters.location || '',
+                        class: filters.class || '',
+                        skip_bs: true
+                    };
+                    // Only include book if it's not empty (convert string to number)
+                    if (filters.accountingBook && filters.accountingBook !== '' && filters.accountingBook !== '1') {
+                        const bookNum = parseInt(filters.accountingBook);
+                        if (!isNaN(bookNum)) {
+                            payload.book = bookNum;
+                        }
+                    }
+                    
                     const response = await fetch(`${SERVER_URL}/batch/full_year_refresh`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            year: parseInt(yearForOptimization),
-                            subsidiary: filters.subsidiary || '',
-                            department: filters.department || '',
-                            location: filters.location || '',
-                            class: filters.class || '',
-                            skip_bs: true,
-                            accountingbook: filters.accountingBook || ''
-                        })
+                        body: JSON.stringify(payload)
                     });
                     
                     if (!response.ok) {
