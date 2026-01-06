@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.97';  // FIX: Error handling in fetchOpeningBalance and fetchPeriodActivityBatch
+const FUNCTIONS_VERSION = '4.0.6.99';  // FIX: Account type detection for Balance Sheet batching, accounting book extraction from Excel ranges
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -6297,8 +6297,9 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         // CRITICAL FIX: Normalize empty accountingBook to "1" (Primary Book) for consistent cache keys and filtersHash
         // This ensures formulas with accountingBook="" and accountingBook="1" use the same cache/manifest
         // Note: API calls will still omit book parameter for "1" (handled in API call logic)
+        // CRITICAL: Use extractValueFromRange to properly handle Excel Range objects (e.g., $H$1)
         const rawAccountingBook = accountingBook;
-        accountingBook = String(accountingBook || '').trim();
+        accountingBook = extractValueFromRange(accountingBook, 'accountingBook');
         if (accountingBook === '' || accountingBook === '1') {
             accountingBook = '1'; // Normalize to "1" for Primary Book
         }
@@ -6410,10 +6411,12 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         // ================================================================
         // CRITICAL FIX: Use isBalanceSheetType() instead of checking for 'Balance Sheet' string
         // getAccountType() returns NetSuite account types like "Bank", "AcctRec", etc., not "Balance Sheet"
-        const isBalanceSheet = accountType && isBalanceSheetType(accountType);
+        // Extract type string if accountType is an object
+        const acctTypeStr = typeof accountType === 'string' ? accountType : (accountType?.type || accountType?.account || '');
+        const isBalanceSheet = acctTypeStr && isBalanceSheetType(acctTypeStr);
         if (USE_COLUMN_BASED_BS_BATCHING && isBalanceSheet) {
             const evaluatingRequests = Array.from(pendingEvaluation.balance.values());
-            console.log(`🔍 [BATCH DEBUG] Checking column-based batching: accountType=${accountType}, isBalanceSheet=${isBalanceSheet}, evaluatingRequests=${evaluatingRequests.length}, account=${account}, toPeriod=${toPeriod}`);
+            console.log(`🔍 [BATCH DEBUG] Checking column-based batching: accountType=${acctTypeStr}, isBalanceSheet=${isBalanceSheet}, evaluatingRequests=${evaluatingRequests.length}, account=${account}, toPeriod=${toPeriod}`);
             const columnBasedDetection = detectColumnBasedBSGrid(evaluatingRequests);
             
             if (columnBasedDetection.eligible) {
