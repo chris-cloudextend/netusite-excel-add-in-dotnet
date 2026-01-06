@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.101';  // FIX: Account type JSON string parsing, filtersHash in cache lookups, exact account type search in backend
+const FUNCTIONS_VERSION = '4.0.6.102';  // FIX: Manifest status updates for preload tracking, prevents waitForPeriodCompletion timeout  // FIX: Account type JSON string parsing, filtersHash in cache lookups, exact account type search in backend
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -2070,7 +2070,7 @@ function extractValueFromRange(value, paramName = 'parameter') {
 let autoPreloadTriggered = false;
 let autoPreloadInProgress = false;
 
-function triggerAutoPreload(firstAccount, firstPeriod) {
+function triggerAutoPreload(firstAccount, firstPeriod, filters = null) {
     // CRITICAL: Normalize period before using it (handles Range objects)
     // This ensures cache keys use canonical "Mon YYYY" format, not "[object Object]"
     const normalizedPeriod = normalizePeriodKey(firstPeriod, false);
@@ -2104,6 +2104,14 @@ function triggerAutoPreload(firstAccount, firstPeriod) {
     }
     
     autoPreloadInProgress = true;
+    
+    // CRITICAL FIX: Update manifest status to "requested" so waitForPeriodCompletion can detect it
+    // This prevents formulas from timing out while waiting for preload
+    if (filters) {
+        const filtersHash = getFilterKey(filters);
+        updatePeriodStatus(filtersHash, normalizedPeriod, { status: "requested" });
+        console.log(`📋 Manifest updated: ${normalizedPeriod} status = requested (filtersHash: ${filtersHash})`);
+    }
     
     // Set localStorage flag so waitForPreload() can detect it
     // This allows formulas to wait for auto-preload to complete
@@ -7097,7 +7105,8 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                                 // CRITICAL FIX: Trigger auto-preload for ALL BS accounts, including those with subsidiary filters
                                 // Backend preload endpoints support subsidiary filters, so this check was incorrectly blocking preload
                                 // This was causing formulas with subsidiaries to wait 120s timeout instead of triggering preload
-                                triggerAutoPreload(account, periodKey);
+                                // CRITICAL: Pass filters so manifest status can be updated correctly
+                                triggerAutoPreload(account, periodKey, { subsidiary, department, location, classId, accountingBook });
                             } else {
                                 console.log(`⏸️ BS account: Period ${periodKey} preload already in progress (status: ${preloadStatus}) - skipping trigger`);
                             }
