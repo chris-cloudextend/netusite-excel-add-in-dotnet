@@ -7960,14 +7960,19 @@ async function processFullRefresh() {
     
     try {
         // Call optimized backend endpoint
+        // CRITICAL FIX: Backend expects "book" not "accountingBook"
         const payload = {
             year: year,
-            ...filters
+            subsidiary: filters.subsidiary || '',
+            department: filters.department || '',
+            location: filters.location || '',
+            class: filters.class || '',
+            book: filters.accountingBook || ''  // Backend expects "book" property name
         };
         
         // CRITICAL DEBUG: Log payload to verify accounting book is included
         console.log('📤 Fetching ALL accounts for entire year...');
-        console.log(`   🔍 DEBUG: Payload includes accountingBook="${payload.accountingBook || ''}"`);
+        console.log(`   🔍 DEBUG: Payload includes book="${payload.book || ''}" (was accountingBook="${filters.accountingBook || ''}")`);
         const start = Date.now();
         
         const response = await fetch(`${SERVER_URL}/batch/full_year_refresh`, {
