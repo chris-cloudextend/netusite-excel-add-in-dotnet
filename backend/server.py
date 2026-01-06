@@ -1317,16 +1317,23 @@ def search_accounts():
             pattern_upper = pattern_without_wildcards.upper()
             matched_types = []
             
-            for category, types in type_mappings.items():
-                if category.startswith(pattern_upper) or pattern_upper in category:
-                    matched_types.extend(types)
+            # For exact category matches (BALANCE, INCOME, etc.), use exact matching
+            # This prevents matching account numbers or names that contain these words
+            if pattern_upper in type_mappings:
+                # Exact match for category keywords
+                matched_types = type_mappings[pattern_upper]
+            else:
+                # Check for partial matches in category names
+                for category, types in type_mappings.items():
+                    if category.startswith(pattern_upper) or pattern_upper in category:
+                        matched_types.extend(types)
             
             if matched_types:
-                # Use exact match for mapped types
+                # Use exact match for mapped types - this ensures we ONLY get these account types
                 type_list = "','".join(matched_types)
                 where_conditions.append(f"accttype IN ('{type_list}')")
             else:
-                # Use LIKE for direct type matching
+                # Use LIKE for direct type matching (only when no category match)
                 where_conditions.append(f"UPPER(accttype) LIKE '{sql_pattern}'")
             
             print(f"DEBUG - Type search: pattern='{pattern}', sql_pattern='{sql_pattern}', mapped_types={matched_types}", file=sys.stderr)

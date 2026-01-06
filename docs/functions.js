@@ -4762,9 +4762,6 @@ window.setTypeBalanceCache = function(balances, year, subsidiary = '', departmen
 // ✅ Updated to accept filtersHash parameter for manifest-aware caching
 function checkLocalStorageCache(account, period, toPeriod = null, subsidiary = '', filtersHash = null) {
     try {
-        // Skip localStorage when subsidiary filter is specified (not subsidiary-aware)
-        if (subsidiary && subsidiary !== '') return null;
-        
         // CRITICAL: Normalize lookupPeriod to ensure cache key matching works
         // This ensures periods are in consistent "Mon YYYY" format before building cache keys
         let lookupPeriod = (period && period !== '') ? period : toPeriod;
@@ -4777,25 +4774,49 @@ function checkLocalStorageCache(account, period, toPeriod = null, subsidiary = '
         
         // ================================================================
         // CHECK PRELOAD CACHE FIRST (xavi_balance_cache)
-        // Preload stores data with keys like: balance:${account}::${period}
+        // CRITICAL FIX: Preload cache now includes filters in the key format
+        // Format: balance:${account}:${filtersHash}:${period}
+        // If filtersHash is not provided, build it from subsidiary and other filters
         // ================================================================
         try {
             const preloadCache = localStorage.getItem('xavi_balance_cache');
             if (preloadCache) {
                 const preloadData = JSON.parse(preloadCache);
-                // Preload format: { "balance:10010::Jan 2025": { value: 2064705.84, timestamp: ... }, ... }
-                const preloadKey = `balance:${account}::${lookupPeriod}`;
-                if (preloadData[preloadKey] && preloadData[preloadKey].value !== undefined) {
-                    const cachedValue = preloadData[preloadKey].value;
-                    // CRITICAL: Zero balances (0) are valid cached values and must be returned
-                    // This prevents redundant API calls for accounts with no transactions
-                    // Reduced logging - only log first few hits to reduce noise
-                    if (cacheStats.hits < 3) {
-                        console.log(`✅ Preload cache hit: ${account}/${lookupPeriod} = ${cachedValue}`);
-                    }
-                    return cachedValue;
+                
+                // CRITICAL FIX: Try multiple cache key formats to handle different scenarios
+                // 1. With full filtersHash (if provided)
+                // 2. With partial filtersHash (if only subsidiary provided)
+                // 3. Without filters (backward compatibility)
+                
+                const keysToTry = [];
+                
+                // Key format 1: With full filtersHash (most specific)
+                if (filtersHash) {
+                    keysToTry.push(`balance:${account}:${filtersHash}:${lookupPeriod}`);
                 }
-                // Reduced logging - only log if debugging is needed
+                
+                // Key format 2: With partial filters (subsidiary only, if provided)
+                if (subsidiary && subsidiary !== '') {
+                    // Try with subsidiary only (assumes empty dept/loc/class, book=1)
+                    const partialHash = `${subsidiary}||||1`;
+                    keysToTry.push(`balance:${account}:${partialHash}:${lookupPeriod}`);
+                }
+                
+                // Key format 3: Without filters (backward compatibility - old format)
+                keysToTry.push(`balance:${account}::${lookupPeriod}`);
+                
+                // Try each key format in order of specificity
+                for (const preloadKey of keysToTry) {
+                    if (preloadData[preloadKey] && preloadData[preloadKey].value !== undefined) {
+                        const cachedValue = preloadData[preloadKey].value;
+                        // CRITICAL: Zero balances (0) are valid cached values and must be returned
+                        // This prevents redundant API calls for accounts with no transactions
+                        if (cacheStats.hits < 3) {
+                            console.log(`✅ Preload cache hit: ${account}/${lookupPeriod} (key: ${preloadKey}) = ${cachedValue}`);
+                        }
+                        return cachedValue;
+                    }
+                }
             }
         } catch (preloadErr) {
             console.warn(`⚠️ Preload cache lookup error:`, preloadErr);
@@ -6715,7 +6736,8 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         // because checkLocalStorageCache only looks up cumulative balances (single period)
         const filtersHash = getFilterKey({ subsidiary, department, location, classId, accountingBook });
         let localStorageValue = null;
-        // Only check localStorage for cumulative queries (point-in-time, not period activity)
+        // CRITICAL FIX: Always check localStorage for cumulative queries, even with filters
+        // The cache now includes filters in the key, so it will work correctly
         if (isCumulativeQuery) {
             localStorageValue = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
         }
@@ -11353,3 +11375,4 @@ function CLEARCACHE(itemsJson) {
         }
     }
 })();
+

@@ -1485,24 +1485,49 @@ public class BalanceController : ControllerBase
     }
     
     /// <summary>
-    /// Parse balance value handling scientific notation.
+    /// Parse balance value handling scientific notation (e.g., "2.402086483E7").
+    /// CRITICAL FIX: Use same logic as BalanceService.ParseBalance to handle scientific notation properly.
     /// </summary>
     private static decimal ParseBalance(System.Text.Json.JsonElement element)
     {
+        // Null = legitimate zero
+        if (element.ValueKind == JsonValueKind.Null)
+            return 0;
+        
+        // Number = direct conversion
         if (element.ValueKind == JsonValueKind.Number)
             return element.GetDecimal();
         
         if (element.ValueKind == JsonValueKind.String)
         {
-            var str = element.GetString();
-            if (!string.IsNullOrEmpty(str) && decimal.TryParse(str, 
-                System.Globalization.NumberStyles.Float, 
-                System.Globalization.CultureInfo.InvariantCulture, out var result))
+            var strVal = element.GetString();
+            
+            // Empty string = legitimate zero
+            if (string.IsNullOrEmpty(strVal))
+                return 0;
+            
+            // CRITICAL FIX: Handle scientific notation (e.g., "2.402086483E7" or "3.32773677E8")
+            // decimal.TryParse with NumberStyles.Float doesn't work for scientific notation
+            // Must use double.TryParse first, then convert to decimal
+            if (double.TryParse(strVal, System.Globalization.NumberStyles.Float, 
+                                System.Globalization.CultureInfo.InvariantCulture, out var dblVal))
             {
-                return result;
+                return (decimal)dblVal;
             }
+            
+            // Fallback to decimal parsing (for non-scientific notation strings)
+            if (decimal.TryParse(strVal, System.Globalization.NumberStyles.Float, 
+                                System.Globalization.CultureInfo.InvariantCulture, out var decVal))
+            {
+                return decVal;
+            }
+            
+            // String cannot be parsed - this is an error, not a zero
+            // Log warning but return 0 to prevent breaking the response
+            System.Diagnostics.Debug.WriteLine($"⚠️ Failed to parse balance from string value '{strVal}'. This may indicate a data format issue.");
         }
         
+        // Unexpected ValueKind (Object, Array, etc.) - return 0 but log warning
         return 0;
     }
     

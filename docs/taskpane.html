@@ -5169,7 +5169,7 @@ For licensing inquiries, contact: legal@celigo.com
                     <!-- GL Accounts Section -->
                     <div style="margin-bottom: 20px; padding-bottom: 16px; border-bottom: 1px dashed rgba(0,0,0,0.1);">
                         <p style="color: var(--bottlenose); font-size: 12px; margin-bottom: 12px; line-height: 1.5;">
-                            Search by account number or type. Results insert at your cursor position.
+                            Search by account number or type. Enter <strong>"Balance"</strong> for all Balance Sheet accounts (Assets, Liabilities, Equity) or <strong>"Income"</strong> for all Income Statement accounts (Revenue, Expenses, COGS). Results insert at your cursor position.
                         </p>
                         
                         <input 
@@ -5179,34 +5179,6 @@ For licensing inquiries, contact: legal@celigo.com
                             placeholder="e.g., Balance, Income, 4*, Bank"
                             onkeypress="if(event.key === 'Enter') searchAccounts()"
                         />
-                        
-                        <!-- Quick Action Buttons for Common Searches -->
-                        <div style="margin-top: 10px; margin-bottom: 12px; padding: 12px; background: linear-gradient(135deg, rgba(59,130,246,0.05), rgba(16,185,129,0.05)); border-radius: 10px; border: 1px solid rgba(59,130,246,0.15);">
-                            <p style="color: var(--deep-sea); font-size: 11px; font-weight: 600; margin: 0 0 10px 0; display: flex; align-items: center; gap: 6px;">
-                                <span>⚡</span> Quick Add All Accounts
-                            </p>
-                            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-                                <button 
-                                    onclick="document.getElementById('accountSearchInput').value='Balance'; searchAccounts();" 
-                                    style="flex: 1; min-width: 140px; padding: 10px 14px; background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); color: white; border: none; border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer; box-shadow: 0 2px 4px rgba(59,130,246,0.2); transition: all 0.2s;"
-                                    onmouseover="this.style.transform='translateY(-1px)'; this.style.boxShadow='0 4px 8px rgba(59,130,246,0.3)';"
-                                    onmouseout="this.style.transform=''; this.style.boxShadow='0 2px 4px rgba(59,130,246,0.2)';"
-                                    title="Add all Balance Sheet accounts: Assets (Bank, AR, Inventory, Fixed Assets), Liabilities (AP, Credit Cards, Loans), and Equity accounts">
-                                    📊 All Balance Sheet
-                                </button>
-                                <button 
-                                    onclick="document.getElementById('accountSearchInput').value='Income'; searchAccounts();" 
-                                    style="flex: 1; min-width: 140px; padding: 10px 14px; background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: white; border: none; border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer; box-shadow: 0 2px 4px rgba(16,185,129,0.2); transition: all 0.2s;"
-                                    onmouseover="this.style.transform='translateY(-1px)'; this.style.boxShadow='0 4px 8px rgba(16,185,129,0.3)';"
-                                    onmouseout="this.style.transform=''; this.style.boxShadow='0 2px 4px rgba(16,185,129,0.2)';"
-                                    title="Add all Income Statement accounts: Revenue (Income, Other Income), Expenses (Operating Expenses, Other Expenses), and COGS">
-                                    💰 All Income Statement
-                                </button>
-                            </div>
-                            <p style="color: #666; font-size: 10px; margin: 8px 0 0 0; line-height: 1.4;">
-                                💡 <strong>Tip:</strong> These buttons add <strong>all active accounts</strong> of each type. Perfect for building complete financial statements!
-                            </p>
-                        </div>
                         
                         <div class="search-hints">
                             <p style="color: var(--bottlenose); font-size: 11px; margin: 0; line-height: 1.6; margin-bottom: 8px;">
@@ -9043,19 +9015,70 @@ For licensing inquiries, contact: legal@celigo.com
                                     periods.add(firstTrigger.firstPeriod);
                                 }
                                 
-                                // Scan for XAVI.BALANCE formulas to extract periods
-                                // We're looking for periods, not accounts - we'll preload ALL BS accounts
-                                const balanceRegex = /XAVI\.BALANCE(?:CHANGE)?\s*\(\s*"?([^",)]+)"?\s*,\s*"?([^",)]*)"?\s*,\s*"?([^",)]+)"?/gi;
+                                // Scan for XAVI.BALANCE formulas to extract periods and filters
+                                // We're looking for periods and filters - we'll preload ALL BS accounts with the same filters
+                                const balanceRegex = /XAVI\.BALANCE(?:CHANGE)?\s*\(/gi;
+                                
+                                // Track filters found in formulas (use most common filter combination)
+                                const filterCombinations = new Map(); // key: filtersHash, value: count
                                 
                                 for (let row = 0; row < formulas.length; row++) {
                                     for (let col = 0; col < formulas[row].length; col++) {
                                         const cell = formulas[row][col];
                                         if (typeof cell === 'string' && cell.toUpperCase().includes('XAVI.BALANCE')) {
-                                            let match;
-                                            balanceRegex.lastIndex = 0;
-                                            while ((match = balanceRegex.exec(cell)) !== null) {
-                                                const toPeriodParam = match[3].replace(/"/g, '').trim();
+                                            // Parse the full formula to extract all parameters
+                                            // Format: XAVI.BALANCE(account, fromPeriod, toPeriod, subsidiary, department, location, class, accountingBook)
+                                            const formulaMatch = cell.match(/XAVI\.BALANCE(?:CHANGE)?\s*\(([^)]+)\)/i);
+                                            if (formulaMatch) {
+                                                const paramsStr = formulaMatch[1];
+                                                // Split by comma, handling quoted strings and cell references
+                                                const params = [];
+                                                let currentParam = '';
+                                                let inQuotes = false;
+                                                let parenDepth = 0;
                                                 
+                                                for (let i = 0; i < paramsStr.length; i++) {
+                                                    const char = paramsStr[i];
+                                                    if (char === '"' && (i === 0 || paramsStr[i-1] !== '\\')) {
+                                                        inQuotes = !inQuotes;
+                                                        currentParam += char;
+                                                    } else if (!inQuotes && char === '(') {
+                                                        parenDepth++;
+                                                        currentParam += char;
+                                                    } else if (!inQuotes && char === ')') {
+                                                        parenDepth--;
+                                                        currentParam += char;
+                                                    } else if (!inQuotes && parenDepth === 0 && char === ',') {
+                                                        params.push(currentParam.trim());
+                                                        currentParam = '';
+                                                    } else {
+                                                        currentParam += char;
+                                                    }
+                                                }
+                                                if (currentParam.trim()) {
+                                                    params.push(currentParam.trim());
+                                                }
+                                                
+                                                // Extract parameters (account, fromPeriod, toPeriod, subsidiary, department, location, class, accountingBook)
+                                                const accountParam = params[0] ? params[0].replace(/^["']|["']$/g, '').trim() : '';
+                                                const fromPeriodParam = params[1] ? params[1].replace(/^["']|["']$/g, '').trim() : '';
+                                                const toPeriodParam = params[2] ? params[2].replace(/^["']|["']$/g, '').trim() : '';
+                                                const subsidiaryParam = params[3] ? params[3].replace(/^["']|["']$/g, '').trim() : '';
+                                                const departmentParam = params[4] ? params[4].replace(/^["']|["']$/g, '').trim() : '';
+                                                const locationParam = params[5] ? params[5].replace(/^["']|["']$/g, '').trim() : '';
+                                                const classParam = params[6] ? params[6].replace(/^["']|["']$/g, '').trim() : '';
+                                                const accountingBookParam = params[7] ? params[7].replace(/^["']|["']$/g, '').trim() : '';
+                                                
+                                                // Build filtersHash for this formula
+                                                // Normalize accountingBook: empty or "1" → "1"
+                                                let normalizedBook = accountingBookParam || '1';
+                                                if (normalizedBook === '' || normalizedBook === '1') {
+                                                    normalizedBook = '1';
+                                                }
+                                                const filtersHash = `${subsidiaryParam || ''}|${departmentParam || ''}|${locationParam || ''}|${classParam || ''}|${normalizedBook}`;
+                                                filterCombinations.set(filtersHash, (filterCombinations.get(filtersHash) || 0) + 1);
+                                                
+                                                // Extract period from toPeriodParam
                                                 // Check if it's a literal period value
                                                 if (toPeriodParam && !toPeriodParam.includes('$') && !toPeriodParam.match(/^[A-Z]+\d+$/)) {
                                                     periods.add(toPeriodParam);
@@ -9116,8 +9139,45 @@ For licensing inquiries, contact: legal@celigo.com
                                     }
                                 }
                                 
+                                // Determine the most common filter combination to use for preload
+                                let mostCommonFilters = null;
+                                let maxCount = 0;
+                                for (const [filtersHash, count] of filterCombinations.entries()) {
+                                    if (count > maxCount) {
+                                        maxCount = count;
+                                        mostCommonFilters = filtersHash;
+                                    }
+                                }
+                                
+                                // Parse the most common filters
+                                let preloadSubsidiary = '';
+                                let preloadDepartment = '';
+                                let preloadLocation = '';
+                                let preloadClass = '';
+                                let preloadAccountingBook = '1';
+                                
+                                if (mostCommonFilters) {
+                                    const filterParts = mostCommonFilters.split('|');
+                                    preloadSubsidiary = filterParts[0] || '';
+                                    preloadDepartment = filterParts[1] || '';
+                                    preloadLocation = filterParts[2] || '';
+                                    preloadClass = filterParts[3] || '';
+                                    preloadAccountingBook = filterParts[4] || '1';
+                                    console.log(`📊 Most common filters detected: subsidiary="${preloadSubsidiary}", department="${preloadDepartment}", location="${preloadLocation}", class="${preloadClass}", book="${preloadAccountingBook}" (used in ${maxCount} formulas)`);
+                                } else {
+                                    console.log(`📊 No filters detected in formulas - using default (no filters)`);
+                                }
+                                
                                 return {
-                                    periods: Array.from(periods)
+                                    periods: Array.from(periods),
+                                    filters: {
+                                        subsidiary: preloadSubsidiary,
+                                        department: preloadDepartment,
+                                        location: preloadLocation,
+                                        class: preloadClass,
+                                        accountingBook: preloadAccountingBook
+                                    },
+                                    filtersHash: mostCommonFilters || '||||1'
                                 };
                             });
                                     } catch (error) {
@@ -9258,7 +9318,10 @@ For licensing inquiries, contact: legal@celigo.com
                             // ✅ CHUNKED PRECACHE: Process periods in batches to avoid timeouts
                             // Chunk size starts at 2, reduces by half on failure (min 1)
                             // This handles drag-across scenarios where 8 periods would timeout
-                            const filtersHash = `${''}|${''}|${''}|${''}|${''}`;  // Empty filters for default preload
+                            
+                            // Store filters from formulaData for use in processChunk
+                            const preloadFilters = formulaData.filters || {};
+                            const preloadFiltersHash = formulaData.filtersHash || '||||1';
                             
                             // Helper function to chunk array
                             function chunkArray(array, chunkSize) {
@@ -9314,16 +9377,18 @@ For licensing inquiries, contact: legal@celigo.com
                                 
                                 let preloadResponse;
                                 try {
+                                    // CRITICAL FIX: Use filters extracted from formulas (available in outer scope)
+                                    // This ensures preload cache matches the filters used in formulas
                                     preloadResponse = await fetch(`${getServerUrl()}/batch/bs_preload`, {
                                         method: 'POST',
                                         headers: { 'Content-Type': 'application/json' },
                                         body: JSON.stringify({
                                             periods: periodChunk,
-                                            subsidiary: '',
-                                            department: '',
-                                            location: '',
-                                            class: '',
-                                            accountingBook: ''
+                                            subsidiary: preloadFilters.subsidiary || '',
+                                            department: preloadFilters.department || '',
+                                            location: preloadFilters.location || '',
+                                            class: preloadFilters.class || '',
+                                            accountingBook: preloadFilters.accountingBook || ''
                                         }),
                                         signal: controller.signal
                                     });
@@ -9389,12 +9454,25 @@ For licensing inquiries, contact: legal@celigo.com
                                         const cacheEntries = {};
                                         let accountCount = 0;
                                         let zeroBalanceCount = 0;
+                                        // CRITICAL FIX: Include filters in cache key to match formula lookups
+                                        // Use preloadFiltersHash from outer scope (extracted from formulas)
+                                        const filtersHash = preloadFiltersHash;
+                                        
                                         for (const [account, periodBalances] of Object.entries(result.balances)) {
                                             accountCount++;
                                             if (typeof periodBalances === 'object') {
                                                 for (const [pName, balance] of Object.entries(periodBalances)) {
-                                                    const cacheKey = `balance:${account}::${pName}`;
+                                                    // Cache key format: balance:${account}:${filtersHash}:${period}
+                                                    // This matches the format expected by checkLocalStorageCache
+                                                    const cacheKey = `balance:${account}:${filtersHash}:${pName}`;
                                                     cacheEntries[cacheKey] = { value: balance, timestamp: Date.now() };
+                                                    
+                                                    // Also store without filters for backward compatibility (if filters are empty/default)
+                                                    // This ensures old cache lookups still work
+                                                    if (filtersHash === '||||1' || filtersHash === '||||') {
+                                                        const legacyKey = `balance:${account}::${pName}`;
+                                                        cacheEntries[legacyKey] = { value: balance, timestamp: Date.now() };
+                                                    }
                                                     
                                                     if (balance === 0 || balance === '0' || parseFloat(balance) === 0) {
                                                         zeroBalanceCount++;
