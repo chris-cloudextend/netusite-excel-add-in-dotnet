@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.99';  // FIX: Account type detection for Balance Sheet batching, accounting book extraction from Excel ranges
+const FUNCTIONS_VERSION = '4.0.6.100';  // FIX: Improved account type extraction from objects, normalized isBalanceSheetType check, Balance search uses pattern parameter
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -3279,7 +3279,13 @@ function exitBuildModeAndProcess() {
 // Helper: Check if account type is Balance Sheet
 function isBalanceSheetType(acctType) {
     if (!acctType) return false;
+    
+    // Normalize: convert to string and trim whitespace
+    const normalizedType = String(acctType).trim();
+    if (!normalizedType) return false;
+    
     // All Balance Sheet account types (Assets, Liabilities, Equity)
+    // These are the exact NetSuite account type values
     const bsTypes = [
         // Assets (Debit balance)
         'Bank',           // Bank/Cash accounts
@@ -3299,7 +3305,9 @@ function isBalanceSheetType(acctType) {
         'Equity',         // Equity accounts
         'RetainedEarnings' // Retained Earnings
     ];
-    return bsTypes.includes(acctType);
+    
+    // Exact match (case-sensitive) - NetSuite types are case-sensitive
+    return bsTypes.includes(normalizedType);
 }
 
 // Helper: Check if account type needs sign flip for Balance Sheet display
@@ -6412,8 +6420,29 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         // CRITICAL FIX: Use isBalanceSheetType() instead of checking for 'Balance Sheet' string
         // getAccountType() returns NetSuite account types like "Bank", "AcctRec", etc., not "Balance Sheet"
         // Extract type string if accountType is an object
-        const acctTypeStr = typeof accountType === 'string' ? accountType : (accountType?.type || accountType?.account || '');
+        // The cache may store either strings ("Bank") or objects ({ type: "Bank", ... })
+        // We need to extract the actual type string to check against isBalanceSheetType()
+        let acctTypeStr = '';
+        if (typeof accountType === 'string') {
+            acctTypeStr = accountType.trim();
+        } else if (accountType && typeof accountType === 'object') {
+            // Handle object format: { account: "10010", type: "Bank", display_name: "Bank" }
+            // Extract the 'type' property which contains the NetSuite account type string
+            acctTypeStr = (accountType.type || accountType.accountType || '').toString().trim();
+            if (!acctTypeStr && accountType.toString && accountType.toString() !== '[object Object]') {
+                acctTypeStr = accountType.toString().trim();
+            }
+        } else if (accountType) {
+            acctTypeStr = String(accountType).trim();
+        }
+        
+        // Now check if the extracted type string is a Balance Sheet type
+        // isBalanceSheetType() checks if the string (e.g., "Bank") is in the BS types array
         const isBalanceSheet = acctTypeStr && isBalanceSheetType(acctTypeStr);
+        
+        if (DEBUG_COLUMN_BASED_BS_BATCHING || !isBalanceSheet) {
+            console.log(`🔍 [TYPE DEBUG] accountType=`, accountType, `→ extracted="${acctTypeStr}" → isBalanceSheet=${isBalanceSheet}`);
+        }
         if (USE_COLUMN_BASED_BS_BATCHING && isBalanceSheet) {
             const evaluatingRequests = Array.from(pendingEvaluation.balance.values());
             console.log(`🔍 [BATCH DEBUG] Checking column-based batching: accountType=${acctTypeStr}, isBalanceSheet=${isBalanceSheet}, evaluatingRequests=${evaluatingRequests.length}, account=${account}, toPeriod=${toPeriod}`);
@@ -6483,9 +6512,17 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
             }
         } else {
             // Not Balance Sheet or batching disabled
-            const acctTypeStr = typeof accountType === 'string' ? accountType : (accountType?.type || accountType?.account || '');
+            // Extract type string consistently with the check above
+            let acctTypeStr = '';
+            if (typeof accountType === 'string') {
+                acctTypeStr = accountType;
+            } else if (accountType && typeof accountType === 'object') {
+                acctTypeStr = accountType.type || accountType.accountType || String(accountType);
+            } else {
+                acctTypeStr = String(accountType || '');
+            }
             if (!isBalanceSheetType(acctTypeStr)) {
-                console.log(`⏸️ [BATCH DEBUG] Account type is ${acctTypeStr}, not a Balance Sheet type - skipping column-based batching`);
+                console.log(`⏸️ [BATCH DEBUG] Account type is "${acctTypeStr}" (from:`, accountType, '), not a Balance Sheet type - skipping column-based batching');
             }
         }
         

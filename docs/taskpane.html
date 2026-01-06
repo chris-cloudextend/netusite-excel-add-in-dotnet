@@ -6093,7 +6093,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.99"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.100"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -26819,11 +26819,9 @@ export default {
                 // or 'type' parameter for account types (income, expense, FixedAsset, etc.)
                 // Check for common keywords OR exact NetSuite account type names
                 // UX ENHANCEMENT: Support "Balance" and "Income" keywords for all BS/IS accounts
-                const commonTypeKeywords = /^(income|expense|bank|asset|liability|equity|cogs|revenue|balance|balancesheet)/i;
-                const exactAccountTypes = /^(Bank|AcctRec|OthCurrAsset|FixedAsset|OthAsset|DeferExpense|UnbilledRec|AcctPay|CredCard|OthCurrLiab|LongTermLiab|DeferRevenue|Equity|RetainedEarnings|Income|OthIncome|COGS|Expense|OthExpense)$/i;
-                const isTypeSearch = commonTypeKeywords.test(pattern.toLowerCase()) || exactAccountTypes.test(pattern);
-                const paramName = isTypeSearch ? 'type' : 'number';
-                const url = `${getServerUrl()}/accounts/search?${paramName}=${encodeURIComponent(pattern)}`;
+                // CRITICAL FIX: Backend expects 'pattern' parameter, not 'type' or 'number'
+                // The backend determines if it's a type search or number search based on the pattern content
+                const url = `${getServerUrl()}/accounts/search?pattern=${encodeURIComponent(pattern)}`;
                 console.log('API URL:', url);
                 
                 const response = await fetch(url);
