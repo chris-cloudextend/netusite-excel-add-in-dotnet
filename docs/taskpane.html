@@ -10024,9 +10024,29 @@ For licensing inquiries, contact: legal@celigo.com
             
             // Check book-subsidiary cache status AFTER content is moved to inline view
             // This ensures the elements exist when we try to find them
-            setTimeout(() => {
-                checkBookSubsidiaryCacheStatus();
-            }, 500);
+            // Also add event listener for when the details element is opened
+            const cacheDetails = settingsInline.querySelector('details.cache-details');
+            if (cacheDetails) {
+                // Check immediately if already open
+                if (cacheDetails.open) {
+                    setTimeout(() => {
+                        checkBookSubsidiaryCacheStatus();
+                    }, 100);
+                }
+                // Also check when opened
+                cacheDetails.addEventListener('toggle', function() {
+                    if (this.open) {
+                        setTimeout(() => {
+                            checkBookSubsidiaryCacheStatus();
+                        }, 100);
+                    }
+                });
+            } else {
+                // Fallback: try after delay
+                setTimeout(() => {
+                    checkBookSubsidiaryCacheStatus();
+                }, 500);
+            }
         }
 
         function closeSettings() {
@@ -10821,6 +10841,29 @@ For licensing inquiries, contact: legal@celigo.com
                 
                 // Close Quick Start accordion after successful generation
                 closeQuickStart();
+                
+                // CRITICAL FIX: Initialize lastU3Value IMMEDIATELY after Income Statement generation completes
+                // This prevents false "U3 changed" detection when Excel fires change events
+                // Similar to CFO Flash Report fix
+                try {
+                    await Excel.run(async (context) => {
+                        const sheet = context.workbook.worksheets.getActiveWorksheet();
+                        const u3Cell = sheet.getRange("U3");
+                        u3Cell.load("values");
+                        await context.sync();
+                        const u3Value = u3Cell.values && u3Cell.values[0] && u3Cell.values[0][0] 
+                            ? String(u3Cell.values[0][0]).trim() 
+                            : "1"; // Default to Primary Book if empty
+                        lastU3Value = u3Value;
+                        localStorage.setItem('netsuite_u3_initialized', 'true');
+                        console.log(`✅ [INIT] Initialized lastU3Value after Income Statement complete: "${u3Value}"`);
+                    });
+                } catch (e) {
+                    console.warn('Could not initialize lastU3Value after Income Statement:', e.message);
+                    // Set default if we can't read
+                    lastU3Value = "1";
+                    localStorage.setItem('netsuite_u3_initialized', 'true');
+                }
                 
                 // After report is built, scan for subsidiary cells and apply currency formatting
                 setTimeout(async () => {
