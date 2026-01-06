@@ -6386,9 +6386,11 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         // ================================================================
         if (USE_COLUMN_BASED_BS_BATCHING && accountType === 'Balance Sheet') {
             const evaluatingRequests = Array.from(pendingEvaluation.balance.values());
+            console.log(`🔍 [BATCH DEBUG] Checking column-based batching: accountType=${accountType}, evaluatingRequests=${evaluatingRequests.length}, account=${account}, toPeriod=${toPeriod}`);
             const columnBasedDetection = detectColumnBasedBSGrid(evaluatingRequests);
             
             if (columnBasedDetection.eligible) {
+                console.log(`✅ [BATCH DEBUG] Grid eligible for column-based batching: ${columnBasedDetection.allAccounts?.size || 0} accounts, ${columnBasedDetection.columns?.length || 0} periods`);
                 // Check execution eligibility (no validation/trust requirements)
                 const executionCheck = isColumnBatchExecutionAllowed(accountType, columnBasedDetection);
                 
@@ -6442,10 +6444,16 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                 }
             } else {
                 // Grid not eligible for column-based batching - fall back to per-cell
+                console.log(`⏸️ [BATCH DEBUG] Grid not eligible for column-based batching: accountType=${accountType}, evaluatingRequests=${evaluatingRequests.length}, account=${account}`);
                 if (DEBUG_COLUMN_BASED_BS_BATCHING) {
                     console.log(`⏸️ COLUMN-BASED BS: Grid not eligible - falling back to per-cell`);
                 }
                 // Fall through to per-cell logic below
+            }
+        } else {
+            // Not Balance Sheet or batching disabled
+            if (accountType !== 'Balance Sheet') {
+                console.log(`⏸️ [BATCH DEBUG] Account type is ${accountType}, not Balance Sheet - skipping column-based batching`);
             }
         }
         

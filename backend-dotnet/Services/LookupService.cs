@@ -366,8 +366,14 @@ public class LookupService : ILookupService
         await _cacheLock.WaitAsync();
         try
         {
+            // If cache is already initialized, return immediately (no need to reload)
+            if (_cacheInitialized)
+            {
+                return true;
+            }
+            
             // If cache is not initialized but file exists, try loading it
-            if (!_cacheInitialized && File.Exists(CacheFilePath))
+            if (File.Exists(CacheFilePath))
             {
                 _logger.LogInformation("🔍 Cache not initialized but file exists - attempting to load...");
                 try
@@ -382,7 +388,10 @@ public class LookupService : ILookupService
                             _bookSubsidiaryCache[kvp.Key] = kvp.Value;
                         }
                         _cacheInitialized = true;
-                        _logger.LogInformation("✅ Loaded cache from disk in IsBookSubsidiaryCacheReadyAsync");
+                        var totalBooks = _bookSubsidiaryCache.Count;
+                        var totalMappings = _bookSubsidiaryCache.Values.Sum(list => list.Count);
+                        _logger.LogInformation("✅ Loaded cache from disk in IsBookSubsidiaryCacheReadyAsync: {BookCount} books, {MappingCount} mappings", 
+                            totalBooks, totalMappings);
                     }
                 }
                 catch (Exception ex)
