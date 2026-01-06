@@ -242,11 +242,36 @@ public class LookupController : ControllerBase
             if (_lookupService is XaviApi.Services.LookupService service)
             {
                 var isReady = await service.IsBookSubsidiaryCacheReadyAsync();
+                var cacheFilePath = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                    "XaviApi",
+                    "book-subsidiary-cache.json"
+                );
+                var fileExists = System.IO.File.Exists(cacheFilePath);
+                
+                // Get book count from cache
+                var bookCount = 0;
+                if (isReady)
+                {
+                    // Try to get book count from cache
+                    try
+                    {
+                        var cacheData = await service.GetBookSubsidiaryCacheDataAsync();
+                        bookCount = cacheData?.Count ?? 0;
+                    }
+                    catch
+                    {
+                        // Ignore errors getting book count
+                    }
+                }
+                
                 return Ok(new 
                 { 
                     ready = isReady,
                     message = isReady ? "Cache is ready" : "Cache is still initializing",
-                    timestamp = DateTime.UtcNow
+                    timestamp = DateTime.UtcNow,
+                    fileExists = fileExists,
+                    books = bookCount
                 });
             }
             return BadRequest(new { error = "LookupService is not the expected type" });

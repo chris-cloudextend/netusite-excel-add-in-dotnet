@@ -342,6 +342,23 @@ public class LookupService : ILookupService
     }
 
     /// <summary>
+    /// Get the current cache data (for status reporting).
+    /// </summary>
+    public async Task<Dictionary<string, List<string>>?> GetBookSubsidiaryCacheDataAsync()
+    {
+        await _cacheLock.WaitAsync();
+        try
+        {
+            // Return a copy of the cache
+            return new Dictionary<string, List<string>>(_bookSubsidiaryCache);
+        }
+        finally
+        {
+            _cacheLock.Release();
+        }
+    }
+
+    /// <summary>
     /// Check if the book-subsidiary cache is ready.
     /// </summary>
     public async Task<bool> IsBookSubsidiaryCacheReadyAsync()

@@ -6092,7 +6092,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.95"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.96"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -9979,10 +9979,6 @@ For licensing inquiries, contact: legal@celigo.com
         // SETTINGS VIEW (inline, not modal)
         // ========================================================================
         function openSettings() {
-            // Check book-subsidiary cache status when settings opens
-            setTimeout(() => {
-                checkBookSubsidiaryCacheStatus();
-            }, 500);
             // Move settings content into the inline container
             const settingsContent = document.getElementById('settingsView');
             const settingsInline = document.getElementById('settingsViewInline');
@@ -10017,11 +10013,20 @@ For licensing inquiries, contact: legal@celigo.com
                 if (btn.textContent.includes('Reload Lookups')) {
                     btn.onclick = reloadLookups;
                 }
+                if (btn.textContent.includes('Rebuild Cache')) {
+                    btn.onclick = rebuildBookSubsidiaryCache;
+                }
             });
             
             checkServerStatus();
             checkTunnelStatus();
             checkCacheStatus();
+            
+            // Check book-subsidiary cache status AFTER content is moved to inline view
+            // This ensures the elements exist when we try to find them
+            setTimeout(() => {
+                checkBookSubsidiaryCacheStatus();
+            }, 500);
         }
 
         function closeSettings() {
@@ -18934,9 +18939,29 @@ export default {
                         }
                         
                         // Update transition flag with selected subsidiary (guard will unlock)
-                        transitionData.newSubsidiary = verifiedSubsidiary;
-                        localStorage.setItem(transitionKey, JSON.stringify(transitionData));
-                        console.log(`🔒 [GUARD CLAUSE] Updated transition flag - newSub: "${verifiedSubsidiary}"`);
+                        if (transitionKey) {
+                            try {
+                                const existingTransition = localStorage.getItem(transitionKey);
+                                if (existingTransition) {
+                                    const transition = JSON.parse(existingTransition);
+                                    transition.newSubsidiary = verifiedSubsidiary;
+                                    localStorage.setItem(transitionKey, JSON.stringify(transition));
+                                    console.log(`🔒 [GUARD CLAUSE] Updated transition flag - newSub: "${verifiedSubsidiary}"`);
+                                } else {
+                                    // Create new transition data if it doesn't exist
+                                    const transition = {
+                                        timestamp: Date.now(),
+                                        oldSubsidiary: '',
+                                        newBook: accountingBook,
+                                        newSubsidiary: verifiedSubsidiary
+                                    };
+                                    localStorage.setItem(transitionKey, JSON.stringify(transition));
+                                    console.log(`🔒 [GUARD CLAUSE] Created transition flag - newSub: "${verifiedSubsidiary}"`);
+                                }
+                            } catch (e) {
+                                console.warn('⚠️ Could not update transition flag:', e.message);
+                            }
+                        }
                         
                         // Filter dropdown to show only valid subsidiaries
                         if (window.filterSubsidiaryDropdownByAccountingBook) {
