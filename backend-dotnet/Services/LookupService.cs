@@ -1237,16 +1237,57 @@ public class LookupService : ILookupService
         }
         else
         {
-            // Name or account number search
-            searchType = "name_or_number";
+            // Check if input is an exact NetSuite account type match (case-insensitive)
+            // This handles searches like "OthIncome", "AcctPay", "AcctRec", "FixedAsset", etc.
+            var allAccountTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                // Balance Sheet - Assets
+                AccountType.Bank, AccountType.AcctRec, AccountType.OthCurrAsset, 
+                AccountType.FixedAsset, AccountType.OthAsset, AccountType.DeferExpense, AccountType.UnbilledRec,
+                // Balance Sheet - Liabilities
+                AccountType.AcctPay, AccountType.CredCard, AccountType.OthCurrLiab, 
+                AccountType.LongTermLiab, AccountType.DeferRevenue,
+                // Balance Sheet - Equity
+                AccountType.Equity, AccountType.RetainedEarnings,
+                // Income Statement
+                AccountType.Income, AccountType.OthIncome, AccountType.Expense, 
+                AccountType.OthExpense, AccountType.COGS, AccountType.CostOfGoodsSold,
+                // Other
+                AccountType.NonPosting, AccountType.Stat
+            };
             
-            // Escape the pattern for SQL LIKE
-            var escapedPattern = NetSuiteService.EscapeSql(normalizedInput);
-            var sqlPattern = $"%{escapedPattern}%";
+            // Find exact match (case-insensitive)
+            string? exactTypeMatch = null;
+            foreach (var accountType in allAccountTypes)
+            {
+                if (accountType.Equals(normalizedInput, StringComparison.OrdinalIgnoreCase))
+                {
+                    exactTypeMatch = accountType;
+                    break;
+                }
+            }
             
-            // Search both account name and account number
-            conditions.Add($"(LOWER(a.accountsearchdisplaynamecopy) LIKE LOWER('{sqlPattern}') OR a.acctnumber LIKE '{sqlPattern}')");
-            _logger.LogInformation("✅ [ACCOUNT SEARCH] Mode: NAME_OR_NUMBER → pattern: '{Pattern}'", sqlPattern);
+            if (exactTypeMatch != null)
+            {
+                // Exact account type match (e.g., "OthIncome", "AcctPay", "AcctRec", "FixedAsset")
+                searchType = "account_type";
+                matchedTypes.Add(exactTypeMatch);
+                conditions.Add($"a.accttype = '{NetSuiteService.EscapeSql(exactTypeMatch)}'");
+                _logger.LogInformation("✅ [ACCOUNT SEARCH] Mode: ACCOUNT_TYPE → exact match: '{Type}'", exactTypeMatch);
+            }
+            else
+            {
+                // Name or account number search
+                searchType = "name_or_number";
+                
+                // Escape the pattern for SQL LIKE
+                var escapedPattern = NetSuiteService.EscapeSql(normalizedInput);
+                var sqlPattern = $"%{escapedPattern}%";
+                
+                // Search both account name and account number
+                conditions.Add($"(LOWER(a.accountsearchdisplaynamecopy) LIKE LOWER('{sqlPattern}') OR a.acctnumber LIKE '{sqlPattern}')");
+                _logger.LogInformation("✅ [ACCOUNT SEARCH] Mode: NAME_OR_NUMBER → pattern: '{Pattern}'", sqlPattern);
+            }
         }
 
         // Base filter: always include active status
