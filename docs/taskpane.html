@@ -11019,28 +11019,9 @@ For licensing inquiries, contact: legal@celigo.com
                 // Close Quick Start accordion after successful generation
                 closeQuickStart();
                 
-                // CRITICAL FIX: Initialize lastU3Value IMMEDIATELY after Income Statement generation completes
-                // This prevents false "U3 changed" detection when Excel fires change events
-                // Similar to CFO Flash Report fix
-                try {
-                    await Excel.run(async (context) => {
-                        const sheet = context.workbook.worksheets.getActiveWorksheet();
-                        const u3Cell = sheet.getRange("U3");
-                        u3Cell.load("values");
-                        await context.sync();
-                        const u3Value = u3Cell.values && u3Cell.values[0] && u3Cell.values[0][0] 
-                            ? String(u3Cell.values[0][0]).trim() 
-                            : "1"; // Default to Primary Book if empty
-                        lastU3Value = u3Value;
-                        localStorage.setItem('netsuite_u3_initialized', 'true');
-                        console.log(`✅ [INIT] Initialized lastU3Value after Income Statement complete: "${u3Value}"`);
-                    });
-                } catch (e) {
-                    console.warn('Could not initialize lastU3Value after Income Statement:', e.message);
-                    // Set default if we can't read
-                    lastU3Value = "1";
-                    localStorage.setItem('netsuite_u3_initialized', 'true');
-                }
+                // Note: lastU3Value is already initialized BEFORE Income Statement generation starts
+                // This ensures the sheet change handler recognizes U3 setting as initialization, not a change
+                // No need to re-initialize here - it's already set correctly
                 
                 // After report is built, scan for subsidiary cells and apply currency formatting
                 setTimeout(async () => {
@@ -11914,6 +11895,13 @@ For licensing inquiries, contact: legal@celigo.com
             };
             
             try {
+                // CRITICAL FIX: Initialize lastU3Value to "1" BEFORE setting U3 to prevent false "change" detection
+                // We're about to set U3 to "1", so initialize lastU3Value to "1" so the change handler
+                // sees no change when U3 is set. This prevents the subsidiary modal from showing on first load.
+                lastU3Value = "1";
+                localStorage.setItem('netsuite_u3_initialized', 'true');
+                console.log(`✅ [INIT] Initialized lastU3Value to "1" BEFORE Income Statement generation (preventing modal on first load)`);
+                
                 // Step 1: Fetch ALL account data
                 updateProgress(5, '📥 Step 1 of 6: Loading Accounts', 'Fetching all P&L accounts from NetSuite...');
                 
