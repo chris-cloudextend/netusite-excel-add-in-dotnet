@@ -2494,7 +2494,8 @@ public class BalanceController : ControllerBase
                             ? ParseBalance(priorPlResult.Items.First().TryGetProperty("value", out var ppProp) ? ppProp : default)
                             : 0;
                         
-                        // Posted RE - CRITICAL FIX: Use t.postingperiod <= targetPeriodId instead of ap.enddate <= TO_DATE(...)
+                        // Posted RE - CRITICAL FIX: Use t.trandate <= TO_DATE('{periodEndDate}', 'YYYY-MM-DD') to match NetSuite GL Balance report
+                        // NetSuite's GL Balance report uses transaction date, not posting period, for cumulative balances
                         var postedReQuery = $@"
                             SELECT SUM(
                                 TO_NUMBER(BUILTIN.CONSOLIDATE(tal.amount, 'LEDGER', 'DEFAULT', 'DEFAULT', {targetSub}, {targetPeriodId}, 'DEFAULT'))
@@ -2507,7 +2508,7 @@ public class BalanceController : ControllerBase
                             WHERE t.posting = 'T'
                               AND tal.posting = 'T'
                               AND (a.accttype = 'RetainedEarnings' OR LOWER(a.fullname) LIKE '%retained earnings%')
-                              AND t.postingperiod <= {targetPeriodId}
+                              AND t.trandate <= TO_DATE('{periodEndDate}', 'YYYY-MM-DD')
                               AND tal.accountingbook = {accountingBook}
                               AND {segmentWhere}";
                         var postedReResult = await _netSuiteService.QueryRawWithErrorAsync(postedReQuery, 120);
@@ -2537,7 +2538,8 @@ public class BalanceController : ControllerBase
                     var liabilityTypesSql = AccountType.BsLiabilityTypesSql;
                     var plTypesSql = "'Income', 'COGS', 'Expense', 'OthIncome', 'OthExpense'";
                     
-                    // Total Assets - CRITICAL FIX: Use t.postingperiod <= targetPeriodId instead of ap.enddate <= TO_DATE(...)
+                    // Total Assets - CRITICAL FIX: Use t.trandate <= TO_DATE('{periodEndDate}', 'YYYY-MM-DD') to match NetSuite GL Balance report
+                    // NetSuite's GL Balance report uses transaction date, not posting period, for cumulative balances
                     var assetsQuery = $@"
                         SELECT SUM(
                             TO_NUMBER(BUILTIN.CONSOLIDATE(tal.amount, 'LEDGER', 'DEFAULT', 'DEFAULT', {targetSub}, {targetPeriodId}, 'DEFAULT'))
@@ -2548,10 +2550,11 @@ public class BalanceController : ControllerBase
                         WHERE t.posting = 'T'
                           AND tal.posting = 'T'
                           AND a.accttype IN ({assetTypesSql})
-                          AND t.postingperiod <= {targetPeriodId}
+                          AND t.trandate <= TO_DATE('{periodEndDate}', 'YYYY-MM-DD')
                           AND tal.accountingbook = {accountingBook}";
                     
-                    // Total Liabilities - CRITICAL FIX: Use t.postingperiod <= targetPeriodId instead of ap.enddate <= TO_DATE(...)
+                    // Total Liabilities - CRITICAL FIX: Use t.trandate <= TO_DATE('{periodEndDate}', 'YYYY-MM-DD') to match NetSuite GL Balance report
+                    // NetSuite's GL Balance report uses transaction date, not posting period, for cumulative balances
                     var liabilitiesQuery = $@"
                         SELECT SUM(
                             TO_NUMBER(BUILTIN.CONSOLIDATE(tal.amount, 'LEDGER', 'DEFAULT', 'DEFAULT', {targetSub}, {targetPeriodId}, 'DEFAULT'))
@@ -2563,10 +2566,11 @@ public class BalanceController : ControllerBase
                         WHERE t.posting = 'T'
                           AND tal.posting = 'T'
                           AND a.accttype IN ({liabilityTypesSql})
-                          AND t.postingperiod <= {targetPeriodId}
+                          AND t.trandate <= TO_DATE('{periodEndDate}', 'YYYY-MM-DD')
                           AND tal.accountingbook = {accountingBook}";
                     
-                    // Posted Equity (excluding RE) - CRITICAL FIX: Use t.postingperiod <= targetPeriodId instead of ap.enddate <= TO_DATE(...)
+                    // Posted Equity (excluding RE) - CRITICAL FIX: Use t.trandate <= TO_DATE('{periodEndDate}', 'YYYY-MM-DD') to match NetSuite GL Balance report
+                    // NetSuite's GL Balance report uses transaction date, not posting period, for cumulative balances
                     var equityQuery = $@"
                         SELECT SUM(
                             TO_NUMBER(BUILTIN.CONSOLIDATE(tal.amount, 'LEDGER', 'DEFAULT', 'DEFAULT', {targetSub}, {targetPeriodId}, 'DEFAULT'))
@@ -2579,7 +2583,7 @@ public class BalanceController : ControllerBase
                           AND tal.posting = 'T'
                           AND a.accttype = 'Equity'
                           AND LOWER(a.fullname) NOT LIKE '%retained earnings%'
-                          AND t.postingperiod <= {targetPeriodId}
+                          AND t.trandate <= TO_DATE('{periodEndDate}', 'YYYY-MM-DD')
                           AND tal.accountingbook = {accountingBook}";
                     
                     var assetsTask = _netSuiteService.QueryRawWithErrorAsync(assetsQuery, 120);
@@ -2650,7 +2654,8 @@ public class BalanceController : ControllerBase
                               AND tal.accountingbook = {accountingBook}";
                     }
                     
-                    // Posted RE (for CTA) - CRITICAL FIX: Use t.postingperiod <= targetPeriodId instead of ap.enddate <= TO_DATE(...)
+                    // Posted RE (for CTA) - CRITICAL FIX: Use t.trandate <= TO_DATE('{periodEndDate}', 'YYYY-MM-DD') to match NetSuite GL Balance report
+                    // NetSuite's GL Balance report uses transaction date, not posting period, for cumulative balances
                     var postedReQuery = $@"
                         SELECT SUM(
                             TO_NUMBER(BUILTIN.CONSOLIDATE(tal.amount, 'LEDGER', 'DEFAULT', 'DEFAULT', {targetSub}, {targetPeriodId}, 'DEFAULT'))
@@ -2662,7 +2667,7 @@ public class BalanceController : ControllerBase
                         WHERE t.posting = 'T'
                           AND tal.posting = 'T'
                           AND (a.accttype = 'RetainedEarnings' OR LOWER(a.fullname) LIKE '%retained earnings%')
-                          AND t.postingperiod <= {targetPeriodId}
+                          AND t.trandate <= TO_DATE('{periodEndDate}', 'YYYY-MM-DD')
                           AND tal.accountingbook = {accountingBook}";
                     
                     Task<QueryResult<JsonElement>>? priorPlTask = null;
@@ -3333,7 +3338,7 @@ public class BalanceController : ControllerBase
                   AND {accountFilter}
                   AND a.accttype IN ({AccountType.BsTypesSql})
                   AND a.isinactive = 'F'
-                  AND t.postingperiod <= {anchorPeriodId}
+                  AND t.trandate <= TO_DATE('{anchorDateStr}', 'YYYY-MM-DD')
                   AND tal.accountingbook = {accountingBook}
                   AND {segmentWhere}
                 GROUP BY a.acctnumber

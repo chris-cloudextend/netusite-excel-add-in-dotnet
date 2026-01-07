@@ -1723,8 +1723,9 @@ public class BalanceService : IBalanceService
                     continue; // Skip this period
                 }
 
-                // CRITICAL FIX: Use t.postingperiod <= periodId instead of t.trandate <= TO_DATE(...)
-                // This ensures month-by-month and batched queries use identical period filtering
+                // CRITICAL FIX: Use t.trandate <= TO_DATE('{endDate}', 'YYYY-MM-DD') to match NetSuite GL Balance report
+                // NetSuite's GL Balance report uses transaction date, not posting period, for cumulative balances
+                // This ensures month-by-month and batched queries match NetSuite's behavior
                 var bsQuery = $@"
                     SELECT 
                         a.acctnumber,
@@ -1749,7 +1750,7 @@ public class BalanceService : IBalanceService
                       AND tal.posting = 'T'
                       AND {bsAccountFilter}
                       AND a.accttype NOT IN ({AccountType.PlTypesSql})
-                      AND t.postingperiod <= {periodId}
+                      AND t.trandate <= TO_DATE('{endDate}', 'YYYY-MM-DD')
                       AND tal.accountingbook = {accountingBook}
                       AND {segmentWhere}
                     GROUP BY a.acctnumber";
@@ -2492,8 +2493,8 @@ public class BalanceService : IBalanceService
             ? "JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id" 
             : "";
         
-        // CRITICAL FIX: Use t.postingperiod <= anchorPeriodId instead of t.trandate <= anchorDate
-        // This ensures month-by-month and batched queries use identical period filtering
+        // CRITICAL FIX: Use t.trandate <= TO_DATE('{anchorDateStr}', 'YYYY-MM-DD') to match NetSuite GL Balance report
+        // NetSuite's GL Balance report uses transaction date, not posting period, for cumulative balances
         // Use anchor period ID for currency conversion to ensure consistent exchange rates
         var query = $@"
             SELECT SUM(x.cons_amt) AS balance
@@ -2517,7 +2518,7 @@ public class BalanceService : IBalanceService
                 WHERE t.posting = 'T'
                   AND tal.posting = 'T'
                   AND {NetSuiteService.BuildAccountFilter(new[] { request.Account })}
-                  AND t.postingperiod <= {anchorPeriodId}
+                  AND t.trandate <= TO_DATE('{anchorDateStr}', 'YYYY-MM-DD')
                   AND tal.accountingbook = {accountingBook}
                   {whereSegment}
             ) x";
