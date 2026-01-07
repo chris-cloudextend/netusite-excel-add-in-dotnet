@@ -135,4 +135,4 @@ See [DOCUMENTATION.md](DOCUMENTATION.md) for detailed troubleshooting.
 
 ---
 
-*Current Version: 4.0.6.41*
+*Current Version: 4.0.6.107*

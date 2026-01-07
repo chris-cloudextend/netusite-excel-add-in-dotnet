@@ -86,9 +86,9 @@ public class LookupService : ILookupService
                 _cacheInitialized = true;
                 var totalBooks = _bookSubsidiaryCache.Count;
                 var totalMappings = _bookSubsidiaryCache.Values.Sum(list => list.Count);
-                _logger.LogInformation("✅ Loaded book-subsidiary cache from disk: {BookCount} books, {MappingCount} mappings", 
+                _logger.LogInformation("Loaded book-subsidiary cache from disk: {BookCount} books, {MappingCount} mappings", 
                     totalBooks, totalMappings);
-                _logger.LogInformation("✅ Cache initialized flag set to TRUE after loading from disk");
+                _logger.LogDebug("Cache initialized flag set to TRUE after loading from disk");
             }
             else
             {
@@ -1193,8 +1193,8 @@ public class LookupService : ILookupService
         // Normalize input once
         var normalizedInput = (pattern ?? "").Trim().ToLowerInvariant();
         
-        // Log normalized input
-        _logger.LogInformation("🔍 [ACCOUNT SEARCH] Input: '{Original}' → Normalized: '{Normalized}'", pattern ?? "(null)", normalizedInput);
+        // Log normalized input (debug level for troubleshooting)
+        _logger.LogDebug("[ACCOUNT SEARCH] Input: '{Original}' → Normalized: '{Normalized}'", pattern ?? "(null)", normalizedInput);
         
         var conditions = new List<string>();
         var matchedTypes = new List<string>();
@@ -1209,7 +1209,7 @@ public class LookupService : ILookupService
             matchedTypes.AddRange(incomeTypes);
             var escapedTypes = incomeTypes.Select(t => $"'{NetSuiteService.EscapeSql(t)}'");
             conditions.Add($"a.accttype IN ({string.Join(",", escapedTypes)})");
-            _logger.LogInformation("✅ [ACCOUNT SEARCH] Mode: INCOME_STATEMENT → {Count} types", incomeTypes.Length);
+            _logger.LogDebug("[ACCOUNT SEARCH] Mode: INCOME_STATEMENT → {Count} types", incomeTypes.Length);
         }
         else if (normalizedInput == "balance")
         {
@@ -1219,7 +1219,7 @@ public class LookupService : ILookupService
             matchedTypes.AddRange(balanceTypes);
             var escapedTypes = balanceTypes.Select(t => $"'{NetSuiteService.EscapeSql(t)}'");
             conditions.Add($"a.accttype IN ({string.Join(",", escapedTypes)})");
-            _logger.LogInformation("✅ [ACCOUNT SEARCH] Mode: BALANCE_SHEET → {Count} types", balanceTypes.Length);
+            _logger.LogDebug("[ACCOUNT SEARCH] Mode: BALANCE_SHEET → {Count} types", balanceTypes.Length);
         }
         else if (normalizedInput == "bank")
         {
@@ -1227,13 +1227,13 @@ public class LookupService : ILookupService
             searchType = "bank_accounts";
             matchedTypes.Add("Bank");
             conditions.Add("a.accttype = 'Bank'");
-            _logger.LogInformation("✅ [ACCOUNT SEARCH] Mode: BANK_ACCOUNTS");
+            _logger.LogDebug("[ACCOUNT SEARCH] Mode: BANK_ACCOUNTS");
         }
         else if (normalizedInput == "" || normalizedInput == "*")
         {
             // All active accounts - no type filter
             searchType = "all_active";
-            _logger.LogInformation("✅ [ACCOUNT SEARCH] Mode: ALL_ACTIVE (no type filter)");
+            _logger.LogDebug("[ACCOUNT SEARCH] Mode: ALL_ACTIVE (no type filter)");
         }
         else
         {
@@ -1273,7 +1273,7 @@ public class LookupService : ILookupService
                 searchType = "account_type";
                 matchedTypes.Add(exactTypeMatch);
                 conditions.Add($"a.accttype = '{NetSuiteService.EscapeSql(exactTypeMatch)}'");
-                _logger.LogInformation("✅ [ACCOUNT SEARCH] Mode: ACCOUNT_TYPE → exact match: '{Type}'", exactTypeMatch);
+                _logger.LogDebug("[ACCOUNT SEARCH] Mode: ACCOUNT_TYPE → exact match: '{Type}'", exactTypeMatch);
             }
             else
             {
@@ -1286,7 +1286,7 @@ public class LookupService : ILookupService
                 
                 // Search both account name and account number
                 conditions.Add($"(LOWER(a.accountsearchdisplaynamecopy) LIKE LOWER('{sqlPattern}') OR a.acctnumber LIKE '{sqlPattern}')");
-                _logger.LogInformation("✅ [ACCOUNT SEARCH] Mode: NAME_OR_NUMBER → pattern: '{Pattern}'", sqlPattern);
+                _logger.LogDebug("[ACCOUNT SEARCH] Mode: NAME_OR_NUMBER → pattern: '{Pattern}'", sqlPattern);
             }
         }
 
@@ -1300,13 +1300,13 @@ public class LookupService : ILookupService
         if (conditions.Count == 0)
         {
             var errorMsg = $"ERROR: No WHERE conditions generated for pattern '{pattern}'";
-            _logger.LogError("❌ {Error}", errorMsg);
+                _logger.LogError("{Error}", errorMsg);
             throw new InvalidOperationException(errorMsg);
         }
         
         // Build WHERE clause
         var whereClause = string.Join(" AND ", conditions);
-        _logger.LogInformation("📋 [ACCOUNT SEARCH] WHERE clause: {WhereClause}", whereClause);
+        _logger.LogDebug("[ACCOUNT SEARCH] WHERE clause: {WhereClause}", whereClause);
         
         // Build SuiteQL query
         // Note: Don't include ORDER BY - QueryPaginatedAsync adds it automatically
@@ -1329,8 +1329,8 @@ public class LookupService : ILookupService
         // Account search is unlikely to exceed 1000 rows, so we use FETCH FIRST instead of pagination
         var finalQuery = $"{query} ORDER BY a.acctnumber FETCH FIRST 1000 ROWS ONLY";
         
-        // Log final query before execution
-        _logger.LogInformation("📊 [ACCOUNT SEARCH] Final SuiteQL Query:\n{Query}", finalQuery);
+        // Log final query before execution (debug level)
+        _logger.LogDebug("[ACCOUNT SEARCH] Final SuiteQL Query:\n{Query}", finalQuery);
         
         // Execute query with proper error handling - do NOT swallow errors
         List<System.Text.Json.JsonElement> results;
@@ -1342,7 +1342,7 @@ public class LookupService : ILookupService
             if (!queryResult.Success)
             {
                 // Log the error clearly
-                _logger.LogError("❌ [ACCOUNT SEARCH] NetSuite query failed: {ErrorCode} - {ErrorDetails}", 
+                _logger.LogError("[ACCOUNT SEARCH] NetSuite query failed: {ErrorCode} - {ErrorDetails}", 
                     queryResult.ErrorCode, queryResult.ErrorDetails);
                 // Propagate the failure to the caller
                 throw new InvalidOperationException(
@@ -1350,11 +1350,11 @@ public class LookupService : ILookupService
             }
             
             results = queryResult.Items ?? new List<System.Text.Json.JsonElement>();
-            _logger.LogInformation("✅ [ACCOUNT SEARCH] Query executed successfully → {Count} results", results.Count);
+            _logger.LogDebug("[ACCOUNT SEARCH] Query executed successfully → {Count} results", results.Count);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "❌ [ACCOUNT SEARCH] NetSuite query execution failed: {Message}", ex.Message);
+            _logger.LogError(ex, "[ACCOUNT SEARCH] NetSuite query execution failed: {Message}", ex.Message);
             throw; // Re-throw - do NOT swallow errors
         }
 
@@ -1370,7 +1370,7 @@ public class LookupService : ILookupService
             Parent = r.TryGetProperty("parent", out var p) && p.ValueKind != System.Text.Json.JsonValueKind.Null ? p.GetString() : null
         }).ToList();
         
-        _logger.LogInformation("✅ [ACCOUNT SEARCH] Complete → {Count} accounts returned", accounts.Count);
+        _logger.LogDebug("[ACCOUNT SEARCH] Complete → {Count} accounts returned", accounts.Count);
         
         return new AccountSearchResult
         {
