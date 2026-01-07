@@ -1268,6 +1268,7 @@ public class LookupService : ILookupService
         _logger.LogInformation("📋 [ACCOUNT SEARCH] WHERE clause: {WhereClause}", whereClause);
         
         // Build SuiteQL query
+        // Note: Don't include ORDER BY - QueryPaginatedAsync adds it automatically
         var query = $@"
             SELECT 
                 a.id,
@@ -1281,23 +1282,38 @@ public class LookupService : ILookupService
             LEFT JOIN 
                 Account p ON a.parent = p.id
             WHERE 
-                {whereClause}
-            ORDER BY 
-                a.acctnumber";
+                {whereClause}";
+        
+        // Add ORDER BY and FETCH FIRST (NetSuite SuiteQL syntax - no OFFSET/FETCH NEXT)
+        // Account search is unlikely to exceed 1000 rows, so we use FETCH FIRST instead of pagination
+        var finalQuery = $"{query} ORDER BY a.acctnumber FETCH FIRST 1000 ROWS ONLY";
         
         // Log final query before execution
-        _logger.LogInformation("📊 [ACCOUNT SEARCH] Final SuiteQL Query:\n{Query}", query);
+        _logger.LogInformation("📊 [ACCOUNT SEARCH] Final SuiteQL Query:\n{Query}", finalQuery);
         
-        // Execute query - do NOT swallow errors
+        // Execute query with proper error handling - do NOT swallow errors
         List<System.Text.Json.JsonElement> results;
         try
         {
-            results = await _netSuiteService.QueryPaginatedAsync<System.Text.Json.JsonElement>(query, orderBy: "a.acctnumber");
+            // Use QueryRawWithErrorAsync to get proper error propagation
+            var queryResult = await _netSuiteService.QueryRawWithErrorAsync(finalQuery);
+            
+            if (!queryResult.Success)
+            {
+                // Log the error clearly
+                _logger.LogError("❌ [ACCOUNT SEARCH] NetSuite query failed: {ErrorCode} - {ErrorDetails}", 
+                    queryResult.ErrorCode, queryResult.ErrorDetails);
+                // Propagate the failure to the caller
+                throw new InvalidOperationException(
+                    $"Account search failed: {queryResult.ErrorCode}. {queryResult.ErrorDetails}");
+            }
+            
+            results = queryResult.Items ?? new List<System.Text.Json.JsonElement>();
             _logger.LogInformation("✅ [ACCOUNT SEARCH] Query executed successfully → {Count} results", results.Count);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "❌ [ACCOUNT SEARCH] NetSuite query execution failed");
+            _logger.LogError(ex, "❌ [ACCOUNT SEARCH] NetSuite query execution failed: {Message}", ex.Message);
             throw; // Re-throw - do NOT swallow errors
         }
 

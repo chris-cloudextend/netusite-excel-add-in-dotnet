@@ -20,11 +20,11 @@
 // 4. Replace ALL code with this file
 // 5. Click: Save and Deploy
 //
-// CURRENT TUNNEL URL: https://importance-euro-danny-vision.trycloudflare.com
+// CURRENT TUNNEL URL: https://buildings-escape-lan-singing.trycloudflare.com
 // CURRENT ACCOUNT: 589861 (Production)
 // BACKEND: .NET Core (backend-dotnet/) - PRIMARY/TARGET
 // NOTE: Python backend (backend/server.py) is legacy and being replaced
-// Last Updated: Jan 01, 2026 (Tunnel: importance-euro-danny-vision)))))
+// Last Updated: Jan 07, 2026 (Tunnel: buildings-escape-lan-singing)
 // ════════════════════════════════════════════════════════════════════
 
 export default {
@@ -33,7 +33,7 @@ export default {
     // ⚠️ UPDATE THIS when .NET backend tunnel URL changes
     // To get the URL, run: cloudflared tunnel --url http://localhost:5002
     // Copy the https://xxxxx.trycloudflare.com URL and paste it here
-    const TUNNEL_URL = 'https://importance-euro-danny-vision.trycloudflare.com';
+    const TUNNEL_URL = 'https://buildings-escape-lan-singing.trycloudflare.com';
 
     // Handle CORS preflight requests
     if (request.method === 'OPTIONS') {
