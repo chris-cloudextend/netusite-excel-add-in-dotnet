@@ -1012,8 +1012,11 @@ public class BalanceController : ControllerBase
 
         try
         {
+            // CRITICAL DEBUG: Log the received request to verify accounting book is being received
             _logger.LogInformation("📊 BS PRELOAD: Starting for {Count} period(s): {Periods}", 
                 periodsToLoad.Count, string.Join(", ", periodsToLoad));
+            _logger.LogInformation("🔍 [BS PRELOAD DEBUG] Request received: Book={Book} (raw value from request), Subsidiary={Subsidiary}, Department={Department}, Location={Location}, Class={Class}", 
+                request.Book?.ToString() ?? "null", request.Subsidiary ?? "null", request.Department ?? "null", request.Location ?? "null", request.Class ?? "null");
             
             // Results aggregated across all periods
             var allBalances = new Dictionary<string, Dictionary<string, decimal>>();
@@ -1042,7 +1045,11 @@ public class BalanceController : ControllerBase
             
             // CRITICAL FIX: Convert accounting book to string and include in filtersHash
             // This ensures cache keys are unique per accounting book
+            // CRITICAL FIX: Added JsonPropertyName("accountingBook") to BsPreloadRequest model
+            // so the frontend's "accountingBook" parameter is correctly deserialized to Book property
             var accountingBook = (request.Book ?? DefaultAccountingBook).ToString();
+            _logger.LogInformation("🔍 [BS PRELOAD DEBUG] Accounting book resolved: request.Book={RequestBook}, DefaultAccountingBook={Default}, Final accountingBook={FinalBook}", 
+                request.Book?.ToString() ?? "null", DefaultAccountingBook, accountingBook);
             var filtersHash = $"{targetSub}:{departmentId ?? ""}:{locationId ?? ""}:{classId ?? ""}:{accountingBook}";
             var cacheExpiry = TimeSpan.FromMinutes(5);
             var bsTypesSql = Models.AccountType.BsTypesSql;
@@ -3812,6 +3819,10 @@ public class BsPreloadRequest
     public string? Department { get; set; }
     public string? Class { get; set; }
     public string? Location { get; set; }
+    
+    /// <summary>Accounting book ID (e.g., 1 for Primary Book, 2 for India GAAP)</summary>
+    [System.Text.Json.Serialization.JsonPropertyName("accountingBook")]
+    [System.Text.Json.Serialization.JsonConverter(typeof(Models.FlexibleIntConverter))]
     public int? Book { get; set; }
 }
 
@@ -3831,6 +3842,10 @@ public class TargetedBsPreloadRequest
     public string? Department { get; set; }
     public string? Class { get; set; }
     public string? Location { get; set; }
+    
+    /// <summary>Accounting book ID (e.g., 1 for Primary Book, 2 for India GAAP)</summary>
+    [System.Text.Json.Serialization.JsonPropertyName("accountingBook")]
+    [System.Text.Json.Serialization.JsonConverter(typeof(Models.FlexibleIntConverter))]
     public int? Book { get; set; }
 }
 
