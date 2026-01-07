@@ -1074,6 +1074,10 @@ public class BalanceController : ControllerBase
                 
                 var endDate = ConvertToYYYYMMDD(period.EndDate);
                 var periodId = !string.IsNullOrEmpty(period.Id) ? period.Id : "NULL";
+                
+                // DEBUG: Log period resolution details
+                _logger.LogInformation("🔍 [BS PRELOAD DEBUG] Period resolution: periodName={PeriodName}, periodId={PeriodId}, endDate={EndDate} (raw: {RawEndDate})", 
+                    periodName, periodId, endDate, period.EndDate);
             
                 if (string.IsNullOrEmpty(periodId) || periodId == "NULL")
                 {
@@ -1104,6 +1108,11 @@ public class BalanceController : ControllerBase
                 // NetSuite's GL Balance report uses transaction date, not posting period, for cumulative balances
                 // This matches the individual BalanceService query logic (which returns correct values)
                 // Note: endDate is already calculated above (line 1075)
+                
+                // DEBUG: Log query parameters before building query
+                _logger.LogInformation("🔍 [BS PRELOAD DEBUG] Query parameters: periodName={PeriodName}, periodId={PeriodId}, endDate={EndDate}, targetSub={TargetSub}, accountingBook={AccountingBook}, filtersHash={FiltersHash}", 
+                    periodName, periodId, endDate, targetSub, accountingBook, filtersHash);
+                
                 var query = $@"
                     SELECT 
                         a.acctnumber,
@@ -1139,8 +1148,10 @@ public class BalanceController : ControllerBase
                     GROUP BY a.acctnumber, a.accountsearchdisplaynamecopy, a.accttype
                     ORDER BY a.acctnumber";
             
-                _logger.LogDebug("BS Preload [{Period}] query (first 500 chars): {Query}", 
-                    periodName, query[..Math.Min(500, query.Length)]);
+                // DEBUG: Log full query (or at least the critical date filter part)
+                var queryPreview = query.Length > 1000 ? query.Substring(0, 1000) + "..." : query;
+                _logger.LogInformation("🔍 [BS PRELOAD DEBUG] Full query for {Period}: {Query}", periodName, queryPreview);
+                _logger.LogInformation("🔍 [BS PRELOAD DEBUG] Critical date filter in query: t.trandate <= TO_DATE('{EndDate}', 'YYYY-MM-DD')", endDate);
             
                 var queryResult = await _netSuiteService.QueryRawWithErrorAsync(query, 180);
                 var periodElapsed = (DateTime.UtcNow - periodStartTime).TotalSeconds;
@@ -1202,6 +1213,14 @@ public class BalanceController : ControllerBase
                 
                     // Cache individual account balance for this period
                     var cacheKey = $"balance:{accountNumber}:{periodName}:{filtersHash}";
+                    
+                    // DEBUG: Log cache write for account 13000 (or any account of interest)
+                    if (accountNumber == "13000")
+                    {
+                        _logger.LogInformation("🔍 [BS PRELOAD DEBUG] Caching account 13000: cacheKey={CacheKey}, balance={Balance:N2}, periodName={PeriodName}, filtersHash={FiltersHash}", 
+                            cacheKey, balance, periodName, filtersHash);
+                    }
+                    
                     _cache.Set(cacheKey, balance, cacheExpiry);
                     totalCachedCount++;
                 }
@@ -1214,6 +1233,24 @@ public class BalanceController : ControllerBase
                 {
                     _logger.LogInformation("   Zero balance accounts (first 10): {Accounts}", 
                         string.Join(", ", zeroBalanceAccounts.Take(10)));
+                }
+                
+                // DEBUG: Log account 13000 specifically if found in results
+                var account13000Row = queryResult.Items.FirstOrDefault(r => 
+                    r.TryGetProperty("acctnumber", out var numProp) && numProp.GetString() == "13000");
+                if (account13000Row != null)
+                {
+                    var account13000Balance = 0m;
+                    if (account13000Row.TryGetProperty("balance", out var bal13000))
+                    {
+                        account13000Balance = ParseBalance(bal13000);
+                    }
+                    _logger.LogInformation("🔍 [BS PRELOAD DEBUG] Account 13000 found in results: balance={Balance:N2}, periodName={PeriodName}, filtersHash={FiltersHash}, cacheKey=balance:13000:{PeriodName}:{FiltersHash}", 
+                        account13000Balance, periodName, filtersHash, periodName, filtersHash);
+                }
+                else
+                {
+                    _logger.LogWarning("🔍 [BS PRELOAD DEBUG] Account 13000 NOT found in query results for period {PeriodName}", periodName);
                 }
                 
                 // Check if the problematic accounts (10413, 10206, 10411) are in results

@@ -225,6 +225,10 @@ public class BalanceService : IBalanceService
             if (fromPeriodData?.StartDate != null)
                 fromStartDate = ConvertToYYYYMMDD(fromPeriodData.StartDate);
         }
+        
+        // DEBUG: Log date conversion details
+        _logger.LogInformation("🔍 [BALANCE DEBUG] Date conversion: toPeriod={ToPeriod}, toPeriodData.EndDate={RawEndDate}, toEndDate={ToEndDate}, periodId={PeriodId}", 
+            toPeriod, toPeriodData.EndDate, toEndDate, toPeriodData.Id);
 
         // Resolve subsidiary name to ID and get hierarchy
         var subsidiaryId = await _lookupService.ResolveSubsidiaryIdAsync(request.Subsidiary);
@@ -278,10 +282,14 @@ public class BalanceService : IBalanceService
             var filtersHash = $"{targetSub}:{departmentId ?? ""}:{locationId ?? ""}:{classId ?? ""}:{accountingBook}";
             var cacheKey = $"balance:{request.Account}:{toPeriod}:{filtersHash}";
             
+            // DEBUG: Log cache key generation
+            _logger.LogInformation("🔍 [BALANCE DEBUG] Cache lookup: account={Account}, toPeriod={ToPeriod}, filtersHash={FiltersHash}, cacheKey={CacheKey}", 
+                request.Account, toPeriod, filtersHash, cacheKey);
+            
             if (_cache.TryGetValue(cacheKey, out decimal cachedBalance))
             {
-                _logger.LogInformation("⚡ CACHE HIT: {Account} for {Period} (book={Book}) = ${Balance:N2}", 
-                    request.Account, toPeriod, accountingBook, cachedBalance);
+                _logger.LogInformation("⚡ CACHE HIT: {Account} for {Period} (book={Book}) = ${Balance:N2} (cacheKey={CacheKey})", 
+                    request.Account, toPeriod, accountingBook, cachedBalance, cacheKey);
                 return new BalanceResponse
                 {
                     Account = request.Account,
@@ -290,6 +298,11 @@ public class BalanceService : IBalanceService
                     Balance = cachedBalance,
                     Cached = true
                 };
+            }
+            else
+            {
+                _logger.LogInformation("🔍 [BALANCE DEBUG] Cache MISS: account={Account}, cacheKey={CacheKey} - will query NetSuite", 
+                    request.Account, cacheKey);
             }
         }
 
@@ -383,9 +396,12 @@ public class BalanceService : IBalanceService
                       {whereSegment}
                 ) x";
             
-            // CRITICAL DEBUG: Log the actual SQL query to verify accounting book is included
-            _logger.LogInformation("🔍 [BALANCE DEBUG] Point-in-time query: account={Account}, accountingBook={Book}, SQL (first 500 chars): {Query}", 
-                request.Account, accountingBook, query.Length > 500 ? query.Substring(0, 500) + "..." : query);
+            // CRITICAL DEBUG: Log the actual SQL query to verify accounting book and date filter are included
+            _logger.LogInformation("🔍 [BALANCE DEBUG] Point-in-time query: account={Account}, accountingBook={Book}, toEndDate={ToEndDate}, targetSub={TargetSub}, targetPeriodId={PeriodId}", 
+                request.Account, accountingBook, toEndDate, targetSub, targetPeriodId);
+            _logger.LogInformation("🔍 [BALANCE DEBUG] SQL query (first 800 chars): {Query}", 
+                query.Length > 800 ? query.Substring(0, 800) + "..." : query);
+            _logger.LogInformation("🔍 [BALANCE DEBUG] Critical date filter in query: t.trandate <= TO_DATE('{ToEndDate}', 'YYYY-MM-DD')", toEndDate);
         }
         else if (isPeriodActivity)
         {
@@ -682,13 +698,29 @@ public class BalanceService : IBalanceService
             if (row.TryGetProperty("balance", out var balProp))
             {
                 balance = ParseBalance(balProp);
+                
+                // DEBUG: Log the actual balance returned from NetSuite query
+                _logger.LogInformation("🔍 [BALANCE DEBUG] Query result: account={Account}, balance={Balance:N2}, rawValue={RawValue}", 
+                    request.Account, balance, balProp.ToString());
             }
+            else
+            {
+                _logger.LogWarning("🔍 [BALANCE DEBUG] Query returned rows but no 'balance' property for account={Account}", request.Account);
+            }
+        }
+        else
+        {
+            _logger.LogWarning("🔍 [BALANCE DEBUG] Query returned no rows for account={Account}", request.Account);
         }
 
         // Get account name and type from lookup service
         accountName = await _lookupService.GetAccountNameAsync(request.Account);
         if (accountType == null)
             accountType = await _lookupService.GetAccountTypeAsync(request.Account);
+
+        // DEBUG: Log final response
+        _logger.LogInformation("🔍 [BALANCE DEBUG] Final response: account={Account}, balance={Balance:N2}, toPeriod={ToPeriod}, accountingBook={Book}", 
+            request.Account, balance, toPeriod, accountingBook);
 
         return new BalanceResponse
         {
