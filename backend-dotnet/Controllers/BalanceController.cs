@@ -3569,6 +3569,167 @@ public class BalanceController : ControllerBase
             });
         }
     }
+    
+    /// <summary>
+    /// Test endpoint to debug balance query for account 13000, May 2025, book 2
+    /// </summary>
+    [HttpGet("/test/balance-13000-may-2025")]
+    public async Task<IActionResult> TestBalance13000May2025(
+        [FromQuery] string account = "13000",
+        [FromQuery] string period = "May 2025",
+        [FromQuery] string subsidiary = "Celigo India Pvt Ltd",
+        [FromQuery] int book = 2)
+    {
+        try
+        {
+            _logger.LogWarning("🧪 TEST: Balance query for account {Account}, period {Period}, book {Book}, subsidiary {Sub}", 
+                account, period, book, subsidiary);
+            
+            // Resolve subsidiary
+            var subsidiaryId = await _lookupService.ResolveSubsidiaryIdAsync(subsidiary);
+            var targetSub = subsidiaryId ?? "1";
+            
+            // Get hierarchy
+            var hierarchySubs = await _lookupService.GetSubsidiaryHierarchyAsync(targetSub);
+            var subFilter = string.Join(", ", hierarchySubs);
+            
+            // Get period
+            var periodData = await _netSuiteService.GetPeriodAsync(period);
+            if (periodData == null || string.IsNullOrEmpty(periodData.Id))
+            {
+                return BadRequest(new { error = $"Could not find period: {period}" });
+            }
+            
+            var periodId = periodData.Id;
+            var accountingBook = book.ToString();
+            var toEndDate = ConvertToYYYYMMDD(periodData.EndDate);
+            
+            // Get account type to determine sign flip
+            var accountType = await _lookupService.GetAccountTypeAsync(account) ?? "Unknown";
+            
+            // Build sign flip SQL (same as production)
+            var signFlip = $@"
+                CASE 
+                    WHEN a.accttype IN ({AccountType.SignFlipTypesSql}) THEN -1  -- BS: Liabilities/Equity
+                    WHEN a.accttype IN ({AccountType.IncomeTypesSql}) THEN -1     -- P&L: Income
+                    ELSE 1 
+                END";
+            
+            // Build segment filter
+            var segmentWhere = $"tl.subsidiary IN ({subFilter})";
+            
+            // Build the EXACT query that BalanceService uses (with trandate fix)
+            var query = $@"
+                SELECT SUM(x.cons_amt) AS balance
+                FROM (
+                    SELECT
+                        TO_NUMBER(
+                            BUILTIN.CONSOLIDATE(
+                                tal.amount,
+                                'LEDGER',
+                                'DEFAULT',
+                                'DEFAULT',
+                                {targetSub},
+                                {periodId},
+                                'DEFAULT'
+                            )
+                        ) * {signFlip} AS cons_amt
+                    FROM transactionaccountingline tal
+                    JOIN transaction t ON t.id = tal.transaction
+                    JOIN account a ON a.id = tal.account
+                    JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id
+                    WHERE t.posting = 'T'
+                      AND tal.posting = 'T'
+                      AND a.acctnumber = '{NetSuiteService.EscapeSql(account)}'
+                      AND t.trandate <= TO_DATE('{toEndDate}', 'YYYY-MM-DD')
+                      AND tal.accountingbook = {accountingBook}
+                      AND {segmentWhere}
+                ) x";
+            
+            _logger.LogInformation("🔍 [TEST] Query parameters:");
+            _logger.LogInformation("   Account: {Account} (Type: {Type})", account, accountType);
+            _logger.LogInformation("   Period: {PeriodName} (ID: {PeriodId}, EndDate: {EndDate})", periodData.PeriodName, periodId, toEndDate);
+            _logger.LogInformation("   Subsidiary: {Sub} → ID {Id}, Hierarchy: {Hierarchy}", subsidiary, targetSub, subFilter);
+            _logger.LogInformation("   Book: {Book}", accountingBook);
+            _logger.LogInformation("🔍 [TEST] Full SQL Query:\n{Query}", query);
+            
+            // Run query
+            var queryResult = await _netSuiteService.QueryRawWithErrorAsync(query);
+            
+            decimal balance = 0m;
+            if (queryResult.Success && queryResult.Items.Any())
+            {
+                var row = queryResult.Items[0];
+                if (row.TryGetProperty("balance", out var balProp))
+                {
+                    if (balProp.ValueKind == System.Text.Json.JsonValueKind.Number)
+                        balance = balProp.GetDecimal();
+                    else if (balProp.ValueKind == System.Text.Json.JsonValueKind.String)
+                    {
+                        var balStr = balProp.GetString();
+                        if (decimal.TryParse(balStr, out var parsed))
+                            balance = parsed;
+                    }
+                }
+            }
+            
+            // Also run the production BalanceService to compare
+            var balanceRequest = new BalanceRequest
+            {
+                Account = account,
+                FromPeriod = "",
+                ToPeriod = period,
+                Subsidiary = subsidiary,
+                Department = "",
+                Class = "",
+                Location = "",
+                Book = book
+            };
+            
+            var productionResult = await _balanceService.GetBalanceAsync(balanceRequest);
+            
+            return Ok(new
+            {
+                test_query = new
+                {
+                    account,
+                    period,
+                    period_id = periodId,
+                    period_end_date = toEndDate,
+                    subsidiary,
+                    subsidiary_id = targetSub,
+                    subsidiary_hierarchy = hierarchySubs,
+                    book = accountingBook,
+                    account_type = accountType,
+                    query = query,
+                    result = new
+                    {
+                        success = queryResult.Success,
+                        balance = balance,
+                        error = queryResult.ErrorCode,
+                        error_details = queryResult.ErrorDetails,
+                        row_count = queryResult.Items?.Count ?? 0
+                    }
+                },
+                production_result = new
+                {
+                    balance = productionResult.Balance,
+                    account = productionResult.Account,
+                    from_period = productionResult.FromPeriod,
+                    to_period = productionResult.ToPeriod,
+                    error = productionResult.Error
+                },
+                expected_balance = 8314265.34m,
+                difference = balance - 8314265.34m,
+                production_difference = productionResult.Balance - 8314265.34m
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "❌ [TEST] Error testing balance query");
+            return StatusCode(500, new { error = ex.Message, stack_trace = ex.StackTrace });
+        }
+    }
 }
 
 /// <summary>
@@ -3621,6 +3782,7 @@ public class PeriodResult
     public int AccountCount { get; set; }
     public double ElapsedSeconds { get; set; }
 }
+    
     /// This endpoint tests the query shape that will be used for grid batching optimization.
 /// </summary>
 public class BsGridBatchingTestRequest

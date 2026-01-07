@@ -1,0 +1,9 @@
+{
+  "account": "13000",
+  "period": "May 2025",
+  "subsidiary": "Celigo India Pvt Ltd",
+  "book": 2,
+  "netsuite_balance": 8314265.34,
+  "expected_balance": 8314265.34,
+  "difference": 0.0
+}
