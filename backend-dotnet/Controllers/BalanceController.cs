@@ -1100,7 +1100,10 @@ public class BalanceController : ControllerBase
                 // 1. Segment filters are properly applied (only sum when tl.id IS NOT NULL)
                 // 2. Zero balance accounts are returned (accounts with no matching transactions)
                 // 3. Accounting book filter doesn't collapse LEFT JOIN unexpectedly
-                // CRITICAL FIX: Use t.postingperiod <= periodId instead of t.trandate <= TO_DATE(...)
+                // CRITICAL FIX: Use t.trandate <= TO_DATE('{endDate}', 'YYYY-MM-DD') to match NetSuite GL Balance report
+                // NetSuite's GL Balance report uses transaction date, not posting period, for cumulative balances
+                // This matches the individual BalanceService query logic (which returns correct values)
+                // Note: endDate is already calculated above (line 1075)
                 var query = $@"
                     SELECT 
                         a.acctnumber,
@@ -1127,7 +1130,7 @@ public class BalanceController : ControllerBase
                         AND (tal.accountingbook = {accountingBook} OR tal.accountingbook IS NULL)
                     LEFT JOIN transaction t ON t.id = tal.transaction
                         AND t.posting = 'T'
-                        AND t.postingperiod <= {periodId}
+                        AND t.trandate <= TO_DATE('{endDate}', 'YYYY-MM-DD')
                     LEFT JOIN TransactionLine tl ON t.id = tl.transaction 
                         AND tal.transactionline = tl.id
                         AND ({segmentWhere})
@@ -1362,7 +1365,9 @@ public class BalanceController : ControllerBase
                 var signFlipSql = Models.AccountType.SignFlipTypesSql;
                 
                 // Query ONLY the specific accounts
-                // CRITICAL FIX: Use t.postingperiod <= periodId instead of t.trandate <= TO_DATE(...)
+                // CRITICAL FIX: Use t.trandate <= TO_DATE('{endDate}', 'YYYY-MM-DD') to match NetSuite GL Balance report
+                // NetSuite's GL Balance report uses transaction date, not posting period, for cumulative balances
+                // This matches the individual BalanceService query logic (which returns correct values)
                 var query = $@"
                     SELECT 
                         a.acctnumber,
@@ -1387,7 +1392,7 @@ public class BalanceController : ControllerBase
                     WHERE t.posting = 'T'
                       AND tal.posting = 'T'
                       AND a.acctnumber IN ('{accountFilter}')
-                      AND t.postingperiod <= {periodId}
+                      AND t.trandate <= TO_DATE('{endDate}', 'YYYY-MM-DD')
                       AND tal.accountingbook = {accountingBook}
                       AND {segmentWhere}
                     GROUP BY a.acctnumber, a.accttype
