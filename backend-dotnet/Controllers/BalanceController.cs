@@ -1116,36 +1116,40 @@ public class BalanceController : ControllerBase
                 _logger.LogInformation("🔍 [BS PRELOAD DEBUG] Query parameters: periodName={PeriodName}, periodId={PeriodId}, endDate={EndDate}, targetSub={TargetSub}, accountingBook={AccountingBook}, filtersHash={FiltersHash}", 
                     periodName, periodId, endDate, targetSub, accountingBook, filtersHash);
                 
+                // CRITICAL FIX: Restructure query to match individual BalanceService query logic
+                // Use subquery approach to ensure transactions are filtered correctly before aggregation
+                // This matches the individual query structure exactly
                 var query = $@"
                     SELECT 
                         a.acctnumber,
                         a.accountsearchdisplaynamecopy AS account_name,
                         a.accttype,
-                        COALESCE(SUM(
-                            CASE WHEN tl.id IS NOT NULL THEN
-                                TO_NUMBER(
-                                    BUILTIN.CONSOLIDATE(
-                                        tal.amount,
-                                        'LEDGER',
-                                        'DEFAULT',
-                                        'DEFAULT',
-                                        {targetSub},
-                                        {periodId},
-                                        'DEFAULT'
-                                    )
-                                ) * CASE WHEN a.accttype IN ({signFlipSql}) THEN -1 ELSE 1 END
-                            ELSE 0 END
-                        ), 0) AS balance
+                        COALESCE(SUM(x.cons_amt), 0) AS balance
                     FROM account a
-                    LEFT JOIN transactionaccountingline tal ON tal.account = a.id
-                        AND tal.posting = 'T'
-                        AND tal.accountingbook = {accountingBook}
-                    LEFT JOIN transaction t ON t.id = tal.transaction
-                        AND t.posting = 'T'
-                        AND t.trandate <= TO_DATE('{endDate}', 'YYYY-MM-DD')
-                    LEFT JOIN TransactionLine tl ON t.id = tl.transaction 
-                        AND tal.transactionline = tl.id
-                        AND ({segmentWhere})
+                    LEFT JOIN (
+                        SELECT
+                            tal.account,
+                            TO_NUMBER(
+                                BUILTIN.CONSOLIDATE(
+                                    tal.amount,
+                                    'LEDGER',
+                                    'DEFAULT',
+                                    'DEFAULT',
+                                    {targetSub},
+                                    {periodId},
+                                    'DEFAULT'
+                                )
+                            ) * CASE WHEN a.accttype IN ({signFlipSql}) THEN -1 ELSE 1 END AS cons_amt
+                        FROM transactionaccountingline tal
+                        JOIN transaction t ON t.id = tal.transaction
+                        JOIN account a ON a.id = tal.account
+                        JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id
+                        WHERE t.posting = 'T'
+                          AND tal.posting = 'T'
+                          AND t.trandate <= TO_DATE('{endDate}', 'YYYY-MM-DD')
+                          AND tal.accountingbook = {accountingBook}
+                          AND ({segmentWhere})
+                    ) x ON x.account = a.id
                     WHERE a.accttype IN ({bsTypesSql})
                       AND a.isinactive = 'F'
                     GROUP BY a.acctnumber, a.accountsearchdisplaynamecopy, a.accttype
