@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.106';  // FIX: Account search filtering + vendor bill URL fix (vendbill)
+const FUNCTIONS_VERSION = '4.0.6.107';  // FIX: .NET backend account search with category keywords (Balance, Income, Bank)
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================

@@ -73,6 +73,19 @@ public class AccountItem
     public string? SpecialAccountType { get; set; }
 }
 
+/// <summary>Account search result with metadata</summary>
+public class AccountSearchResult
+{
+    [JsonPropertyName("accounts")]
+    public List<AccountItem> Items { get; set; } = new();
+    
+    [JsonPropertyName("search_type")]
+    public string SearchType { get; set; } = string.Empty;
+    
+    [JsonIgnore]
+    public List<string> MatchedTypes { get; set; } = new();
+}
+
 /// <summary>Accounting book item</summary>
 public class AccountingBookItem
 {

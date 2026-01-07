@@ -196,16 +196,45 @@ public class AccountController : ControllerBase
     
     /// <summary>
     /// Search for accounts by account number or type.
+    /// Supports pattern parameter (like Python backend) for backward compatibility.
     /// </summary>
     [HttpGet("/accounts/search")]
     public async Task<IActionResult> SearchAccounts(
+        [FromQuery] string? pattern = null,
         [FromQuery] string? number = null,
-        [FromQuery] string? type = null)
+        [FromQuery] string? type = null,
+        [FromQuery] string? active_only = "true")
     {
         try
         {
-            var accounts = await _lookupService.SearchAccountsAsync(number, type);
-            return Ok(new { accounts, count = accounts.Count });
+            // Support both pattern (Python-style) and number/type (legacy) parameters
+            // If pattern is provided, use it; otherwise fall back to number/type
+            string? searchPattern = pattern;
+            if (string.IsNullOrEmpty(searchPattern))
+            {
+                // Legacy support: combine number and type into pattern
+                if (!string.IsNullOrEmpty(number) && !string.IsNullOrEmpty(type))
+                    searchPattern = $"{number}|{type}";
+                else if (!string.IsNullOrEmpty(number))
+                    searchPattern = number;
+                else if (!string.IsNullOrEmpty(type))
+                    searchPattern = type;
+            }
+
+            if (string.IsNullOrEmpty(searchPattern))
+                return BadRequest(new { error = "Pattern parameter is required" });
+
+            var activeOnly = active_only?.ToLower() == "true";
+            var result = await _lookupService.SearchAccountsByPatternAsync(searchPattern, activeOnly);
+            
+            // Return format matching Python backend
+            return Ok(new 
+            { 
+                pattern = searchPattern,
+                search_type = result.SearchType,
+                accounts = result.Items,
+                count = result.Items.Count 
+            });
         }
         catch (Exception ex)
         {
