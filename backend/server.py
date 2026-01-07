@@ -1314,7 +1314,7 @@ def search_accounts():
             }
             
             # Check if pattern matches a category
-            pattern_upper = pattern_without_wildcards.upper()
+            pattern_upper = pattern_without_wildcards.upper().strip()
             matched_types = []
             
             # CRITICAL FIX: First check if pattern is an exact NetSuite account type
@@ -1334,13 +1334,18 @@ def search_accounts():
             if exact_type_match:
                 # Pattern is an exact account type match (e.g., "Equity", "Bank", "FixedAsset")
                 # Use exact match - this ensures we ONLY get accounts of this specific type
-                where_conditions.append(f"accttype = '{escape_sql(exact_type_match)}'")
+                escaped_type = escape_sql(exact_type_match)
+                where_conditions.append(f"accttype = '{escaped_type}'")
                 matched_types = [exact_type_match]
+                print(f"DEBUG - Exact type match: '{exact_type_match}'", file=sys.stderr)
             elif pattern_upper in type_mappings:
                 # Exact match for category keywords (BALANCE, INCOME, etc.)
                 matched_types = type_mappings[pattern_upper]
-                type_list = "','".join(matched_types)
+                # CRITICAL FIX: Escape each type in the list to prevent SQL injection
+                escaped_types = [escape_sql(t) for t in matched_types]
+                type_list = "','".join(escaped_types)
                 where_conditions.append(f"accttype IN ('{type_list}')")
+                print(f"DEBUG - Category match: '{pattern_upper}' → {len(matched_types)} types", file=sys.stderr)
             else:
                 # Check for partial matches in category names
                 for category, types in type_mappings.items():
@@ -1349,13 +1354,24 @@ def search_accounts():
                 
                 if matched_types:
                     # Use exact match for mapped types - this ensures we ONLY get these account types
-                    type_list = "','".join(matched_types)
+                    # CRITICAL FIX: Escape each type in the list to prevent SQL injection
+                    escaped_types = [escape_sql(t) for t in matched_types]
+                    type_list = "','".join(escaped_types)
                     where_conditions.append(f"accttype IN ('{type_list}')")
+                    print(f"DEBUG - Partial category match: '{pattern_upper}' → {len(matched_types)} types", file=sys.stderr)
                 else:
                     # Use LIKE for direct type matching (only when no category match)
                     where_conditions.append(f"UPPER(accttype) LIKE '{sql_pattern}'")
+                    print(f"DEBUG - LIKE match: pattern='{sql_pattern}'", file=sys.stderr)
             
-            print(f"DEBUG - Type search: pattern='{pattern}', sql_pattern='{sql_pattern}', mapped_types={matched_types}", file=sys.stderr)
+            # CRITICAL FIX: Ensure we always have a WHERE condition for type searches
+            # If somehow no condition was added, this is a bug - log it and return error
+            if not where_conditions:
+                error_msg = f"ERROR: No WHERE condition generated for type search pattern '{pattern}'"
+                print(error_msg, file=sys.stderr)
+                return jsonify({'error': error_msg}), 500
+            
+            print(f"DEBUG - Type search: pattern='{pattern}', sql_pattern='{sql_pattern}', mapped_types={matched_types}, where_conditions={where_conditions}", file=sys.stderr)
             
         else:
             # ACCOUNT NUMBER search
@@ -1370,7 +1386,15 @@ def search_accounts():
         if active_only:
             where_conditions.append("isinactive = 'F'")
         
+        # CRITICAL FIX: Ensure we have at least one WHERE condition
+        # If where_conditions is empty, this is a bug - return error instead of returning all accounts
+        if not where_conditions:
+            error_msg = f"ERROR: No WHERE conditions generated for search pattern '{pattern}'"
+            print(error_msg, file=sys.stderr)
+            return jsonify({'error': error_msg}), 500
+        
         where_clause = " AND ".join(where_conditions)
+        print(f"DEBUG - Final WHERE clause: {where_clause}", file=sys.stderr)
         
         # Build SuiteQL query
         # Use accountsearchdisplaynamecopy for clean name (without number prefix)
@@ -6117,7 +6141,7 @@ def get_transactions():
             # Map record types to NetSuite URL paths
             type_map = {
                 'invoice': 'custinvc',
-                'bill': 'vendorbill',
+                'bill': 'vendbill',
                 'journalentry': 'journal',
                 'journal': 'journal',
                 'payment': 'custpymt',

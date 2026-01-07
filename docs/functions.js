@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.105';  // FIX: Taskpane resolves cell references before building filtersHash, ensuring cache key matching
+const FUNCTIONS_VERSION = '4.0.6.106';  // FIX: Account search filtering + vendor bill URL fix (vendbill)
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================

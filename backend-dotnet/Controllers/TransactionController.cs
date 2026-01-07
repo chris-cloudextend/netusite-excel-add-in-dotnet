@@ -249,7 +249,7 @@ public class TransactionController : ControllerBase
         var typeMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
             { "invoice", "custinvc" },
-            { "bill", "vendorbill" },
+            { "bill", "vendbill" },
             { "journalentry", "journal" },
             { "journal", "journal" },
             { "payment", "custpymt" },
