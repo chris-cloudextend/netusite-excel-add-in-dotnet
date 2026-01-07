@@ -11391,6 +11391,13 @@ For licensing inquiries, contact: legal@celigo.com
                     await context.sync();
                     
                     // ========== ROW 3: PARAMETER VALUES ==========
+                    // CRITICAL FIX: Initialize lastU3Value to "1" BEFORE setting U3 to prevent false "change" detection
+                    // We're about to set U3 to "1", so initialize lastU3Value to "1" so the change handler
+                    // sees no change when U3 is set. This prevents the subsidiary modal from showing on first load.
+                    lastU3Value = "1";
+                    localStorage.setItem('netsuite_u3_initialized', 'true');
+                    console.log(`✅ [INIT] Initialized lastU3Value to "1" BEFORE CFO Flash Report generation (preventing modal on first load)`);
+                    
                     // CRITICAL: Set sync trackers BEFORE context.sync() to prevent race condition
                     lastSyncedYear = String(currentYear);
                     lastSyncedSubsidiary = defaultSubsidiary;
@@ -11746,28 +11753,9 @@ For licensing inquiries, contact: legal@celigo.com
                         console.warn('Post-report currency format failed:', e.message);
                     }
                     
-                    // CRITICAL FIX: Initialize lastU3Value IMMEDIATELY after CFO Flash Report completes
-                    // This prevents false "U3 changed" detection when Excel fires change events
-                    // Do this BEFORE releasing the sync lock to ensure it happens first
-                    // Also set a flag to prevent modal from showing until initialization is complete
-                    try {
-                        await Excel.run(async (context) => {
-                            const sheet = context.workbook.worksheets.getActiveWorksheet();
-                            const bookCell = sheet.getRange("U3");
-                            bookCell.load("values");
-                            await context.sync();
-                            const u3Value = String(bookCell.values[0][0] || '').trim();
-                            lastU3Value = u3Value;
-                            // Set flag to indicate initialization is complete
-                            localStorage.setItem('netsuite_u3_initialized', 'true');
-                            console.log(`✅ [INIT] Initialized lastU3Value after CFO Flash complete: "${u3Value}"`);
-                        });
-                    } catch (e) {
-                        console.warn('⚠️ Could not initialize lastU3Value after CFO Flash:', e.message);
-                        // Set to empty string so it won't match any value
-                        lastU3Value = '';
-                        localStorage.setItem('netsuite_u3_initialized', 'true');
-                    }
+                    // Note: lastU3Value is already initialized BEFORE CFO Flash Report generation starts
+                    // This ensures the sheet change handler recognizes U3 setting as initialization, not a change
+                    // No need to re-initialize here - it's already set correctly
                     
                     // Release the sync lock after currency formatting is done
                     // Reduced delay (was 1000ms) - user can change subsidiary sooner
