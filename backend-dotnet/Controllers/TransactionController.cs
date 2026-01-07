@@ -41,7 +41,8 @@ public class TransactionController : ControllerBase
         [FromQuery] string? subsidiary = null,
         [FromQuery] string? department = null,
         [FromQuery(Name = "class")] string? classId = null,
-        [FromQuery] string? location = null)
+        [FromQuery] string? location = null,
+        [FromQuery] string? accountingbook = null)
     {
         if (string.IsNullOrEmpty(account))
             return BadRequest(new { error = "account is required" });
@@ -52,8 +53,16 @@ public class TransactionController : ControllerBase
         {
             account = account.Trim();
             period = period.Trim();
-            _logger.LogInformation("GetTransactions: account={Account}, period={Period}, subsidiary={Subsidiary}, dept={Dept}, class={Class}, loc={Loc}",
-                account, period, subsidiary, department, classId, location);
+            
+            // Normalize accounting book: default to "1" (Primary Book) if not specified
+            var accountingBook = accountingbook?.Trim();
+            if (string.IsNullOrEmpty(accountingBook) || accountingBook == "1")
+            {
+                accountingBook = "1";
+            }
+            
+            _logger.LogInformation("GetTransactions: account={Account}, period={Period}, subsidiary={Subsidiary}, dept={Dept}, class={Class}, loc={Loc}, book={Book}",
+                account, period, subsidiary, department, classId, location, accountingBook);
 
             // Resolve filters to IDs
             var resolvedSubsidiary = string.IsNullOrWhiteSpace(subsidiary) ? null : await _lookupService.ResolveSubsidiaryIdAsync(subsidiary.Trim());
@@ -93,6 +102,10 @@ public class TransactionController : ControllerBase
             var deptFilter = string.IsNullOrEmpty(resolvedDept) ? "" : $"AND tl.department = {resolvedDept}";
             var classFilter = string.IsNullOrEmpty(resolvedClass) ? "" : $"AND tl.class = {resolvedClass}";
             var locationFilter = string.IsNullOrEmpty(resolvedLocation) ? "" : $"AND tl.location = {resolvedLocation}";
+            
+            // CRITICAL FIX: Add accounting book filter
+            // Accounting book is a numeric ID - use it directly (no quotes needed)
+            var bookFilter = $"AND tal.accountingbook = {accountingBook}";
 
             // Query transactions (raw, not consolidated) to match Python logic
             var baseQuery = $@"
@@ -131,6 +144,7 @@ public class TransactionController : ControllerBase
                     {deptFilter}
                     {classFilter}
                     {locationFilter}
+                    {bookFilter}
                 GROUP BY
                     t.id, t.tranid, t.trandisplayname, t.recordtype, t.trandate,
                     e.entityid, e.id, t.memo, a.acctnumber, a.accountsearchdisplayname, tl.memo

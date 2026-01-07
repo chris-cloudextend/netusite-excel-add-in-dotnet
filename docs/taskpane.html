@@ -8685,6 +8685,7 @@ For licensing inquiries, contact: legal@celigo.com
                     
                     const qp = new URLSearchParams({ account, period });
                     if (subsidiary) qp.append('subsidiary', subsidiary);
+                    // Note: accounting book not extracted in this code path - needs to be added
                     
                     const resp = await fetch(`${getServerUrl()}/transactions?${qp}`);
                     if (resp.ok) {
@@ -26079,6 +26080,7 @@ export default {
                                     // Fetch transactions directly
                                     const queryParams = new URLSearchParams({ account, period });
                                     if (subsidiary) queryParams.append('subsidiary', subsidiary);
+                                    // Note: accounting book not available in TYPEBALANCE drill-down context
                                     
                                     const response = await fetch(`${getServerUrl()}/transactions?${queryParams}`);
                                     if (!response.ok) throw new Error(`API error: ${response.status}`);
@@ -26198,6 +26200,9 @@ export default {
                         if (commonParams.department) queryParams.append('department', commonParams.department);
                         if (commonParams.location) queryParams.append('location', commonParams.location);
                         if (commonParams.class) queryParams.append('class', commonParams.class);
+                        if (commonParams.accountingBook && commonParams.accountingBook !== '1') {
+                            queryParams.append('accountingbook', commonParams.accountingBook);
+                        }
                     
                     const fetchUrl = `${getServerUrl()}/transactions?${queryParams}`;
                     
@@ -26551,7 +26556,8 @@ export default {
                     subsidiaryRef: params[3] || '',
                     departmentRef: params[4] || '',
                     locationRef: params[5] || '',
-                    classRef: params[6] || ''
+                    classRef: params[6] || '',
+                    accountingBookRef: params[7] || ''
                 };
                 
             } catch (error) {
@@ -26656,6 +26662,7 @@ export default {
                 const department = await getValue(cellRefs.departmentRef);
                 const location = await getValue(cellRefs.locationRef);
                 const classId = await getValue(cellRefs.classRef);
+                const accountingBook = await getValue(cellRefs.accountingBookRef);
                 
                 // Convert periods if they're Excel date serials
                 const fromPeriod = convertToPeriodName(fromPeriodRaw);
@@ -26665,6 +26672,9 @@ export default {
                 // Prefer toPeriod when present; fallback to fromPeriod.
                 const drillDownPeriod = toPeriod || fromPeriod;
                 
+                // Normalize accounting book: empty or "1" → "1"
+                const normalizedBook = accountingBook && accountingBook !== '' && accountingBook !== '1' ? accountingBook : '1';
+                
                 return {
                     account: account,
                     period: drillDownPeriod, // Use fromPeriod if set, otherwise toPeriod
@@ -26673,7 +26683,8 @@ export default {
                     subsidiary: subsidiary,
                     department: department,
                     location: location,
-                    class: classId
+                    class: classId,
+                    accountingBook: normalizedBook
                 };
                 
             } catch (error) {
