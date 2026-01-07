@@ -1237,8 +1237,18 @@ public class BalanceController : ControllerBase
                 
                 // DEBUG: Log account 13000 specifically if found in results
                 var account13000Row = queryResult.Items.FirstOrDefault(r => 
-                    r.TryGetProperty("acctnumber", out var numProp) && numProp.GetString() == "13000");
-                if (account13000Row != null)
+                {
+                    if (r.TryGetProperty("acctnumber", out var numProp))
+                    {
+                        var acctNum = numProp.GetString();
+                        return acctNum == "13000";
+                    }
+                    return false;
+                });
+                
+                // Check if account 13000 was found (JsonElement is a struct, check if it has the acctnumber property)
+                if (account13000Row.ValueKind != JsonValueKind.Undefined && 
+                    account13000Row.TryGetProperty("acctnumber", out var _))
                 {
                     var account13000Balance = 0m;
                     if (account13000Row.TryGetProperty("balance", out var bal13000))
