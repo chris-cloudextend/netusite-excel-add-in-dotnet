@@ -6093,7 +6093,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.104"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.105"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -9022,6 +9022,27 @@ For licensing inquiries, contact: legal@celigo.com
                                 // Track filters found in formulas (use most common filter combination)
                                 const filterCombinations = new Map(); // key: filtersHash, value: count
                                 
+                                // CRITICAL FIX: Helper function to resolve cell reference to value (defined outside loop for efficiency)
+                                // This ensures filtersHash matches what functions.js uses (resolved values, not cell references)
+                                async function resolveCellReference(cellRef) {
+                                    if (!cellRef || (!cellRef.includes('$') && !cellRef.match(/^[A-Z]+\d+$/))) {
+                                        return cellRef; // Not a cell reference, return as-is
+                                    }
+                                    try {
+                                        const refRange = sheet.getRange(cellRef);
+                                        refRange.load(['values']);
+                                        await context.sync();
+                                        const cellValue = refRange.values[0][0];
+                                        if (cellValue !== null && cellValue !== undefined) {
+                                            return String(cellValue).trim();
+                                        }
+                                        return cellRef; // Fallback to original if resolution fails
+                                    } catch (e) {
+                                        // Excel busy or other error - return original
+                                        return cellRef;
+                                    }
+                                }
+                                
                                 for (let row = 0; row < formulas.length; row++) {
                                     for (let col = 0; col < formulas[row].length; col++) {
                                         const cell = formulas[row][col];
@@ -9063,13 +9084,22 @@ For licensing inquiries, contact: legal@celigo.com
                                                 const accountParam = params[0] ? params[0].replace(/^["']|["']$/g, '').trim() : '';
                                                 const fromPeriodParam = params[1] ? params[1].replace(/^["']|["']$/g, '').trim() : '';
                                                 const toPeriodParam = params[2] ? params[2].replace(/^["']|["']$/g, '').trim() : '';
-                                                const subsidiaryParam = params[3] ? params[3].replace(/^["']|["']$/g, '').trim() : '';
-                                                const departmentParam = params[4] ? params[4].replace(/^["']|["']$/g, '').trim() : '';
-                                                const locationParam = params[5] ? params[5].replace(/^["']|["']$/g, '').trim() : '';
-                                                const classParam = params[6] ? params[6].replace(/^["']|["']$/g, '').trim() : '';
-                                                const accountingBookParam = params[7] ? params[7].replace(/^["']|["']$/g, '').trim() : '';
+                                                let subsidiaryParam = params[3] ? params[3].replace(/^["']|["']$/g, '').trim() : '';
+                                                let departmentParam = params[4] ? params[4].replace(/^["']|["']$/g, '').trim() : '';
+                                                let locationParam = params[5] ? params[5].replace(/^["']|["']$/g, '').trim() : '';
+                                                let classParam = params[6] ? params[6].replace(/^["']|["']$/g, '').trim() : '';
+                                                let accountingBookParam = params[7] ? params[7].replace(/^["']|["']$/g, '').trim() : '';
                                                 
-                                                // Build filtersHash for this formula
+                                                // CRITICAL FIX: Resolve cell references to actual values BEFORE building filtersHash
+                                                // This ensures filtersHash matches what functions.js uses (resolved values, not cell references)
+                                                // Resolve all filter parameters that are cell references
+                                                subsidiaryParam = await resolveCellReference(subsidiaryParam);
+                                                departmentParam = await resolveCellReference(departmentParam);
+                                                locationParam = await resolveCellReference(locationParam);
+                                                classParam = await resolveCellReference(classParam);
+                                                accountingBookParam = await resolveCellReference(accountingBookParam);
+                                                
+                                                // Build filtersHash for this formula (using RESOLVED values)
                                                 // Normalize accountingBook: empty or "1" → "1"
                                                 let normalizedBook = accountingBookParam || '1';
                                                 if (normalizedBook === '' || normalizedBook === '1') {
