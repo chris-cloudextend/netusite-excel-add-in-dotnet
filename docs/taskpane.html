@@ -26626,31 +26626,26 @@ export default {
                     return cleaned;
                 };
                 
-                // Helper to convert Excel date serial to period name
+                // Helper to convert period values to normalized "Mon YYYY" format
+                // Uses the centralized normalizePeriodKey function from functions.js
+                // This ensures consistency with how BALANCE and other functions handle periods
                 const convertToPeriodName = (value) => {
                     if (!value) return '';
                     
-                    // If it's already a string like "Jan 2024", return as-is
-                    if (typeof value === 'string' && /^[A-Za-z]{3}\s+\d{4}$/.test(value.trim())) {
-                        return value.trim();
+                    // Use the centralized normalizePeriodKey function if available
+                    // This handles Excel date serials, date strings (including "5/1/25"), 
+                    // Date objects, year-only format, and already-normalized strings
+                    if (typeof normalizePeriodKey === 'function') {
+                        const normalized = normalizePeriodKey(value, false); // false = toPeriod (use Dec for year-only)
+                        if (normalized) {
+                            console.log(`  📅 normalizePeriodKey converted "${value}" to period: ${normalized}`);
+                            return normalized;
+                        }
                     }
                     
-                    // If it's a number, it might be an Excel date serial
-                    const num = Number(value);
-                    if (!isNaN(num) && num > 40000 && num < 60000) {
-                        // Excel date serial: convert to JS Date
-                        // Excel epoch is Dec 30, 1899 (with the 1900 leap year bug)
-                        const excelEpoch = new Date(1899, 11, 30);
-                        const jsDate = new Date(excelEpoch.getTime() + num * 24 * 60 * 60 * 1000);
-                        
-                        const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 
-                                           'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-                        const periodName = `${monthNames[jsDate.getMonth()]} ${jsDate.getFullYear()}`;
-                        console.log(`  📅 Converted Excel date ${value} to period: ${periodName}`);
-                        return periodName;
-                    }
-                    
-                    // Otherwise return as-is
+                    // Fallback: if normalizePeriodKey is not available or returns null, return as-is
+                    // This should rarely happen since functions.js is loaded before this code runs
+                    console.warn(`  ⚠️ normalizePeriodKey not available or returned null for "${value}", returning as-is`);
                     return String(value);
                 };
                 
