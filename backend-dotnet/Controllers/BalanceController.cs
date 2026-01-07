@@ -1098,12 +1098,15 @@ public class BalanceController : ControllerBase
                 // - Use LEFT JOIN to include accounts with no transactions
                 // - COALESCE returns 0 for accounts with no transactions (not NULL)
                 // - Filter inactive accounts
-                // - Accounting book filter handles NULL (accounts with no transactions)
+                // - Accounting book filter uses strict equality (no NULL) to match individual query behavior
                 // Issue 1 Fix: Make SUM conditional on segment match and move accounting book filter to JOIN
                 // This ensures:
                 // 1. Segment filters are properly applied (only sum when tl.id IS NOT NULL)
                 // 2. Zero balance accounts are returned (accounts with no matching transactions)
-                // 3. Accounting book filter doesn't collapse LEFT JOIN unexpectedly
+                // 3. Accounting book filter matches individual BalanceService query (strict equality, no NULL)
+                // CRITICAL: Using strict equality (tal.accountingbook = {accountingBook}) ensures we only
+                // include transactions from the specified book, matching the individual query behavior.
+                // Accounts with no transactions in that book will still return 0 due to LEFT JOIN + COALESCE.
                 // CRITICAL FIX: Use t.trandate <= TO_DATE('{endDate}', 'YYYY-MM-DD') to match NetSuite GL Balance report
                 // NetSuite's GL Balance report uses transaction date, not posting period, for cumulative balances
                 // This matches the individual BalanceService query logic (which returns correct values)
@@ -1136,7 +1139,7 @@ public class BalanceController : ControllerBase
                     FROM account a
                     LEFT JOIN transactionaccountingline tal ON tal.account = a.id
                         AND tal.posting = 'T'
-                        AND (tal.accountingbook = {accountingBook} OR tal.accountingbook IS NULL)
+                        AND tal.accountingbook = {accountingBook}
                     LEFT JOIN transaction t ON t.id = tal.transaction
                         AND t.posting = 'T'
                         AND t.trandate <= TO_DATE('{endDate}', 'YYYY-MM-DD')
