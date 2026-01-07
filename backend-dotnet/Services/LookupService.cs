@@ -1190,137 +1190,83 @@ public class LookupService : ILookupService
     /// </summary>
     public async Task<AccountSearchResult> SearchAccountsByPatternAsync(string pattern, bool activeOnly = true)
     {
-        if (string.IsNullOrWhiteSpace(pattern))
-            throw new ArgumentException("Pattern is required", nameof(pattern));
-
-        var patternWithoutWildcards = pattern.Replace("*", "").Trim();
-        var isTypeSearch = !string.IsNullOrEmpty(patternWithoutWildcards) && 
-                          patternWithoutWildcards.Any(char.IsLetter);
-
+        // Normalize input once
+        var normalizedInput = (pattern ?? "").Trim().ToLowerInvariant();
+        
+        // Log normalized input
+        _logger.LogInformation("🔍 [ACCOUNT SEARCH] Input: '{Original}' → Normalized: '{Normalized}'", pattern ?? "(null)", normalizedInput);
+        
         var conditions = new List<string>();
         var matchedTypes = new List<string>();
         string searchType;
 
-        if (isTypeSearch)
+        // Explicit intent detection in exact order (case-insensitive)
+        if (normalizedInput == "income")
         {
-            // ACCOUNT TYPE search
-            var patternUpper = patternWithoutWildcards.ToUpper().Trim();
-
-            // NetSuite account type mapping for better matching
-            var typeMappings = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase)
-            {
-                // Income Statement (P&L) - all revenue and expense accounts
-                ["INCOME"] = new List<string> { "Income", "OthIncome", "COGS", "Cost of Goods Sold", "Expense", "OthExpense" },
-                // Balance Sheet - all asset, liability, and equity accounts
-                ["BALANCE"] = new List<string> 
-                { 
-                    "Bank", "AcctRec", "OthCurrAsset", "FixedAsset", "OthAsset", "DeferExpense", "UnbilledRec",
-                    "AcctPay", "CredCard", "OthCurrLiab", "LongTermLiab", "DeferRevenue",
-                    "Equity", "RetainedEarnings"
-                },
-                ["BALANCESHEET"] = new List<string> 
-                { 
-                    "Bank", "AcctRec", "OthCurrAsset", "FixedAsset", "OthAsset", "DeferExpense", "UnbilledRec",
-                    "AcctPay", "CredCard", "OthCurrLiab", "LongTermLiab", "DeferRevenue",
-                    "Equity", "RetainedEarnings"
-                },
-                // Individual categories
-                ["EXPENSE"] = new List<string> { "Expense", "OthExpense" },
-                ["COGS"] = new List<string> { "COGS", "Cost of Goods Sold" },
-                ["ASSET"] = new List<string> { "Bank", "AcctRec", "OthCurrAsset", "FixedAsset", "OthAsset", "DeferExpense", "UnbilledRec" },
-                ["LIABILITY"] = new List<string> { "AcctPay", "CredCard", "OthCurrLiab", "LongTermLiab", "DeferRevenue" },
-                ["EQUITY"] = new List<string> { "Equity", "RetainedEarnings" }
-            };
-
-            // Collect all valid NetSuite account types
-            var allValidTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var typesList in typeMappings.Values)
-                allValidTypes.UnionWith(typesList);
-
-            // Check if pattern is an exact account type match
-            string? exactTypeMatch = null;
-            foreach (var validType in allValidTypes)
-            {
-                if (validType.Equals(patternUpper, StringComparison.OrdinalIgnoreCase))
-                {
-                    exactTypeMatch = validType;
-                    break;
-                }
-            }
-
-            if (exactTypeMatch != null)
-            {
-                // Exact account type match (e.g., "Bank", "AcctRec", "FixedAsset")
-                matchedTypes.Add(exactTypeMatch);
-                conditions.Add($"a.accttype = '{NetSuiteService.EscapeSql(exactTypeMatch)}'");
-                _logger.LogInformation("DEBUG - Exact type match: '{Type}'", exactTypeMatch);
-            }
-            else if (typeMappings.TryGetValue(patternUpper, out var mappedTypes))
-            {
-                // Category keyword match (BALANCE, INCOME, etc.)
-                matchedTypes = mappedTypes;
-                var escapedTypes = matchedTypes.Select(t => $"'{NetSuiteService.EscapeSql(t)}'");
-                var typeList = string.Join(",", escapedTypes);
-                conditions.Add($"a.accttype IN ({typeList})");
-                _logger.LogInformation("DEBUG - Category match: '{Pattern}' → {Count} types", patternUpper, matchedTypes.Count);
-            }
-            else
-            {
-                // Check for partial matches in category names
-                foreach (var (category, types) in typeMappings)
-                {
-                    if (category.StartsWith(patternUpper, StringComparison.OrdinalIgnoreCase) ||
-                        category.Contains(patternUpper, StringComparison.OrdinalIgnoreCase))
-                    {
-                        matchedTypes.AddRange(types);
-                    }
-                }
-
-                if (matchedTypes.Count > 0)
-                {
-                    // Use exact match for mapped types
-                    var escapedTypes = matchedTypes.Select(t => $"'{NetSuiteService.EscapeSql(t)}'");
-                    var typeList = string.Join(",", escapedTypes);
-                    conditions.Add($"a.accttype IN ({typeList})");
-                    _logger.LogInformation("DEBUG - Partial category match: '{Pattern}' → {Count} types", patternUpper, matchedTypes.Count);
-                }
-                else
-                {
-                    // Use LIKE for direct type matching
-                    var sqlPattern = pattern.Replace("*", "%").ToUpper();
-                    sqlPattern = NetSuiteService.EscapeSql(sqlPattern);
-                    conditions.Add($"UPPER(a.accttype) LIKE '{sqlPattern}'");
-                    _logger.LogInformation("DEBUG - LIKE match: pattern='{Pattern}'", sqlPattern);
-                }
-            }
-
-            searchType = "account_type";
+            // Income statement accounts
+            searchType = "income_statement";
+            var incomeTypes = new[] { "Income", "OthIncome", "Expense", "OthExpense", "COGS" };
+            matchedTypes.AddRange(incomeTypes);
+            var escapedTypes = incomeTypes.Select(t => $"'{NetSuiteService.EscapeSql(t)}'");
+            conditions.Add($"a.accttype IN ({string.Join(",", escapedTypes)})");
+            _logger.LogInformation("✅ [ACCOUNT SEARCH] Mode: INCOME_STATEMENT → {Count} types", incomeTypes.Length);
+        }
+        else if (normalizedInput == "balance")
+        {
+            // Balance sheet accounts
+            searchType = "balance_sheet";
+            var balanceTypes = new[] { "Bank", "AcctRec", "OthCurrAsset", "FixedAsset", "OthAsset", "AcctPay", "CredCard", "OthCurrLiab", "LongTermLiab", "Equity" };
+            matchedTypes.AddRange(balanceTypes);
+            var escapedTypes = balanceTypes.Select(t => $"'{NetSuiteService.EscapeSql(t)}'");
+            conditions.Add($"a.accttype IN ({string.Join(",", escapedTypes)})");
+            _logger.LogInformation("✅ [ACCOUNT SEARCH] Mode: BALANCE_SHEET → {Count} types", balanceTypes.Length);
+        }
+        else if (normalizedInput == "bank")
+        {
+            // Bank accounts only
+            searchType = "bank_accounts";
+            matchedTypes.Add("Bank");
+            conditions.Add("a.accttype = 'Bank'");
+            _logger.LogInformation("✅ [ACCOUNT SEARCH] Mode: BANK_ACCOUNTS");
+        }
+        else if (normalizedInput == "" || normalizedInput == "*")
+        {
+            // All active accounts - no type filter
+            searchType = "all_active";
+            _logger.LogInformation("✅ [ACCOUNT SEARCH] Mode: ALL_ACTIVE (no type filter)");
         }
         else
         {
-            // ACCOUNT NUMBER search
-            var sqlPattern = pattern.Replace("*", "%");
-            sqlPattern = NetSuiteService.EscapeSql(sqlPattern);
-            conditions.Add($"a.acctnumber LIKE '{sqlPattern}'");
-            searchType = "account_number";
-            _logger.LogInformation("DEBUG - Account number search: pattern='{Pattern}', sql_pattern='{SqlPattern}'", pattern, sqlPattern);
+            // Name or account number search
+            searchType = "name_or_number";
+            
+            // Escape the pattern for SQL LIKE
+            var escapedPattern = NetSuiteService.EscapeSql(normalizedInput);
+            var sqlPattern = $"%{escapedPattern}%";
+            
+            // Search both account name and account number
+            conditions.Add($"(LOWER(a.accountsearchdisplaynamecopy) LIKE LOWER('{sqlPattern}') OR a.acctnumber LIKE '{sqlPattern}')");
+            _logger.LogInformation("✅ [ACCOUNT SEARCH] Mode: NAME_OR_NUMBER → pattern: '{Pattern}'", sqlPattern);
         }
 
-        // Filter by active status
+        // Base filter: always include active status
         if (activeOnly)
+        {
             conditions.Add("a.isinactive = 'F'");
-
-        // CRITICAL FIX: Ensure we have at least one WHERE condition
+        }
+        
+        // Validate: must have at least one condition (active filter counts)
         if (conditions.Count == 0)
         {
-            var errorMsg = $"ERROR: No WHERE conditions generated for search pattern '{pattern}'";
-            _logger.LogError(errorMsg);
+            var errorMsg = $"ERROR: No WHERE conditions generated for pattern '{pattern}'";
+            _logger.LogError("❌ {Error}", errorMsg);
             throw new InvalidOperationException(errorMsg);
         }
-
+        
+        // Build WHERE clause
         var whereClause = string.Join(" AND ", conditions);
-        _logger.LogInformation("DEBUG - Final WHERE clause: {WhereClause}", whereClause);
-
+        _logger.LogInformation("📋 [ACCOUNT SEARCH] WHERE clause: {WhereClause}", whereClause);
+        
         // Build SuiteQL query
         var query = $@"
             SELECT 
@@ -1338,11 +1284,24 @@ public class LookupService : ILookupService
                 {whereClause}
             ORDER BY 
                 a.acctnumber";
+        
+        // Log final query before execution
+        _logger.LogInformation("📊 [ACCOUNT SEARCH] Final SuiteQL Query:\n{Query}", query);
+        
+        // Execute query - do NOT swallow errors
+        List<System.Text.Json.JsonElement> results;
+        try
+        {
+            results = await _netSuiteService.QueryPaginatedAsync<System.Text.Json.JsonElement>(query, orderBy: "a.acctnumber");
+            _logger.LogInformation("✅ [ACCOUNT SEARCH] Query executed successfully → {Count} results", results.Count);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "❌ [ACCOUNT SEARCH] NetSuite query execution failed");
+            throw; // Re-throw - do NOT swallow errors
+        }
 
-        _logger.LogInformation("DEBUG - Account search query: {Query}", query);
-
-        var results = await _netSuiteService.QueryPaginatedAsync<JsonElement>(query, orderBy: "a.acctnumber");
-
+        // Map results
         var accounts = results.Select(r => new AccountItem
         {
             Id = r.TryGetProperty("id", out var id) ? id.ToString() : "",
@@ -1350,10 +1309,12 @@ public class LookupService : ILookupService
             Name = r.TryGetProperty("accountname", out var name) ? name.GetString() ?? "" : "",
             FullName = null,
             Type = r.TryGetProperty("accttype", out var type) ? type.GetString() ?? "" : "",
-            SpecialAccountType = r.TryGetProperty("sspecacct", out var spec) && spec.ValueKind != JsonValueKind.Null ? spec.GetString() : null,
-            Parent = r.TryGetProperty("parent", out var p) && p.ValueKind != JsonValueKind.Null ? p.GetString() : null
+            SpecialAccountType = r.TryGetProperty("sspecacct", out var spec) && spec.ValueKind != System.Text.Json.JsonValueKind.Null ? spec.GetString() : null,
+            Parent = r.TryGetProperty("parent", out var p) && p.ValueKind != System.Text.Json.JsonValueKind.Null ? p.GetString() : null
         }).ToList();
-
+        
+        _logger.LogInformation("✅ [ACCOUNT SEARCH] Complete → {Count} accounts returned", accounts.Count);
+        
         return new AccountSearchResult
         {
             Items = accounts,
