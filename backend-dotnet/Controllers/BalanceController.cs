@@ -1040,8 +1040,10 @@ public class BalanceController : ControllerBase
                 segmentFilters.Add($"tl.location = {locationId}");
             var segmentWhere = string.Join(" AND ", segmentFilters);
             
-            var accountingBook = request.Book ?? DefaultAccountingBook;
-            var filtersHash = $"{targetSub}:{departmentId ?? ""}:{locationId ?? ""}:{classId ?? ""}";
+            // CRITICAL FIX: Convert accounting book to string and include in filtersHash
+            // This ensures cache keys are unique per accounting book
+            var accountingBook = (request.Book ?? DefaultAccountingBook).ToString();
+            var filtersHash = $"{targetSub}:{departmentId ?? ""}:{locationId ?? ""}:{classId ?? ""}:{accountingBook}";
             var cacheExpiry = TimeSpan.FromMinutes(5);
             var bsTypesSql = Models.AccountType.BsTypesSql;
             var requestId = Guid.NewGuid().ToString("N")[..16]; // Short unique ID for tracking
@@ -1325,8 +1327,10 @@ public class BalanceController : ControllerBase
                 segmentFilters.Add($"tl.location = {locationId}");
             var segmentWhere = string.Join(" AND ", segmentFilters);
             
-            var accountingBook = request.Book ?? DefaultAccountingBook;
-            var filtersHash = $"{targetSub}:{departmentId ?? ""}:{locationId ?? ""}:{classId ?? ""}";
+            // CRITICAL FIX: Convert accounting book to string and include in filtersHash
+            // This ensures cache keys are unique per accounting book
+            var accountingBook = (request.Book ?? DefaultAccountingBook).ToString();
+            var filtersHash = $"{targetSub}:{departmentId ?? ""}:{locationId ?? ""}:{classId ?? ""}:{accountingBook}";
             var cacheExpiry = TimeSpan.FromMinutes(5);
             
             // Build account filter

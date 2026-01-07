@@ -271,16 +271,17 @@ public class BalanceService : IBalanceService
         // ========================================================================
         // CACHE CHECK: For single non-wildcard accounts, check if we have a cached balance
         // This is populated by the /batch/bs_preload endpoint for instant lookups
+        // CRITICAL FIX: Include accounting book in cache key to prevent cross-book cache hits
         // ========================================================================
         if (!request.Account.Contains('*'))
         {
-            var filtersHash = $"{targetSub}:{departmentId ?? ""}:{locationId ?? ""}:{classId ?? ""}";
+            var filtersHash = $"{targetSub}:{departmentId ?? ""}:{locationId ?? ""}:{classId ?? ""}:{accountingBook}";
             var cacheKey = $"balance:{request.Account}:{toPeriod}:{filtersHash}";
             
             if (_cache.TryGetValue(cacheKey, out decimal cachedBalance))
             {
-                _logger.LogInformation("⚡ CACHE HIT: {Account} for {Period} = ${Balance:N2}", 
-                    request.Account, toPeriod, cachedBalance);
+                _logger.LogInformation("⚡ CACHE HIT: {Account} for {Period} (book={Book}) = ${Balance:N2}", 
+                    request.Account, toPeriod, accountingBook, cachedBalance);
                 return new BalanceResponse
                 {
                     Account = request.Account,
@@ -1116,7 +1117,11 @@ public class BalanceService : IBalanceService
         var departmentId = await _lookupService.ResolveDimensionIdAsync("department", request.Department);
         var classId = await _lookupService.ResolveDimensionIdAsync("class", request.Class);
         var locationId = await _lookupService.ResolveDimensionIdAsync("location", request.Location);
-        var filtersHash = $"{targetSub}:{departmentId ?? ""}:{locationId ?? ""}:{classId ?? ""}";
+        
+        // CRITICAL FIX: Convert accounting book to string and include in filtersHash
+        // This ensures cache keys are unique per accounting book
+        var accountingBook = (request.Book ?? DefaultAccountingBook).ToString();
+        var filtersHash = $"{targetSub}:{departmentId ?? ""}:{locationId ?? ""}:{classId ?? ""}:{accountingBook}";
         
         // ========================================================================
         // PERIOD RANGE HANDLING: Support both period list and period range
@@ -1318,8 +1323,8 @@ public class BalanceService : IBalanceService
             segmentFilters.Add($"tl.location = {locationId}");
         var segmentWhere = string.Join(" AND ", segmentFilters);
 
-        // CRITICAL FIX: Convert accounting book to string (like TYPEBALANCE does)
-        var accountingBook = (request.Book ?? DefaultAccountingBook).ToString();
+        // Note: accountingBook is already declared earlier in this method (line 1123)
+        // No need to redeclare it here
         int queryCount = 0;
 
         // ===========================================================================
