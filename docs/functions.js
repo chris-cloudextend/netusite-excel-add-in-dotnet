@@ -5237,14 +5237,27 @@ function normalizePeriodKey(value, isFromPeriod = true) {
         value = extracted;
     }
     
-    // If numeric string (periodId/internalId), lookup in cache
+    // CRITICAL: Handle numeric strings - check for Excel date serials BEFORE period IDs
+    // Excel date serials are typically 5+ digits and >= 40000 (dates after ~2009)
+    // Period IDs are typically 1-6 digits and < 40000
     if (typeof value === 'string' && /^\d+$/.test(value.trim())) {
-        const periodId = value.trim();
-        if (cache.byId[periodId]) {
-            return cache.byId[periodId];  // Return cached "Mon YYYY"
+        const numValue = parseFloat(value.trim());
+        
+        // First check: Is this an Excel date serial? (>= 40000)
+        if (numValue >= 40000 && numValue <= 1000000 && Number.isFinite(numValue)) {
+            // This is an Excel date serial - convert to number and process below
+            value = numValue;
         }
-        // Not in cache - return null (will need to be resolved via resolvePeriodIdToName)
-        return null;
+        // Second check: Is this a cached period ID? (< 40000)
+        else if (numValue < 40000 && numValue >= 1 && Number.isInteger(numValue)) {
+            const periodId = value.trim();
+            if (cache.byId[periodId]) {
+                return cache.byId[periodId];  // Return cached "Mon YYYY"
+            }
+            // Not in cache - return null (will need to be resolved via resolvePeriodIdToName)
+            return null;
+        }
+        // If it's a numeric string but doesn't match either pattern, continue processing
     }
     
     // If already in "Mon YYYY" format, normalize case and return
@@ -5295,6 +5308,7 @@ function normalizePeriodKey(value, isFromPeriod = true) {
         // These should be passed through to the backend as-is (backend resolves them)
         // Period IDs are typically 1-6 digits and are NOT years (not 1900-2100)
         // and NOT Excel date serials (not >= 40000)
+        // NOTE: Excel date serials are already handled above, so this only processes period IDs
         if (/^\d{1,6}$/.test(trimmed)) {
             const numValue = parseInt(trimmed, 10);
             // If it's NOT a year (1900-2100) and NOT an Excel date serial (>= 40000),
@@ -5302,21 +5316,6 @@ function normalizePeriodKey(value, isFromPeriod = true) {
             if ((numValue < 1900 || numValue > 2100) && numValue < 40000) {
                 // This is a period ID - return as-is (backend will resolve it)
                 return trimmed;
-            }
-        }
-        
-        // CRITICAL: Handle string representations of Excel date serials
-        // When extractValueFromRange extracts a date serial from a Range object,
-        // it returns a string like "45658" (not a number)
-        // Excel date serials are typically 5+ digits and > 40000 (dates after ~2009)
-        // We need to detect these and convert them to numbers before processing
-        if (/^\d+$/.test(trimmed)) {
-            const numValue = parseFloat(trimmed);
-            // Excel date serials are typically 5+ digits (dates after ~2009)
-            // Year 2000 = 36526, Year 2025 = ~45658
-            if (numValue >= 1 && numValue <= 1000000 && Number.isFinite(numValue)) {
-                // This looks like an Excel date serial - convert to number and process below
-                value = numValue;
             }
         }
     }
@@ -6297,12 +6296,27 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         // - "Mon YYYY" format (e.g., "Jan 2025")
         // - Year-only "YYYY" format (e.g., "2025") - backend handles expansion
         // - Period ID format (e.g., "344") - numeric ID that backend resolves to period
+        // CRITICAL: Reject Excel date serials (>= 40000) - these should have been converted
         const periodPattern = /^([A-Za-z]{3}\s+\d{4}|\d{4}|\d{1,6})$/;
-        if (fromPeriod && !periodPattern.test(fromPeriod)) {
-            console.error(`❌ Invalid fromPeriod after conversion: "${fromPeriod}" (raw: ${rawFrom})`);
+        if (fromPeriod) {
+            const fromPeriodNum = typeof fromPeriod === 'number' ? fromPeriod : parseFloat(fromPeriod);
+            if (!isNaN(fromPeriodNum) && fromPeriodNum >= 40000 && fromPeriodNum <= 1000000) {
+                console.error(`❌ Excel date serial not converted for fromPeriod: "${fromPeriod}" (raw: ${rawFrom})`);
+                throw new Error('INVALID_PERIOD');
+            }
+            if (!periodPattern.test(fromPeriod)) {
+                console.error(`❌ Invalid fromPeriod after conversion: "${fromPeriod}" (raw: ${rawFrom})`);
+            }
         }
-        if (toPeriod && !periodPattern.test(toPeriod)) {
-            console.error(`❌ Invalid toPeriod after conversion: "${toPeriod}" (raw: ${rawTo})`);
+        if (toPeriod) {
+            const toPeriodNum = typeof toPeriod === 'number' ? toPeriod : parseFloat(toPeriod);
+            if (!isNaN(toPeriodNum) && toPeriodNum >= 40000 && toPeriodNum <= 1000000) {
+                console.error(`❌ Excel date serial not converted for toPeriod: "${toPeriod}" (raw: ${rawTo})`);
+                throw new Error('INVALID_PERIOD');
+            }
+            if (!periodPattern.test(toPeriod)) {
+                console.error(`❌ Invalid toPeriod after conversion: "${toPeriod}" (raw: ${rawTo})`);
+            }
         }
         
         // Other parameters as strings

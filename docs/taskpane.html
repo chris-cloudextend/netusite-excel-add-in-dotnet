@@ -26179,8 +26179,14 @@ export default {
                         }
                     }
                     
-                    if (allAccounts.length === 0 || !commonParams || !commonParams.period) {
+                    if (allAccounts.length === 0 || !commonParams) {
                         showDrilldownError('Could not parse formula parameters', 'Check that account and period values are set');
+                        return;
+                    }
+                    
+                    // Validate period was converted (should not be a numeric Excel date serial)
+                    if (!commonParams.period || /^\d{5,}$/.test(String(commonParams.period).trim())) {
+                        showDrilldownError('Invalid period format', `Period "${commonParams.period}" could not be converted. Please use "Mon YYYY" format (e.g., "Jan 2025").`);
                         return;
                     }
                     
@@ -26629,22 +26635,77 @@ export default {
                 // Helper to convert period values to normalized "Mon YYYY" format
                 // Uses the centralized normalizePeriodKey function from functions.js
                 // This ensures consistency with how BALANCE and other functions handle periods
-                const convertToPeriodName = (value) => {
+                const convertToPeriodName = async (value) => {
                     if (!value) return '';
                     
                     // Use the centralized normalizePeriodKey function if available
                     // This handles Excel date serials, date strings (including "5/1/25"), 
                     // Date objects, year-only format, and already-normalized strings
                     if (typeof normalizePeriodKey === 'function') {
-                        const normalized = normalizePeriodKey(value, false); // false = toPeriod (use Dec for year-only)
+                        let normalized = normalizePeriodKey(value, false); // false = toPeriod (use Dec for year-only)
                         if (normalized) {
                             console.log(`  📅 normalizePeriodKey converted "${value}" to period: ${normalized}`);
                             return normalized;
                         }
+                        
+                        // If normalizePeriodKey returned null, it might be a numeric period ID or an Excel date serial
+                        // Try to resolve it via resolvePeriodIdToName (async) if it's a numeric string
+                        if (typeof value === 'string' && /^\d+$/.test(value.trim())) {
+                            const numValue = parseFloat(value.trim());
+                            if (numValue < 40000 && numValue >= 1 && Number.isInteger(numValue)) {
+                                // Likely a period ID - try to resolve it
+                                if (typeof resolvePeriodIdToName === 'function') {
+                                    console.log(`  📅 Attempting to resolve period ID "${value}" via resolvePeriodIdToName...`);
+                                    const resolved = await resolvePeriodIdToName(value.trim());
+                                    if (resolved) {
+                                        console.log(`  📅 resolvePeriodIdToName converted "${value}" to period: ${resolved}`);
+                                        return resolved;
+                                    }
+                                }
+                            } else if (numValue >= 40000 && numValue <= 1000000 && Number.isFinite(numValue)) {
+                                // Likely an Excel date serial - directly convert it
+                                const excelEpoch = new Date(1899, 11, 30);
+                                const date = new Date(excelEpoch.getTime() + numValue * 24 * 60 * 60 * 1000);
+                                const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+                                const month = monthNames[date.getMonth()];
+                                const year = date.getFullYear();
+                                const convertedDate = `${month} ${year}`;
+                                console.log(`  📅 Manually converted Excel date serial "${value}" to period: ${convertedDate}`);
+                                return convertedDate;
+                            }
+                        } else if (typeof value === 'number') {
+                            // Direct numeric value - check if it's an Excel date serial
+                            if (value >= 40000 && value <= 1000000 && Number.isFinite(value)) {
+                                const excelEpoch = new Date(1899, 11, 30);
+                                const date = new Date(excelEpoch.getTime() + value * 24 * 60 * 60 * 1000);
+                                const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+                                const month = monthNames[date.getMonth()];
+                                const year = date.getFullYear();
+                                const convertedDate = `${month} ${year}`;
+                                console.log(`  📅 Manually converted Excel date serial ${value} to period: ${convertedDate}`);
+                                return convertedDate;
+                            }
+                        }
                     }
                     
-                    // Fallback: if normalizePeriodKey is not available or returns null, return as-is
-                    // This should rarely happen since functions.js is loaded before this code runs
+                    // Fallback: if normalizePeriodKey is not available or returned null, try direct conversion
+                    // Check if it's an Excel date serial that wasn't converted
+                    if (typeof value === 'number' || (typeof value === 'string' && /^\d+$/.test(value.trim()))) {
+                        const numValue = typeof value === 'number' ? value : parseFloat(value.trim());
+                        if (numValue >= 40000 && numValue <= 1000000 && Number.isFinite(numValue)) {
+                            // This is an Excel date serial - convert it directly
+                            const excelEpoch = new Date(1899, 11, 30);
+                            const date = new Date(excelEpoch.getTime() + numValue * 24 * 60 * 60 * 1000);
+                            const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+                            const month = monthNames[date.getMonth()];
+                            const year = date.getFullYear();
+                            const convertedDate = `${month} ${year}`;
+                            console.log(`  📅 Fallback: Converted Excel date serial "${value}" to period: ${convertedDate}`);
+                            return convertedDate;
+                        }
+                    }
+                    
+                    // Last resort: if we can't convert it, return as-is but log a warning
                     console.warn(`  ⚠️ normalizePeriodKey not available or returned null for "${value}", returning as-is`);
                     return String(value);
                 };
@@ -26659,9 +26720,9 @@ export default {
                 const classId = await getValue(cellRefs.classRef);
                 const accountingBook = await getValue(cellRefs.accountingBookRef);
                 
-                // Convert periods if they're Excel date serials
-                const fromPeriod = convertToPeriodName(fromPeriodRaw);
-                const toPeriod = convertToPeriodName(toPeriodRaw);
+                // Convert periods if they're Excel date serials (now async)
+                const fromPeriod = await convertToPeriodName(fromPeriodRaw);
+                const toPeriod = await convertToPeriodName(toPeriodRaw);
                 
                 // For YTD formulas the visible value usually reflects the TO period.
                 // Prefer toPeriod when present; fallback to fromPeriod.

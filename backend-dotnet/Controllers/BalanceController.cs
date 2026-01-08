@@ -1114,8 +1114,9 @@ public class BalanceController : ControllerBase
                 // CRITICAL: Using strict equality (tal.accountingbook = {accountingBook}) ensures we only
                 // include transactions from the specified book, matching the individual query behavior.
                 // Accounts with no transactions in that book will still return 0 due to LEFT JOIN + COALESCE.
-                // CRITICAL FIX: Use t.trandate <= TO_DATE('{endDate}', 'YYYY-MM-DD') to match NetSuite GL Balance report
-                // NetSuite's GL Balance report uses transaction date, not posting period, for cumulative balances
+                // CRITICAL FIX: Use posting period end date (not transaction date) to match NetSuite GL Balance report
+                // NetSuite's GL Balance report uses posting period, not transaction date, for balance sheet balances
+                // Transactions with trandate in January but posted to February period are excluded from January balance
                 // This matches the individual BalanceService query logic (which returns correct values)
                 // Note: endDate is already calculated above (line 1075)
                 
@@ -1150,10 +1151,11 @@ public class BalanceController : ControllerBase
                         FROM transactionaccountingline tal
                         JOIN transaction t ON t.id = tal.transaction
                         JOIN account a ON a.id = tal.account
+                        JOIN accountingperiod ap ON t.postingperiod = ap.id
                         JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id
                         WHERE t.posting = 'T'
                           AND tal.posting = 'T'
-                          AND t.trandate <= TO_DATE('{endDate}', 'YYYY-MM-DD')
+                          AND ap.enddate <= TO_DATE('{endDate}', 'YYYY-MM-DD')
                           AND tal.accountingbook = {accountingBook}
                           AND ({segmentWhere})
                     ) x ON x.account = a.id
@@ -1165,7 +1167,7 @@ public class BalanceController : ControllerBase
                 // DEBUG: Log full query (or at least the critical date filter part)
                 var queryPreview = query.Length > 1000 ? query.Substring(0, 1000) + "..." : query;
                 _logger.LogInformation("🔍 [BS PRELOAD DEBUG] Full query for {Period}: {Query}", periodName, queryPreview);
-                _logger.LogInformation("🔍 [BS PRELOAD DEBUG] Critical date filter in query: t.trandate <= TO_DATE('{EndDate}', 'YYYY-MM-DD')", endDate);
+                _logger.LogInformation("🔍 [BS PRELOAD DEBUG] Critical date filter in query: ap.enddate <= TO_DATE('{EndDate}', 'YYYY-MM-DD')", endDate);
             
                 var queryResult = await _netSuiteService.QueryRawWithErrorAsync(query, 180);
                 var periodElapsed = (DateTime.UtcNow - periodStartTime).TotalSeconds;
@@ -1426,8 +1428,9 @@ public class BalanceController : ControllerBase
                 var signFlipSql = Models.AccountType.SignFlipTypesSql;
                 
                 // Query ONLY the specific accounts
-                // CRITICAL FIX: Use t.trandate <= TO_DATE('{endDate}', 'YYYY-MM-DD') to match NetSuite GL Balance report
-                // NetSuite's GL Balance report uses transaction date, not posting period, for cumulative balances
+                // CRITICAL FIX: Use posting period end date (not transaction date) to match NetSuite GL Balance report
+                // NetSuite's GL Balance report uses posting period, not transaction date, for balance sheet balances
+                // Transactions with trandate in January but posted to February period are excluded from January balance
                 // This matches the individual BalanceService query logic (which returns correct values)
                 var query = $@"
                     SELECT 
@@ -1449,11 +1452,12 @@ public class BalanceController : ControllerBase
                     FROM transactionaccountingline tal
                     JOIN transaction t ON t.id = tal.transaction
                     JOIN account a ON a.id = tal.account
+                    JOIN accountingperiod ap ON t.postingperiod = ap.id
                     JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id
                     WHERE t.posting = 'T'
                       AND tal.posting = 'T'
                       AND a.acctnumber IN ('{accountFilter}')
-                      AND t.trandate <= TO_DATE('{endDate}', 'YYYY-MM-DD')
+                      AND ap.enddate <= TO_DATE('{endDate}', 'YYYY-MM-DD')
                       AND tal.accountingbook = {accountingBook}
                       AND {segmentWhere}
                     GROUP BY a.acctnumber, a.accttype
@@ -2508,8 +2512,9 @@ public class BalanceController : ControllerBase
                             ? ParseBalance(priorPlResult.Items.First().TryGetProperty("value", out var ppProp) ? ppProp : default)
                             : 0;
                         
-                        // Posted RE - CRITICAL FIX: Use t.trandate <= TO_DATE('{periodEndDate}', 'YYYY-MM-DD') to match NetSuite GL Balance report
-                        // NetSuite's GL Balance report uses transaction date, not posting period, for cumulative balances
+                        // Posted RE - CRITICAL FIX: Use posting period end date (not transaction date) to match NetSuite GL Balance report
+                        // NetSuite's GL Balance report uses posting period, not transaction date, for balance sheet balances
+                        // Transactions with trandate in January but posted to February period are excluded from January balance
                         var postedReQuery = $@"
                             SELECT SUM(
                                 TO_NUMBER(BUILTIN.CONSOLIDATE(tal.amount, 'LEDGER', 'DEFAULT', 'DEFAULT', {targetSub}, {targetPeriodId}, 'DEFAULT'))
@@ -2518,11 +2523,12 @@ public class BalanceController : ControllerBase
                             FROM transactionaccountingline tal
                             JOIN transaction t ON t.id = tal.transaction
                             JOIN account a ON a.id = tal.account
+                            JOIN accountingperiod ap ON t.postingperiod = ap.id
                             JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id
                             WHERE t.posting = 'T'
                               AND tal.posting = 'T'
                               AND (a.accttype = 'RetainedEarnings' OR LOWER(a.fullname) LIKE '%retained earnings%')
-                              AND t.trandate <= TO_DATE('{periodEndDate}', 'YYYY-MM-DD')
+                              AND ap.enddate <= TO_DATE('{periodEndDate}', 'YYYY-MM-DD')
                               AND tal.accountingbook = {accountingBook}
                               AND {segmentWhere}";
                         var postedReResult = await _netSuiteService.QueryRawWithErrorAsync(postedReQuery, 120);
@@ -2552,8 +2558,9 @@ public class BalanceController : ControllerBase
                     var liabilityTypesSql = AccountType.BsLiabilityTypesSql;
                     var plTypesSql = "'Income', 'COGS', 'Expense', 'OthIncome', 'OthExpense'";
                     
-                    // Total Assets - CRITICAL FIX: Use t.trandate <= TO_DATE('{periodEndDate}', 'YYYY-MM-DD') to match NetSuite GL Balance report
-                    // NetSuite's GL Balance report uses transaction date, not posting period, for cumulative balances
+                    // Total Assets - CRITICAL FIX: Use posting period end date (not transaction date) to match NetSuite GL Balance report
+                    // NetSuite's GL Balance report uses posting period, not transaction date, for balance sheet balances
+                    // Transactions with trandate in January but posted to February period are excluded from January balance
                     var assetsQuery = $@"
                         SELECT SUM(
                             TO_NUMBER(BUILTIN.CONSOLIDATE(tal.amount, 'LEDGER', 'DEFAULT', 'DEFAULT', {targetSub}, {targetPeriodId}, 'DEFAULT'))
@@ -2561,14 +2568,16 @@ public class BalanceController : ControllerBase
                         FROM transactionaccountingline tal
                         JOIN transaction t ON t.id = tal.transaction
                         JOIN account a ON a.id = tal.account
+                        JOIN accountingperiod ap ON t.postingperiod = ap.id
                         WHERE t.posting = 'T'
                           AND tal.posting = 'T'
                           AND a.accttype IN ({assetTypesSql})
-                          AND t.trandate <= TO_DATE('{periodEndDate}', 'YYYY-MM-DD')
+                          AND ap.enddate <= TO_DATE('{periodEndDate}', 'YYYY-MM-DD')
                           AND tal.accountingbook = {accountingBook}";
                     
-                    // Total Liabilities - CRITICAL FIX: Use t.trandate <= TO_DATE('{periodEndDate}', 'YYYY-MM-DD') to match NetSuite GL Balance report
-                    // NetSuite's GL Balance report uses transaction date, not posting period, for cumulative balances
+                    // Total Liabilities - CRITICAL FIX: Use posting period end date (not transaction date) to match NetSuite GL Balance report
+                    // NetSuite's GL Balance report uses posting period, not transaction date, for balance sheet balances
+                    // Transactions with trandate in January but posted to February period are excluded from January balance
                     var liabilitiesQuery = $@"
                         SELECT SUM(
                             TO_NUMBER(BUILTIN.CONSOLIDATE(tal.amount, 'LEDGER', 'DEFAULT', 'DEFAULT', {targetSub}, {targetPeriodId}, 'DEFAULT'))
@@ -2577,14 +2586,16 @@ public class BalanceController : ControllerBase
                         FROM transactionaccountingline tal
                         JOIN transaction t ON t.id = tal.transaction
                         JOIN account a ON a.id = tal.account
+                        JOIN accountingperiod ap ON t.postingperiod = ap.id
                         WHERE t.posting = 'T'
                           AND tal.posting = 'T'
                           AND a.accttype IN ({liabilityTypesSql})
-                          AND t.trandate <= TO_DATE('{periodEndDate}', 'YYYY-MM-DD')
+                          AND ap.enddate <= TO_DATE('{periodEndDate}', 'YYYY-MM-DD')
                           AND tal.accountingbook = {accountingBook}";
                     
-                    // Posted Equity (excluding RE) - CRITICAL FIX: Use t.trandate <= TO_DATE('{periodEndDate}', 'YYYY-MM-DD') to match NetSuite GL Balance report
-                    // NetSuite's GL Balance report uses transaction date, not posting period, for cumulative balances
+                    // Posted Equity (excluding RE) - CRITICAL FIX: Use posting period end date (not transaction date) to match NetSuite GL Balance report
+                    // NetSuite's GL Balance report uses posting period, not transaction date, for balance sheet balances
+                    // Transactions with trandate in January but posted to February period are excluded from January balance
                     var equityQuery = $@"
                         SELECT SUM(
                             TO_NUMBER(BUILTIN.CONSOLIDATE(tal.amount, 'LEDGER', 'DEFAULT', 'DEFAULT', {targetSub}, {targetPeriodId}, 'DEFAULT'))
@@ -2593,11 +2604,12 @@ public class BalanceController : ControllerBase
                         FROM transactionaccountingline tal
                         JOIN transaction t ON t.id = tal.transaction
                         JOIN account a ON a.id = tal.account
+                        JOIN accountingperiod ap ON t.postingperiod = ap.id
                         WHERE t.posting = 'T'
                           AND tal.posting = 'T'
                           AND a.accttype = 'Equity'
                           AND LOWER(a.fullname) NOT LIKE '%retained earnings%'
-                          AND t.trandate <= TO_DATE('{periodEndDate}', 'YYYY-MM-DD')
+                          AND ap.enddate <= TO_DATE('{periodEndDate}', 'YYYY-MM-DD')
                           AND tal.accountingbook = {accountingBook}";
                     
                     var assetsTask = _netSuiteService.QueryRawWithErrorAsync(assetsQuery, 120);
@@ -2668,8 +2680,9 @@ public class BalanceController : ControllerBase
                               AND tal.accountingbook = {accountingBook}";
                     }
                     
-                    // Posted RE (for CTA) - CRITICAL FIX: Use t.trandate <= TO_DATE('{periodEndDate}', 'YYYY-MM-DD') to match NetSuite GL Balance report
-                    // NetSuite's GL Balance report uses transaction date, not posting period, for cumulative balances
+                    // Posted RE (for CTA) - CRITICAL FIX: Use posting period end date (not transaction date) to match NetSuite GL Balance report
+                    // NetSuite's GL Balance report uses posting period, not transaction date, for balance sheet balances
+                    // Transactions with trandate in January but posted to February period are excluded from January balance
                     var postedReQuery = $@"
                         SELECT SUM(
                             TO_NUMBER(BUILTIN.CONSOLIDATE(tal.amount, 'LEDGER', 'DEFAULT', 'DEFAULT', {targetSub}, {targetPeriodId}, 'DEFAULT'))
@@ -2678,10 +2691,11 @@ public class BalanceController : ControllerBase
                         FROM transactionaccountingline tal
                         JOIN transaction t ON t.id = tal.transaction
                         JOIN account a ON a.id = tal.account
+                        JOIN accountingperiod ap ON t.postingperiod = ap.id
                         WHERE t.posting = 'T'
                           AND tal.posting = 'T'
                           AND (a.accttype = 'RetainedEarnings' OR LOWER(a.fullname) LIKE '%retained earnings%')
-                          AND t.trandate <= TO_DATE('{periodEndDate}', 'YYYY-MM-DD')
+                          AND ap.enddate <= TO_DATE('{periodEndDate}', 'YYYY-MM-DD')
                           AND tal.accountingbook = {accountingBook}";
                     
                     Task<QueryResult<JsonElement>>? priorPlTask = null;
@@ -3327,6 +3341,7 @@ public class BalanceController : ControllerBase
             var accountFilter = NetSuiteService.BuildAccountFilter(request.Accounts);
             
             // Single point-in-time query for all accounts at anchor date
+            // CRITICAL FIX: Use posting period end date (not transaction date) to match NetSuite GL Balance report
             var query = $@"
                 SELECT 
                     a.acctnumber AS account,
@@ -3346,13 +3361,14 @@ public class BalanceController : ControllerBase
                 FROM transactionaccountingline tal
                 JOIN transaction t ON t.id = tal.transaction
                 JOIN account a ON a.id = tal.account
+                JOIN accountingperiod ap ON t.postingperiod = ap.id
                 JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id
                 WHERE t.posting = 'T'
                   AND tal.posting = 'T'
                   AND {accountFilter}
                   AND a.accttype IN ({AccountType.BsTypesSql})
                   AND a.isinactive = 'F'
-                  AND t.trandate <= TO_DATE('{anchorDateStr}', 'YYYY-MM-DD')
+                  AND ap.enddate <= TO_DATE('{anchorDateStr}', 'YYYY-MM-DD')
                   AND tal.accountingbook = {accountingBook}
                   AND {segmentWhere}
                 GROUP BY a.acctnumber
@@ -3689,7 +3705,8 @@ public class BalanceController : ControllerBase
             // Build segment filter
             var segmentWhere = $"tl.subsidiary IN ({subFilter})";
             
-            // Build the EXACT query that BalanceService uses (with trandate fix)
+            // Build the EXACT query that BalanceService uses (with posting period end date fix)
+            // CRITICAL FIX: Use posting period end date (not transaction date) to match NetSuite GL Balance report
             var query = $@"
                 SELECT SUM(x.cons_amt) AS balance
                 FROM (
@@ -3708,11 +3725,12 @@ public class BalanceController : ControllerBase
                     FROM transactionaccountingline tal
                     JOIN transaction t ON t.id = tal.transaction
                     JOIN account a ON a.id = tal.account
+                    JOIN accountingperiod ap ON t.postingperiod = ap.id
                     JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id
                     WHERE t.posting = 'T'
                       AND tal.posting = 'T'
                       AND a.acctnumber = '{NetSuiteService.EscapeSql(account)}'
-                      AND t.trandate <= TO_DATE('{toEndDate}', 'YYYY-MM-DD')
+                      AND ap.enddate <= TO_DATE('{toEndDate}', 'YYYY-MM-DD')
                       AND tal.accountingbook = {accountingBook}
                       AND {segmentWhere}
                 ) x";

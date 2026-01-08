@@ -65,7 +65,12 @@ public class TransactionController : ControllerBase
                 account, period, subsidiary, department, classId, location, accountingBook);
 
             // Resolve filters to IDs
-            var resolvedSubsidiary = string.IsNullOrWhiteSpace(subsidiary) ? null : await _lookupService.ResolveSubsidiaryIdAsync(subsidiary.Trim());
+            // CRITICAL FIX: Default subsidiary to "1" (top-level consolidated) if not provided
+            var resolvedSubsidiary = string.IsNullOrWhiteSpace(subsidiary) ? "1" : await _lookupService.ResolveSubsidiaryIdAsync(subsidiary.Trim());
+            if (string.IsNullOrEmpty(resolvedSubsidiary))
+            {
+                resolvedSubsidiary = "1"; // Fallback to top-level consolidated if resolution fails
+            }
             var resolvedDept = string.IsNullOrWhiteSpace(department) ? null : await _lookupService.ResolveDimensionIdAsync("department", department.Trim());
             var resolvedClass = string.IsNullOrWhiteSpace(classId) ? null : await _lookupService.ResolveDimensionIdAsync("class", classId.Trim());
             var resolvedLocation = string.IsNullOrWhiteSpace(location) ? null : await _lookupService.ResolveDimensionIdAsync("location", location.Trim());
