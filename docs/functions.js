@@ -6553,12 +6553,10 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                 
                 if (executionCheck.allowed) {
                     // Execute column-based batch query (one query per period, all accounts)
-                    if (DEBUG_COLUMN_BASED_BS_BATCHING) {
-                        const accountCount = columnBasedDetection.allAccounts.size;
-                        const periodCount = columnBasedDetection.columns.length;
-                        console.log(`🚀 COLUMN-BASED BS BATCH: ${accountCount} accounts × ${periodCount} periods`);
-                        console.log(`📊 Querying translated ending balances (one NetSuite query per period)`);
-                    }
+                    const accountCount = columnBasedDetection.allAccounts.size;
+                    const periodCount = columnBasedDetection.columns.length;
+                    console.log(`🚀 COLUMN-BASED BS BATCH EXECUTING: ${accountCount} accounts × ${periodCount} periods`);
+                    console.log(`📊 Querying translated ending balances (chunked processing: 2 periods per chunk)`);
                     
                     try {
                         // Execute column-based batch query
@@ -6587,16 +6585,13 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                         }
                     } catch (error) {
                         // Error in batch execution - fall back to per-cell logic
-                        if (DEBUG_COLUMN_BASED_BS_BATCHING) {
-                            console.error(`❌ COLUMN-BASED BS BATCH ERROR: ${error.message} - falling back to per-cell`);
-                        }
+                        console.error(`❌ COLUMN-BASED BS BATCH ERROR: ${error.message} - falling back to per-cell`);
+                        console.error(`   Error stack:`, error.stack);
                         // Fall through to per-cell logic below
                     }
                 } else {
                     // Execution not allowed - log reason and fall back to per-cell
-                    if (DEBUG_COLUMN_BASED_BS_BATCHING) {
-                        console.log(`⏸️ COLUMN-BASED BS EXECUTION BLOCKED: ${executionCheck.reason}`);
-                    }
+                    console.log(`⏸️ COLUMN-BASED BS EXECUTION BLOCKED: ${executionCheck.reason || 'unknown reason'}`);
                     // Fall through to per-cell logic below
                 }
             } else {
