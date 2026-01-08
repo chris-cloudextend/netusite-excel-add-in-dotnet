@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.112';  // Restored to commit 251a8da, updated cache-busting parameters
+const FUNCTIONS_VERSION = '4.0.6.113';  // Enhanced column-based batch execution logging
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -5214,6 +5214,9 @@ const pendingRequests = {
 
 // Track requests currently being evaluated (for synchronous batch detection)
 // This allows us to detect grid patterns even before requests are queued
+// Track active column-based batch execution to prevent duplicate executions
+let activeColumnBatchExecution = null; // { gridKey: string, promise: Promise }
+
 const pendingEvaluation = {
     balance: new Map()  // Map<cacheKey, {account, fromPeriod, toPeriod, filters}>
 };
@@ -6551,6 +6554,8 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                 // Pass accountType object for compatibility, but execution check should also use isBalanceSheetType
                 const executionCheck = isColumnBatchExecutionAllowed(accountType, columnBasedDetection);
                 
+                console.log(`🔍 [BATCH DEBUG] Execution check result: allowed=${executionCheck.allowed}, reason=${executionCheck.reason || 'none'}`);
+                
                 if (executionCheck.allowed) {
                     // Execute column-based batch query (one query per period, all accounts)
                     const accountCount = columnBasedDetection.allAccounts.size;
@@ -6569,18 +6574,14 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                             // Cache result
                             cache.balance.set(cacheKey, balance);
                             
-                            if (DEBUG_COLUMN_BASED_BS_BATCHING) {
-                                console.log(`✅ COLUMN-BASED BS RESULT: ${account} for ${toPeriod} = ${balance}`);
-                            }
+                            console.log(`✅ COLUMN-BASED BS RESULT: ${account} for ${toPeriod} = ${balance}`);
                             
                             // Remove from pendingEvaluation (batch executed successfully)
                             pendingEvaluation.balance.delete(evalKey);
                             return balance;
                         } else {
                             // Missing result - fall back to per-cell logic
-                            if (DEBUG_COLUMN_BASED_BS_BATCHING) {
-                                console.log(`⚠️ COLUMN-BASED BS: Missing result for ${account}/${toPeriod} - falling back to per-cell`);
-                            }
+                            console.log(`⚠️ COLUMN-BASED BS: Missing result for ${account}/${toPeriod} - falling back to per-cell`);
                             // Fall through to per-cell logic below
                         }
                     } catch (error) {
