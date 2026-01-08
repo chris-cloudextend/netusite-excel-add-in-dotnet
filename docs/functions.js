@@ -6320,10 +6320,12 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         }
         
         // Other parameters as strings
-        subsidiary = String(subsidiary || '').trim();
-        department = String(department || '').trim();
-        location = String(location || '').trim();
-        classId = String(classId || '').trim();
+        // CRITICAL FIX: Use extractValueFromRange for ALL parameters that might be cell references
+        // This ensures that when cell values change, the parameters are properly extracted and cache keys update
+        subsidiary = extractValueFromRange(subsidiary, 'subsidiary');
+        department = extractValueFromRange(department, 'department');
+        location = extractValueFromRange(location, 'location');
+        classId = extractValueFromRange(classId, 'classId');
         
         // Multi-Book Accounting support - default to empty (uses Primary Book on backend)
         // CRITICAL FIX: Normalize empty accountingBook to "1" (Primary Book) for consistent cache keys and filtersHash
@@ -7513,9 +7515,10 @@ async function BALANCECURRENCY(account, fromPeriod, toPeriod, subsidiary, curren
         }
         
         // Other parameters as strings
-        // CRITICAL: For currency, we need to handle Range objects properly
+        // CRITICAL FIX: Use extractValueFromRange for ALL parameters that might be cell references
+        // This ensures that when cell values change, the parameters are properly extracted and cache keys update
         // Excel may pass Range objects for cell references, which need special handling
-        subsidiary = String(subsidiary || '').trim();
+        subsidiary = extractValueFromRange(subsidiary, 'subsidiary');
         
         // Extract currency value - handle Range objects from cell references
         // Excel custom functions with @requiresAddress receive Range objects
@@ -7573,10 +7576,12 @@ async function BALANCECURRENCY(account, fromPeriod, toPeriod, subsidiary, curren
             console.log(`ℹ️ BALANCECURRENCY: Currency parameter not provided (optional)`);
         }
         
-        department = String(department || '').trim();
-        location = String(location || '').trim();
-        classId = String(classId || '').trim();
-        accountingBook = String(accountingBook || '').trim();
+        // CRITICAL FIX: Use extractValueFromRange for ALL parameters that might be cell references
+        // This ensures that when cell values change, the parameters are properly extracted and cache keys update
+        department = extractValueFromRange(department, 'department');
+        location = extractValueFromRange(location, 'location');
+        classId = extractValueFromRange(classId, 'classId');
+        accountingBook = extractValueFromRange(accountingBook, 'accountingBook');
         
         // ================================================================
         // BUILD MODE DETECTION: Detect rapid formula creation (drag/paste)
