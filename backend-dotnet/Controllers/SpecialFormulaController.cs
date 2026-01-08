@@ -653,7 +653,7 @@ public class SpecialFormulaController : ControllerBase
               AND tp.isyear = 'F'
               AND fy.isyear = 'T'
             ORDER BY tp.id
-            FETCH FIRST 1 ROWS ONLY";
+            OFFSET 0 ROWS FETCH NEXT 1 ROWS ONLY";
 
         var results = await _netSuiteService.QueryRawAsync(query);
         if (!results.Any())
@@ -686,7 +686,7 @@ public class SpecialFormulaController : ControllerBase
                   AND isyear = 'F'
                   AND isposting = 'T'
                 ORDER BY startdate
-                FETCH FIRST 1 ROWS ONLY";
+                OFFSET 0 ROWS FETCH NEXT 1 ROWS ONLY";
             
             var firstPeriodResults = await _netSuiteService.QueryRawAsync(firstPeriodQuery);
             if (firstPeriodResults.Any())
