@@ -1107,71 +1107,127 @@ async function executeColumnBasedBSBatch(grid) {
         return aDate.getTime() - bDate.getTime();
     });
     
-    if (DEBUG_COLUMN_BASED_BS_BATCHING) {
-        console.log(`🚀 COLUMN-BASED BS BATCH: ${accounts.length} accounts, ${periods.length} periods`);
-    }
-    
-    // Query translated ending balances for all accounts across all periods
-    // Backend processes periods sequentially (one NetSuite query per period)
-    const requestBody = {
-        accounts: accounts,
-        periods: periods,
-        subsidiary: filters.subsidiary || null,
-        department: filters.department || null,
-        location: filters.location || null,
-        class: filters.classId || null,
-        book: filters.accountingBook || null
-    };
-    
-    const url = `${SERVER_URL}/batch/bs_preload_targeted`;
+    // Process periods in chunks of 2-3 for incremental progress
+    const CHUNK_SIZE = 2; // Process 2 periods at a time
+    const allResults = {}; // Accumulate results across all chunks
     
     if (DEBUG_COLUMN_BASED_BS_BATCHING) {
+        console.log(`🚀 COLUMN-BASED BS BATCH: ${accounts.length} accounts, ${periods.length} periods (processing in chunks of ${CHUNK_SIZE})`);
     }
     
-    const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(requestBody)
-    });
-    
-    if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Translated ending balances query failed: ${response.status} - ${errorText}`);
-    }
-    
-    const data = await response.json();
-    
-    // Validate response shape
-    if (!data.balances || typeof data.balances !== 'object') {
-        throw new Error(`Invalid translated ending balances response: missing balances object`);
-    }
-    
-    // Transform response from {account: {period: balance}} to match expected format
-    const results = {};
-    for (const account of accounts) {
-        if (!(account in data.balances)) {
-            throw new Error(`Missing ending balance for account ${account}`);
+    // Process periods in chunks
+    for (let i = 0; i < periods.length; i += CHUNK_SIZE) {
+        const chunk = periods.slice(i, i + CHUNK_SIZE);
+        const chunkNumber = Math.floor(i / CHUNK_SIZE) + 1;
+        const totalChunks = Math.ceil(periods.length / CHUNK_SIZE);
+        
+        console.log(`📦 Processing chunk ${chunkNumber}/${totalChunks}: ${chunk.length} periods (${chunk.join(', ')})`);
+        
+        // Query translated ending balances for this chunk
+        const requestBody = {
+            accounts: accounts,
+            periods: chunk,
+            subsidiary: filters.subsidiary || null,
+            department: filters.department || null,
+            location: filters.location || null,
+            class: filters.classId || null,
+            book: filters.accountingBook || null
+        };
+        
+        const url = `${SERVER_URL}/batch/bs_preload_targeted`;
+        
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(requestBody)
+        });
+        
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`Translated ending balances query failed for chunk ${chunkNumber}: ${response.status} - ${errorText}`);
         }
         
-        results[account] = {};
-        const accountBalances = data.balances[account];
+        const data = await response.json();
         
-        // Validate all periods are present
-        for (const period of periods) {
-            if (!(period in accountBalances)) {
-                throw new Error(`Missing ending balance for account ${account}, period ${period}`);
+        // Validate response shape
+        if (!data.balances || typeof data.balances !== 'object') {
+            throw new Error(`Invalid translated ending balances response for chunk ${chunkNumber}: missing balances object`);
+        }
+        
+        // Transform and merge chunk results
+        for (const account of accounts) {
+            if (!(account in data.balances)) {
+                throw new Error(`Missing ending balance for account ${account} in chunk ${chunkNumber}`);
             }
-            results[account][period] = accountBalances[period];
+            
+            if (!(account in allResults)) {
+                allResults[account] = {};
+            }
+            
+            const accountBalances = data.balances[account];
+            
+            // Validate all periods in chunk are present and merge into allResults
+            for (const period of chunk) {
+                if (!(period in accountBalances)) {
+                    throw new Error(`Missing ending balance for account ${account}, period ${period} in chunk ${chunkNumber}`);
+                }
+                allResults[account][period] = accountBalances[period];
+                
+                // Update cache incrementally for this account/period
+                const cacheKey = getCacheKey('balance', {
+                    account,
+                    fromPeriod: '',
+                    toPeriod: period,
+                    subsidiary: filters.subsidiary || '',
+                    department: filters.department || '',
+                    location: filters.location || '',
+                    classId: filters.classId || '',
+                    accountingBook: filters.accountingBook || ''
+                });
+                cache.balance.set(cacheKey, accountBalances[period]);
+            }
         }
+        
+        // Resolve promises for completed periods in pendingEvaluation
+        // This allows cells to update incrementally as chunks complete
+        for (const [evalKey, evalRequest] of pendingEvaluation.balance.entries()) {
+            const { account: evalAccount, toPeriod: evalPeriod } = evalRequest;
+            if (accounts.includes(evalAccount) && chunk.includes(evalPeriod)) {
+                const balance = allResults[evalAccount]?.[evalPeriod];
+                if (balance !== undefined && balance !== null && typeof balance === 'number') {
+                    // Find the corresponding request in pendingRequests if it exists
+                    // and resolve it (this handles cells that are still waiting)
+                    const matchingCacheKey = getCacheKey('balance', {
+                        account: evalAccount,
+                        fromPeriod: '',
+                        toPeriod: evalPeriod,
+                        subsidiary: filters.subsidiary || '',
+                        department: filters.department || '',
+                        location: filters.location || '',
+                        classId: filters.classId || '',
+                        accountingBook: filters.accountingBook || ''
+                    });
+                    
+                    // Check if there's a pending request for this cache key
+                    if (pendingRequests.balance.has(matchingCacheKey)) {
+                        const pendingRequest = pendingRequests.balance.get(matchingCacheKey);
+                        pendingRequest.resolve(balance);
+                        pendingRequests.balance.delete(matchingCacheKey);
+                    }
+                }
+            }
+        }
+        
+        console.log(`✅ Chunk ${chunkNumber}/${totalChunks} complete: ${chunk.length} periods processed, cache updated`);
     }
     
     if (DEBUG_COLUMN_BASED_BS_BATCHING) {
-        console.log(`✅ Using translated ending balances (NetSuite Balance Sheet semantics)`);
+        console.log(`✅ All chunks complete: Using translated ending balances (NetSuite Balance Sheet semantics)`);
     }
     
-    return results; // {account: {period: balance}}
+    return allResults; // {account: {period: balance}}
 }
 
 /**
