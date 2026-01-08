@@ -150,8 +150,7 @@ All of the following functions were updated to throw Errors instead of returning
 
 1. **BALANCE** - Fixed 5 string returns
 2. **BALANCECURRENCY** - Fixed 8 string returns  
-3. **BALANCECHANGE** - Fixed 4 string returns
-4. **BUDGET** - Fixed 5 string returns
+3. **BUDGET** - Fixed 5 string returns
 5. **RETAINEDEARNINGS** - Fixed 6 string returns
 6. **NETINCOME** - Fixed 7 string returns
 7. **TYPEBALANCE** - Fixed 5 string returns

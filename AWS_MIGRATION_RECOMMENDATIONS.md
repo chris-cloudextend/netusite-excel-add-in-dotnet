@@ -295,7 +295,6 @@ const SERVER_URL = window.location.hostname.includes('localhost')
 ### Post-Deployment
 - [ ] Verify health check endpoint responds
 - [ ] Test BS preload completes without timeout
-- [ ] Test BALANCECHANGE formula with 2 periods
 - [ ] Verify CORS allows Office Add-in requests
 - [ ] Monitor CloudWatch for errors
 

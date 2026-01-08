@@ -321,50 +321,6 @@ public class BalanceItem
     public string? AccountType { get; set; }
 }
 
-/// <summary>
-/// Response for balance change calculation.
-/// Returns the change in a BS account between two points in time.
-/// </summary>
-public class BalanceChangeResponse
-{
-    [JsonPropertyName("account")]
-    public string Account { get; set; } = string.Empty;
-    
-    [JsonPropertyName("account_type")]
-    public string? AccountType { get; set; }
-    
-    [JsonPropertyName("from_period")]
-    public string FromPeriod { get; set; } = string.Empty;
-    
-    [JsonPropertyName("to_period")]
-    public string ToPeriod { get; set; } = string.Empty;
-    
-    /// <summary>Balance as of from_period (cumulative from inception)</summary>
-    [JsonPropertyName("from_balance")]
-    public decimal FromBalance { get; set; }
-    
-    /// <summary>Balance as of to_period (cumulative from inception)</summary>
-    [JsonPropertyName("to_balance")]
-    public decimal ToBalance { get; set; }
-    
-    /// <summary>The change: to_balance - from_balance</summary>
-    [JsonPropertyName("change")]
-    public decimal Change { get; set; }
-    
-    [JsonPropertyName("cached")]
-    public bool Cached { get; set; }
-    
-    /// <summary>
-    /// One-word error code if calculation failed.
-    /// INVALIDACCT = account is not a Balance Sheet account
-    /// NOTFOUND = account not found
-    /// TIMEOUT, RATELIMIT, etc. = query errors
-    /// </summary>
-    [JsonPropertyName("error")]
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? Error { get; set; }
-}
-
 #endregion
 
 #region Type Balance

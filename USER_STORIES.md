@@ -102,20 +102,6 @@
 
 ---
 
-### US-005: Get Balance Sheet Account Changes
-
-**As a** financial analyst  
-**I want** to use `XAVI.BALANCECHANGE` to calculate changes in Balance Sheet accounts between periods  
-**So that** I can analyze cash flow, working capital changes, and other balance sheet movements
-
-**Acceptance Criteria:**
-- [ ] Formula syntax: `=XAVI.BALANCECHANGE(account, fromPeriod, toPeriod, [subsidiary], [department], [location], [class], [accountingBook])`
-- [ ] Returns the difference between the two period balances
-- [ ] Correctly handles cumulative Balance Sheet accounts
-- [ ] Supports all optional filter parameters
-
-**Business Value:** Simplifies cash flow analysis and working capital reporting
-
 ---
 
 ### US-006: Get Account Metadata

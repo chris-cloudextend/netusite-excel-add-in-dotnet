@@ -42,7 +42,6 @@ Then in Excel: **Insert → My Add-ins → Shared Folder** → Select the manife
 |---------|-------------|
 | `=XAVI.BALANCE("4010", "Jan 2025", "Jan 2025")` | Get GL account balance |
 | `=XAVI.BALANCECURRENCY("4010", "Jan 2025", "Jan 2025", "Subsidiary", "USD")` | Get balance with explicit currency control |
-| `=XAVI.BALANCECHANGE("10100", "Dec 2024", "Jan 2025")` | Get change in Balance Sheet account |
 | `=XAVI.TYPEBALANCE("Income", "Jan 2025", "Dec 2025")` | Get total for account type |
 | `=XAVI.BUDGET("4010", "Jan 2025", "Dec 2025", "", "", "", "", "", "Budget Category")` | Get budget amount |
 | `=XAVI.NAME("4010")` | Get account name |

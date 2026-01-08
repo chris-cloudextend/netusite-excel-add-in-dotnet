@@ -68,31 +68,6 @@
 
 ---
 
-### 3. BALANCECHANGE
-**Get the change in a Balance Sheet account between two dates**
-
-```excel
-=XAVI.BALANCECHANGE(account, fromPeriod, toPeriod, subsidiary, department, location, classId, accountingBook)
-```
-
-**Parameters:**
-1. **`account`** (required) - Account number (must be a Balance Sheet account)
-2. **`fromPeriod`** (required) - Starting period (e.g., `"Dec 2024"` or `12/1/2024`)
-3. **`toPeriod`** (required) - Ending period (e.g., `"Jan 2025"` or `1/1/2025`)
-4. **`subsidiary`** (optional) - Subsidiary filter (use `""` for all)
-5. **`department`** (optional) - Department filter (use `""` for all)
-6. **`location`** (optional) - Location filter (use `""` for all)
-7. **`classId`** (optional) - Class filter (use `""` for all)
-8. **`accountingBook`** (optional) - Accounting Book ID (use `""` for Primary Book)
-
-**Description:** Returns the change in a Balance Sheet account between two periods. Calculates as `balance(toPeriod) - balance(fromPeriod)`. Only valid for Balance Sheet accounts - returns `INVALIDACCT` for P&L accounts.
-
-**Examples:**
-```excel
-=XAVI.BALANCECHANGE("10000", "Dec 2024", "Jan 2025")
-=XAVI.BALANCECHANGE("10000", "Dec 2024", "Jan 2025", "Celigo Inc.")
-```
-
 ---
 
 ### 4. TYPEBALANCE
@@ -311,7 +286,6 @@
 |----------|------------|----------|-------------|
 | **BALANCE** | 8 | 3 | Get GL account balance |
 | **BALANCECURRENCY** | 9 | 3 | Get balance with currency control |
-| **BALANCECHANGE** | 8 | 3 | Get change in BS account |
 | **BUDGET** | 9 | 4 | Get budget amount |
 | **TYPEBALANCE** | 9 | 3 | Get total for account type |
 | **RETAINEDEARNINGS** | 6 | 1 | Calculate retained earnings |

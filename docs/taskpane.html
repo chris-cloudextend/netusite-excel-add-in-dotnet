@@ -5468,29 +5468,6 @@ For licensing inquiries, contact: legal@celigo.com
                 </div>
             </div>
 
-            <!-- XAVI.BALANCECHANGE -->
-            <div class="formula-card" onclick="this.classList.toggle('expanded')">
-                <div class="formula-header">
-                    <div class="formula-header-left">
-                        <span class="formula-name">BALANCECHANGE</span>
-                        <span class="formula-brief">BS period change</span>
-                </div>
-                    <svg class="formula-expand-icon" viewBox="0 0 24 24"><path fill="currentColor" d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z"/></svg>
-                </div>
-                <div class="formula-details">
-                    <div class="formula-syntax">=XAVI.BALANCECHANGE(acct, from, to, [sub], [dept], [loc], [class])</div>
-                    <div class="param-item"><span class="param-name">acct</span> - Balance Sheet account # (Bank, AcctRec, AcctPay, Equity, etc.)</div>
-                    <div class="param-item"><span class="param-name">from</span> - Starting period ("Dec 2024")</div>
-                    <div class="param-item"><span class="param-name">to</span> - Ending period ("Jan 2025")</div>
-                    <div class="param-item" style="color: var(--bottlenose); font-size: 10px;">Returns: balance(to) - balance(from) = change during period</div>
-                    <div class="example">
-                        <div class="example-code">=XAVI.BALANCECHANGE("10100", "Dec 2024", "Jan 2025")</div>
-                        <div class="example-code">=XAVI.BALANCECHANGE("20000", "Dec 2024", "Mar 2025")</div>
-                    </div>
-                    <div style="font-size: 10px; color: #dc2626; margin-top: 6px;">⚠️ BS accounts only — returns INVALIDACCT for P&L</div>
-                </div>
-            </div>
-    
             <!-- XAVI.BUDGET -->
             <!-- XAVI.BUDGET -->
             <div class="formula-card" onclick="this.classList.toggle('expanded')">
@@ -14489,7 +14466,7 @@ For licensing inquiries, contact: legal@celigo.com
             showLoading('🔍 Scanning Sheet', 'Finding Balance Sheet formulas...', 10);
             
             try {
-                // Step 1: Scan sheet for XAVI.BALANCE and XAVI.BALANCECHANGE formulas
+                // Step 1: Scan sheet for XAVI.BALANCE formulas
                 const formulaData = await Excel.run(async (context) => {
                     const sheet = context.workbook.worksheets.getActiveWorksheet();
                     const usedRange = sheet.getUsedRange();
@@ -14500,8 +14477,8 @@ For licensing inquiries, contact: legal@celigo.com
                     const periods = new Set();
                     const formulas = usedRange.formulas;
                     
-                    // Regex to match XAVI.BALANCE and XAVI.BALANCECHANGE formulas
-                    const balanceRegex = /XAVI\.BALANCE(?:CHANGE)?\s*\(\s*"?([^",)]+)"?\s*,\s*"?([^",)]*)"?\s*,\s*"?([^",)]+)"?/gi;
+                    // Regex to match XAVI.BALANCE formulas
+                    const balanceRegex = /XAVI\.BALANCE\s*\(\s*"?([^",)]+)"?\s*,\s*"?([^",)]*)"?\s*,\s*"?([^",)]+)"?/gi;
                     
                     for (let row = 0; row < formulas.length; row++) {
                         for (let col = 0; col < formulas[row].length; col++) {
@@ -19507,7 +19484,7 @@ export default {
                             let classParam = '';
                             
                             // Extract parameters based on formula type
-                            if (upperFormula.includes('XAVI.BALANCE') && !upperFormula.includes('XAVI.TYPEBALANCE') && !upperFormula.includes('XAVI.BALANCECURRENCY') && !upperFormula.includes('XAVI.BALANCECHANGE')) {
+                            if (upperFormula.includes('XAVI.BALANCE') && !upperFormula.includes('XAVI.TYPEBALANCE') && !upperFormula.includes('XAVI.BALANCECURRENCY')) {
                                 formulaCount++;
                                 subsidiaryParam = extractFormulaParam(formula, 3);
                                 departmentParam = extractFormulaParam(formula, 4);
@@ -22602,7 +22579,7 @@ export default {
                         const upperFormula = formula.toUpperCase();
                         let subsidiaryParam = '';
                         
-                        if (upperFormula.includes('XAVI.BALANCE') && !upperFormula.includes('XAVI.TYPEBALANCE') && !upperFormula.includes('XAVI.BALANCECURRENCY') && !upperFormula.includes('XAVI.BALANCECHANGE')) {
+                        if (upperFormula.includes('XAVI.BALANCE') && !upperFormula.includes('XAVI.TYPEBALANCE') && !upperFormula.includes('XAVI.BALANCECURRENCY')) {
                             subsidiaryParam = extractFormulaParam(formula, 3);
                         } else if (upperFormula.includes('XAVI.BALANCECURRENCY')) {
                             // BALANCECURRENCY: currency param is at index 4, subsidiary at index 3
@@ -22882,7 +22859,7 @@ export default {
                             const upperFormula = formula.toUpperCase();
                             let subsidiaryParam = '';
                             
-                            if (upperFormula.includes('XAVI.BALANCE') && !upperFormula.includes('XAVI.TYPEBALANCE') && !upperFormula.includes('XAVI.BALANCECURRENCY') && !upperFormula.includes('XAVI.BALANCECHANGE')) {
+                            if (upperFormula.includes('XAVI.BALANCE') && !upperFormula.includes('XAVI.TYPEBALANCE') && !upperFormula.includes('XAVI.BALANCECURRENCY')) {
                                 subsidiaryParam = extractFormulaParam(formula, 3);
                             } else if (upperFormula.includes('XAVI.BALANCECURRENCY')) {
                                 // BALANCECURRENCY: currency param is at index 4, subsidiary at index 3

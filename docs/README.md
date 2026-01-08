@@ -20,7 +20,6 @@ This folder contains the Excel Add-in files hosted via GitHub Pages.
 |----------|-------------|
 | `XAVI.BALANCE` | Get GL account balance |
 | `XAVI.BALANCECURRENCY` | Get balance with explicit currency control for consolidation |
-| `XAVI.BALANCECHANGE` | Get change in Balance Sheet account between two periods |
 | `XAVI.TYPEBALANCE` | Get total for account type (Income, Expense, etc.) |
 | `XAVI.BUDGET` | Get budget amount |
 | `XAVI.NAME` | Get account name |

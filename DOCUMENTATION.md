@@ -37,7 +37,6 @@
 |----------|---------|---------|
 | `XAVI.BALANCE` | Get GL account balance | `=XAVI.BALANCE("4010", "Jan 2025", "Jan 2025")` |
 | `XAVI.BALANCECURRENCY` | Get balance with explicit currency control | `=XAVI.BALANCECURRENCY("4010", "Jan 2025", "Jan 2025", "Subsidiary", "USD")` |
-| `XAVI.BALANCECHANGE` | Get change in Balance Sheet account | `=XAVI.BALANCECHANGE("10100", "Dec 2024", "Jan 2025")` |
 | `XAVI.BUDGET` | Get budget amount | `=XAVI.BUDGET("4010", "Jan 2025", "Dec 2025", "", "", "", "", "", "Budget Category")` |
 | `XAVI.TYPEBALANCE` | Get total for account type | `=XAVI.TYPEBALANCE("Income", "Jan 2025", "Dec 2025")` |
 | `XAVI.NAME` | Get account name | `=XAVI.NAME("4010")` → "Product Revenue" |
@@ -90,30 +89,6 @@ This is particularly useful for creating summary rows without listing every acco
 - The formula returns **activity for the period**
 - This matches NetSuite's P&L presentation
 - Example: Revenue for Jan 2025 = only January revenue transactions
-
-### XAVI.BALANCECHANGE - Balance Sheet Movement
-
-Calculate the **change** in a Balance Sheet account between two points in time.
-
-**Syntax:**
-```
-=XAVI.BALANCECHANGE(account, fromPeriod, toPeriod, [subsidiary], [department], [location], [class], [accountingBook])
-```
-
-**Formula:** `Change = Balance(toDate) − Balance(fromDate)`
-
-**⚠️ Balance Sheet Accounts Only** - Returns `INVALIDACCT` for P&L accounts.
-
-**Examples:**
-```
-=XAVI.BALANCECHANGE("10034", "Dec 2024", "Jan 2025")  → Cash change Dec→Jan
-=XAVI.BALANCECHANGE("12000", "Dec 2023", "Dec 2024")  → YoY AR movement
-```
-
-**Use Cases:**
-- Cash flow analysis (how did cash change?)
-- Working capital movement
-- Year-over-year Balance Sheet comparisons
 
 ### Why Are RE, NI, and CTA Separate?
 

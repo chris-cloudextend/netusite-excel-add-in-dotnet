@@ -10,7 +10,6 @@
 |----------|----------------|
 | **BALANCE** | `account, fromPeriod, toPeriod, subsidiary, department, location, classId, accountingBook` |
 | **BALANCECURRENCY** | `account, fromPeriod, toPeriod, subsidiary, currency, department, location, classId, accountingBook` |
-| **BALANCECHANGE** | `account, fromPeriod, toPeriod, subsidiary, department, location, classId, accountingBook` |
 | **BUDGET** | `account, fromPeriod, toPeriod, subsidiary, department, location, classId, accountingBook, budgetCategory` |
 | **TYPEBALANCE** | `accountType, fromPeriod, toPeriod, subsidiary, department, location, classId, accountingBook, useSpecialAccount` |
 | **RETAINEDEARNINGS** | `period, subsidiary, accountingBook, classId, department, location` |
@@ -86,31 +85,6 @@
 - Empty currency cell references will return `#EMPTY_CURRENCY#` error
 
 ---
-
-### 3. BALANCECHANGE
-**Get the change in a Balance Sheet account between two dates**
-
-```excel
-=XAVI.BALANCECHANGE(account, fromPeriod, toPeriod, subsidiary, department, location, classId, accountingBook)
-```
-
-**Parameters (in order):**
-1. **`account`** (required) - Account number (must be a Balance Sheet account)
-2. **`fromPeriod`** (required) - Starting period (e.g., `"Dec 2024"` or `12/1/2024`)
-3. **`toPeriod`** (required) - Ending period (e.g., `"Jan 2025"` or `1/1/2025`)
-4. **`subsidiary`** (optional) - Subsidiary filter (use `""` for all)
-5. **`department`** (optional) - Department filter (use `""` for all)
-6. **`location`** (optional) - Location filter (use `""` for all)
-7. **`classId`** (optional) - Class filter (use `""` for all)
-8. **`accountingBook`** (optional) - Accounting Book ID (use `""` for Primary Book)
-
-**Examples:**
-```excel
-=XAVI.BALANCECHANGE("10000", "Dec 2024", "Jan 2025")
-=XAVI.BALANCECHANGE("10000", "Dec 2024", "Jan 2025", "Celigo Inc.")
-```
-
-**Note:** Only valid for Balance Sheet accounts. P&L accounts will return `INVALIDACCT`.
 
 ---
 
@@ -335,7 +309,6 @@ This prevents silent `0` values that could be mistakes.
 |----------|--------------|----------|----------|---------------|
 | **BALANCE** | 8 | 3 | 5 | fromPeriod optional for BS |
 | **BALANCECURRENCY** | 9 | 3 | 6 | currency in position 5 |
-| **BALANCECHANGE** | 8 | 3 | 5 | BS accounts only |
 | **BUDGET** | 9 | 4 | 5 | budgetCategory required |
 | **TYPEBALANCE** | 9 | 3 | 6 | fromPeriod ignored for BS types |
 | **RETAINEDEARNINGS** | 6 | 1 | 5 | Different parameter order! |

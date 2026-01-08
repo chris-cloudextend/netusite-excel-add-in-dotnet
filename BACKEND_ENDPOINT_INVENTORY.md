@@ -51,13 +51,7 @@
    - QueryRawAsync Usage: Indirect (via BalanceService)
    - Priority: **HIGH** - Core balance endpoint
 
-7. **GET /balance-change**
-   - Returns: Balance change between two periods
-   - Finance-Critical: ✅ YES
-   - QueryRawAsync Usage: **Direct** (line 349: account type lookup)
-   - Priority: **MEDIUM** - Uses QueryRawAsync for account type only (non-financial)
-
-8. **POST /batch/balance**
+7. **POST /batch/balance**
    - Returns: Batch balances for multiple accounts
    - Finance-Critical: ✅ YES
    - Uses: `BalanceService.GetBatchBalanceAsync` (delegates to service)
@@ -217,9 +211,6 @@
    - Queries: Multiple queries for NETINCOME, RETAINEDEARNINGS, CTA, Assets, Liabilities, Equity
    - **Action Required:** Replace all with `QueryRawWithErrorAsync`, check each query
 
-4. **GetBalanceChange** (line 349)
-   - Query: Account type lookup (non-financial)
-   - **Action Required:** ⚠️ Low priority - only used for validation
 
 5. **GetBsGridOpeningBalances** (line 3050)
    - Query: Period lookup (non-financial)
@@ -266,8 +257,7 @@
 
 ### 🟡 MEDIUM (Fix After)
 7. **BalanceController.GetBsGridOpeningBalances** - Period lookup only
-8. **BalanceController.GetBalanceChange** - Account type lookup only
-9. **SpecialFormulaController.GetFiscalYearInfoAsync** - Helper method (returns null on failure)
+8. **SpecialFormulaController.GetFiscalYearInfoAsync** - Helper method (returns null on failure)
 
 ---
 

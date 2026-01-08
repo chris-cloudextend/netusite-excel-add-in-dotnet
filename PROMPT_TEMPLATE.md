@@ -42,7 +42,7 @@ I need to fix date parameter handling in BALANCECURRENCY.
 - [ ] Don't change BALANCE function - it works correctly
 - [ ] Make BALANCECURRENCY match BALANCE's date handling approach
 - [ ] Review and compare before implementing
-- [ ] Check for impact on: BALANCECHANGE, TYPEBALANCE, BUDGET (all use date parameters)
+- [ ] Check for impact on: TYPEBALANCE, BUDGET (all use date parameters)
 
 **Before Making Changes:**
 1. Show me a side-by-side comparison of BALANCE vs BALANCECURRENCY date handling
