@@ -673,20 +673,22 @@ public class SpecialFormulaController : ControllerBase
         }
 
         var fiscalYearId = row.TryGetProperty("fiscal_year_id", out var fyId) ? fyId.ToString() : null;
+        var fyStartDate = GetDateString(row, "fy_start");
         
-        // Get the first period of the fiscal year (using period relationships, not dates)
+        // Get the first period of the fiscal year (using date-based query, not parent relationship)
+        // Monthly periods have quarters as parents, not the fiscal year directly
         string? fyStartPeriodId = null;
-        if (!string.IsNullOrEmpty(fiscalYearId))
+        if (!string.IsNullOrEmpty(fyStartDate))
         {
             var firstPeriodQuery = $@"
                 SELECT id
                 FROM accountingperiod
-                WHERE parent = {fiscalYearId}
+                WHERE startdate >= TO_DATE('{NetSuiteService.EscapeSql(fyStartDate)}', 'YYYY-MM-DD')
                   AND isquarter = 'F'
                   AND isyear = 'F'
                   AND isposting = 'T'
                 ORDER BY startdate
-                OFFSET 0 ROWS FETCH NEXT 1 ROWS ONLY";
+                FETCH FIRST 1 ROWS ONLY";
             
             var firstPeriodResults = await _netSuiteService.QueryRawAsync(firstPeriodQuery);
             if (firstPeriodResults.Any())
