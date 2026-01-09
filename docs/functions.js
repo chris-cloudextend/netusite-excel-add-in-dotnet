@@ -6232,6 +6232,8 @@ async function retryCacheLookup(
  * @requiresAddress
  */
 async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, location, classId, accountingBook) {
+    // DIAGNOSTIC: Log start of BALANCE evaluation
+    console.log(`🔍 BALANCE START: account=${account}, period=${toPeriod}, timestamp=${Date.now()}`);
     
     // Cross-context cache invalidation - taskpane signals via localStorage
     // FIX #1 & #5: Synchronize cache clear - clear in-memory cache FIRST, then check signal
@@ -6703,13 +6705,17 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         // This ensures dragged cells use cached results instead of creating new batches
         if (isCumulativeQuery && lookupPeriod) {
             const localStorageValue = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
+            // DIAGNOSTIC: Log cache check result
+            console.log(`🔍 CACHE CHECK: account=${account}, period=${lookupPeriod}, hit=${localStorageValue !== null}`);
             if (localStorageValue !== null) {
+                console.log(`🔍 CACHE HIT - returning early, no batch needed`);
                 console.log(`✅ localStorage cache hit BEFORE batch check: ${account}/${lookupPeriod} = ${localStorageValue}`);
                 cacheStats.hits++;
                 cache.balance.set(cacheKey, localStorageValue);
                 pendingEvaluation.balance.delete(evalKey); // Remove from pending since we resolved it
                 return localStorageValue;
             }
+            console.log(`🔍 CACHE MISS - continuing to batch logic`);
         }
         
         // ================================================================
@@ -6763,12 +6769,17 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
             console.log(`🔍 [BATCH DEBUG] Checking column-based batching: accountType=${acctTypeStr}, isBalanceSheet=${isBalanceSheet}, evaluatingRequests=${evaluatingRequests.length}, account=${account}, toPeriod=${toPeriod}`);
             const columnBasedDetection = detectColumnBasedBSGrid(evaluatingRequests);
             
+            // DIAGNOSTIC: Log column detection result
+            console.log(`🔍 COLUMN DETECTION: eligible=${columnBasedDetection?.eligible}, accounts=${columnBasedDetection?.allAccounts?.size || 0}, periods=${columnBasedDetection?.columns?.length || 0}`);
+            
             if (columnBasedDetection.eligible) {
                 console.log(`✅ [BATCH DEBUG] Grid eligible for column-based batching: ${columnBasedDetection.allAccounts?.size || 0} accounts, ${columnBasedDetection.columns?.length || 0} periods`);
                 // Check execution eligibility (no validation/trust requirements)
                 // Pass accountType object for compatibility, but execution check should also use isBalanceSheetType
                 const executionCheck = isColumnBatchExecutionAllowed(accountType, columnBasedDetection);
                 
+                // DIAGNOSTIC: Log execution check result
+                console.log(`🔍 EXECUTION CHECK: allowed=${executionCheck.allowed}, reason=${executionCheck.reason || 'none'}`);
                 console.log(`🔍 [BATCH DEBUG] Execution check result: allowed=${executionCheck.allowed}, reason=${executionCheck.reason || 'none'}`);
                 
                 if (executionCheck.allowed) {
@@ -6800,6 +6811,13 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                     let accounts = Array.from(columnBasedDetection.allAccounts);
                     let activePeriodQuery = activePeriodQueries.get(periodKey);
                     
+                    // DIAGNOSTIC: Log period query check
+                    console.log(`🔍 PERIOD QUERY CHECK: periodKey="${periodKey}", exists=${activePeriodQueries.has(periodKey)}`);
+                    if (activePeriodQueries.has(periodKey)) {
+                        const existing = activePeriodQueries.get(periodKey);
+                        console.log(`🔍 EXISTING QUERY: state=${existing.queryState}, accounts=${existing.accounts.size}`);
+                    }
+                    
                     if (activePeriodQuery) {
                         // Period query already active - check if our account is already in the query
                         console.log(`🔄 PERIOD DEDUP: Periods ${periods.join(', ')} already being queried (state: ${activePeriodQuery.queryState})`);
@@ -6829,8 +6847,11 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                             if (activePeriodQuery.queryState === 'collecting') {
                                 // DEBOUNCE WINDOW OPEN: Merge accounts into existing query
                                 console.log(`   📊 Account ${account} not in existing query, merging during debounce window (collecting state)`);
+                                // DIAGNOSTIC: Log account merge
+                                const beforeSize = activePeriodQuery.accounts.size;
                                 accounts.forEach(acc => activePeriodQuery.accounts.add(acc));
                                 accounts = Array.from(activePeriodQuery.accounts).sort();
+                                console.log(`🔍 MERGE: Adding account ${account} to existing query, now ${activePeriodQuery.accounts.size} accounts (was ${beforeSize})`);
                                 
                                 // Update gridKey with merged accounts
                                 const mergedGridKey = `grid:${accounts.join(',')}:${periods.join(',')}:${filterKey}`;
@@ -6939,7 +6960,13 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                             
                             // Start debounce timer - execute query after DEBOUNCE_MS
                             const activeQuery = activePeriodQueries.get(periodKey);
+                            // DIAGNOSTIC: Log debounce timer creation
+                            console.log(`🔍 DEBOUNCE: Creating new query for ${periodKey}, starting 100ms timer`);
                             activeQuery.executeTimeout = setTimeout(() => {
+                                // DIAGNOSTIC: Log when timer fires
+                                const query = activePeriodQueries.get(periodKey);
+                                const accountCount = query ? query.accounts.size : 0;
+                                console.log(`🔍 DEBOUNCE EXECUTE: Timer fired for ${periodKey}, executing with ${accountCount} accounts`);
                                 executeDebouncedQuery(periodKey, activePeriodQueries, columnBasedDetection, filterKey)
                                     .then(results => {
                                         // Results already resolved placeholder in executeDebouncedQuery
