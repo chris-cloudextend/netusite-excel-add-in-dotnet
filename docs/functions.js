@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.120';  // Period dedup improvements: query state tracking, promise chaining, chronological sort, batched localStorage
+const FUNCTIONS_VERSION = '4.0.6.121';  // Period dedup fixes: queryState before fetch, promise error handling, explicit supplemental queries, 1hr TTL
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -1115,9 +1115,11 @@ function inferAnchorPeriod(periods) {
  * This matches NetSuite Balance Sheet reports exactly, including foreign currency accounts.
  * 
  * @param {Object} grid - Grid detection result from detectColumnBasedBSGrid()
+ * @param {string} periodKey - Period key for deduplication tracking (optional)
+ * @param {Map} activePeriodQueries - Map of active period queries for state tracking (optional)
  * @returns {Promise<Object>} - Map of {account: {period: balance}} or throws error
  */
-async function executeColumnBasedBSBatch(grid) {
+async function executeColumnBasedBSBatch(grid, periodKey = null, activePeriodQueries = null) {
     const { allAccounts, columns, filters } = grid;
     const accounts = Array.from(allAccounts);
     const periods = columns.map(col => col.period).sort((a, b) => {
@@ -1155,6 +1157,16 @@ async function executeColumnBasedBSBatch(grid) {
         };
         
         const url = `${SERVER_URL}/batch/bs_preload_targeted`;
+        
+        // CRITICAL: Mark query as 'sent' immediately before network request fires
+        // This prevents race conditions where accounts could be merged after promise creation but before fetch()
+        if (periodKey && activePeriodQueries) {
+            const activeQuery = activePeriodQueries.get(periodKey);
+            if (activeQuery && activeQuery.queryState === 'pending') {
+                activeQuery.queryState = 'sent';
+                console.log(`📤 Query state transition: ${periodKey} → 'sent' (before fetch)`);
+            }
+        }
         
         const response = await fetch(url, {
             method: 'POST',
@@ -4655,7 +4667,7 @@ window.resolvePendingRequests = function() {
 // ============================================================================
 const STORAGE_KEY = 'netsuite_balance_cache';
 const STORAGE_TIMESTAMP_KEY = 'netsuite_balance_cache_timestamp';
-const STORAGE_TTL = 300000; // 5 minutes in milliseconds
+const STORAGE_TTL = 3600000; // 1 hour in milliseconds (increased from 5 minutes for normal spreadsheet work sessions)
 
 // TYPEBALANCE localStorage cache - critical for pre-fetch before functions.html loads!
 const TYPEBALANCE_STORAGE_KEY = 'netsuite_typebalance_cache';
@@ -6747,9 +6759,11 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                                         pendingEvaluation.balance.delete(evalKey);
                                         return balance;
                                     } else {
-                                        // Account not in results - this shouldn't happen if preload worked correctly
-                                        // But if it does, fall through to create supplemental query
-                                        console.warn(`⚠️ Account ${account} not found in completed query results - will create supplemental query`);
+                                        // Account not in results - create explicit supplemental query
+                                        // This should be rare (only if account truly missing from preload results)
+                                        console.warn(`⚠️ Account ${account} not found in completed query results - creating supplemental query`);
+                                        // Fall through to create supplemental batch below (lines 6757+)
+                                        // The supplemental query will be a new batch with just this account
                                     }
                                 } catch (error) {
                                     console.warn(`⚠️ PERIOD DEDUP: Error awaiting existing query: ${error.message}`);
@@ -6783,8 +6797,9 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                         
                         // Create promise synchronously and set it immediately
                         // Also track in activePeriodQueries for period-based deduplication
-                        // CRITICAL: Mark query as 'sent' immediately after creating promise to prevent further merges
-                        batchPromise = executeColumnBasedBSBatch(updatedGrid)
+                        // CRITICAL: queryState will be set to 'sent' inside executeColumnBasedBSBatch() right before fetch()
+                        // This ensures no accounts can slip through between promise creation and network request
+                        batchPromise = executeColumnBasedBSBatch(updatedGrid, periodKey, activePeriodQueries)
                             .then(results => {
                                 // Remove from active period queries when complete
                                 activePeriodQueries.delete(periodKey);
@@ -6858,7 +6873,7 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                                 periods: new Set(periods),
                                 filters: columnBasedDetection.filters,
                                 gridKey: gridKey,
-                                queryState: 'sent'  // Mark as sent immediately to prevent further merges
+                                queryState: 'pending'  // Will be set to 'sent' inside executeColumnBasedBSBatch() before fetch()
                             });
                         } else {
                             // Update existing period query with merged accounts
@@ -6866,16 +6881,23 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                             // If there's an existing promise, chain the new one after it
                             if (activePeriodQuery.queryState === 'pending') {
                                 // Query hasn't been sent yet - replace promise with merged accounts version
+                                // queryState will be set to 'sent' inside executeColumnBasedBSBatch() before fetch()
                                 activePeriodQuery.promise = batchPromise;
                                 activePeriodQuery.accounts = new Set(accounts);
                                 activePeriodQuery.gridKey = gridKey;
-                                activePeriodQuery.queryState = 'sent';
+                                // Keep as 'pending' - will transition to 'sent' in executeColumnBasedBSBatch()
                             } else {
                                 // Query already sent - chain new promise after existing one
                                 // This ensures cells awaiting the old promise will see the new results
                                 // The chained promise merges results from both queries
+                                // CRITICAL: Add error handling to prevent chain breakage
                                 const oldPromise = activePeriodQuery.promise;
                                 activePeriodQuery.promise = oldPromise
+                                    .catch(() => {
+                                        // If old promise rejects, return empty results to allow new query to proceed
+                                        console.warn(`⚠️ Previous query for ${periodKey} failed, proceeding with new query`);
+                                        return {};
+                                    })
                                     .then(oldResults => {
                                         // Wait for new batch to complete
                                         return batchPromise.then(newResults => {
