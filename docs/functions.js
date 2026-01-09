@@ -2643,13 +2643,33 @@ function triggerAutoPreload(firstAccount, firstPeriod, filters = null) {
     // Format: netsuite_auto_preload_trigger_<timestamp>_<random>
     try {
         const triggerId = `netsuite_auto_preload_trigger_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-        localStorage.setItem(triggerId, JSON.stringify({
+        const triggerData = {
             firstAccount: firstAccount,
             firstPeriod: normalizedPeriod,  // Use normalized period, not raw input
             timestamp: Date.now(),
-            reason: autoPreloadTriggered ? `New period detected: ${normalizedPeriod}` : 'First Balance Sheet formula detected'
-        }));
+            reason: autoPreloadTriggered ? `New period detected: ${normalizedPeriod}` : 'First Balance Sheet formula detected',
+            filters: filters || null
+        };
+        localStorage.setItem(triggerId, JSON.stringify(triggerData));
         console.log(`📤 Auto-preload trigger queued: ${triggerId} (period: ${normalizedPeriod})`);
+        console.log(`🔬 TRIGGER DEBUG:`, {
+            triggerId,
+            triggerData,
+            localStorageLength: localStorage.length,
+            verifyRead: localStorage.getItem(triggerId) ? '✅ Set successfully' : '❌ Not found after set'
+        });
+        
+        // 🔬 VALIDATION: Also trigger a custom event for same-window detection (if storage events don't fire)
+        // This is a fallback for when storage events don't work (same-origin issue)
+        try {
+            window.dispatchEvent(new CustomEvent('netsuite-preload-trigger', { 
+                detail: { triggerId, triggerData } 
+            }));
+            console.log(`🔬 TRIGGER DEBUG: Dispatched custom event for same-window detection`);
+        } catch (e) {
+            // Custom events might not work in all contexts
+            console.warn('⚠️ Could not dispatch custom event:', e);
+        }
     } catch (e) {
         console.warn('Could not trigger auto-preload:', e);
     }
@@ -7700,7 +7720,7 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                 pendingEvaluation.balance.delete(evalKey);
                 return postBatchCacheCheck;
             } else {
-                console.log(`⚠️ FALLBACK TO INDIVIDUAL: account=${account}, period=${lookupPeriod} - cache miss, will queue individual API call`);
+                console.log(`🔍 INDIVIDUAL PATH: account=${account}, period=${lookupPeriod} - cache miss, checking manifest/preload before queuing`);
             }
         }
         // NOTE: Old row-based batching (executeBalanceSheetBatchQueryImmediate) is REMOVED

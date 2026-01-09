@@ -8879,14 +8879,20 @@ For licensing inquiries, contact: legal@celigo.com
                     const allPeriods = new Set();
                     let firstTrigger = null;
                 
+                // 🔬 VALIDATION LOGGING: Log trigger detection
+                console.log(`🔬 TASKPANE: processAutoPreloadTriggers() called at ${new Date().toISOString()}`);
+                
                 try {
                     // Scan localStorage for all trigger keys
                     for (let i = 0; i < localStorage.length; i++) {
                         const key = localStorage.key(i);
                         if (key && key.startsWith('netsuite_auto_preload_trigger_')) {
                             triggerKeys.push(key);
+                            console.log(`🔬 TASKPANE: Found trigger key: ${key}`);
                         }
                     }
+                    
+                    console.log(`🔬 TASKPANE: Found ${triggerKeys.length} trigger key(s)`);
                     
                     // Process all triggers and collect periods
                     for (const triggerKey of triggerKeys) {
@@ -8937,6 +8943,7 @@ For licensing inquiries, contact: legal@celigo.com
                     const periodsArray = Array.from(allPeriods);
                     console.log(`🚀 AUTO-PRELOAD TRIGGERED: ${allPeriods.size} period(s) - ${periodsArray.join(', ')}`);
                     console.log(`   First trigger:`, firstTrigger);
+                    console.log(`🔬 TASKPANE: About to start preload for periods: ${periodsArray.join(', ')}`);
                     
                     // FIX #1: Check if preload is already running
                     if (isPreloadRunning()) {
@@ -8959,6 +8966,7 @@ For licensing inquiries, contact: legal@celigo.com
                     // Small delay to let Excel finish rendering, then scan and preload
                     setTimeout(async () => {
                         try {
+                            console.log(`🔬 TASKPANE: Starting formula scan for preload (periods: ${periodsArray.join(', ')})`);
                             updateLoading('Scanning Sheet for BS Formulas', 20, 'Finding all Balance Sheet accounts...');
                             
                             // Scan the sheet for periods used in BS formulas
@@ -8967,6 +8975,7 @@ For licensing inquiries, contact: legal@celigo.com
                             
                             // FIX #5: Excel API rate limiting with retry logic
                             const formulaData = await (async function() {
+                                console.log(`🔬 TASKPANE: Entering formula scan retry loop`);
                                 let attempts = 0;
                                 const maxAttempts = 5;
                                 const baseDelay = 100; // Start with 100ms delay
@@ -9772,11 +9781,18 @@ For licensing inquiries, contact: legal@celigo.com
                             }
                         } catch (error) {
                             console.error('❌ Auto-preload error:', error);
+                            console.error('❌ Error stack:', error.stack);
+                            console.error('❌ Error details:', {
+                                message: error.message,
+                                name: error.name,
+                                periods: periodsArray,
+                                firstTrigger: firstTrigger
+                            });
                             hideLoading();
                             
                             showToast({
                                 title: 'Auto-Preload Issue',
-                                message: 'Could not auto-preload. Use Smart Preload manually for faster results.',
+                                message: `Could not auto-preload: ${error.message || 'Unknown error'}. Use Smart Preload manually for faster results.`,
                                 type: 'warning',
                                 duration: 8000
                             });
@@ -9854,6 +9870,7 @@ For licensing inquiries, contact: legal@celigo.com
                 // This allows the preload screen to appear immediately when a formula sets the trigger
                 // instead of waiting for the polling interval
                 window.addEventListener('storage', (e) => {
+                    console.log(`🔔 Storage event detected: key=${e.key}, newValue=${e.newValue ? 'set' : 'removed'}`);
                     if (e.key && e.key.startsWith('netsuite_auto_preload_trigger_')) {
                         console.log('🔔 Storage event detected for preload trigger - processing immediately');
                         // Process immediately (no debounce) for faster response
@@ -9863,6 +9880,45 @@ For licensing inquiries, contact: legal@celigo.com
                         processAutoPreloadTriggers();
                     }
                 });
+                
+                // 🔬 VALIDATION: Also listen for custom events as fallback (for same-window detection)
+                // This handles cases where storage events don't fire (same-origin issue)
+                // functions.js will dispatch this event when setting the trigger
+                window.addEventListener('netsuite-preload-trigger', (e) => {
+                    console.log('🔔 Custom event detected for preload trigger - processing immediately');
+                    console.log('🔬 TRIGGER DEBUG: Custom event detail:', e.detail);
+                    // Process immediately (no debounce) for faster response
+                    processAutoPreloadTriggers();
+                });
+                
+                // 🔬 VALIDATION: Add a manual trigger check function for debugging
+                window.debugCheckTriggers = function() {
+                    console.log('🔬 DEBUG: Manual trigger check');
+                    const triggers = [];
+                    try {
+                        for (let i = 0; i < localStorage.length; i++) {
+                            const key = localStorage.key(i);
+                            if (key && key.startsWith('netsuite_auto_preload_trigger_')) {
+                                const value = localStorage.getItem(key);
+                                triggers.push({ key, value: value ? JSON.parse(value) : null });
+                            }
+                        }
+                        const legacyTrigger = localStorage.getItem('netsuite_auto_preload_trigger');
+                        if (legacyTrigger) {
+                            triggers.push({ key: 'netsuite_auto_preload_trigger (legacy)', value: JSON.parse(legacyTrigger) });
+                        }
+                    } catch (e) {
+                        console.error('Error checking triggers:', e);
+                    }
+                    console.log(`🔬 DEBUG: Found ${triggers.length} trigger(s):`, triggers);
+                    return triggers;
+                };
+                
+                // 🔬 VALIDATION: Add a manual trigger processor for debugging
+                window.debugProcessTriggers = function() {
+                    console.log('🔬 DEBUG: Manually processing triggers');
+                    return processAutoPreloadTriggers();
+                };
                 
                 // FIX #3: Set up polling to check for new triggers every 2 seconds
                 // FIX #2: Use debounced processing instead of immediate processing
@@ -9888,6 +9944,7 @@ For licensing inquiries, contact: legal@celigo.com
                     }
                     
                     if (hasTriggers) {
+                        console.log(`🔬 TASKPANE: Polling detected triggers, calling debouncedProcessTriggers()`);
                         debouncedProcessTriggers();
                     }
                 }, 2000); // Check every 2 seconds
