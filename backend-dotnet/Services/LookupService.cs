@@ -1764,9 +1764,10 @@ public class LookupService : ILookupService
             }
             
             var currencyCodes = string.Join(", ", validCurrencies.Select(c => $"'{NetSuiteService.EscapeSql(c)}'"));
-            // Try to get displayname field - if it doesn't exist, it will be null
+            // Note: displayname field does not exist in NetSuite's currency table
+            // Removed from SELECT to avoid BadRequest error
             var query = $@"
-                SELECT id, name, symbol, displayname
+                SELECT id, name, symbol
                 FROM currency
                 WHERE name IN ({currencyCodes})
                 ORDER BY name";
