@@ -6850,8 +6850,10 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                         console.log(`🔄 PERIOD DEDUP: Periods ${periods.join(', ')} already being queried (state: ${activePeriodQuery.queryState})`);
                         console.log(`   Existing accounts: ${activePeriodQuery.accounts.size}, Our accounts: ${accounts.length}`);
                         
-                        // Check if our account is already in the active query
-                        const ourAccountInQuery = accounts.some(acc => activePeriodQuery.accounts.has(acc));
+                        // CRITICAL FIX: Check if THIS CELL's account is in the query, not if any of the detected accounts are
+                        // The 'accounts' variable contains ALL accounts from grid detection (21-23 accounts),
+                        // but we need to check if THIS cell's specific account is in the activePeriodQuery
+                        const ourAccountInQuery = activePeriodQuery.accounts.has(account);
                         
                         if (ourAccountInQuery) {
                             // Our account is already being queried - wait for results
