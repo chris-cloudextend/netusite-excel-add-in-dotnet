@@ -3,7 +3,7 @@
 **Date:** January 9, 2026  
 **Last Updated:** January 9, 2026  
 **Feature:** Period-Based Deduplication for Balance Sheet Batch Processing  
-**Version Progression:** 4.0.6.119 → 4.0.6.120 → 4.0.6.121 → 4.0.6.122 → 4.0.6.128 → 4.0.6.129 → 4.0.6.130
+**Version Progression:** 4.0.6.119 → 4.0.6.120 → 4.0.6.121 → 4.0.6.122 → 4.0.6.128 → 4.0.6.129 → 4.0.6.130 → 4.0.6.131 → 4.0.6.132
 
 ---
 
@@ -340,17 +340,19 @@ The period-based deduplication implementation was significantly improved through
 3. **Supplemental query path** made explicit for clarity
 4. **TTL increased** to 1 hour for better cache performance
 
-**Subsequent Reviews (v4.0.6.128-130):**
+**Subsequent Reviews (v4.0.6.128-132):**
 5. **Debounce bypass fix** - prevent immediate batch execution when debounce window is open
 6. **Rolling debounce** - reset timer on new accounts (200ms base, 1000ms max) to collect all accounts
 7. **Cache check before individual calls** - prevent redundant individual API calls when batch already cached data
 8. **Filter cached periods** - exclude cached periods from batch detection
+9. **Account merge bug fix** - fixed account check to use THIS cell's account instead of checking if ANY account from grid detection is in query
+10. **Full preload for new periods** - always use full preload (`/batch/bs_preload`) for new periods instead of targeted preload, ensuring all 232 accounts are cached
 
-The final implementation (v4.0.6.130) is more robust, reliable, and performant than the initial version (v4.0.6.119). This demonstrates the value of thorough code review, iterative improvement, and addressing issues as they are discovered in production-like scenarios.
+The final implementation (v4.0.6.132) is more robust, reliable, and performant than the initial version (v4.0.6.119). This demonstrates the value of thorough code review, iterative improvement, and addressing issues as they are discovered in production-like scenarios.
 
 ---
 
-## Additional Improvements (v4.0.6.128-130)
+## Additional Improvements (v4.0.6.128-132)
 
 ### Issue #5: Debounce Window Too Short
 
@@ -433,6 +435,38 @@ for (const request of bsCumulativeRequests) {
 - Only uncached periods are batched
 - Reduces redundant queries
 
+### Issue #8: Wrong Endpoint for New Periods - Targeted Instead of Full Preload
+
+**The Problem:**
+- When dragging to new periods (Feb, Mar), code called `/batch/bs_preload_targeted` with only 21 visible accounts
+- Manual entry for January correctly called `/batch/bs_preload` which fetched all 232 accounts
+- NetSuite query time is essentially the same whether fetching 1, 20, or 200 accounts (~80-100 seconds)
+- Result: Future lookups for other accounts in Feb/Mar require additional queries instead of instant cache hits
+
+**Claude's Analysis:**
+> "The debounce is working correctly (21 accounts collected), but it's calling the WRONG ENDPOINT. Always use FULL preload (`/batch/bs_preload`) for new periods, never targeted preload. NetSuite query time is essentially the same whether we fetch 1, 20, or 200 accounts (~80-100 seconds). So we should ALWAYS fetch all accounts for a period on first encounter."
+
+**The Fix - Full Preload for New Periods:**
+```javascript
+// In executeColumnBasedBSBatch, check if period needs full preload
+for (const period of chunk) {
+    const periodStatus = getPeriodStatus(filtersHash, period);
+    const isFullyPreloaded = periodStatus === "completed";
+    
+    if (!isFullyPreloaded) {
+        // Trigger full preload (same as manual entry)
+        triggerAutoPreload(firstAccount, period, filters);
+        await waitForPeriodCompletion(filtersHash, period, maxWait);
+        // Get results from cache (all 232 accounts now cached)
+    }
+}
+```
+
+**Impact:**
+- Dragging to new periods now triggers full preload (all 232 accounts)
+- All future lookups for that period are instant cache hits
+- Targeted preload only used as fallback if full preload fails
+
 ---
 
 ## Version History
@@ -444,6 +478,9 @@ for (const request of bsCumulativeRequests) {
 - **v4.0.6.128:** Debounce fix - prevent immediate batch execution when activePeriodQuery is in 'collecting' state
 - **v4.0.6.129:** Filter cached periods from batch detection - prevent January (already cached) from being included in batch queries
 - **v4.0.6.130:** Rolling debounce + cache check before individual calls - reset timer on new accounts (200ms base, 1000ms max), check cache before falling back to individual API calls
+- **v4.0.6.131:** Account merge bug fix - changed account check to use THIS cell's account instead of checking if ANY account from grid detection is in query
+- **v4.0.6.132:** Full preload for new periods - always use full preload (`/batch/bs_preload`) for new periods instead of targeted preload, ensuring all 232 accounts are cached
+- **v4.0.6.132:** Full preload for new periods - always use full preload (`/batch/bs_preload`) for new periods instead of targeted preload, ensuring all 232 accounts are cached
 
 ---
 
@@ -457,7 +494,7 @@ for (const request of bsCumulativeRequests) {
    - Increased TTL to 1 hour
 
 2. **`excel-addin/manifest.xml`**
-   - Updated version to 4.0.6.130
+   - Updated version to 4.0.6.132
    - Updated all cache-busting URLs
 
 3. **`docs/taskpane.html`, `docs/sharedruntime.html`, `docs/functions.html`**

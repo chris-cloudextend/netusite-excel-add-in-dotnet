@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.130';  // Rolling debounce + cache check before individual calls: Reset timer on new accounts (200ms base, 1000ms max), check cache before falling back to individual API calls
+const FUNCTIONS_VERSION = '4.0.6.132';  // Full preload for new periods: Always use full preload (/batch/bs_preload) for new periods instead of targeted preload, ensuring all 232 accounts are cached for future instant lookups
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -1234,6 +1234,15 @@ async function executeColumnBasedBSBatch(grid, periodKey = null, activePeriodQue
     const CHUNK_SIZE = 1; // Process 1 period at a time (Cloudflare timeout constraint)
     const allResults = {}; // Accumulate results across all chunks
     
+    // Build filtersHash for preload marker checking
+    const filtersHash = getFilterKey({
+        subsidiary: filters.subsidiary || '',
+        department: filters.department || '',
+        location: filters.location || '',
+        classId: filters.classId || '',
+        accountingBook: filters.accountingBook || ''
+    });
+    
     if (DEBUG_COLUMN_BASED_BS_BATCHING) {
         console.log(`🚀 COLUMN-BASED BS BATCH: ${accounts.length} accounts, ${periods.length} periods (processing in chunks of ${CHUNK_SIZE})`);
     }
@@ -1246,10 +1255,121 @@ async function executeColumnBasedBSBatch(grid, periodKey = null, activePeriodQue
         
         console.log(`📦 Processing chunk ${chunkNumber}/${totalChunks}: ${chunk.length} period(s) (${chunk.join(', ')})`);
         
-        // CRITICAL: Query ONE period at a time to avoid Cloudflare timeout
-        // Backend processes periods sequentially, so 2 periods = 2× query time (180-300s) → exceeds Cloudflare ~100s timeout
-        // NOTE: Once migrated to AWS, we can batch multiple periods per request
-        // Query translated ending balances for this chunk
+        // CRITICAL FIX: Check if periods need FULL preload before using targeted preload
+        // NetSuite query time is essentially the same whether fetching 1, 20, or 200 accounts (~80-100 seconds)
+        // So we should ALWAYS fetch all accounts for a period on first encounter
+        // This makes all future lookups instant cache hits
+        const periodsToPreload = [];
+        
+        for (const period of chunk) {
+            // Check manifest status to see if period is already fully preloaded
+            const periodStatus = getPeriodStatus(filtersHash, period);
+            const isFullyPreloaded = periodStatus === "completed";
+            
+            console.log(`🔍 PRELOAD CHECK: period=${period}, status=${periodStatus}, fullyPreloaded=${isFullyPreloaded}`);
+            
+            if (!isFullyPreloaded) {
+                // This period hasn't been fully preloaded yet - trigger FULL preload (same as manual entry)
+                console.log(`🚀 FULL PRELOAD: Fetching ALL accounts for ${period} (same as manual entry)`);
+                periodsToPreload.push(period);
+            } else {
+                console.log(`⚡ ALREADY PRELOADED: ${period} - will check cache`);
+            }
+        }
+        
+        // Trigger full preload for periods that need it
+        if (periodsToPreload.length > 0) {
+            for (const period of periodsToPreload) {
+                // Trigger full preload using the same mechanism as manual entry
+                // This will fetch ALL 232 balance sheet accounts for this period
+                const firstAccount = accounts.length > 0 ? accounts[0] : '10010'; // Use first account or default
+                triggerAutoPreload(firstAccount, period, {
+                    subsidiary: filters.subsidiary || '',
+                    department: filters.department || '',
+                    location: filters.location || '',
+                    classId: filters.classId || '',
+                    accountingBook: filters.accountingBook || ''
+                });
+            }
+            
+            // Wait for all periods to complete preload
+            const maxWait = 120000; // 120 seconds
+            let allPreloadsSucceeded = true;
+            for (const period of periodsToPreload) {
+                const waited = await waitForPeriodCompletion(filtersHash, period, maxWait);
+                
+                if (waited) {
+                    console.log(`✅ PRELOAD COMPLETE: ${period} is now fully cached`);
+                } else {
+                    console.warn(`⚠️ FULL PRELOAD: Timeout or failure for ${period} - will use targeted preload as fallback`);
+                    allPreloadsSucceeded = false;
+                }
+            }
+            
+            // If any preload failed, we'll need targeted preload as fallback
+            if (!allPreloadsSucceeded) {
+                // Fall through to targeted preload below
+            } else {
+                // All preloads succeeded - get results from cache
+                let allAccountsCached = true;
+                for (const period of chunk) {
+                    for (const account of accounts) {
+                        const cachedValue = checkLocalStorageCache(account, null, period, filters.subsidiary || '', filtersHash);
+                        if (cachedValue !== null) {
+                            if (!allResults[account]) {
+                                allResults[account] = {};
+                            }
+                            allResults[account][period] = cachedValue;
+                        } else {
+                            // Account missing from cache - will need targeted preload
+                            allAccountsCached = false;
+                        }
+                    }
+                }
+                
+                if (allAccountsCached) {
+                    // All accounts are in cache - skip targeted preload and continue to next chunk
+                    console.log(`✅ ALL ACCOUNTS CACHED: Skipping targeted preload for ${chunk.join(', ')} - using cache`);
+                    continue;
+                } else {
+                    // Some accounts missing - use targeted preload as fallback
+                    console.log(`📊 TARGETED PRELOAD: Some accounts missing from cache for ${chunk.join(', ')} - using targeted endpoint`);
+                }
+            }
+        } else {
+            // All periods already preloaded - check cache first
+            let allAccountsCached = true;
+            for (const period of chunk) {
+                for (const account of accounts) {
+                    const cachedValue = checkLocalStorageCache(account, null, period, filters.subsidiary || '', filtersHash);
+                    if (cachedValue !== null) {
+                        if (!allResults[account]) {
+                            allResults[account] = {};
+                        }
+                        allResults[account][period] = cachedValue;
+                    } else {
+                        // Account missing from cache - will need targeted preload
+                        allAccountsCached = false;
+                    }
+                }
+            }
+            
+            if (allAccountsCached) {
+                // All accounts are in cache - skip targeted preload and continue to next chunk
+                console.log(`✅ ALL ACCOUNTS CACHED: Skipping targeted preload for ${chunk.join(', ')} - using cache`);
+                continue;
+            } else {
+                // Some accounts missing - use targeted preload
+                console.log(`📊 TARGETED PRELOAD: Some accounts missing from cache for ${chunk.join(', ')} - using targeted endpoint`);
+            }
+        }
+        
+        // Only use targeted preload if:
+        // 1. Full preload timed out/failed (fallback)
+        // 2. Some accounts are missing from cache (edge case)
+        // For the common drag scenario, all accounts should be in cache after full preload
+        
+        // Query translated ending balances for this chunk (targeted preload - should be rare)
         const requestBody = {
             accounts: accounts,
             periods: chunk,
