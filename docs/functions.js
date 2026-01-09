@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.132';  // Full preload for new periods: Always use full preload (/batch/bs_preload) for new periods instead of targeted preload, ensuring all 232 accounts are cached for future instant lookups
+const FUNCTIONS_VERSION = '4.0.6.133';  // Fixed filtersHash duplicate declaration bug: Removed duplicate const filtersHash declaration that caused "Cannot access 'filtersHash' before initialization" error
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -1414,15 +1414,9 @@ async function executeColumnBasedBSBatch(grid, periodKey = null, activePeriodQue
         
         // OPTIMIZATION: Batch localStorage writes - parse once before loop, stringify once after
         // This reduces JSON.parse/stringify from O(accounts × periods) to O(1) per chunk
+        // NOTE: filtersHash is already defined at the top of the function (line ~1238)
         let balanceData = null;
         let preloadData = null;
-        const filtersHash = getFilterKey({
-            subsidiary: filters.subsidiary || '',
-            department: filters.department || '',
-            location: filters.location || '',
-            classId: filters.classId || '',
-            accountingBook: filters.accountingBook || ''
-        });
         
         // Transform and merge chunk results
         for (const account of accounts) {
