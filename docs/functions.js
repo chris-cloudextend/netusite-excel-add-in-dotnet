@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.119';  // Period-based deduplication: merge account lists before queries are sent
+const FUNCTIONS_VERSION = '4.0.6.120';  // Period dedup improvements: query state tracking, promise chaining, chronological sort, batched localStorage
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -1176,6 +1176,18 @@ async function executeColumnBasedBSBatch(grid) {
             throw new Error(`Invalid translated ending balances response for chunk ${chunkNumber}: missing balances object`);
         }
         
+        // OPTIMIZATION: Batch localStorage writes - parse once before loop, stringify once after
+        // This reduces JSON.parse/stringify from O(accounts × periods) to O(1) per chunk
+        let balanceData = null;
+        let preloadData = null;
+        const filtersHash = getFilterKey({
+            subsidiary: filters.subsidiary || '',
+            department: filters.department || '',
+            location: filters.location || '',
+            classId: filters.classId || '',
+            accountingBook: filters.accountingBook || ''
+        });
+        
         // Transform and merge chunk results
         for (const account of accounts) {
             if (!(account in data.balances)) {
@@ -1211,37 +1223,47 @@ async function executeColumnBasedBSBatch(grid) {
                 // CRITICAL: Also persist to localStorage for cross-context access
                 // This ensures other cells in the same column can access the cache
                 // Write to BOTH formats: legacy (netsuite_balance_cache) and preload (xavi_balance_cache)
+                // OPTIMIZATION: Lazy-load localStorage data once per chunk, update object, write once at end
                 try {
-                    // Write to legacy format (for backward compatibility)
-                    const stored = localStorage.getItem(STORAGE_KEY);
-                    const balanceData = stored ? JSON.parse(stored) : {};
+                    // Lazy-load legacy format (first time only)
+                    if (balanceData === null) {
+                        const stored = localStorage.getItem(STORAGE_KEY);
+                        balanceData = stored ? JSON.parse(stored) : {};
+                    }
                     
                     if (!balanceData[account]) {
                         balanceData[account] = {};
                     }
                     balanceData[account][period] = accountBalances[period];
                     
-                    localStorage.setItem(STORAGE_KEY, JSON.stringify(balanceData));
-                    localStorage.setItem(STORAGE_TIMESTAMP_KEY, Date.now().toString());
+                    // Lazy-load preload format (first time only)
+                    if (preloadData === null) {
+                        const preloadCache = localStorage.getItem('xavi_balance_cache');
+                        preloadData = preloadCache ? JSON.parse(preloadCache) : {};
+                    }
                     
-                    // ALSO write to preload cache format (xavi_balance_cache) for immediate lookup
                     // Format: balance:${account}:${filtersHash}:${period}
-                    const filtersHash = getFilterKey({
-                        subsidiary: filters.subsidiary || '',
-                        department: filters.department || '',
-                        location: filters.location || '',
-                        classId: filters.classId || '',
-                        accountingBook: filters.accountingBook || ''
-                    });
                     const preloadKey = `balance:${account}:${filtersHash}:${period}`;
-                    const preloadCache = localStorage.getItem('xavi_balance_cache');
-                    const preloadData = preloadCache ? JSON.parse(preloadCache) : {};
                     preloadData[preloadKey] = { value: accountBalances[period], timestamp: Date.now() };
-                    localStorage.setItem('xavi_balance_cache', JSON.stringify(preloadData));
                 } catch (e) {
                     // localStorage might be full or unavailable - log but don't fail
                     console.warn(`⚠️ Failed to persist cache to localStorage for ${account}/${period}:`, e.message);
                 }
+            }
+        }
+        
+        // Write to localStorage once per chunk (after all account/period updates)
+        if (balanceData !== null || preloadData !== null) {
+            try {
+                if (balanceData !== null) {
+                    localStorage.setItem(STORAGE_KEY, JSON.stringify(balanceData));
+                    localStorage.setItem(STORAGE_TIMESTAMP_KEY, Date.now().toString());
+                }
+                if (preloadData !== null) {
+                    localStorage.setItem('xavi_balance_cache', JSON.stringify(preloadData));
+                }
+            } catch (e) {
+                console.warn(`⚠️ Failed to write localStorage batch for chunk ${chunkNumber}:`, e.message);
             }
         }
         
@@ -4937,7 +4959,18 @@ function checkLocalStorageCache(account, period, toPeriod = null, subsidiary = '
                 // Try each key format in order of specificity
                 for (const preloadKey of keysToTry) {
                     if (preloadData[preloadKey] && preloadData[preloadKey].value !== undefined) {
-                        const cachedValue = preloadData[preloadKey].value;
+                        const cachedEntry = preloadData[preloadKey];
+                        const cachedValue = cachedEntry.value;
+                        
+                        // Check cache staleness (TTL check)
+                        if (cachedEntry.timestamp) {
+                            const cacheAge = Date.now() - cachedEntry.timestamp;
+                            if (cacheAge > STORAGE_TTL) {
+                                // Cache expired - skip this entry
+                                continue;
+                            }
+                        }
+                        
                         // CRITICAL: Zero balances (0) are valid cached values and must be returned
                         // This prevents redundant API calls for accounts with no transactions
                         if (cacheStats.hits < 3) {
@@ -5275,8 +5308,9 @@ const pendingRequests = {
 const activeColumnBatchExecutions = new Map();
 
 // PERIOD-BASED DEDUPLICATION: Track active queries per period to merge account lists
-// Map<periodKey, { promise, accounts: Set, periods: Set, filters, gridKey }>
+// Map<periodKey, { promise, accounts: Set, periods: Set, filters, gridKey, queryState: 'pending'|'sent' }>
 // periodKey = `${periods.join(',')}:${filterKey}` (e.g., "Jan 2025,Feb 2025:1::::1")
+// queryState: 'pending' = query not yet sent (can merge accounts), 'sent' = query already in flight
 const activePeriodQueries = new Map();
 
 const pendingEvaluation = {
@@ -6644,7 +6678,13 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                 if (executionCheck.allowed) {
                     // PERIOD-BASED DEDUPLICATION: Check for existing queries for same periods FIRST
                     // This prevents multiple queries for the same period with different account lists
-                    const periods = columnBasedDetection.columns.map(col => col.period).sort();
+                    // CRITICAL: Sort periods chronologically (not lexicographically) for consistent periodKey
+                    const periods = columnBasedDetection.columns.map(col => col.period).sort((a, b) => {
+                        const aDate = parsePeriodToDate(a);
+                        const bDate = parsePeriodToDate(b);
+                        if (!aDate || !bDate) return 0;
+                        return aDate.getTime() - bDate.getTime();
+                    });
                     const filterKey = getFilterKey({
                         subsidiary: columnBasedDetection.filters.subsidiary || '',
                         department: columnBasedDetection.filters.department || '',
@@ -6663,7 +6703,7 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                     
                     if (activePeriodQuery) {
                         // Period query already active - check if our account is already in the query
-                        console.log(`🔄 PERIOD DEDUP: Periods ${periods.join(', ')} already being queried`);
+                        console.log(`🔄 PERIOD DEDUP: Periods ${periods.join(', ')} already being queried (state: ${activePeriodQuery.queryState})`);
                         console.log(`   Existing accounts: ${activePeriodQuery.accounts.size}, Our accounts: ${accounts.length}`);
                         
                         // Check if our account is already in the active query
@@ -6686,11 +6726,36 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                                 console.warn(`⚠️ PERIOD DEDUP: Error in existing query: ${error.message}`);
                             }
                         } else {
-                            // Our account is NOT in the active query - merge accounts for future queries
-                            console.log(`   📊 Account ${account} not in existing query, merging for future batches`);
-                            accounts.forEach(acc => activePeriodQuery.accounts.add(acc));
-                            accounts = Array.from(activePeriodQuery.accounts).sort();
-                            // Continue to create new batch with merged accounts
+                            // Our account is NOT in the active query
+                            if (activePeriodQuery.queryState === 'pending') {
+                                // Query hasn't been sent yet - merge accounts and update query
+                                console.log(`   📊 Account ${account} not in existing query, merging before query is sent`);
+                                accounts.forEach(acc => activePeriodQuery.accounts.add(acc));
+                                accounts = Array.from(activePeriodQuery.accounts).sort();
+                                // Continue to create new batch with merged accounts
+                            } else {
+                                // Query already sent - await existing promise, then check if account is in results
+                                // If not, we'll need a supplemental query (but this should be rare)
+                                console.log(`   ⏳ Account ${account} not in query (already sent) - awaiting results, then checking...`);
+                                try {
+                                    const batchResults = await activePeriodQuery.promise;
+                                    const balance = batchResults[account]?.[toPeriod];
+                                    
+                                    if (balance !== undefined && balance !== null && typeof balance === 'number') {
+                                        cache.balance.set(cacheKey, balance);
+                                        console.log(`✅ PERIOD DEDUP RESULT (post-query): ${account} for ${toPeriod} = ${balance}`);
+                                        pendingEvaluation.balance.delete(evalKey);
+                                        return balance;
+                                    } else {
+                                        // Account not in results - this shouldn't happen if preload worked correctly
+                                        // But if it does, fall through to create supplemental query
+                                        console.warn(`⚠️ Account ${account} not found in completed query results - will create supplemental query`);
+                                    }
+                                } catch (error) {
+                                    console.warn(`⚠️ PERIOD DEDUP: Error awaiting existing query: ${error.message}`);
+                                    // Fall through to create new batch
+                                }
+                            }
                         }
                     }
                     
@@ -6718,6 +6783,7 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                         
                         // Create promise synchronously and set it immediately
                         // Also track in activePeriodQueries for period-based deduplication
+                        // CRITICAL: Mark query as 'sent' immediately after creating promise to prevent further merges
                         batchPromise = executeColumnBasedBSBatch(updatedGrid)
                             .then(results => {
                                 // Remove from active period queries when complete
@@ -6791,13 +6857,39 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                                 accounts: new Set(accounts),
                                 periods: new Set(periods),
                                 filters: columnBasedDetection.filters,
-                                gridKey: gridKey
+                                gridKey: gridKey,
+                                queryState: 'sent'  // Mark as sent immediately to prevent further merges
                             });
                         } else {
-                            // Update existing period query with merged accounts and new promise
-                            activePeriodQuery.promise = batchPromise;
-                            activePeriodQuery.accounts = new Set(accounts);
-                            activePeriodQuery.gridKey = gridKey;
+                            // Update existing period query with merged accounts
+                            // CRITICAL: Chain promises instead of replacing to ensure all awaiters see results
+                            // If there's an existing promise, chain the new one after it
+                            if (activePeriodQuery.queryState === 'pending') {
+                                // Query hasn't been sent yet - replace promise with merged accounts version
+                                activePeriodQuery.promise = batchPromise;
+                                activePeriodQuery.accounts = new Set(accounts);
+                                activePeriodQuery.gridKey = gridKey;
+                                activePeriodQuery.queryState = 'sent';
+                            } else {
+                                // Query already sent - chain new promise after existing one
+                                // This ensures cells awaiting the old promise will see the new results
+                                // The chained promise merges results from both queries
+                                const oldPromise = activePeriodQuery.promise;
+                                activePeriodQuery.promise = oldPromise
+                                    .then(oldResults => {
+                                        // Wait for new batch to complete
+                                        return batchPromise.then(newResults => {
+                                            // Merge results: new results override old ones (newer is more complete)
+                                            const mergedResults = { ...oldResults };
+                                            for (const acc in newResults) {
+                                                mergedResults[acc] = { ...mergedResults[acc], ...newResults[acc] };
+                                            }
+                                            return mergedResults;
+                                        });
+                                    });
+                                activePeriodQuery.accounts = new Set(accounts);
+                                activePeriodQuery.gridKey = gridKey;
+                            }
                         }
                         
                         // Set the promise immediately (synchronously) to prevent race conditions
