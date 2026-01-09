@@ -1114,7 +1114,21 @@ function inferAnchorPeriod(periods) {
 async function executeDebouncedQuery(periodKey, activePeriodQueries, columnBasedDetection, filterKey) {
     const activePeriodQuery = activePeriodQueries.get(periodKey);
     if (!activePeriodQuery || activePeriodQuery.queryState !== 'collecting') {
-        console.warn(`⚠️ executeDebouncedQuery: Query not in 'collecting' state for ${periodKey}, skipping`);
+        // CRITICAL: If query is missing or in wrong state, reject placeholder promise
+        // Otherwise cells awaiting the promise will hang forever
+        const state = activePeriodQuery?.queryState || 'missing';
+        console.warn(`⚠️ DEBOUNCE: Unexpected state for ${periodKey} - query ${activePeriodQuery ? `state is '${state}'` : 'missing'}, rejecting placeholder`);
+        
+        if (activePeriodQuery && activePeriodQuery._rejectPlaceholder) {
+            activePeriodQuery._rejectPlaceholder(new Error(`Debounce query failed: unexpected state '${state}'`));
+        }
+        
+        // Clean up
+        if (activePeriodQuery?.executeTimeout) {
+            clearTimeout(activePeriodQuery.executeTimeout);
+        }
+        activePeriodQueries.delete(periodKey);
+        
         return {};
     }
     
@@ -1151,12 +1165,15 @@ async function executeDebouncedQuery(periodKey, activePeriodQueries, columnBased
         
         return results;
     } catch (error) {
-        // Reject placeholder promise with error
+        // CRITICAL: Reject placeholder promise with error so awaiting cells don't hang
         if (activePeriodQuery._rejectPlaceholder) {
             activePeriodQuery._rejectPlaceholder(error);
         }
         
         // Clean up on error
+        if (activePeriodQuery.executeTimeout) {
+            clearTimeout(activePeriodQuery.executeTimeout);
+        }
         activePeriodQueries.delete(periodKey);
         throw error;
     }
@@ -7000,12 +7017,18 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                                     return results;
                                 })
                                 .catch(error => {
-                                    // Clean up on error
+                                    // CRITICAL: Clean up on error, including timeout and placeholder promise
                                     activeColumnBatchExecutions.delete(gridKey);
                                     if (activePeriodQueries.has(periodKey)) {
                                         const query = activePeriodQueries.get(periodKey);
+                                        // Clear timeout if still pending
                                         if (query.executeTimeout) {
                                             clearTimeout(query.executeTimeout);
+                                        }
+                                        // Reject placeholder promise if not already rejected
+                                        // (This is defensive - executeDebouncedQuery should have already rejected it)
+                                        if (query._rejectPlaceholder) {
+                                            query._rejectPlaceholder(error);
                                         }
                                         activePeriodQueries.delete(periodKey);
                                     }
