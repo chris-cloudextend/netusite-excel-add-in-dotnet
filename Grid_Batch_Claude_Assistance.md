@@ -355,6 +355,50 @@ The final implementation (v4.0.6.135) is more robust, reliable, and performant t
 
 ---
 
+## New Issues Identified (v4.0.6.135)
+
+### Issue #12: Cells Resolving One-by-One Instead of All at Once
+
+**The Problem:**
+- When dragging across columns (Jan → Feb, Mar), cells resolve one-by-one instead of all at once
+- March's first cell resolves first, while the rest show #BUSY
+- Eventually all resolve, but it takes much longer than expected
+
+**Root Cause:**
+- Excel custom functions re-evaluate cells asynchronously
+- When batch completes, results are written to cache, but Excel re-evaluates cells at different times
+- First cell that re-evaluates gets the result, others still show #BUSY until they re-evaluate
+
+**Status:** Identified, pending fix. See `BATCH_RESOLUTION_AND_PROGRESS_ISSUES.md` for detailed analysis.
+
+### Issue #13: Task Pane Shows Incorrect Periods
+
+**The Problem:**
+- Task pane shows "Preloading Feb 2025, Jan 2025 (2 periods)" even though Jan is already cached
+- Should only show periods actually being preloaded (Feb, Mar), not Jan
+
+**Root Cause:**
+- Multiple preload requests are being sent from different sources
+- Task pane scans formulas and finds all periods (Jan, Feb, Mar)
+- Cache check might have race condition or not working correctly
+- Result: Task pane request includes Jan incorrectly
+
+**Status:** Identified, pending fix. See `BATCH_RESOLUTION_AND_PROGRESS_ISSUES.md` for detailed analysis.
+
+### Issue #14: Progress Indicator Remains Running After Completion
+
+**The Problem:**
+- Progress indicator continues showing "Preloading..." even after all periods are complete
+- Remains running for a long time after the job is actually complete
+
+**Root Cause:**
+- Progress indicator is updated when preload starts, but might not be updated correctly when preload completes
+- Or it's showing stale data from a previous request
+
+**Status:** Identified, pending fix. See `BATCH_RESOLUTION_AND_PROGRESS_ISSUES.md` for detailed analysis.
+
+---
+
 ## Additional Improvements (v4.0.6.128-132)
 
 ### Issue #5: Debounce Window Too Short
@@ -615,6 +659,7 @@ if (periodsNeedingFullPreload.length > 0) {
 - **v4.0.6.133:** Fixed filtersHash duplicate declaration bug - removed duplicate const filtersHash that caused "Cannot access 'filtersHash' before initialization" error
 - **v4.0.6.134:** Added cache verification after full preload - wait for cache to be populated before checking, preventing targeted preload when full preload completed
 - **v4.0.6.135:** Fixed two critical bugs: (1) Store filtersHash in activePeriodQueries to prevent scoping error, (2) Always call FULL preload for new periods instead of targeted preload (with verification before targeted preload)
+- **v4.0.6.135 (Issues Identified):** Three new issues discovered: (1) Cells resolving one-by-one instead of all at once, (2) Task pane showing incorrect periods, (3) Progress indicator remains running after completion. See `BATCH_RESOLUTION_AND_PROGRESS_ISSUES.md` for details.
 
 ---
 

@@ -1175,6 +1175,17 @@ async function executeDebouncedQuery(periodKey, activePeriodQueries, columnBased
         // Execute the batch query
         const results = await executeColumnBasedBSBatch(updatedGrid, periodKey, activePeriodQueries);
         
+        // 🔬 VALIDATION LOGGING: Log promise resolution
+        console.log(`🎯 RESOLVING PLACEHOLDER:`, {
+            periodKey: periodKey,
+            accountCount: activePeriodQuery.accounts.size,
+            accounts: Array.from(activePeriodQuery.accounts).slice(0, 5),
+            periodCount: activePeriodQuery.periods.size,
+            periods: Array.from(activePeriodQuery.periods),
+            resultsAccountCount: Object.keys(results).length,
+            timestamp: Date.now()
+        });
+        
         // Resolve placeholder promise with results
         if (activePeriodQuery._resolvePlaceholder) {
             activePeriodQuery._resolvePlaceholder(results);
@@ -1265,6 +1276,29 @@ async function executeColumnBasedBSBatch(grid, periodKey = null, activePeriodQue
             // Check manifest status to see if period is already fully preloaded
             const periodStatus = getPeriodStatus(filtersHash, period);
             const isFullyPreloaded = periodStatus === "completed";
+            
+            // 🔬 VALIDATION LOGGING: Add diagnostic info before preload decision
+            const manifest = getManifest(filtersHash);
+            const manifestPeriod = manifest.periods[normalizePeriodKey(period)];
+            console.log(`🔬 PRELOAD DECISION DEBUG:`, {
+                period: period,
+                filtersHash: filtersHash,
+                periodStatus: periodStatus,
+                isFullyPreloaded: isFullyPreloaded,
+                manifestExists: !!manifest,
+                manifestPeriod: manifestPeriod ? {
+                    status: manifestPeriod.status,
+                    attemptCount: manifestPeriod.attemptCount
+                } : null,
+                willTriggerFullPreload: !isFullyPreloaded,
+                filters: {
+                    subsidiary: filters.subsidiary || '',
+                    department: filters.department || '',
+                    location: filters.location || '',
+                    classId: filters.classId || '',
+                    accountingBook: filters.accountingBook || ''
+                }
+            });
             
             console.log(`🔍 PRELOAD CHECK: period=${period}, status=${periodStatus}, fullyPreloaded=${isFullyPreloaded}`);
             
@@ -1405,6 +1439,29 @@ async function executeColumnBasedBSBatch(grid, periodKey = null, activePeriodQue
         for (const period of chunk) {
             const periodStatus = getPeriodStatus(filtersHash, period);
             const isFullyPreloaded = periodStatus === "completed";
+            
+            // 🔬 VALIDATION LOGGING: Add diagnostic info before preload decision
+            const manifest = getManifest(filtersHash);
+            const manifestPeriod = manifest.periods[normalizePeriodKey(period)];
+            console.log(`🔬 PRELOAD DECISION DEBUG (chunk processing):`, {
+                period: period,
+                filtersHash: filtersHash,
+                periodStatus: periodStatus,
+                isFullyPreloaded: isFullyPreloaded,
+                manifestExists: !!manifest,
+                manifestPeriod: manifestPeriod ? {
+                    status: manifestPeriod.status,
+                    attemptCount: manifestPeriod.attemptCount
+                } : null,
+                willTriggerFullPreload: !isFullyPreloaded,
+                filters: {
+                    subsidiary: filters.subsidiary || '',
+                    department: filters.department || '',
+                    location: filters.location || '',
+                    classId: filters.classId || '',
+                    accountingBook: filters.accountingBook || ''
+                }
+            });
             
             if (!isFullyPreloaded) {
                 periodsNeedingFullPreload.push(period);
@@ -7311,6 +7368,16 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                             // Set batchPromise to placeholder - will resolve when debounced query completes
                             batchPromise = placeholderPromise
                                 .then(results => {
+                                    // 🔬 VALIDATION LOGGING: Log batch results handler start
+                                    console.log(`🎯 BATCH RESULTS HANDLER:`, {
+                                        periodKey: periodKey,
+                                        accountCount: activeQuery.accounts.size,
+                                        periodCount: activeQuery.periods.size,
+                                        resultsAccountCount: Object.keys(results).length,
+                                        pendingEvaluationCount: pendingEvaluation.balance.size,
+                                        timestamp: Date.now()
+                                    });
+                                    
                                     // Resolve ALL pending evaluations for this grid
                                     const finalAccounts = Array.from(activeQuery.accounts);
                                     const finalPeriods = Array.from(activeQuery.periods);

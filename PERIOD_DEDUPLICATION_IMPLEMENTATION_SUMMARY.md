@@ -2,7 +2,7 @@
 
 **Version:** 4.0.6.135  
 **Date:** January 9, 2026  
-**Last Updated:** January 9, 2026  
+**Last Updated:** January 9, 2026 (Issues #12-14 identified, pending fixes)  
 **Purpose:** Optimize balance sheet batch processing to prevent redundant queries when dragging formulas across columns
 
 **IMPORTANT:** This implementation processes periods one at a time (CHUNK_SIZE = 1) to avoid Cloudflare timeout (524 error). Cloudflare has a ~100 second timeout, but NetSuite queries take 90-150 seconds per period. Once migrated to AWS, this limitation will not apply and we can increase CHUNK_SIZE.
@@ -555,3 +555,41 @@ This implementation introduces **period-based deduplication** to prevent redunda
 4. **Dual cache format** - Results written to both legacy and preload cache formats
 
 **Expected Result:** Dragging across 5 columns should take the same time as manually entering 5 formulas (one query per period), with no single-cell resolutions.
+
+---
+
+## Known Issues (v4.0.6.135)
+
+### Issue #12: Cells Resolving One-by-One Instead of All at Once
+
+**Problem:** When dragging across columns (Jan → Feb, Mar), cells resolve one-by-one instead of all at once. March's first cell resolves first, while the rest show #BUSY.
+
+**Root Cause:** Excel custom functions re-evaluate cells asynchronously. When batch completes, results are written to cache, but Excel re-evaluates cells at different times. First cell that re-evaluates gets the result, others still show #BUSY until they re-evaluate.
+
+**Expected Fix:** Ensure all cells await the same promise and get results simultaneously when promise resolves. Excel will re-evaluate all cells, but they should all get results from the resolved promise.
+
+**See:** `BATCH_RESOLUTION_AND_PROGRESS_ISSUES.md` for detailed analysis.
+
+### Issue #13: Task Pane Shows Incorrect Periods
+
+**Problem:** Task pane shows "Preloading Feb 2025, Jan 2025 (2 periods)" even though Jan is already cached and complete.
+
+**Root Cause:** Multiple preload requests are being sent from different sources:
+1. Task pane scans formulas and finds all periods (Jan, Feb, Mar)
+2. Task pane filters out cached periods, but cache check might have race condition
+3. `executeColumnBasedBSBatch` also calls `triggerAutoPreload` for each period
+4. Result: Task pane request includes Jan incorrectly
+
+**Expected Fix:** Ensure cache check happens correctly and only uncached periods are included in preload requests. Progress indicator should show only active periods, not completed ones.
+
+**See:** `BATCH_RESOLUTION_AND_PROGRESS_ISSUES.md` for detailed analysis.
+
+### Issue #14: Progress Indicator Remains Running After Completion
+
+**Problem:** Progress indicator continues showing "Preloading..." even after all periods are complete.
+
+**Root Cause:** Progress indicator is updated when preload starts, but might not be updated correctly when preload completes. Or it's showing stale data from a previous request.
+
+**Expected Fix:** Update progress indicator when each period completes, and hide it when all periods are complete. Clear stale progress data when new preload starts.
+
+**See:** `BATCH_RESOLUTION_AND_PROGRESS_ISSUES.md` for detailed analysis.

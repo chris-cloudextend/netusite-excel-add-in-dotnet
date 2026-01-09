@@ -9263,6 +9263,9 @@ For licensing inquiries, contact: legal@celigo.com
                             const cachedPeriods = [];
                             
                             // Helper function to check if period is cached (matches functions.js logic)
+                            // CRITICAL FIX: Check BOTH manifest status AND cache data
+                            // This ensures we don't preload periods that are already complete
+                            // The manifest status is the source of truth (set by taskpane when preload completes)
                             function isPeriodCached(period) {
                                 try {
                                     // Normalize period
@@ -9275,6 +9278,18 @@ For licensing inquiries, contact: legal@celigo.com
                                         normalizedPeriod = `${normalizedMonth} ${year}`;
                                     }
                                     
+                                    // CRITICAL FIX: Check manifest status FIRST (most reliable)
+                                    // If manifest says "completed", period is fully preloaded
+                                    // This matches the check in executeColumnBasedBSBatch (getPeriodStatus)
+                                    if (typeof window.getPeriodStatus === 'function') {
+                                        const status = window.getPeriodStatus(preloadFiltersHash, normalizedPeriod);
+                                        if (status === 'completed') {
+                                            console.log(`✅ Period ${normalizedPeriod} marked as completed in manifest (filtersHash: ${preloadFiltersHash}) - skipping preload`);
+                                            return true;
+                                        }
+                                    }
+                                    
+                                    // Fallback: Check cache data (less reliable, but useful for backward compatibility)
                                     const preloadCache = localStorage.getItem('xavi_balance_cache');
                                     if (!preloadCache) return false;
                                     
@@ -9304,7 +9319,27 @@ For licensing inquiries, contact: legal@celigo.com
                                     normalizedPeriod = `${normalizedMonth} ${year}`;
                                 }
                                 
-                                if (isPeriodCached(normalizedPeriod)) {
+                                // 🔬 VALIDATION LOGGING: Log cache check decision
+                                const isCached = isPeriodCached(normalizedPeriod);
+                                const periodStatus = (typeof window.getPeriodStatus === 'function') 
+                                    ? window.getPeriodStatus(preloadFiltersHash, normalizedPeriod)
+                                    : 'unknown';
+                                console.log(`🔬 TASKPANE CACHE CHECK:`, {
+                                    period: normalizedPeriod,
+                                    filtersHash: preloadFiltersHash,
+                                    isCached: isCached,
+                                    periodStatus: periodStatus,
+                                    willPreload: !isCached,
+                                    filters: {
+                                        subsidiary: preloadFilters.subsidiary || '',
+                                        department: preloadFilters.department || '',
+                                        location: preloadFilters.location || '',
+                                        class: preloadFilters.class || '',
+                                        accountingBook: preloadFilters.accountingBook || ''
+                                    }
+                                });
+                                
+                                if (isCached) {
                                     cachedPeriods.push(normalizedPeriod);
                                     console.log(`✅ Period ${normalizedPeriod} already cached, skipping preload`);
                                 } else {
@@ -9341,6 +9376,8 @@ For licensing inquiries, contact: legal@celigo.com
                             }
                             
                             // Helper function to check if period is actually cached
+                            // CRITICAL FIX: Check BOTH manifest status AND cache data
+                            // This ensures we don't preload periods that are already complete
                             function isPeriodCachedInLocalStorage(period) {
                                 try {
                                     let normalizedPeriod = period.trim();
@@ -9352,6 +9389,17 @@ For licensing inquiries, contact: legal@celigo.com
                                         normalizedPeriod = `${normalizedMonth} ${year}`;
                                     }
                                     
+                                    // CRITICAL FIX: Check manifest status FIRST (most reliable)
+                                    // If manifest says "completed", period is fully preloaded
+                                    if (typeof window.getPeriodStatus === 'function') {
+                                        const status = window.getPeriodStatus(preloadFiltersHash, normalizedPeriod);
+                                        if (status === 'completed') {
+                                            console.log(`✅ Period ${normalizedPeriod} marked as completed in manifest - skipping preload`);
+                                            return true;
+                                        }
+                                    }
+                                    
+                                    // Fallback: Check cache data (less reliable, but useful for backward compatibility)
                                     const preloadCache = localStorage.getItem('xavi_balance_cache');
                                     if (!preloadCache) return false;
                                     
@@ -9577,6 +9625,24 @@ For licensing inquiries, contact: legal@celigo.com
                                         totalAccountCount = Math.max(totalAccountCount, chunkResult.accountCount);
                                     }
                                     
+                                    // CRITICAL FIX: Update progress indicator after each chunk completes
+                                    // Filter out completed periods from display
+                                    const remainingActivePeriods = remainingPeriods.filter(p => 
+                                        !allCompleted.includes(p) && 
+                                        !allFailed.some(f => f.period === p)
+                                    );
+                                    
+                                    if (remainingActivePeriods.length > 0) {
+                                        const activePeriodsText = remainingActivePeriods.length === 1 
+                                            ? remainingActivePeriods[0]
+                                            : remainingActivePeriods.join(', ');
+                                        updateLoading(
+                                            `⚡ Preloading ${activePeriodsText} (${remainingActivePeriods.length} period${remainingActivePeriods.length > 1 ? 's' : ''})`,
+                                            40 + Math.floor((allCompleted.length / uncachedPeriods.length) * 40), // Progress based on completion
+                                            `Getting initial balances for a period can take some time as we work with your NetSuite data to sum values from the beginning of time. Good news - once this formula is resolved all balance sheet accounts for the same period will resolve instantly`
+                                        );
+                                    }
+                                    
                                     // Handle timeout/error - determine which periods are actually missing
                                     if (chunkResult.status === 'timeout' || chunkResult.status === 'error') {
                                         // Check which periods are actually cached (backend might have completed before timeout)
@@ -9617,6 +9683,20 @@ For licensing inquiries, contact: legal@celigo.com
                             // This unblocks waiting formulas so they can check the cache and return values
                             if (typeof window.updatePeriodStatus === 'function') {
                                 for (const period of allCompleted) {
+                                    // 🔬 VALIDATION LOGGING: Log marker setting
+                                    console.log(`✅ PRELOAD MARKER SET:`, {
+                                        period: period,
+                                        filtersHash: preloadFiltersHash,
+                                        status: 'completed',
+                                        timestamp: Date.now(),
+                                        verifyRead: (() => {
+                                            // Verify by reading back from manifest
+                                            if (typeof window.getPeriodStatus === 'function') {
+                                                return window.getPeriodStatus(preloadFiltersHash, period);
+                                            }
+                                            return 'unknown';
+                                        })()
+                                    });
                                     window.updatePeriodStatus(preloadFiltersHash, period, { status: 'completed' });
                                     console.log(`📋 Manifest updated: ${period} status = completed (filtersHash: ${preloadFiltersHash})`);
                                 }
@@ -9628,6 +9708,15 @@ For licensing inquiries, contact: legal@celigo.com
                             } else {
                                 console.warn('⚠️ updatePeriodStatus function not available - manifest status not updated');
                             }
+                            
+                            // 🔬 VALIDATION LOGGING: Log final state before hiding
+                            console.log(`🔬 TASKPANE PRELOAD COMPLETE:`, {
+                                completed: allCompleted,
+                                failed: allFailed.map(f => f.period),
+                                totalRequested: uncachedPeriods.length,
+                                filtersHash: preloadFiltersHash,
+                                timestamp: Date.now()
+                            });
                             
                             // Final status
                             hideLoading();
