@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.116';  // Added localStorage persistence for column-based batch results
+const FUNCTIONS_VERSION = '4.0.6.117';  // Fixed race condition in batch deduplication - atomic check-and-set
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -6609,33 +6609,19 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                     });
                     const gridKey = `grid:${accounts.join(',')}:${periods.join(',')}:${filterKey}`;
                     
-                    // Check if batch is already executing for this grid
-                    if (activeColumnBatchExecutions.has(gridKey)) {
-                        console.log(`⏳ COLUMN-BASED BS: Batch already executing for grid, waiting for results...`);
-                        try {
-                            const batchResults = await activeColumnBatchExecutions.get(gridKey);
-                            const balance = batchResults[account]?.[toPeriod];
-                            
-                            if (balance !== undefined && balance !== null && typeof balance === 'number') {
-                                // Cache result
-                                cache.balance.set(cacheKey, balance);
-                                console.log(`✅ COLUMN-BASED BS RESULT (shared batch): ${account} for ${toPeriod} = ${balance}`);
-                                pendingEvaluation.balance.delete(evalKey);
-                                return balance;
-                            }
-                        } catch (error) {
-                            console.error(`❌ COLUMN-BASED BS: Error waiting for shared batch: ${error.message}`);
-                            // Fall through to per-cell logic
-                        }
-                    } else {
-                        // Execute column-based batch query (one query per period, all accounts)
+                    // ATOMIC CHECK-AND-SET: Prevent race conditions when multiple cells evaluate simultaneously
+                    // Strategy: Check if batch exists, if not create promise immediately (synchronously) and set it
+                    let batchPromise = activeColumnBatchExecutions.get(gridKey);
+                    
+                    if (!batchPromise) {
+                        // No batch exists - create one immediately (synchronously) to prevent race conditions
                         const accountCount = columnBasedDetection.allAccounts.size;
                         const periodCount = columnBasedDetection.columns.length;
-                        console.log(`🚀 COLUMN-BASED BS BATCH EXECUTING: ${accountCount} accounts × ${periodCount} periods`);
+                        console.log(`🚀 COLUMN-BASED BS BATCH EXECUTING: ${accountCount} accounts × ${periodCount} periods (gridKey: ${gridKey.substring(0, 50)}...)`);
                         console.log(`📊 Querying translated ending balances (chunked processing: 2 periods per chunk)`);
                         
-                        // Create and store the batch promise
-                        const batchPromise = executeColumnBasedBSBatch(columnBasedDetection)
+                        // Create promise synchronously and set it immediately
+                        batchPromise = executeColumnBasedBSBatch(columnBasedDetection)
                             .then(results => {
                                 // Resolve ALL pending evaluations for this grid
                                 for (const [evalKey, evalRequest] of pendingEvaluation.balance.entries()) {
@@ -6695,34 +6681,39 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                                 throw error;
                             });
                         
+                        // Set the promise immediately (synchronously) to prevent race conditions
+                        // This ensures that any other cell checking after this point will see the promise
                         activeColumnBatchExecutions.set(gridKey, batchPromise);
+                    } else {
+                        console.log(`⏳ COLUMN-BASED BS: Batch already executing for grid (gridKey: ${gridKey.substring(0, 60)}...), waiting for results...`);
+                    }
+                    
+                    // All cells (whether they created the batch or are waiting) await the same promise
+                    try {
+                        const batchResults = await batchPromise;
                         
-                        try {
-                            const batchResults = await batchPromise;
+                        // Get result for this specific account and period
+                        const balance = batchResults[account]?.[toPeriod];
+                        
+                        if (balance !== undefined && balance !== null && typeof balance === 'number') {
+                            // Cache result (already cached above, but ensure it's set)
+                            cache.balance.set(cacheKey, balance);
                             
-                            // Get result for this specific account and period
-                            const balance = batchResults[account]?.[toPeriod];
+                            console.log(`✅ COLUMN-BASED BS RESULT: ${account} for ${toPeriod} = ${balance}`);
                             
-                            if (balance !== undefined && balance !== null && typeof balance === 'number') {
-                                // Cache result (already cached above, but ensure it's set)
-                                cache.balance.set(cacheKey, balance);
-                                
-                                console.log(`✅ COLUMN-BASED BS RESULT: ${account} for ${toPeriod} = ${balance}`);
-                                
-                                // Remove from pendingEvaluation (batch executed successfully)
-                                pendingEvaluation.balance.delete(evalKey);
-                                return balance;
-                            } else {
-                                // Missing result - fall back to per-cell logic
-                                console.log(`⚠️ COLUMN-BASED BS: Missing result for ${account}/${toPeriod} - falling back to per-cell`);
-                                // Fall through to per-cell logic below
-                            }
-                        } catch (error) {
-                            // Error in batch execution - fall back to per-cell logic
-                            console.error(`❌ COLUMN-BASED BS BATCH ERROR: ${error.message} - falling back to per-cell`);
-                            console.error(`   Error stack:`, error.stack);
+                            // Remove from pendingEvaluation (batch executed successfully)
+                            pendingEvaluation.balance.delete(evalKey);
+                            return balance;
+                        } else {
+                            // Missing result - fall back to per-cell logic
+                            console.log(`⚠️ COLUMN-BASED BS: Missing result for ${account}/${toPeriod} - falling back to per-cell`);
                             // Fall through to per-cell logic below
                         }
+                    } catch (error) {
+                        // Error in batch execution - fall back to per-cell logic
+                        console.error(`❌ COLUMN-BASED BS BATCH ERROR: ${error.message} - falling back to per-cell`);
+                        console.error(`   Error stack:`, error.stack);
+                        // Fall through to per-cell logic below
                     }
                 } else {
                     // Execution not allowed - log reason and fall back to per-cell
