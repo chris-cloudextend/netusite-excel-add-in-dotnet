@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.113';  // Enhanced column-based batch execution logging
+const FUNCTIONS_VERSION = '4.0.6.114';  // Fixed account type extraction for column-based batch execution
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -846,11 +846,31 @@ function isColumnBatchExecutionAllowed(accountType, gridDetection) {
     }
     
     // Condition 2: Must be Balance Sheet account
-    // CRITICAL FIX: accountType can be a string (NetSuite type like "Bank") or an object with .type property
-    // Use isBalanceSheetType() to check if it's a Balance Sheet account type
-    const acctTypeStr = typeof accountType === 'string' ? accountType : (accountType?.type || accountType?.account || '');
-    if (!isBalanceSheetType(acctTypeStr)) {
-        return { allowed: false, reason: `Account type is ${acctTypeStr}, not a Balance Sheet type` };
+    // CRITICAL FIX: accountType can be:
+    // - A string (NetSuite type like "Bank")
+    // - A JSON string (like '{"account":"10899","type":"Bank","display_name":"Bank"}') - backend returns JSON
+    // - An object with .type property
+    // Extract the type string properly
+    let acctTypeStr = '';
+    if (typeof accountType === 'string') {
+        // Try to parse as JSON first (backend returns JSON string)
+        try {
+            const parsed = JSON.parse(accountType);
+            if (parsed && typeof parsed === 'object') {
+                acctTypeStr = parsed.type || parsed.account || '';
+            } else {
+                acctTypeStr = accountType; // Plain string type
+            }
+        } catch (e) {
+            // Not JSON, use as-is (plain string type like "Bank")
+            acctTypeStr = accountType;
+        }
+    } else if (accountType && typeof accountType === 'object') {
+        acctTypeStr = accountType.type || accountType.account || '';
+    }
+    
+    if (!acctTypeStr || !isBalanceSheetType(acctTypeStr)) {
+        return { allowed: false, reason: `Account type is ${JSON.stringify(accountType)}, extracted type="${acctTypeStr}", not a Balance Sheet type` };
     }
     
     // Condition 3: Grid detection must be eligible
