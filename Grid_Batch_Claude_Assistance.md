@@ -3,7 +3,7 @@
 **Date:** January 9, 2026  
 **Last Updated:** January 9, 2026  
 **Feature:** Period-Based Deduplication for Balance Sheet Batch Processing  
-**Version Progression:** 4.0.6.119 → 4.0.6.120 → 4.0.6.121 → 4.0.6.122 → 4.0.6.128 → 4.0.6.129 → 4.0.6.130 → 4.0.6.131 → 4.0.6.132
+**Version Progression:** 4.0.6.119 → 4.0.6.120 → 4.0.6.121 → 4.0.6.122 → 4.0.6.128 → 4.0.6.129 → 4.0.6.130 → 4.0.6.131 → 4.0.6.132 → 4.0.6.133 → 4.0.6.134 → 4.0.6.135
 
 ---
 
@@ -340,15 +340,18 @@ The period-based deduplication implementation was significantly improved through
 3. **Supplemental query path** made explicit for clarity
 4. **TTL increased** to 1 hour for better cache performance
 
-**Subsequent Reviews (v4.0.6.128-132):**
+**Subsequent Reviews (v4.0.6.128-135):**
 5. **Debounce bypass fix** - prevent immediate batch execution when debounce window is open
 6. **Rolling debounce** - reset timer on new accounts (200ms base, 1000ms max) to collect all accounts
 7. **Cache check before individual calls** - prevent redundant individual API calls when batch already cached data
 8. **Filter cached periods** - exclude cached periods from batch detection
 9. **Account merge bug fix** - fixed account check to use THIS cell's account instead of checking if ANY account from grid detection is in query
 10. **Full preload for new periods** - always use full preload (`/batch/bs_preload`) for new periods instead of targeted preload, ensuring all 232 accounts are cached
+11. **filtersHash scoping error** - store filtersHash in activePeriodQueries to prevent "Cannot access 'filtersHash' before initialization" error
+12. **Cache verification after full preload** - wait for cache to be populated before checking, preventing targeted preload when full preload completed
+13. **Full preload check before targeted** - verify period needs full preload before calling targeted preload, ensuring new periods always get full preload
 
-The final implementation (v4.0.6.132) is more robust, reliable, and performant than the initial version (v4.0.6.119). This demonstrates the value of thorough code review, iterative improvement, and addressing issues as they are discovered in production-like scenarios.
+The final implementation (v4.0.6.135) is more robust, reliable, and performant than the initial version (v4.0.6.119). This demonstrates the value of thorough code review, iterative improvement, and addressing issues as they are discovered in production-like scenarios.
 
 ---
 
@@ -446,7 +449,7 @@ for (const request of bsCumulativeRequests) {
 **Claude's Analysis:**
 > "The debounce is working correctly (21 accounts collected), but it's calling the WRONG ENDPOINT. Always use FULL preload (`/batch/bs_preload`) for new periods, never targeted preload. NetSuite query time is essentially the same whether we fetch 1, 20, or 200 accounts (~80-100 seconds). So we should ALWAYS fetch all accounts for a period on first encounter."
 
-**The Fix - Full Preload for New Periods:**
+**The Fix - Full Preload for New Periods (v4.0.6.132):**
 ```javascript
 // In executeColumnBasedBSBatch, check if period needs full preload
 for (const period of chunk) {
@@ -467,6 +470,135 @@ for (const period of chunk) {
 - All future lookups for that period are instant cache hits
 - Targeted preload only used as fallback if full preload fails
 
+### Issue #9: filtersHash Scoping Error (v4.0.6.135)
+
+**The Problem:**
+- When debounce timer fired, `executeDebouncedQuery` tried to access `filtersHash` but it wasn't in scope
+- Error: "Cannot access 'filtersHash' before initialization" at line 1266 in `executeColumnBasedBSBatch`
+- `filtersHash` was calculated inside `executeColumnBasedBSBatch` but needed in `executeDebouncedQuery`
+
+**Claude's Analysis:**
+> "The `filtersHash` variable isn't accessible in the scope where `executeDebouncedQuery` runs. Store `filtersHash` in `activePeriodQueries` when creating the query entry, then retrieve it in `executeDebouncedQuery` or `executeColumnBasedBSBatch`."
+
+**The Fix:**
+```javascript
+// Store filtersHash in activePeriodQueries when creating query entry
+activePeriodQueries.set(periodKey, {
+    promise: placeholderPromise,
+    accounts: new Set(accounts),
+    periods: new Set(periods),
+    filters: columnBasedDetection.filters,
+    filtersHash: filtersHash,  // CRITICAL: Store for use in executeDebouncedQuery
+    gridKey: gridKey,
+    queryState: 'collecting',
+    // ...
+});
+
+// In executeDebouncedQuery, retrieve filtersHash from activePeriodQuery
+const filtersHash = activePeriodQuery.filtersHash || getFilterKey({
+    subsidiary: activePeriodQuery.filters?.subsidiary || '',
+    department: activePeriodQuery.filters?.department || '',
+    location: activePeriodQuery.filters?.location || '',
+    classId: activePeriodQuery.filters?.classId || '',
+    accountingBook: activePeriodQuery.filters?.accountingBook || ''
+});
+```
+
+**Impact:**
+- Eliminates scoping error
+- filtersHash available in all execution contexts
+- More reliable debounce execution
+
+### Issue #10: Cache Verification After Full Preload (v4.0.6.134)
+
+**The Problem:**
+- `waitForPeriodCompletion` returned true when manifest status was "completed"
+- But cache might not be populated yet (taskpane writes to localStorage asynchronously)
+- Code checked cache immediately, found nothing, and fell through to targeted preload
+
+**Claude's Analysis:**
+> "The targeted preload is being called even though the full preload for Feb 2025 completed. The issue is that `waitForPeriodCompletion` returns true when the manifest status is 'completed', but the cache may not be populated yet (taskpane writes to localStorage asynchronously)."
+
+**The Fix:**
+```javascript
+if (waited) {
+    console.log(`✅ PRELOAD COMPLETE: ${period} is now fully cached`);
+    
+    // CRITICAL: Wait a bit longer for cache to be populated by taskpane
+    await new Promise(resolve => setTimeout(resolve, 500)); // 500ms buffer
+    
+    // Verify cache is actually populated before proceeding
+    let cachePopulated = false;
+    let retries = 0;
+    const maxRetries = 10; // 10 retries = 5 seconds total
+    while (retries < maxRetries && !cachePopulated) {
+        const sampleAccount = accounts.length > 0 ? accounts[0] : null;
+        if (sampleAccount) {
+            const sampleCached = checkLocalStorageCache(sampleAccount, null, period, filters.subsidiary || '', filtersHash);
+            if (sampleCached !== null) {
+                cachePopulated = true;
+                console.log(`✅ Cache verified: ${period} is populated`);
+            }
+        }
+        
+        if (!cachePopulated) {
+            retries++;
+            if (retries < maxRetries) {
+                await new Promise(resolve => setTimeout(resolve, 500));
+            }
+        }
+    }
+}
+```
+
+**Impact:**
+- Prevents targeted preload from being called when full preload completed but cache write hasn't finished
+- Ensures cache is actually populated before proceeding
+- More reliable cache verification
+
+### Issue #11: Full Preload Check Before Targeted Preload (v4.0.6.135)
+
+**The Problem:**
+- Even after implementing full preload for new periods, targeted preload was still being called
+- Server logs showed: Full preload completed, but then targeted preload called immediately after
+- The check for full preload was happening, but code was still falling through to targeted preload
+
+**Claude's Analysis:**
+> "Before calling targeted preload, check if ANY period needs FULL preload. If so, trigger it and wait. Only use targeted preload as a fallback if accounts are still missing after full preload."
+
+**The Fix:**
+```javascript
+// Before calling targeted preload, check if ANY period needs FULL preload
+const periodsNeedingFullPreload = [];
+for (const period of chunk) {
+    const periodStatus = getPeriodStatus(filtersHash, period);
+    const isFullyPreloaded = periodStatus === "completed";
+    
+    if (!isFullyPreloaded) {
+        periodsNeedingFullPreload.push(period);
+        console.log(`🔄 NEW PERIOD: ${period} - triggering FULL preload (not targeted)`);
+    }
+}
+
+// If any period needs full preload, trigger it and wait
+if (periodsNeedingFullPreload.length > 0) {
+    for (const period of periodsNeedingFullPreload) {
+        await triggerAutoPreload(firstAccount, period, filters);
+        await waitForPeriodCompletion(filtersHash, period, maxWait);
+        await new Promise(resolve => setTimeout(resolve, 1000)); // Wait for cache
+    }
+    
+    // After full preload, check cache again - should have all accounts now
+    // If all accounts cached, skip targeted preload
+    // Only use targeted preload as fallback if accounts still missing
+}
+```
+
+**Impact:**
+- Ensures new periods always get full preload before targeted preload is considered
+- Prevents redundant targeted preload calls when full preload should have cached everything
+- More reliable endpoint selection
+
 ---
 
 ## Version History
@@ -480,7 +612,9 @@ for (const period of chunk) {
 - **v4.0.6.130:** Rolling debounce + cache check before individual calls - reset timer on new accounts (200ms base, 1000ms max), check cache before falling back to individual API calls
 - **v4.0.6.131:** Account merge bug fix - changed account check to use THIS cell's account instead of checking if ANY account from grid detection is in query
 - **v4.0.6.132:** Full preload for new periods - always use full preload (`/batch/bs_preload`) for new periods instead of targeted preload, ensuring all 232 accounts are cached
-- **v4.0.6.132:** Full preload for new periods - always use full preload (`/batch/bs_preload`) for new periods instead of targeted preload, ensuring all 232 accounts are cached
+- **v4.0.6.133:** Fixed filtersHash duplicate declaration bug - removed duplicate const filtersHash that caused "Cannot access 'filtersHash' before initialization" error
+- **v4.0.6.134:** Added cache verification after full preload - wait for cache to be populated before checking, preventing targeted preload when full preload completed
+- **v4.0.6.135:** Fixed two critical bugs: (1) Store filtersHash in activePeriodQueries to prevent scoping error, (2) Always call FULL preload for new periods instead of targeted preload (with verification before targeted preload)
 
 ---
 
@@ -494,11 +628,11 @@ for (const period of chunk) {
    - Increased TTL to 1 hour
 
 2. **`excel-addin/manifest.xml`**
-   - Updated version to 4.0.6.132
+   - Updated version to 4.0.6.135
    - Updated all cache-busting URLs
 
 3. **`docs/taskpane.html`, `docs/sharedruntime.html`, `docs/functions.html`**
-   - Updated functions.js script references to v4.0.6.130
+   - Updated functions.js script references to v4.0.6.135
 
 4. **`Grid_Batch_Claude_Assistance.md`** (this document)
    - Comprehensive summary of review process and improvements

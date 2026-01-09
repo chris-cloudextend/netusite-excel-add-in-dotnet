@@ -1,6 +1,6 @@
 # Period-Based Deduplication Implementation Summary
 
-**Version:** 4.0.6.132  
+**Version:** 4.0.6.135  
 **Date:** January 9, 2026  
 **Last Updated:** January 9, 2026  
 **Purpose:** Optimize balance sheet batch processing to prevent redundant queries when dragging formulas across columns
@@ -529,13 +529,16 @@ Track query state (pending vs. sent):
    - Updated batch execution to track in `activePeriodQueries` (lines ~6719-6748)
    - Updated cleanup to remove from `activePeriodQueries` (lines ~6722-6731, 6778-6782)
    - Updated batch write to preload cache format (lines ~1227-1240)
+   - **v4.0.6.133:** Removed duplicate `filtersHash` declaration
+   - **v4.0.6.134:** Added cache verification after full preload completion
+   - **v4.0.6.135:** Store `filtersHash` in `activePeriodQueries`, check for full preload before targeted preload
 
 2. **`excel-addin/manifest.xml`**
-   - Updated version to `4.0.6.132`
+   - Updated version to `4.0.6.135`
    - Updated all cache-busting URLs
 
 3. **`docs/taskpane.html`, `docs/sharedruntime.html`, `docs/functions.html`**
-   - Updated functions.js script references to v4.0.6.132
+   - Updated functions.js script references to v4.0.6.135
 
 4. **`PERIOD_DEDUPLICATION_PLAN.md`** (new file)
    - Implementation plan and analysis

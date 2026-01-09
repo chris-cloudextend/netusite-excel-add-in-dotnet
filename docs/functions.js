@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.133';  // Fixed filtersHash duplicate declaration bug: Removed duplicate const filtersHash declaration that caused "Cannot access 'filtersHash' before initialization" error
+const FUNCTIONS_VERSION = '4.0.6.135';  // Fixed two bugs: (1) Store filtersHash in activePeriodQueries to prevent scoping error, (2) Always call FULL preload for new periods instead of targeted preload
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -1300,6 +1300,39 @@ async function executeColumnBasedBSBatch(grid, periodKey = null, activePeriodQue
                 
                 if (waited) {
                     console.log(`✅ PRELOAD COMPLETE: ${period} is now fully cached`);
+                    
+                    // CRITICAL: Wait a bit longer for cache to be populated by taskpane
+                    // The taskpane processes the backend response and writes to localStorage
+                    // Give it a moment to complete the write operation
+                    await new Promise(resolve => setTimeout(resolve, 500)); // 500ms buffer
+                    
+                    // Verify cache is actually populated before proceeding
+                    let cachePopulated = false;
+                    let retries = 0;
+                    const maxRetries = 10; // 10 retries = 5 seconds total
+                    while (retries < maxRetries && !cachePopulated) {
+                        // Check if at least one account from our list is cached
+                        const sampleAccount = accounts.length > 0 ? accounts[0] : null;
+                        if (sampleAccount) {
+                            const sampleCached = checkLocalStorageCache(sampleAccount, null, period, filters.subsidiary || '', filtersHash);
+                            if (sampleCached !== null) {
+                                cachePopulated = true;
+                                console.log(`✅ Cache verified: ${period} is populated (sample account ${sampleAccount} found)`);
+                            }
+                        }
+                        
+                        if (!cachePopulated) {
+                            retries++;
+                            if (retries < maxRetries) {
+                                await new Promise(resolve => setTimeout(resolve, 500)); // Wait 500ms before retry
+                            }
+                        }
+                    }
+                    
+                    if (!cachePopulated) {
+                        console.warn(`⚠️ FULL PRELOAD: Cache not populated for ${period} after ${maxRetries * 500}ms - will use targeted preload as fallback`);
+                        allPreloadsSucceeded = false;
+                    }
                 } else {
                     console.warn(`⚠️ FULL PRELOAD: Timeout or failure for ${period} - will use targeted preload as fallback`);
                     allPreloadsSucceeded = false;
@@ -1364,10 +1397,72 @@ async function executeColumnBasedBSBatch(grid, periodKey = null, activePeriodQue
             }
         }
         
+        // CRITICAL FIX: Before calling targeted preload, check if ANY period needs FULL preload
+        // NetSuite query time is dominated by CONSOLIDATE function, not row count
+        // Whether we ask for 1, 23, or 232 accounts, it takes ~80 seconds
+        // So we should ALWAYS get all 232 accounts for a new period
+        const periodsNeedingFullPreload = [];
+        for (const period of chunk) {
+            const periodStatus = getPeriodStatus(filtersHash, period);
+            const isFullyPreloaded = periodStatus === "completed";
+            
+            if (!isFullyPreloaded) {
+                periodsNeedingFullPreload.push(period);
+                console.log(`🔄 NEW PERIOD: ${period} - triggering FULL preload (not targeted)`);
+            }
+        }
+        
+        // If any period needs full preload, trigger it and wait
+        if (periodsNeedingFullPreload.length > 0) {
+            console.log(`🚀 FULL PRELOAD: Triggering for ${periodsNeedingFullPreload.length} period(s): ${periodsNeedingFullPreload.join(', ')}`);
+            
+            for (const period of periodsNeedingFullPreload) {
+                // Use the same triggerAutoPreload function that manual entry uses
+                // This calls /batch/bs_preload (full preload, not targeted)
+                const firstAccount = accounts.length > 0 ? accounts[0] : null;
+                if (firstAccount) {
+                    await triggerAutoPreload(firstAccount, period, filters);
+                    
+                    // Wait for preload to complete
+                    const maxWait = 120000; // 120 seconds
+                    const waited = await waitForPeriodCompletion(filtersHash, period, maxWait);
+                    
+                    if (waited) {
+                        // Wait for cache to be populated
+                        await new Promise(resolve => setTimeout(resolve, 1000)); // 1 second buffer
+                        console.log(`✅ FULL PRELOAD COMPLETE: ${period} - all 232 accounts cached`);
+                    } else {
+                        console.warn(`⚠️ FULL PRELOAD: Timeout for ${period} - will try targeted as fallback`);
+                    }
+                }
+            }
+            
+            // After full preload, check cache again - should have all accounts now
+            let allAccountsCached = true;
+            for (const period of chunk) {
+                for (const account of accounts) {
+                    const cachedValue = checkLocalStorageCache(account, null, period, filters.subsidiary || '', filtersHash);
+                    if (cachedValue === null) {
+                        allAccountsCached = false;
+                        break;
+                    }
+                }
+                if (!allAccountsCached) break;
+            }
+            
+            if (allAccountsCached) {
+                // All accounts are in cache after full preload - skip targeted preload
+                console.log(`✅ ALL ACCOUNTS CACHED AFTER FULL PRELOAD: Skipping targeted preload for ${chunk.join(', ')}`);
+                continue; // Skip to next chunk
+            } else {
+                console.warn(`⚠️ Some accounts still missing after full preload - will use targeted preload as fallback`);
+            }
+        }
+        
         // Only use targeted preload if:
-        // 1. Full preload timed out/failed (fallback)
-        // 2. Some accounts are missing from cache (edge case)
-        // For the common drag scenario, all accounts should be in cache after full preload
+        // 1. All periods are already fully preloaded but some accounts are missing (edge case)
+        // 2. Full preload timed out/failed (fallback)
+        // For the common drag scenario, full preload should have cached all accounts
         
         // Query translated ending balances for this chunk (targeted preload - should be rare)
         const requestBody = {
@@ -6940,6 +7035,9 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                         classId: columnBasedDetection.filters.classId || '',
                         accountingBook: columnBasedDetection.filters.accountingBook || ''
                     });
+                    // CRITICAL: Store filtersHash for use in executeDebouncedQuery/executeColumnBasedBSBatch
+                    // This prevents "Cannot access 'filtersHash' before initialization" error
+                    const filtersHash = filterKey; // filterKey is the same as filtersHash
                     
                     // Create period key for deduplication (periods + filters, NOT accounts)
                     const periodKey = `${periods.join(',')}:${filterKey}`;
@@ -7194,6 +7292,7 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                                 accounts: new Set(accounts),
                                 periods: new Set(periods),
                                 filters: columnBasedDetection.filters,
+                                filtersHash: filtersHash,  // CRITICAL: Store filtersHash for use in executeDebouncedQuery
                                 gridKey: gridKey,
                                 queryState: 'collecting',  // Debounce window open - accounts can merge
                                 _resolvePlaceholder: resolvePlaceholder,
