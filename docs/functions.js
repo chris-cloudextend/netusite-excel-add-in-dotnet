@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.115';  // Added batch execution deduplication to prevent duplicate API calls
+const FUNCTIONS_VERSION = '4.0.6.116';  // Added localStorage persistence for column-based batch results
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -1207,6 +1207,24 @@ async function executeColumnBasedBSBatch(grid) {
                     accountingBook: filters.accountingBook || ''
                 });
                 cache.balance.set(cacheKey, accountBalances[period]);
+                
+                // CRITICAL: Also persist to localStorage for cross-context access
+                // This ensures other cells in the same column can access the cache
+                try {
+                    const stored = localStorage.getItem(STORAGE_KEY);
+                    const balanceData = stored ? JSON.parse(stored) : {};
+                    
+                    if (!balanceData[account]) {
+                        balanceData[account] = {};
+                    }
+                    balanceData[account][period] = accountBalances[period];
+                    
+                    localStorage.setItem(STORAGE_KEY, JSON.stringify(balanceData));
+                    localStorage.setItem(STORAGE_TIMESTAMP_KEY, Date.now().toString());
+                } catch (e) {
+                    // localStorage might be full or unavailable - log but don't fail
+                    console.warn(`⚠️ Failed to persist cache to localStorage for ${account}/${period}:`, e.message);
+                }
             }
         }
         
@@ -6636,6 +6654,24 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                                                 accountingBook: columnBasedDetection.filters.accountingBook || ''
                                             });
                                             cache.balance.set(evalCacheKey, balance);
+                                            
+                                            // CRITICAL: Also persist to localStorage for cross-context access
+                                            // This ensures other cells in the same column can access the cache
+                                            try {
+                                                const stored = localStorage.getItem(STORAGE_KEY);
+                                                const balanceData = stored ? JSON.parse(stored) : {};
+                                                
+                                                if (!balanceData[evalAccount]) {
+                                                    balanceData[evalAccount] = {};
+                                                }
+                                                balanceData[evalAccount][evalPeriod] = balance;
+                                                
+                                                localStorage.setItem(STORAGE_KEY, JSON.stringify(balanceData));
+                                                localStorage.setItem(STORAGE_TIMESTAMP_KEY, Date.now().toString());
+                                            } catch (e) {
+                                                // localStorage might be full or unavailable - log but don't fail
+                                                console.warn(`⚠️ Failed to persist cache to localStorage for ${evalAccount}/${evalPeriod}:`, e.message);
+                                            }
                                             
                                             // Resolve pending request if it exists
                                             if (pendingRequests.balance.has(evalCacheKey)) {
