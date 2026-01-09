@@ -22,8 +22,15 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.135';  // Fixed two bugs: (1) Store filtersHash in activePeriodQueries to prevent scoping error, (2) Always call FULL preload for new periods instead of targeted preload
+const FUNCTIONS_VERSION = '4.0.6.137';  // Phase 2: Enabled single-promise approach (USE_SINGLE_PROMISE_APPROACH = true)
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
+
+// ============================================================================
+// FEATURE FLAG: Single Promise Per Period (Claude's Architectural Fix)
+// When enabled, all cells for the same period await the EXACT SAME Promise
+// that resolves WITH the balance data, ensuring simultaneous resolution
+// ============================================================================
+const USE_SINGLE_PROMISE_APPROACH = true; // Phase 2: Enabled for testing
 
 // ============================================================================
 // LRU CACHE - Bounded cache with Least Recently Used eviction
@@ -1276,6 +1283,7 @@ async function executeColumnBasedBSBatch(grid, periodKey = null, activePeriodQue
             // Check manifest status to see if period is already fully preloaded
             const periodStatus = getPeriodStatus(filtersHash, period);
             const isFullyPreloaded = periodStatus === "completed";
+            const isPreloadInProgress = periodStatus === "requested" || periodStatus === "running";
             
             // 🔬 VALIDATION LOGGING: Add diagnostic info before preload decision
             const manifest = getManifest(filtersHash);
@@ -1285,12 +1293,14 @@ async function executeColumnBasedBSBatch(grid, periodKey = null, activePeriodQue
                 filtersHash: filtersHash,
                 periodStatus: periodStatus,
                 isFullyPreloaded: isFullyPreloaded,
+                isPreloadInProgress: isPreloadInProgress,
                 manifestExists: !!manifest,
                 manifestPeriod: manifestPeriod ? {
                     status: manifestPeriod.status,
                     attemptCount: manifestPeriod.attemptCount
                 } : null,
-                willTriggerFullPreload: !isFullyPreloaded,
+                willTriggerFullPreload: !isFullyPreloaded && !isPreloadInProgress,
+                willWaitForPreload: isPreloadInProgress,
                 filters: {
                     subsidiary: filters.subsidiary || '',
                     department: filters.department || '',
@@ -1300,20 +1310,36 @@ async function executeColumnBasedBSBatch(grid, periodKey = null, activePeriodQue
                 }
             });
             
-            console.log(`🔍 PRELOAD CHECK: period=${period}, status=${periodStatus}, fullyPreloaded=${isFullyPreloaded}`);
+            console.log(`🔍 PRELOAD CHECK: period=${period}, status=${periodStatus}, fullyPreloaded=${isFullyPreloaded}, inProgress=${isPreloadInProgress}`);
             
-            if (!isFullyPreloaded) {
-                // This period hasn't been fully preloaded yet - trigger FULL preload (same as manual entry)
+            if (isFullyPreloaded) {
+                console.log(`⚡ ALREADY PRELOADED: ${period} - will check cache`);
+            } else if (isPreloadInProgress) {
+                // Preload is already in progress (triggered by another cell) - wait for it instead of triggering duplicate
+                console.log(`⏳ PRELOAD IN PROGRESS: ${period} (status: ${periodStatus}) - waiting for existing preload to complete`);
+                periodsToPreload.push(period); // Add to list to wait for, but don't trigger new preload
+            } else {
+                // This period hasn't been preloaded yet - trigger FULL preload (same as manual entry)
                 console.log(`🚀 FULL PRELOAD: Fetching ALL accounts for ${period} (same as manual entry)`);
                 periodsToPreload.push(period);
-            } else {
-                console.log(`⚡ ALREADY PRELOADED: ${period} - will check cache`);
             }
         }
         
-        // Trigger full preload for periods that need it
-        if (periodsToPreload.length > 0) {
-            for (const period of periodsToPreload) {
+        // Trigger full preload for periods that need it (only if not already in progress)
+        const periodsToTrigger = [];
+        const periodsToWait = [];
+        for (const period of periodsToPreload) {
+            const periodStatus = getPeriodStatus(filtersHash, period);
+            if (periodStatus === "requested" || periodStatus === "running") {
+                periodsToWait.push(period);
+            } else {
+                periodsToTrigger.push(period);
+            }
+        }
+        
+        // Trigger new preloads only for periods that aren't already in progress
+        if (periodsToTrigger.length > 0) {
+            for (const period of periodsToTrigger) {
                 // Trigger full preload using the same mechanism as manual entry
                 // This will fetch ALL 232 balance sheet accounts for this period
                 const firstAccount = accounts.length > 0 ? accounts[0] : '10010'; // Use first account or default
@@ -1325,8 +1351,10 @@ async function executeColumnBasedBSBatch(grid, periodKey = null, activePeriodQue
                     accountingBook: filters.accountingBook || ''
                 });
             }
-            
-            // Wait for all periods to complete preload
+        }
+        
+        // Wait for all periods to complete preload (both newly triggered and already in progress)
+        if (periodsToPreload.length > 0) {
             const maxWait = 120000; // 120 seconds
             let allPreloadsSucceeded = true;
             for (const period of periodsToPreload) {
@@ -1436,9 +1464,11 @@ async function executeColumnBasedBSBatch(grid, periodKey = null, activePeriodQue
         // Whether we ask for 1, 23, or 232 accounts, it takes ~80 seconds
         // So we should ALWAYS get all 232 accounts for a new period
         const periodsNeedingFullPreload = [];
+        const periodsToWaitFor = [];
         for (const period of chunk) {
             const periodStatus = getPeriodStatus(filtersHash, period);
             const isFullyPreloaded = periodStatus === "completed";
+            const isPreloadInProgress = periodStatus === "requested" || periodStatus === "running";
             
             // 🔬 VALIDATION LOGGING: Add diagnostic info before preload decision
             const manifest = getManifest(filtersHash);
@@ -1448,12 +1478,14 @@ async function executeColumnBasedBSBatch(grid, periodKey = null, activePeriodQue
                 filtersHash: filtersHash,
                 periodStatus: periodStatus,
                 isFullyPreloaded: isFullyPreloaded,
+                isPreloadInProgress: isPreloadInProgress,
                 manifestExists: !!manifest,
                 manifestPeriod: manifestPeriod ? {
                     status: manifestPeriod.status,
                     attemptCount: manifestPeriod.attemptCount
                 } : null,
-                willTriggerFullPreload: !isFullyPreloaded,
+                willTriggerFullPreload: !isFullyPreloaded && !isPreloadInProgress,
+                willWaitForPreload: isPreloadInProgress,
                 filters: {
                     subsidiary: filters.subsidiary || '',
                     department: filters.department || '',
@@ -1463,9 +1495,48 @@ async function executeColumnBasedBSBatch(grid, periodKey = null, activePeriodQue
                 }
             });
             
-            if (!isFullyPreloaded) {
+            if (isFullyPreloaded) {
+                // Already fully preloaded - skip
+                console.log(`⚡ ALREADY PRELOADED: ${period} - skipping preload`);
+            } else if (isPreloadInProgress) {
+                // Preload already in progress - wait for it instead of triggering duplicate
+                periodsToWaitFor.push(period);
+                console.log(`⏳ PRELOAD IN PROGRESS: ${period} (status: ${periodStatus}) - will wait for existing preload`);
+            } else {
+                // New period - trigger full preload
                 periodsNeedingFullPreload.push(period);
                 console.log(`🔄 NEW PERIOD: ${period} - triggering FULL preload (not targeted)`);
+            }
+        }
+        
+        // Wait for any periods that are already in progress
+        if (periodsToWaitFor.length > 0) {
+            console.log(`⏳ WAITING FOR PRELOAD: ${periodsToWaitFor.length} period(s) already in progress: ${periodsToWaitFor.join(', ')}`);
+            const maxWait = 120000; // 120 seconds
+            for (const period of periodsToWaitFor) {
+                const waited = await waitForPeriodCompletion(filtersHash, period, maxWait);
+                if (waited) {
+                    console.log(`✅ PRELOAD COMPLETE: ${period} finished (was already in progress)`);
+                    // Wait for cache to be populated
+                    await new Promise(resolve => setTimeout(resolve, 1000)); // 1 second buffer
+                    
+                    // Verify cache is populated
+                    let cachePopulated = false;
+                    const sampleAccount = accounts.length > 0 ? accounts[0] : null;
+                    if (sampleAccount) {
+                        const sampleCached = checkLocalStorageCache(sampleAccount, null, period, filters.subsidiary || '', filtersHash);
+                        if (sampleCached !== null) {
+                            cachePopulated = true;
+                            console.log(`✅ Cache verified: ${period} is populated (sample account ${sampleAccount} found)`);
+                        }
+                    }
+                    
+                    if (!cachePopulated) {
+                        console.warn(`⚠️ Cache not populated for ${period} after waiting - may need targeted preload`);
+                    }
+                } else {
+                    console.warn(`⚠️ PRELOAD TIMEOUT: ${period} did not complete within ${maxWait}ms (was already in progress)`);
+                }
             }
         }
         
@@ -1522,18 +1593,18 @@ async function executeColumnBasedBSBatch(grid, periodKey = null, activePeriodQue
         // For the common drag scenario, full preload should have cached all accounts
         
         // Query translated ending balances for this chunk (targeted preload - should be rare)
-        const requestBody = {
-            accounts: accounts,
+    const requestBody = {
+        accounts: accounts,
             periods: chunk,
-            subsidiary: filters.subsidiary || null,
-            department: filters.department || null,
-            location: filters.location || null,
-            class: filters.classId || null,
-            book: filters.accountingBook || null
-        };
-        
-        const url = `${SERVER_URL}/batch/bs_preload_targeted`;
-        
+        subsidiary: filters.subsidiary || null,
+        department: filters.department || null,
+        location: filters.location || null,
+        class: filters.classId || null,
+        book: filters.accountingBook || null
+    };
+    
+    const url = `${SERVER_URL}/batch/bs_preload_targeted`;
+    
         // CRITICAL: Mark query as 'sent' immediately before network request fires
         // This prevents race conditions where accounts could be merged after promise creation but before fetch()
         if (periodKey && activePeriodQueries) {
@@ -1542,25 +1613,25 @@ async function executeColumnBasedBSBatch(grid, periodKey = null, activePeriodQue
                 activeQuery.queryState = 'sent';
                 console.log(`📤 Query state transition: ${periodKey} → 'sent' (before fetch)`);
             }
-        }
-        
-        const response = await fetch(url, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify(requestBody)
-        });
-        
-        if (!response.ok) {
-            const errorText = await response.text();
+    }
+    
+    const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(requestBody)
+    });
+    
+    if (!response.ok) {
+        const errorText = await response.text();
             throw new Error(`Translated ending balances query failed for chunk ${chunkNumber}: ${response.status} - ${errorText}`);
-        }
-        
-        const data = await response.json();
-        
-        // Validate response shape
-        if (!data.balances || typeof data.balances !== 'object') {
+    }
+    
+    const data = await response.json();
+    
+    // Validate response shape
+    if (!data.balances || typeof data.balances !== 'object') {
             throw new Error(`Invalid translated ending balances response for chunk ${chunkNumber}: missing balances object`);
         }
         
@@ -1571,20 +1642,20 @@ async function executeColumnBasedBSBatch(grid, periodKey = null, activePeriodQue
         let preloadData = null;
         
         // Transform and merge chunk results
-        for (const account of accounts) {
-            if (!(account in data.balances)) {
+    for (const account of accounts) {
+        if (!(account in data.balances)) {
                 throw new Error(`Missing ending balance for account ${account} in chunk ${chunkNumber}`);
-            }
-            
+        }
+        
             if (!(account in allResults)) {
                 allResults[account] = {};
             }
             
-            const accountBalances = data.balances[account];
-            
+        const accountBalances = data.balances[account];
+        
             // Validate all periods in chunk are present and merge into allResults
             for (const period of chunk) {
-                if (!(period in accountBalances)) {
+            if (!(period in accountBalances)) {
                     throw new Error(`Missing ending balance for account ${account}, period ${period} in chunk ${chunkNumber}`);
                 }
                 allResults[account][period] = accountBalances[period];
@@ -5360,7 +5431,7 @@ function checkLocalStorageCache(account, period, toPeriod = null, subsidiary = '
                 
                 // Try each key format in order of specificity
                 for (const preloadKey of keysToTry) {
-                    if (preloadData[preloadKey] && preloadData[preloadKey].value !== undefined) {
+                if (preloadData[preloadKey] && preloadData[preloadKey].value !== undefined) {
                         const cachedEntry = preloadData[preloadKey];
                         const cachedValue = cachedEntry.value;
                         
@@ -5373,13 +5444,13 @@ function checkLocalStorageCache(account, period, toPeriod = null, subsidiary = '
                             }
                         }
                         
-                        // CRITICAL: Zero balances (0) are valid cached values and must be returned
-                        // This prevents redundant API calls for accounts with no transactions
-                        if (cacheStats.hits < 3) {
+                    // CRITICAL: Zero balances (0) are valid cached values and must be returned
+                    // This prevents redundant API calls for accounts with no transactions
+                    if (cacheStats.hits < 3) {
                             console.log(`✅ Preload cache hit: ${account}/${lookupPeriod} (key: ${preloadKey}) = ${cachedValue}`);
-                        }
-                        return cachedValue;
                     }
+                    return cachedValue;
+                }
                 }
             }
         } catch (preloadErr) {
@@ -5807,12 +5878,12 @@ function normalizePeriodKey(value, isFromPeriod = true) {
         }
         // Second check: Is this a cached period ID? (< 40000)
         else if (numValue < 40000 && numValue >= 1 && Number.isInteger(numValue)) {
-            const periodId = value.trim();
-            if (cache.byId[periodId]) {
-                return cache.byId[periodId];  // Return cached "Mon YYYY"
-            }
-            // Not in cache - return null (will need to be resolved via resolvePeriodIdToName)
-            return null;
+        const periodId = value.trim();
+        if (cache.byId[periodId]) {
+            return cache.byId[periodId];  // Return cached "Mon YYYY"
+        }
+        // Not in cache - return null (will need to be resolved via resolvePeriodIdToName)
+        return null;
         }
         // If it's a numeric string but doesn't match either pattern, continue processing
     }
@@ -6481,6 +6552,211 @@ async function PARENT(accountNumber, invocation) {
 }
 
 // ============================================================================
+// SINGLE-PROMISE PERIOD QUERIES (Claude's Architectural Fix - Phase 1)
+// ============================================================================
+// Map<periodKey, Promise<{account: balance}>>
+// periodKey = `${period}:${filtersHash}` (e.g., "Feb 2025:1::::1")
+// All cells for the same period await the EXACT SAME Promise that resolves WITH data
+const singlePromiseQueries = new Map();
+
+/**
+ * Helper functions to parse filtersHash back to filter object
+ * filtersHash format: "subsidiary|department|location|class|book"
+ */
+function extractSubsidiary(filtersHash) {
+    const parts = filtersHash.split('|');
+    return parts[0] || '';
+}
+
+function extractDepartment(filtersHash) {
+    const parts = filtersHash.split('|');
+    return parts[1] || '';
+}
+
+function extractLocation(filtersHash) {
+    const parts = filtersHash.split('|');
+    return parts[2] || '';
+}
+
+function extractClass(filtersHash) {
+    const parts = filtersHash.split('|');
+    return parts[3] || '';
+}
+
+function extractBook(filtersHash) {
+    const parts = filtersHash.split('|');
+    return parts[4] || '1';
+}
+
+/**
+ * Write preload results to localStorage cache
+ * Cache key format: balance:${account}:${filtersHash}:${period}
+ */
+function writeToLocalStorageCache(balancesByAccount, period, filtersHash) {
+    try {
+        const existing = JSON.parse(localStorage.getItem('xavi_balance_cache') || '{}');
+        const cacheEntries = {};
+        
+        for (const [account, balance] of Object.entries(balancesByAccount)) {
+            const cacheKey = `balance:${account}:${filtersHash}:${period}`;
+            cacheEntries[cacheKey] = { value: balance, timestamp: Date.now() };
+        }
+        
+        const merged = { ...existing, ...cacheEntries };
+        localStorage.setItem('xavi_balance_cache', JSON.stringify(merged));
+        console.log(`✅ Cached ${Object.keys(balancesByAccount).length} accounts for ${period} in localStorage`);
+    } catch (e) {
+        console.warn('⚠️ Failed to write to localStorage cache:', e);
+    }
+}
+
+/**
+ * Execute FULL preload for a single period
+ * Calls /batch/bs_preload and transforms response to {account: balance} format
+ * Resolves the promise with the transformed data so ALL awaiting cells get results simultaneously
+ */
+async function executeFullPreload(periodKey) {
+    const periodQuery = singlePromiseQueries.get(periodKey);
+    if (!periodQuery) {
+        console.warn(`⚠️ executeFullPreload: No query found for ${periodKey}`);
+        return;
+    }
+    
+    // Parse periodKey: "Feb 2025:1::::1" -> period="Feb 2025", filtersHash="1::::1"
+    const [period, filtersHash] = periodKey.split(':');
+    
+    console.log(`🚀 EXECUTING FULL PRELOAD: ${periodKey}, period=${period}, filtersHash=${filtersHash}`);
+    
+    try {
+        // Extract filters from filtersHash
+        const subsidiary = extractSubsidiary(filtersHash);
+        const department = extractDepartment(filtersHash);
+        const location = extractLocation(filtersHash);
+        const classId = extractClass(filtersHash);
+        const accountingBook = extractBook(filtersHash);
+        
+        // Call FULL preload endpoint
+        const response = await fetch(`${SERVER_URL}/batch/bs_preload`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                periods: [period], // Single period
+                subsidiary: subsidiary || undefined,
+                department: department || undefined,
+                location: location || undefined,
+                class: classId || undefined,
+                accountingBook: accountingBook !== '1' ? accountingBook : undefined
+            })
+        });
+        
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`HTTP ${response.status}: ${errorText}`);
+        }
+        
+        const result = await response.json();
+        
+        // TRANSFORM: Extract balances for the specific period
+        // Backend returns: { "10010": { "Feb 2025": 12345.67 }, ... }
+        // We need: { "10010": 12345.67, ... }
+        const balancesByAccount = {};
+        if (result.balances) {
+            for (const [account, periodBalances] of Object.entries(result.balances)) {
+                // periodBalances is { "Feb 2025": 12345.67 }
+                if (periodBalances && typeof periodBalances === 'object') {
+                    const balance = periodBalances[period];
+                    if (balance !== undefined) {
+                        balancesByAccount[account] = balance;
+                    }
+                }
+            }
+        }
+        
+        console.log(`✅ PRELOAD COMPLETE: ${period}, accounts=${Object.keys(balancesByAccount).length}`);
+        
+        // Write to localStorage cache (for future lookups)
+        writeToLocalStorageCache(balancesByAccount, period, filtersHash);
+        
+        // Set preload marker
+        localStorage.setItem(`preload_complete:${period}:${filtersHash}`, Date.now().toString());
+        
+        // RESOLVE THE PROMISE WITH THE TRANSFORMED DATA
+        // This makes ALL awaiting cells get results SIMULTANEOUSLY
+        periodQuery.resolve(balancesByAccount);
+        
+        // Clean up
+        singlePromiseQueries.delete(periodKey);
+        
+    } catch (error) {
+        console.error(`❌ PRELOAD FAILED: ${periodKey}`, error);
+        periodQuery.reject(error);
+        singlePromiseQueries.delete(periodKey);
+    }
+}
+
+/**
+ * Single-promise flow for balance sheet accounts
+ * All cells for the same period await the EXACT SAME Promise
+ */
+async function singlePromiseFlow(account, toPeriod, filtersHash, cacheKey) {
+    // Create period key: "Feb 2025:1::::1"
+    const periodKey = `${toPeriod}:${filtersHash}`;
+    
+    // Check if query already exists for this period
+    let periodQuery = singlePromiseQueries.get(periodKey);
+    
+    if (!periodQuery) {
+        // Create new query with promise
+        let resolve, reject;
+        const promise = new Promise((res, rej) => {
+            resolve = res;
+            reject = rej;
+        });
+        
+        periodQuery = {
+            promise,
+            resolve,
+            reject,
+            period: toPeriod,
+            filtersHash,
+            startTime: Date.now()
+        };
+        
+        singlePromiseQueries.set(periodKey, periodQuery);
+        
+        // Start preload immediately (no debounce for single-promise approach)
+        console.log(`🔄 NEW SINGLE-PROMISE QUERY: ${periodKey}`);
+        executeFullPreload(periodKey).catch(err => {
+            console.error(`❌ executeFullPreload error:`, err);
+        });
+    } else {
+        console.log(`🔄 EXISTING SINGLE-PROMISE QUERY: ${periodKey} (${Date.now() - periodQuery.startTime}ms elapsed)`);
+    }
+    
+    // ALL cells await the EXACT SAME Promise
+    try {
+        const balancesByAccount = await periodQuery.promise;
+        
+        // Extract balance for this specific account
+        const balance = balancesByAccount[account];
+        
+        if (balance !== undefined && balance !== null && typeof balance === 'number') {
+            // Cache it
+            cache.balance.set(cacheKey, balance);
+            console.log(`✅ SINGLE-PROMISE RESULT: ${account} for ${toPeriod} = ${balance}`);
+            return balance;
+        } else {
+            // Account not in results (shouldn't happen with full preload, but handle gracefully)
+            console.warn(`⚠️ Account ${account} not found in preload results for ${toPeriod}`);
+            throw new Error(`Account ${account} not found in preload results`);
+        }
+    } catch (error) {
+        console.error(`❌ SINGLE-PROMISE ERROR for ${account}/${toPeriod}:`, error);
+        throw error;
+    }
+}
+
+// ============================================================================
 // BALANCE - Get GL Account Balance (NON-STREAMING WITH BATCHING)
 // ============================================================================
 
@@ -6864,8 +7140,8 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                 throw new Error('INVALID_PERIOD');
             }
             if (!periodPattern.test(fromPeriod)) {
-                console.error(`❌ Invalid fromPeriod after conversion: "${fromPeriod}" (raw: ${rawFrom})`);
-            }
+            console.error(`❌ Invalid fromPeriod after conversion: "${fromPeriod}" (raw: ${rawFrom})`);
+        }
         }
         if (toPeriod) {
             const toPeriodNum = typeof toPeriod === 'number' ? toPeriod : parseFloat(toPeriod);
@@ -6874,7 +7150,7 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                 throw new Error('INVALID_PERIOD');
             }
             if (!periodPattern.test(toPeriod)) {
-                console.error(`❌ Invalid toPeriod after conversion: "${toPeriod}" (raw: ${rawTo})`);
+            console.error(`❌ Invalid toPeriod after conversion: "${toPeriod}" (raw: ${rawTo})`);
             }
         }
         
@@ -7066,6 +7342,22 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         // Now check if the extracted type string is a Balance Sheet type
         // isBalanceSheetType() checks if the string (e.g., "Bank") is in the BS types array
         const isBalanceSheet = acctTypeStr && isBalanceSheetType(acctTypeStr);
+        
+        // ================================================================
+        // SINGLE-PROMISE APPROACH (Claude's Architectural Fix - Phase 1)
+        // When enabled, all cells for the same period await the EXACT SAME Promise
+        // ================================================================
+        if (USE_SINGLE_PROMISE_APPROACH && isCumulativeQuery && lookupPeriod && isBalanceSheet) {
+            console.log(`🔄 SINGLE-PROMISE PATH: account=${account}, period=${lookupPeriod}`);
+            try {
+                const balance = await singlePromiseFlow(account, lookupPeriod, filtersHash, cacheKey);
+                pendingEvaluation.balance.delete(evalKey);
+                return balance;
+            } catch (error) {
+                console.warn(`⚠️ Single-promise flow failed, falling back to existing logic:`, error);
+                // Fall through to existing column-based batching logic
+            }
+        }
         
         if (DEBUG_COLUMN_BASED_BS_BATCHING || !isBalanceSheet) {
             console.log(`🔍 [TYPE DEBUG] accountType=`, accountType, `→ extracted="${acctTypeStr}" → isBalanceSheet=${isBalanceSheet}`);
@@ -7641,19 +7933,19 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                             // Cache result (already cached above, but ensure it's set)
                             cache.balance.set(cacheKey, balance);
                             
-                            console.log(`✅ COLUMN-BASED BS RESULT: ${account} for ${toPeriod} = ${balance}`);
+                                console.log(`✅ COLUMN-BASED BS RESULT: ${account} for ${toPeriod} = ${balance}`);
                             
                             // Remove from pendingEvaluation (batch executed successfully)
                             pendingEvaluation.balance.delete(evalKey);
                             return balance;
                         } else {
                             // Missing result - fall back to per-cell logic
-                            console.log(`⚠️ COLUMN-BASED BS: Missing result for ${account}/${toPeriod} - falling back to per-cell`);
+                                console.log(`⚠️ COLUMN-BASED BS: Missing result for ${account}/${toPeriod} - falling back to per-cell`);
                             // Fall through to per-cell logic below
                         }
                     } catch (error) {
                         // Error in batch execution - fall back to per-cell logic
-                        console.error(`❌ COLUMN-BASED BS BATCH ERROR: ${error.message} - falling back to per-cell`);
+                            console.error(`❌ COLUMN-BASED BS BATCH ERROR: ${error.message} - falling back to per-cell`);
                         console.error(`   Error stack:`, error.stack);
                         // Fall through to per-cell logic below
                     }
