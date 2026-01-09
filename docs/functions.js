@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.124';  // Period dedup debounce: 100ms window to collect accounts before executing query
+const FUNCTIONS_VERSION = '4.0.6.125';  // Period dedup debounce: Improved error handling - reject placeholder on all error paths
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
