@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.122';  // Cloudflare timeout fix: CHUNK_SIZE=1 to avoid 524 errors (will increase after AWS migration)
+const FUNCTIONS_VERSION = '4.0.6.123';  // Period dedup race condition fix: activePeriodQueries.set() before promise creation  // Cloudflare timeout fix: CHUNK_SIZE=1 to avoid 524 errors (will increase after AWS migration)
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -6714,6 +6714,9 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                     // Create period key for deduplication (periods + filters, NOT accounts)
                     const periodKey = `${periods.join(',')}:${filterKey}`;
                     
+                    // DEBUG: Log periodKey generation for troubleshooting
+                    console.log(`🔍 PERIOD KEY DEBUG: "${periodKey}" from periods: [${periods.join(', ')}], filterKey: "${filterKey}"`);
+                    
                     // PERIOD-BASED DEDUPLICATION: Check for active period query BEFORE creating batch
                     // This allows us to merge account lists before the query is sent
                     let accounts = Array.from(columnBasedDetection.allAccounts);
@@ -6801,87 +6804,179 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                             allAccounts: new Set(accounts)
                         };
                         
-                        // Create promise synchronously and set it immediately
-                        // Also track in activePeriodQueries for period-based deduplication
-                        // CRITICAL: queryState will be set to 'sent' inside executeColumnBasedBSBatch() right before fetch()
-                        // This ensures no accounts can slip through between promise creation and network request
-                        batchPromise = executeColumnBasedBSBatch(updatedGrid, periodKey, activePeriodQueries)
-                            .then(results => {
-                                // Remove from active period queries when complete
-                                activePeriodQueries.delete(periodKey);
-                                
-                                // Resolve ALL pending evaluations for this grid
-                                for (const [evalKey, evalRequest] of pendingEvaluation.balance.entries()) {
-                                    const { account: evalAccount, toPeriod: evalPeriod } = evalRequest;
-                                    if (accounts.includes(evalAccount) && periods.includes(evalPeriod)) {
-                                        const balance = results[evalAccount]?.[evalPeriod];
-                                        if (balance !== undefined && balance !== null && typeof balance === 'number') {
-                                            const evalCacheKey = getCacheKey('balance', {
-                                                account: evalAccount,
-                                                fromPeriod: '',
-                                                toPeriod: evalPeriod,
-                                                subsidiary: columnBasedDetection.filters.subsidiary || '',
-                                                department: columnBasedDetection.filters.department || '',
-                                                location: columnBasedDetection.filters.location || '',
-                                                classId: columnBasedDetection.filters.classId || '',
-                                                accountingBook: columnBasedDetection.filters.accountingBook || ''
-                                            });
-                                            cache.balance.set(evalCacheKey, balance);
-                                            
-                                            // CRITICAL: Also persist to localStorage for cross-context access
-                                            // This ensures other cells in the same column can access the cache
-                                            try {
-                                                const stored = localStorage.getItem(STORAGE_KEY);
-                                                const balanceData = stored ? JSON.parse(stored) : {};
-                                                
-                                                if (!balanceData[evalAccount]) {
-                                                    balanceData[evalAccount] = {};
-                                                }
-                                                balanceData[evalAccount][evalPeriod] = balance;
-                                                
-                                                localStorage.setItem(STORAGE_KEY, JSON.stringify(balanceData));
-                                                localStorage.setItem(STORAGE_TIMESTAMP_KEY, Date.now().toString());
-                                            } catch (e) {
-                                                // localStorage might be full or unavailable - log but don't fail
-                                                console.warn(`⚠️ Failed to persist cache to localStorage for ${evalAccount}/${evalPeriod}:`, e.message);
-                                            }
-                                            
-                                            // Resolve pending request if it exists
-                                            if (pendingRequests.balance.has(evalCacheKey)) {
-                                                const pendingRequest = pendingRequests.balance.get(evalCacheKey);
-                                                pendingRequest.resolve(balance);
-                                                pendingRequests.balance.delete(evalCacheKey);
-                                            }
-                                            
-                                            pendingEvaluation.balance.delete(evalKey);
-                                        }
-                                    }
-                                }
-                                
-                                // Clean up
-                                activeColumnBatchExecutions.delete(gridKey);
-                                return results;
-                            })
-                            .catch(error => {
-                                // Clean up on error
-                                activeColumnBatchExecutions.delete(gridKey);
-                                activePeriodQueries.delete(periodKey);
-                                throw error;
-                            });
-                        
-                        // Store in activePeriodQueries BEFORE setting in activeColumnBatchExecutions
-                        // This ensures other cells checking for period overlap will find it
-                        // CRITICAL: Set synchronously to prevent race conditions
+                        // CRITICAL FIX: Register in activePeriodQueries BEFORE creating promise
+                        // This ensures other cells checking for active queries will find it immediately
+                        // If we register after promise creation, there's a gap where other cells won't see the active query
                         if (!activePeriodQuery) {
+                            // Create a placeholder promise that will be replaced
+                            // This ensures activePeriodQueries entry exists synchronously
+                            let resolvePlaceholder, rejectPlaceholder;
+                            const placeholderPromise = new Promise((resolve, reject) => {
+                                resolvePlaceholder = resolve;
+                                rejectPlaceholder = reject;
+                            });
+                            
                             activePeriodQueries.set(periodKey, {
-                                promise: batchPromise,
+                                promise: placeholderPromise,
                                 accounts: new Set(accounts),
                                 periods: new Set(periods),
                                 filters: columnBasedDetection.filters,
                                 gridKey: gridKey,
-                                queryState: 'pending'  // Will be set to 'sent' inside executeColumnBasedBSBatch() before fetch()
+                                queryState: 'pending',  // Will be set to 'sent' inside executeColumnBasedBSBatch() before fetch()
+                                _resolvePlaceholder: resolvePlaceholder,
+                                _rejectPlaceholder: rejectPlaceholder
                             });
+                            
+                            // Now create the actual batch promise
+                            // The placeholder promise will resolve when this promise resolves
+                            batchPromise = executeColumnBasedBSBatch(updatedGrid, periodKey, activePeriodQueries)
+                                .then(results => {
+                                    // Resolve placeholder promise with actual results (cells awaiting placeholder will get results)
+                                    if (resolvePlaceholder) {
+                                        resolvePlaceholder(results);
+                                    }
+                                    
+                                    // Remove from active period queries when complete
+                                    activePeriodQueries.delete(periodKey);
+                                    
+                                    // Resolve ALL pending evaluations for this grid
+                                    for (const [evalKey, evalRequest] of pendingEvaluation.balance.entries()) {
+                                        const { account: evalAccount, toPeriod: evalPeriod } = evalRequest;
+                                        if (accounts.includes(evalAccount) && periods.includes(evalPeriod)) {
+                                            const balance = results[evalAccount]?.[evalPeriod];
+                                            if (balance !== undefined && balance !== null && typeof balance === 'number') {
+                                                const evalCacheKey = getCacheKey('balance', {
+                                                    account: evalAccount,
+                                                    fromPeriod: '',
+                                                    toPeriod: evalPeriod,
+                                                    subsidiary: columnBasedDetection.filters.subsidiary || '',
+                                                    department: columnBasedDetection.filters.department || '',
+                                                    location: columnBasedDetection.filters.location || '',
+                                                    classId: columnBasedDetection.filters.classId || '',
+                                                    accountingBook: columnBasedDetection.filters.accountingBook || ''
+                                                });
+                                                cache.balance.set(evalCacheKey, balance);
+                                                
+                                                // CRITICAL: Also persist to localStorage for cross-context access
+                                                try {
+                                                    const stored = localStorage.getItem(STORAGE_KEY);
+                                                    const balanceData = stored ? JSON.parse(stored) : {};
+                                                    
+                                                    if (!balanceData[evalAccount]) {
+                                                        balanceData[evalAccount] = {};
+                                                    }
+                                                    balanceData[evalAccount][evalPeriod] = balance;
+                                                    
+                                                    localStorage.setItem(STORAGE_KEY, JSON.stringify(balanceData));
+                                                    localStorage.setItem(STORAGE_TIMESTAMP_KEY, Date.now().toString());
+                                                } catch (e) {
+                                                    console.warn(`⚠️ Failed to persist cache to localStorage for ${evalAccount}/${evalPeriod}:`, e.message);
+                                                }
+                                                
+                                                // Resolve pending request if it exists
+                                                if (pendingRequests.balance.has(evalCacheKey)) {
+                                                    const pendingRequest = pendingRequests.balance.get(evalCacheKey);
+                                                    pendingRequest.resolve(balance);
+                                                    pendingRequests.balance.delete(evalCacheKey);
+                                                }
+                                                
+                                                pendingEvaluation.balance.delete(evalKey);
+                                            }
+                                        }
+                                    }
+                                    
+                                    // Clean up
+                                    activeColumnBatchExecutions.delete(gridKey);
+                                    return results;
+                                })
+                                .catch(error => {
+                                    // Reject placeholder promise with error (cells awaiting placeholder will get error)
+                                    if (rejectPlaceholder) {
+                                        rejectPlaceholder(error);
+                                    }
+                                    
+                                    // Clean up on error
+                                    activeColumnBatchExecutions.delete(gridKey);
+                                    activePeriodQueries.delete(periodKey);
+                                    throw error;
+                                });
+                            
+                            // Update the promise reference in activePeriodQueries to the actual promise
+                            // This ensures cells that check after this point will await the real promise
+                            // Cells that checked before will await the placeholder, which will resolve when batchPromise resolves
+                            const registeredQuery = activePeriodQueries.get(periodKey);
+                            if (registeredQuery) {
+                                registeredQuery.promise = batchPromise;
+                            }
                         } else {
+                            // Active query already exists - create batch promise with full promise chain
+                            batchPromise = executeColumnBasedBSBatch(updatedGrid, periodKey, activePeriodQueries)
+                                .then(results => {
+                                    // Remove from active period queries when complete
+                                    activePeriodQueries.delete(periodKey);
+                                    
+                                    // Resolve ALL pending evaluations for this grid
+                                    for (const [evalKey, evalRequest] of pendingEvaluation.balance.entries()) {
+                                        const { account: evalAccount, toPeriod: evalPeriod } = evalRequest;
+                                        if (accounts.includes(evalAccount) && periods.includes(evalPeriod)) {
+                                            const balance = results[evalAccount]?.[evalPeriod];
+                                            if (balance !== undefined && balance !== null && typeof balance === 'number') {
+                                                const evalCacheKey = getCacheKey('balance', {
+                                                    account: evalAccount,
+                                                    fromPeriod: '',
+                                                    toPeriod: evalPeriod,
+                                                    subsidiary: columnBasedDetection.filters.subsidiary || '',
+                                                    department: columnBasedDetection.filters.department || '',
+                                                    location: columnBasedDetection.filters.location || '',
+                                                    classId: columnBasedDetection.filters.classId || '',
+                                                    accountingBook: columnBasedDetection.filters.accountingBook || ''
+                                                });
+                                                cache.balance.set(evalCacheKey, balance);
+                                                
+                                                // CRITICAL: Also persist to localStorage for cross-context access
+                                                try {
+                                                    const stored = localStorage.getItem(STORAGE_KEY);
+                                                    const balanceData = stored ? JSON.parse(stored) : {};
+                                                    
+                                                    if (!balanceData[evalAccount]) {
+                                                        balanceData[evalAccount] = {};
+                                                    }
+                                                    balanceData[evalAccount][evalPeriod] = balance;
+                                                    
+                                                    localStorage.setItem(STORAGE_KEY, JSON.stringify(balanceData));
+                                                    localStorage.setItem(STORAGE_TIMESTAMP_KEY, Date.now().toString());
+                                                } catch (e) {
+                                                    console.warn(`⚠️ Failed to persist cache to localStorage for ${evalAccount}/${evalPeriod}:`, e.message);
+                                                }
+                                                
+                                                // Resolve pending request if it exists
+                                                if (pendingRequests.balance.has(evalCacheKey)) {
+                                                    const pendingRequest = pendingRequests.balance.get(evalCacheKey);
+                                                    pendingRequest.resolve(balance);
+                                                    pendingRequests.balance.delete(evalCacheKey);
+                                                }
+                                                
+                                                pendingEvaluation.balance.delete(evalKey);
+                                            }
+                                        }
+                                    }
+                                    
+                                    // Clean up
+                                    activeColumnBatchExecutions.delete(gridKey);
+                                    return results;
+                                })
+                                .catch(error => {
+                                    // Clean up on error
+                                    activeColumnBatchExecutions.delete(gridKey);
+                                    activePeriodQueries.delete(periodKey);
+                                    throw error;
+                                });
+                        }
+                        
+                        // activePeriodQueries is now set BEFORE promise creation (see above at line ~6819)
+                        // This ensures other cells checking for period overlap will find it immediately
+                        // Update existing period query if it exists (for merged accounts case)
+                        if (activePeriodQuery) {
                             // Update existing period query with merged accounts
                             // CRITICAL: Chain promises instead of replacing to ensure all awaiters see results
                             // If there's an existing promise, chain the new one after it
