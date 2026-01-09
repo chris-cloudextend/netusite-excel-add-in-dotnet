@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.126';  // Period dedup debounce: Added diagnostic logging to trace deduplication flow  // Period dedup debounce: Improved error handling - reject placeholder on all error paths
+const FUNCTIONS_VERSION = '4.0.6.129';  // Filter cached periods from batch detection: Prevent January (already cached) from being included in batch queries when dragging to Feb/Mar
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -697,12 +697,32 @@ function detectColumnBasedBSGrid(evaluatingRequests) {
     }
     
     // Step 2: Group by column (toPeriod + normalized filters)
+    // CRITICAL: Filter out requests for periods that are already fully cached
+    // This prevents January (already resolved) from being included in batch queries when dragging to Feb/Mar
     const byColumn = new Map(); // Map<columnKey, {period, filters, accounts: Set}>
     const allAccounts = new Set();
     
     for (const request of bsCumulativeRequests) {
         const rParams = request.params || request;
         const rFilters = rParams.filters || rParams;
+        
+        // Check if this specific account+period is cached
+        // If cached, skip it - don't include in batch (it will resolve from cache)
+        const filtersHash = getFilterKey({
+            subsidiary: rFilters.subsidiary || '',
+            department: rFilters.department || '',
+            location: rFilters.location || '',
+            classId: rFilters.classId || '',
+            accountingBook: rFilters.accountingBook || ''
+        });
+        const lookupPeriod = normalizePeriodKey(rParams.toPeriod, false);
+        if (lookupPeriod) {
+            const cachedValue = checkLocalStorageCache(rParams.account, null, rParams.toPeriod, rFilters.subsidiary || '', filtersHash);
+            if (cachedValue !== null) {
+                // This account+period is cached - skip it (will resolve from cache, no batch needed)
+                continue;
+            }
+        }
         
         // Normalize filters for grouping
         const normalizedFilterKey = normalizeFiltersForColumnBatching(rFilters);
@@ -6918,28 +6938,41 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                     // Create grid key with merged accounts
                     const gridKey = `grid:${accounts.join(',')}:${periods.join(',')}:${filterKey}`;
                     
-                    // Check if this exact grid is already being executed
-                    let batchPromise = activeColumnBatchExecutions.get(gridKey);
+                    // CRITICAL FIX: If activePeriodQuery exists and is in 'collecting' state (debounce window open),
+                    // we should ALWAYS use the existing promise and NOT create a new batch.
+                    // This prevents multiple queries from being created during the debounce window.
+                    if (activePeriodQuery && activePeriodQuery.queryState === 'collecting') {
+                        // Debounce window is open - use existing promise, don't create new batch
+                        console.log(`⏳ DEBOUNCE: Using existing collecting query for ${periodKey}, awaiting debounce timer (${activePeriodQuery.accounts.size} accounts)`);
+                        const existingPromise = activePeriodQuery.promise;
+                        // Set in activeColumnBatchExecutions so other cells see it
+                        activeColumnBatchExecutions.set(gridKey, existingPromise);
+                        // Use existing promise - skip batch creation
+                        batchPromise = existingPromise;
+                    } else {
+                        // Check if this exact grid is already being executed
+                        batchPromise = activeColumnBatchExecutions.get(gridKey);
+                    }
                     
                     // ATOMIC CHECK-AND-SET: Prevent race conditions when multiple cells evaluate simultaneously
                     // Strategy: Check if batch exists, if not create promise immediately (synchronously) and set it
                     if (!batchPromise) {
-                        // No batch exists - create one immediately (synchronously) to prevent race conditions
-                        const accountCount = accounts.length;
-                        const periodCount = periods.length;
-                        console.log(`🚀 COLUMN-BASED BS BATCH EXECUTING: ${accountCount} accounts × ${periodCount} periods (gridKey: ${gridKey.substring(0, 50)}...)`);
-                        console.log(`📊 Querying translated ending balances (chunked processing: 2 periods per chunk)`);
-                        
-                        // Update grid with merged accounts
-                        const updatedGrid = {
-                            ...columnBasedDetection,
-                            allAccounts: new Set(accounts)
-                        };
-                        
-                        // CRITICAL FIX: Register in activePeriodQueries BEFORE creating promise
-                        // This ensures other cells checking for active queries will find it immediately
-                        // If we register after promise creation, there's a gap where other cells won't see the active query
-                        if (!activePeriodQuery) {
+                            // No batch exists - create one immediately (synchronously) to prevent race conditions
+                            const accountCount = accounts.length;
+                            const periodCount = periods.length;
+                            console.log(`🚀 COLUMN-BASED BS BATCH EXECUTING: ${accountCount} accounts × ${periodCount} periods (gridKey: ${gridKey.substring(0, 50)}...)`);
+                            console.log(`📊 Querying translated ending balances (chunked processing: 2 periods per chunk)`);
+                            
+                            // Update grid with merged accounts
+                            const updatedGrid = {
+                                ...columnBasedDetection,
+                                allAccounts: new Set(accounts)
+                            };
+                            
+                            // CRITICAL FIX: Register in activePeriodQueries BEFORE creating promise
+                            // This ensures other cells checking for active queries will find it immediately
+                            // If we register after promise creation, there's a gap where other cells won't see the active query
+                            if (!activePeriodQuery) {
                             // DEBOUNCE MECHANISM: Create placeholder promise and register immediately
                             // This ensures activePeriodQueries entry exists synchronously
                             // Query will execute after 100ms debounce window to collect all accounts
@@ -7077,7 +7110,17 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                                 registeredQuery.promise = batchPromise;
                             }
                         } else {
-                            // Active query already exists - create batch promise with full promise chain
+                            // Batch already exists in activeColumnBatchExecutions - use it
+                            console.log(`⏳ COLUMN-BASED BS: Batch already executing for grid (gridKey: ${gridKey.substring(0, 60)}...), using existing promise`);
+                            // batchPromise is already set from activeColumnBatchExecutions.get(gridKey) above
+                        }
+                        
+                        // CRITICAL FIX: Only create new batch if activePeriodQuery doesn't exist or is not in 'collecting' state
+                        // If activePeriodQuery exists and is 'collecting', we should NOT create a new batch - use the existing promise
+                        if (!batchPromise && (!activePeriodQuery || activePeriodQuery.queryState !== 'collecting')) {
+                            // No batch exists and no active period query in debounce window - create new batch
+                            // This should only happen for supplemental queries (account not in preload results)
+                            console.log(`⚠️ Creating supplemental batch for ${periodKey} (no active query or query already sent)`);
                             batchPromise = executeColumnBasedBSBatch(updatedGrid, periodKey, activePeriodQueries)
                                 .then(results => {
                                     // Remove from active period queries when complete
