@@ -1,7 +1,8 @@
 # Period-Based Deduplication Implementation Summary
 
-**Version:** 4.0.6.122  
+**Version:** 4.0.6.130  
 **Date:** January 9, 2026  
+**Last Updated:** January 9, 2026  
 **Purpose:** Optimize balance sheet batch processing to prevent redundant queries when dragging formulas across columns
 
 **IMPORTANT:** This implementation processes periods one at a time (CHUNK_SIZE = 1) to avoid Cloudflare timeout (524 error). Cloudflare has a ~100 second timeout, but NetSuite queries take 90-150 seconds per period. Once migrated to AWS, this limitation will not apply and we can increase CHUNK_SIZE.
@@ -490,17 +491,31 @@ Track query state (pending vs. sent):
 ✅ PERIOD DEDUP RESULT: 10010 for Jan 2025 = 2064705.84
 ```
 
-### Account Merging
+### Account Merging with Rolling Debounce
 ```
 🔄 PERIOD DEDUP: Periods Jan 2025 already being queried
    Existing accounts: 19, Our accounts: 1
-   📊 Account 10011 not in existing query, merging for future batches
-🚀 COLUMN-BASED BS BATCH EXECUTING: 20 accounts × 1 periods
+   📊 Account 10011 not in existing query, merging during debounce window (collecting state)
+🔍 MERGE: Adding account 10011 to existing query, now 20 accounts (was 19)
+⏱️ DEBOUNCE: Resetting timer for Jan 2025:1::::1 - 20 accounts, 150ms elapsed, 200ms remaining
+⏱️ DEBOUNCE FIRED: Jan 2025:1::::1 with 20 accounts after 350ms
 ```
 
 ### localStorage Cache Hit (Drag Down)
 ```
 ✅ localStorage cache hit BEFORE batch check: 10010/Jan 2025 = 2064705.84
+```
+
+### Cache Check Before Individual Call
+```
+⚠️ FALLBACK TO INDIVIDUAL: account=10010, period=Feb 2025 - cache miss, will queue individual API call
+✅ POST-BATCH CACHE HIT: 10010/Feb 2025 = 381646.48 (batch query completed, using cached result)
+```
+
+### Rolling Debounce Timer Creation
+```
+🔍 DEBOUNCE: Creating new query for Jan 2025:1::::1, starting 200ms rolling timer (2 accounts initially)
+⏱️ DEBOUNCE: Started 200ms window for Jan 2025:1::::1 (2 accounts initially)
 ```
 
 ---
@@ -516,10 +531,13 @@ Track query state (pending vs. sent):
    - Updated batch write to preload cache format (lines ~1227-1240)
 
 2. **`excel-addin/manifest.xml`**
-   - Updated version to `4.0.6.119`
+   - Updated version to `4.0.6.130`
    - Updated all cache-busting URLs
 
-3. **`PERIOD_DEDUPLICATION_PLAN.md`** (new file)
+3. **`docs/taskpane.html`, `docs/sharedruntime.html`, `docs/functions.html`**
+   - Updated functions.js script references to v4.0.6.130
+
+4. **`PERIOD_DEDUPLICATION_PLAN.md`** (new file)
    - Implementation plan and analysis
 
 ---

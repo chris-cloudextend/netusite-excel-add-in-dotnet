@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.129';  // Filter cached periods from batch detection: Prevent January (already cached) from being included in batch queries when dragging to Feb/Mar
+const FUNCTIONS_VERSION = '4.0.6.130';  // Rolling debounce + cache check before individual calls: Reset timer on new accounts (200ms base, 1000ms max), check cache before falling back to individual API calls
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -6884,8 +6884,14 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                                 const mergedGridKey = `grid:${accounts.join(',')}:${periods.join(',')}:${filterKey}`;
                                 activePeriodQuery.gridKey = mergedGridKey;
                                 
+                                // ROLLING DEBOUNCE: Reset timer when new account arrives
+                                if (activePeriodQuery.resetDebounceTimer) {
+                                    activePeriodQuery.resetDebounceTimer(activePeriodQuery);
+                                }
+                                
                                 // Return placeholder promise - will resolve when debounced query executes
-                                console.log(`   ⏳ Awaiting debounced query execution (${activePeriodQuery.accounts.size} accounts collected so far)...`);
+                                const elapsed = Date.now() - (activePeriodQuery.startTime || Date.now());
+                                console.log(`   ⏳ Awaiting debounced query execution (${activePeriodQuery.accounts.size} accounts collected, ${elapsed}ms elapsed)...`);
                                 try {
                                     const batchResults = await activePeriodQuery.promise;
                                     const balance = batchResults[account]?.[toPeriod];
@@ -6943,15 +6949,32 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                     // This prevents multiple queries from being created during the debounce window.
                     if (activePeriodQuery && activePeriodQuery.queryState === 'collecting') {
                         // Debounce window is open - use existing promise, don't create new batch
-                        console.log(`⏳ DEBOUNCE: Using existing collecting query for ${periodKey}, awaiting debounce timer (${activePeriodQuery.accounts.size} accounts)`);
+                        const elapsed = Date.now() - (activePeriodQuery.startTime || Date.now());
+                        console.log(`⏳ DEBOUNCE: Using existing collecting query for ${periodKey}, awaiting debounce timer (${activePeriodQuery.accounts.size} accounts, ${elapsed}ms elapsed)`);
                         const existingPromise = activePeriodQuery.promise;
                         // Set in activeColumnBatchExecutions so other cells see it
                         activeColumnBatchExecutions.set(gridKey, existingPromise);
                         // Use existing promise - skip batch creation
                         batchPromise = existingPromise;
+                    } else if (activePeriodQuery && activePeriodQuery.queryState === 'sent') {
+                        // Query already sent - check cache first before falling back
+                        console.log(`🔍 NO ACTIVE QUERY (sent): ${periodKey} - query already executing, checking cache before fallback`);
+                        const sentQueryCacheCheck = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
+                        if (sentQueryCacheCheck !== null) {
+                            console.log(`✅ SENT QUERY CACHE HIT: ${account}/${toPeriod} = ${sentQueryCacheCheck} (query in progress, using cached result)`);
+                            cacheStats.hits++;
+                            cache.balance.set(cacheKey, sentQueryCacheCheck);
+                            pendingEvaluation.balance.delete(evalKey);
+                            return sentQueryCacheCheck;
+                        }
+                        // Cache miss - await the existing query
+                        batchPromise = activePeriodQuery.promise;
                     } else {
                         // Check if this exact grid is already being executed
                         batchPromise = activeColumnBatchExecutions.get(gridKey);
+                        if (!batchPromise) {
+                            console.log(`🔍 NO ACTIVE QUERY: ${periodKey} - no active query found, will create new batch or fallback`);
+                        }
                     }
                     
                     // ATOMIC CHECK-AND-SET: Prevent race conditions when multiple cells evaluate simultaneously
@@ -6982,8 +7005,72 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                                 rejectPlaceholder = reject;
                             });
                             
-                            // DEBOUNCE WINDOW: 100ms to collect accounts before executing
-                            const DEBOUNCE_MS = 100;
+                            // ROLLING DEBOUNCE: Reset timer each time a new account arrives
+                            // This ensures we collect all accounts that arrive within the window
+                            // Base delay: 200ms after last account arrives
+                            // Maximum total wait: 1000ms to prevent infinite waiting
+                            const DEBOUNCE_MS = 200;        // Base delay after last account
+                            const MAX_DEBOUNCE_MS = 1000;   // Maximum total wait time
+                            const startTime = Date.now();
+                            
+                            // Helper function to reset debounce timer
+                            const resetDebounceTimer = (query) => {
+                                // Clear existing timer
+                                if (query.executeTimeout) {
+                                    clearTimeout(query.executeTimeout);
+                                }
+                                
+                                // Calculate elapsed time
+                                const elapsed = Date.now() - query.startTime;
+                                
+                                // If we haven't exceeded max wait, reset timer
+                                if (elapsed < MAX_DEBOUNCE_MS) {
+                                    const remainingWindow = Math.min(DEBOUNCE_MS, MAX_DEBOUNCE_MS - elapsed);
+                                    console.log(`⏱️ DEBOUNCE: Resetting timer for ${periodKey} - ${query.accounts.size} accounts, ${elapsed}ms elapsed, ${remainingWindow}ms remaining`);
+                                    
+                                    query.executeTimeout = setTimeout(() => {
+                                        // DIAGNOSTIC: Log when timer fires
+                                        const finalQuery = activePeriodQueries.get(periodKey);
+                                        if (finalQuery) {
+                                            const finalElapsed = Date.now() - finalQuery.startTime;
+                                            const accountCount = finalQuery.accounts.size;
+                                            console.log(`⏱️ DEBOUNCE FIRED: ${periodKey} with ${accountCount} accounts after ${finalElapsed}ms`);
+                                            executeDebouncedQuery(periodKey, activePeriodQueries, columnBasedDetection, filterKey)
+                                                .then(results => {
+                                                    // Results already resolved placeholder in executeDebouncedQuery
+                                                    // Update batchPromise for cells that check after execution starts
+                                                    const query = activePeriodQueries.get(periodKey);
+                                                    if (query) {
+                                                        query.promise = Promise.resolve(results);
+                                                    }
+                                                })
+                                                .catch(error => {
+                                                    // Error already rejected placeholder in executeDebouncedQuery
+                                                    const query = activePeriodQueries.get(periodKey);
+                                                    if (query) {
+                                                        query.promise = Promise.reject(error);
+                                                    }
+                                                });
+                                        }
+                                    }, remainingWindow);
+                                } else {
+                                    // Max wait exceeded - execute immediately
+                                    console.log(`⏱️ DEBOUNCE: Max wait (${MAX_DEBOUNCE_MS}ms) exceeded for ${periodKey}, executing immediately with ${query.accounts.size} accounts`);
+                                    executeDebouncedQuery(periodKey, activePeriodQueries, columnBasedDetection, filterKey)
+                                        .then(results => {
+                                            const query = activePeriodQueries.get(periodKey);
+                                            if (query) {
+                                                query.promise = Promise.resolve(results);
+                                            }
+                                        })
+                                        .catch(error => {
+                                            const query = activePeriodQueries.get(periodKey);
+                                            if (query) {
+                                                query.promise = Promise.reject(error);
+                                            }
+                                        });
+                                }
+                            };
                             
                             // Register immediately with 'collecting' state
                             activePeriodQueries.set(periodKey, {
@@ -6995,37 +7082,16 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                                 queryState: 'collecting',  // Debounce window open - accounts can merge
                                 _resolvePlaceholder: resolvePlaceholder,
                                 _rejectPlaceholder: rejectPlaceholder,
-                                executeTimeout: null  // Will be set below
+                                executeTimeout: null,  // Will be set below
+                                startTime: startTime,  // Track when collection started
+                                resetDebounceTimer: resetDebounceTimer  // Store reset function for reuse
                             });
                             
-                            // Start debounce timer - execute query after DEBOUNCE_MS
+                            // Start initial debounce timer
                             const activeQuery = activePeriodQueries.get(periodKey);
                             // DIAGNOSTIC: Log debounce timer creation
-                            console.log(`🔍 DEBOUNCE: Creating new query for ${periodKey}, starting 100ms timer`);
-                            activeQuery.executeTimeout = setTimeout(() => {
-                                // DIAGNOSTIC: Log when timer fires
-                                const query = activePeriodQueries.get(periodKey);
-                                const accountCount = query ? query.accounts.size : 0;
-                                console.log(`🔍 DEBOUNCE EXECUTE: Timer fired for ${periodKey}, executing with ${accountCount} accounts`);
-                                executeDebouncedQuery(periodKey, activePeriodQueries, columnBasedDetection, filterKey)
-                                    .then(results => {
-                                        // Results already resolved placeholder in executeDebouncedQuery
-                                        // Update batchPromise for cells that check after execution starts
-                                        const query = activePeriodQueries.get(periodKey);
-                                        if (query) {
-                                            query.promise = Promise.resolve(results);
-                                        }
-                                    })
-                                    .catch(error => {
-                                        // Error already rejected placeholder in executeDebouncedQuery
-                                        const query = activePeriodQueries.get(periodKey);
-                                        if (query) {
-                                            query.promise = Promise.reject(error);
-                                        }
-                                    });
-                            }, DEBOUNCE_MS);
-                            
-                            console.log(`⏱️ DEBOUNCE: Started ${DEBOUNCE_MS}ms window for ${periodKey} (${accounts.length} accounts initially)`);
+                            console.log(`🔍 DEBOUNCE: Creating new query for ${periodKey}, starting ${DEBOUNCE_MS}ms rolling timer (${accounts.length} accounts initially)`);
+                            resetDebounceTimer(activeQuery);
                             
                             // Set batchPromise to placeholder - will resolve when debounced query completes
                             batchPromise = placeholderPromise
@@ -7033,6 +7099,11 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                                     // Resolve ALL pending evaluations for this grid
                                     const finalAccounts = Array.from(activeQuery.accounts);
                                     const finalPeriods = Array.from(activeQuery.periods);
+                                    
+                                    // PERFORMANCE: Batch localStorage writes (parse once, write once)
+                                    // Collect all balance updates first, then write to localStorage in a single operation
+                                    let balanceData = null;
+                                    let preloadData = null;
                                     
                                     for (const [evalKey, evalRequest] of pendingEvaluation.balance.entries()) {
                                         const { account: evalAccount, toPeriod: evalPeriod } = evalRequest;
@@ -7051,21 +7122,30 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                                                 });
                                                 cache.balance.set(evalCacheKey, balance);
                                                 
-                                                // CRITICAL: Also persist to localStorage for cross-context access
-                                                try {
+                                                // Collect balance updates for batched localStorage write
+                                                if (balanceData === null) {
                                                     const stored = localStorage.getItem(STORAGE_KEY);
-                                                    const balanceData = stored ? JSON.parse(stored) : {};
-                                                    
-                                                    if (!balanceData[evalAccount]) {
-                                                        balanceData[evalAccount] = {};
-                                                    }
-                                                    balanceData[evalAccount][evalPeriod] = balance;
-                                                    
-                                                    localStorage.setItem(STORAGE_KEY, JSON.stringify(balanceData));
-                                                    localStorage.setItem(STORAGE_TIMESTAMP_KEY, Date.now().toString());
-                                                } catch (e) {
-                                                    console.warn(`⚠️ Failed to persist cache to localStorage for ${evalAccount}/${evalPeriod}:`, e.message);
+                                                    balanceData = stored ? JSON.parse(stored) : {};
                                                 }
+                                                if (!balanceData[evalAccount]) {
+                                                    balanceData[evalAccount] = {};
+                                                }
+                                                balanceData[evalAccount][evalPeriod] = balance;
+                                                
+                                                // Also collect preload format updates
+                                                if (preloadData === null) {
+                                                    const preloadCache = localStorage.getItem('xavi_balance_cache');
+                                                    preloadData = preloadCache ? JSON.parse(preloadCache) : {};
+                                                }
+                                                const filtersHash = getFilterKey({
+                                                    subsidiary: columnBasedDetection.filters.subsidiary || '',
+                                                    department: columnBasedDetection.filters.department || '',
+                                                    location: columnBasedDetection.filters.location || '',
+                                                    classId: columnBasedDetection.filters.classId || '',
+                                                    accountingBook: columnBasedDetection.filters.accountingBook || ''
+                                                });
+                                                const preloadKey = `balance:${evalAccount}:${filtersHash}:${evalPeriod}`;
+                                                preloadData[preloadKey] = { value: balance, timestamp: Date.now() };
                                                 
                                                 // Resolve pending request if it exists
                                                 if (pendingRequests.balance.has(evalCacheKey)) {
@@ -7076,6 +7156,21 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                                                 
                                                 pendingEvaluation.balance.delete(evalKey);
                                             }
+                                        }
+                                    }
+                                    
+                                    // PERFORMANCE: Write to localStorage once after collecting all updates
+                                    if (balanceData !== null || preloadData !== null) {
+                                        try {
+                                            if (balanceData !== null) {
+                                                localStorage.setItem(STORAGE_KEY, JSON.stringify(balanceData));
+                                                localStorage.setItem(STORAGE_TIMESTAMP_KEY, Date.now().toString());
+                                            }
+                                            if (preloadData !== null) {
+                                                localStorage.setItem('xavi_balance_cache', JSON.stringify(preloadData));
+                                            }
+                                        } catch (e) {
+                                            console.warn(`⚠️ Failed to persist batch cache to localStorage:`, e.message);
                                         }
                                     }
                                     
@@ -7310,6 +7405,22 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         // ================================================================
         // DIAGNOSTIC: Log when falling through to individual path
         console.log(`🔍 INDIVIDUAL PATH: account=${account}, period=${toPeriod} - NOT using batch (falling through to per-cell logic)`);
+        
+        // CRITICAL FIX: Check cache BEFORE queuing individual API call
+        // Cells that arrive AFTER debounced batch completes should use cached results
+        // This prevents redundant individual GetBalance calls when batch already cached the data
+        if (isCumulativeQuery && lookupPeriod) {
+            const postBatchCacheCheck = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
+            if (postBatchCacheCheck !== null) {
+                console.log(`✅ POST-BATCH CACHE HIT: ${account}/${lookupPeriod} = ${postBatchCacheCheck} (batch query completed, using cached result)`);
+                cacheStats.hits++;
+                cache.balance.set(cacheKey, postBatchCacheCheck);
+                pendingEvaluation.balance.delete(evalKey);
+                return postBatchCacheCheck;
+            } else {
+                console.log(`⚠️ FALLBACK TO INDIVIDUAL: account=${account}, period=${lookupPeriod} - cache miss, will queue individual API call`);
+            }
+        }
         // NOTE: Old row-based batching (executeBalanceSheetBatchQueryImmediate) is REMOVED
         // Column-based batching is the ONLY batching path for Balance Sheet grids
         

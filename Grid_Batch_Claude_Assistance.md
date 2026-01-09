@@ -1,8 +1,9 @@
 # Grid Batch Claude Assistance: How Code Review Improved Implementation
 
 **Date:** January 9, 2026  
+**Last Updated:** January 9, 2026  
 **Feature:** Period-Based Deduplication for Balance Sheet Batch Processing  
-**Version Progression:** 4.0.6.119 → 4.0.6.120 → 4.0.6.121
+**Version Progression:** 4.0.6.119 → 4.0.6.120 → 4.0.6.121 → 4.0.6.122 → 4.0.6.128 → 4.0.6.129 → 4.0.6.130
 
 ---
 
@@ -331,14 +332,106 @@ The 5-minute TTL was technically correct but didn't match real-world usage patte
 
 ## Conclusion
 
-The period-based deduplication implementation was significantly improved through Claude's code review. The back-and-forth discussion identified four critical issues that were systematically addressed:
+The period-based deduplication implementation was significantly improved through multiple rounds of Claude's code review. The back-and-forth discussion identified seven critical issues that were systematically addressed:
 
+**Initial Review (v4.0.6.121):**
 1. **Race condition** eliminated by setting queryState immediately before fetch()
 2. **Error handling** added to promise chain to prevent breakage
 3. **Supplemental query path** made explicit for clarity
 4. **TTL increased** to 1 hour for better cache performance
 
-The final implementation (v4.0.6.121) is more robust, reliable, and maintainable than the initial version (v4.0.6.119). This demonstrates the value of thorough code review and iterative improvement.
+**Subsequent Reviews (v4.0.6.128-130):**
+5. **Debounce bypass fix** - prevent immediate batch execution when debounce window is open
+6. **Rolling debounce** - reset timer on new accounts (200ms base, 1000ms max) to collect all accounts
+7. **Cache check before individual calls** - prevent redundant individual API calls when batch already cached data
+8. **Filter cached periods** - exclude cached periods from batch detection
+
+The final implementation (v4.0.6.130) is more robust, reliable, and performant than the initial version (v4.0.6.119). This demonstrates the value of thorough code review, iterative improvement, and addressing issues as they are discovered in production-like scenarios.
+
+---
+
+## Additional Improvements (v4.0.6.128-130)
+
+### Issue #5: Debounce Window Too Short
+
+**The Problem:**
+- Fixed 100ms debounce window was too short
+- Only 2 accounts were being collected before timer fired
+- Cells evaluating after 100ms fell back to individual GetBalance calls
+- Evidence: TARGETED BS PRELOAD showed only 2 accounts (should be 20+)
+
+**Claude's Analysis:**
+> "The debounce window (100ms) is too short. Only 2 accounts are being collected before the timer fires. Cells evaluating after 100ms fall back to individual GetBalance calls. Excel spreads formula evaluation over hundreds of milliseconds. The debounce window must be long enough to capture all of them."
+
+**The Fix - Rolling Debounce:**
+```javascript
+// Rolling debounce: Reset timer each time a new account arrives
+const DEBOUNCE_MS = 200;        // Base delay after last account
+const MAX_DEBOUNCE_MS = 1000;   // Maximum total wait time
+
+// When new account merges during 'collecting' state:
+if (activePeriodQuery.resetDebounceTimer) {
+    activePeriodQuery.resetDebounceTimer(activePeriodQuery);
+}
+```
+
+**Impact:**
+- Collects 20+ accounts instead of just 2
+- Adapts to Excel's evaluation pattern (cells arrive over time)
+- Maximum wait prevents infinite delays
+
+### Issue #6: Cells Falling Back to Individual Calls After Batch Completes
+
+**The Problem:**
+- Cells arriving AFTER debounced query completes were falling back to individual GetBalance calls
+- Batch had already cached the data, but cells weren't checking cache first
+
+**Claude's Analysis:**
+> "Cells that arrive AFTER the debounced query completes shouldn't fall back to individual GetBalance. They should check if their account is already cached."
+
+**The Fix - Cache Check Before Individual Calls:**
+```javascript
+// Before queuing individual API call, check cache first
+if (isCumulativeQuery && lookupPeriod) {
+    const postBatchCacheCheck = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
+    if (postBatchCacheCheck !== null) {
+        console.log(`✅ POST-BATCH CACHE HIT: ${account}/${lookupPeriod} = ${postBatchCacheCheck}`);
+        return postBatchCacheCheck; // Don't make individual API call
+    }
+}
+```
+
+**Impact:**
+- Eliminates redundant individual GetBalance calls
+- Cells use cached results from batch query
+- Faster resolution for late-arriving cells
+
+### Issue #7: Cached Periods Included in Batch Detection
+
+**The Problem:**
+- When dragging from January (already cached) to February/March, January was being included in batch queries
+- January cells were in `pendingEvaluation.balance` when batch detection ran, even though they were cached
+
+**Claude's Analysis:**
+> "Why was January even being referenced? When dragging from resolved January values across to February and March, January shouldn't be queried again."
+
+**The Fix - Filter Cached Periods:**
+```javascript
+// In detectColumnBasedBSGrid, filter out cached requests
+for (const request of bsCumulativeRequests) {
+    // Check if this specific account+period is cached
+    const cachedValue = checkLocalStorageCache(rParams.account, null, rParams.toPeriod, ...);
+    if (cachedValue !== null) {
+        continue; // Skip cached requests - don't include in batch
+    }
+    // Only include uncached requests in batch
+}
+```
+
+**Impact:**
+- Prevents January from being included in batch queries
+- Only uncached periods are batched
+- Reduces redundant queries
 
 ---
 
@@ -348,6 +441,9 @@ The final implementation (v4.0.6.121) is more robust, reliable, and maintainable
 - **v4.0.6.120:** First round of improvements (query state tracking, promise chaining, chronological sort, batched localStorage)
 - **v4.0.6.121:** Critical fixes from Claude review (queryState timing, error handling, explicit paths, 1hr TTL)
 - **v4.0.6.122:** Cloudflare timeout fix (CHUNK_SIZE=1 to avoid 524 errors, will increase after AWS migration)
+- **v4.0.6.128:** Debounce fix - prevent immediate batch execution when activePeriodQuery is in 'collecting' state
+- **v4.0.6.129:** Filter cached periods from batch detection - prevent January (already cached) from being included in batch queries
+- **v4.0.6.130:** Rolling debounce + cache check before individual calls - reset timer on new accounts (200ms base, 1000ms max), check cache before falling back to individual API calls
 
 ---
 
@@ -361,8 +457,11 @@ The final implementation (v4.0.6.121) is more robust, reliable, and maintainable
    - Increased TTL to 1 hour
 
 2. **`excel-addin/manifest.xml`**
-   - Updated version to 4.0.6.121
+   - Updated version to 4.0.6.130
    - Updated all cache-busting URLs
 
-3. **`Grid_Batch_Claude_Assistance.md`** (this document)
+3. **`docs/taskpane.html`, `docs/sharedruntime.html`, `docs/functions.html`**
+   - Updated functions.js script references to v4.0.6.130
+
+4. **`Grid_Batch_Claude_Assistance.md`** (this document)
    - Comprehensive summary of review process and improvements
