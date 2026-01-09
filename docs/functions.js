@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.117';  // Fixed race condition in batch deduplication - atomic check-and-set
+const FUNCTIONS_VERSION = '4.0.6.118';  // Check localStorage BEFORE column-based batching to prevent redundant batches
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -1210,7 +1210,9 @@ async function executeColumnBasedBSBatch(grid) {
                 
                 // CRITICAL: Also persist to localStorage for cross-context access
                 // This ensures other cells in the same column can access the cache
+                // Write to BOTH formats: legacy (netsuite_balance_cache) and preload (xavi_balance_cache)
                 try {
+                    // Write to legacy format (for backward compatibility)
                     const stored = localStorage.getItem(STORAGE_KEY);
                     const balanceData = stored ? JSON.parse(stored) : {};
                     
@@ -1221,6 +1223,21 @@ async function executeColumnBasedBSBatch(grid) {
                     
                     localStorage.setItem(STORAGE_KEY, JSON.stringify(balanceData));
                     localStorage.setItem(STORAGE_TIMESTAMP_KEY, Date.now().toString());
+                    
+                    // ALSO write to preload cache format (xavi_balance_cache) for immediate lookup
+                    // Format: balance:${account}:${filtersHash}:${period}
+                    const filtersHash = getFilterKey({
+                        subsidiary: filters.subsidiary || '',
+                        department: filters.department || '',
+                        location: filters.location || '',
+                        classId: filters.classId || '',
+                        accountingBook: filters.accountingBook || ''
+                    });
+                    const preloadKey = `balance:${account}:${filtersHash}:${period}`;
+                    const preloadCache = localStorage.getItem('xavi_balance_cache');
+                    const preloadData = preloadCache ? JSON.parse(preloadCache) : {};
+                    preloadData[preloadKey] = { value: accountBalances[period], timestamp: Date.now() };
+                    localStorage.setItem('xavi_balance_cache', JSON.stringify(preloadData));
                 } catch (e) {
                     // localStorage might be full or unavailable - log but don't fail
                     console.warn(`⚠️ Failed to persist cache to localStorage for ${account}/${period}:`, e.message);
@@ -6538,6 +6555,29 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         pendingEvaluation.balance.set(evalKey, { account, fromPeriod, toPeriod, filters });
         
         // ================================================================
+        // CRITICAL: Check localStorage BEFORE column-based batching
+        // When dragging down, previous batches may have already cached results
+        // This prevents redundant batch creation when cache is available
+        // ================================================================
+        // Normalize periods and filters early (used in multiple places below)
+        const filtersHash = getFilterKey({ subsidiary, department, location, classId, accountingBook });
+        const lookupPeriod = normalizePeriodKey(fromPeriod || toPeriod, false);
+        const isCumulativeQuery = isCumulativeRequest(fromPeriod);
+        
+        // Check localStorage cache BEFORE column-based batching
+        // This ensures dragged cells use cached results instead of creating new batches
+        if (isCumulativeQuery && lookupPeriod) {
+            const localStorageValue = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
+            if (localStorageValue !== null) {
+                console.log(`✅ localStorage cache hit BEFORE batch check: ${account}/${lookupPeriod} = ${localStorageValue}`);
+                cacheStats.hits++;
+                cache.balance.set(cacheKey, localStorageValue);
+                pendingEvaluation.balance.delete(evalKey); // Remove from pending since we resolved it
+                return localStorageValue;
+            }
+        }
+        
+        // ================================================================
         // COLUMN-BASED BATCHING: Primary execution path for Balance Sheet grids
         // One query per period (column), returns translated ending balances
         // No anchor math, no activity reconstruction
@@ -6782,9 +6822,8 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         // 
         // Note: isCumulativeRequest checks if fromPeriod is null/empty to determine query type
         // ================================================================
-        // Normalize lookupPeriod early for period-specific checks
-        const lookupPeriod = normalizePeriodKey(fromPeriod || toPeriod, false);
-        const isCumulativeQuery = isCumulativeRequest(fromPeriod); // Point-in-time if fromPeriod is null/empty
+        // NOTE: lookupPeriod, isCumulativeQuery, and filtersHash are already defined above
+        // (before column-based batching check) - no need to redefine them here
         
         // CRITICAL: For period activity queries (fromPeriod provided), skip manifest/preload logic
         // Period activity queries are faster and don't need preload coordination
@@ -7027,10 +7066,12 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         // localStorage is keyed by account+period only (cumulative), not for period ranges
         // Period activity queries (both fromPeriod and toPeriod) must NOT use localStorage cache
         // because checkLocalStorageCache only looks up cumulative balances (single period)
-        const filtersHash = getFilterKey({ subsidiary, department, location, classId, accountingBook });
+        // NOTE: filtersHash is already defined above (before column-based batching check)
         let localStorageValue = null;
         // CRITICAL FIX: Always check localStorage for cumulative queries, even with filters
         // The cache now includes filters in the key, so it will work correctly
+        // NOTE: This check may be redundant if we already checked above (before column-based batching),
+        // but it's safe to check again here as a fallback
         if (isCumulativeQuery) {
             localStorageValue = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
         }
