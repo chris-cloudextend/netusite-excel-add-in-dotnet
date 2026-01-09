@@ -6764,6 +6764,9 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         if (DEBUG_COLUMN_BASED_BS_BATCHING || !isBalanceSheet) {
             console.log(`🔍 [TYPE DEBUG] accountType=`, accountType, `→ extracted="${acctTypeStr}" → isBalanceSheet=${isBalanceSheet}`);
         }
+        // DIAGNOSTIC: Log before column-based detection check
+        console.log(`🔍 PRE-DETECTION: About to check column-based grid, USE_COLUMN_BASED_BS_BATCHING=${USE_COLUMN_BASED_BS_BATCHING}, isBalanceSheet=${isBalanceSheet}`);
+        
         if (USE_COLUMN_BASED_BS_BATCHING && isBalanceSheet) {
             const evaluatingRequests = Array.from(pendingEvaluation.balance.values());
             console.log(`🔍 [BATCH DEBUG] Checking column-based batching: accountType=${acctTypeStr}, isBalanceSheet=${isBalanceSheet}, evaluatingRequests=${evaluatingRequests.length}, account=${account}, toPeriod=${toPeriod}`);
@@ -6771,6 +6774,7 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
             
             // DIAGNOSTIC: Log column detection result
             console.log(`🔍 COLUMN DETECTION: eligible=${columnBasedDetection?.eligible}, accounts=${columnBasedDetection?.allAccounts?.size || 0}, periods=${columnBasedDetection?.columns?.length || 0}`);
+            console.log(`🔍 POST-DETECTION: isGrid=${columnBasedDetection?.eligible}, path=${columnBasedDetection?.eligible ? 'batch' : 'individual'}`);
             
             if (columnBasedDetection.eligible) {
                 console.log(`✅ [BATCH DEBUG] Grid eligible for column-based batching: ${columnBasedDetection.allAccounts?.size || 0} accounts, ${columnBasedDetection.columns?.length || 0} periods`);
@@ -6783,6 +6787,9 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                 console.log(`🔍 [BATCH DEBUG] Execution check result: allowed=${executionCheck.allowed}, reason=${executionCheck.reason || 'none'}`);
                 
                 if (executionCheck.allowed) {
+                    // DIAGNOSTIC: Log batch path entry
+                    console.log(`🔍 BATCH PATH: account=${account}, entering debounce logic`);
+                    
                     // PERIOD-BASED DEDUPLICATION: Check for existing queries for same periods FIRST
                     // This prevents multiple queries for the same period with different account lists
                     // CRITICAL: Sort periods chronologically (not lexicographically) for consistent periodKey
@@ -7258,6 +7265,8 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         // PER-CELL LOGIC: Fallback when column-based batching is not used
         // This is the original per-cell execution path (manifest/preload/API)
         // ================================================================
+        // DIAGNOSTIC: Log when falling through to individual path
+        console.log(`🔍 INDIVIDUAL PATH: account=${account}, period=${toPeriod} - NOT using batch (falling through to per-cell logic)`);
         // NOTE: Old row-based batching (executeBalanceSheetBatchQueryImmediate) is REMOVED
         // Column-based batching is the ONLY batching path for Balance Sheet grids
         
@@ -9073,6 +9082,11 @@ async function processBatchQueue() {
         
         // Continue with existing individual cumulative request processing...
         // (This handles remaining cumulativeRequests after batching, or all if batching skipped/failed)
+        
+        // DIAGNOSTIC: Log when processing individual cumulative requests
+        if (cumulativeRequests.length > 0) {
+            console.log(`🔍 INDIVIDUAL CALL: Processing ${cumulativeRequests.length} cumulative requests individually (NOT using batch endpoint)`);
+        }
         
         let cacheHits = 0;
         let apiCalls = 0;
