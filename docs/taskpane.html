@@ -9220,6 +9220,10 @@ For licensing inquiries, contact: legal@celigo.com
                             
                             console.log(`📊 Auto-scan found ${formulaData.periods.length} period(s) in formulas`);
                             
+                            // Store filters from formulaData early so they're available for cache checks
+                            const preloadFilters = formulaData.filters || {};
+                            const preloadFiltersHash = formulaData.filtersHash || '||||1';
+                            
                             // CRITICAL: Always ensure ALL trigger periods are included (normalized)
                             // Issue 2A Fix: Process all periods from queued triggers, not just firstTrigger.firstPeriod
                             // This handles cases where user drags across multiple periods simultaneously
@@ -9275,7 +9279,8 @@ For licensing inquiries, contact: legal@celigo.com
                             // CRITICAL FIX: Check BOTH manifest status AND cache data
                             // This ensures we don't preload periods that are already complete
                             // The manifest status is the source of truth (set by taskpane when preload completes)
-                            function isPeriodCached(period) {
+                            // NOTE: This function MUST be defined AFTER preloadFiltersHash is declared to avoid TDZ errors
+                            const isPeriodCached = (period) => {
                                 try {
                                     // Normalize period
                                     let normalizedPeriod = period.trim();
@@ -9314,7 +9319,7 @@ For licensing inquiries, contact: legal@celigo.com
                                 } catch (e) {
                                     return false;
                                 }
-                            }
+                            };
                             
                             // Separate cached vs uncached periods
                             for (const period of formulaData.periods) {
@@ -9370,10 +9375,6 @@ For licensing inquiries, contact: legal@celigo.com
                             // ✅ CHUNKED PRECACHE: Process periods in batches to avoid timeouts
                             // Chunk size starts at 2, reduces by half on failure (min 1)
                             // This handles drag-across scenarios where 8 periods would timeout
-                            
-                            // Store filters from formulaData for use in processChunk
-                            const preloadFilters = formulaData.filters || {};
-                            const preloadFiltersHash = formulaData.filtersHash || '||||1';
                             
                             // Helper function to chunk array
                             function chunkArray(array, chunkSize) {
