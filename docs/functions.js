@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.118';  // Check localStorage BEFORE column-based batching to prevent redundant batches
+const FUNCTIONS_VERSION = '4.0.6.119';  // Period-based deduplication: merge account lists before queries are sent
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -5274,6 +5274,11 @@ const pendingRequests = {
 // Map<gridKey, Promise<batchResults>>
 const activeColumnBatchExecutions = new Map();
 
+// PERIOD-BASED DEDUPLICATION: Track active queries per period to merge account lists
+// Map<periodKey, { promise, accounts: Set, periods: Set, filters, gridKey }>
+// periodKey = `${periods.join(',')}:${filterKey}` (e.g., "Jan 2025,Feb 2025:1::::1")
+const activePeriodQueries = new Map();
+
 const pendingEvaluation = {
     balance: new Map()  // Map<cacheKey, {account, fromPeriod, toPeriod, filters}>
 };
@@ -6637,8 +6642,8 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                 console.log(`🔍 [BATCH DEBUG] Execution check result: allowed=${executionCheck.allowed}, reason=${executionCheck.reason || 'none'}`);
                 
                 if (executionCheck.allowed) {
-                    // Create unique grid key for deduplication
-                    const accounts = Array.from(columnBasedDetection.allAccounts).sort();
+                    // PERIOD-BASED DEDUPLICATION: Check for existing queries for same periods FIRST
+                    // This prevents multiple queries for the same period with different account lists
                     const periods = columnBasedDetection.columns.map(col => col.period).sort();
                     const filterKey = getFilterKey({
                         subsidiary: columnBasedDetection.filters.subsidiary || '',
@@ -6647,22 +6652,77 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                         classId: columnBasedDetection.filters.classId || '',
                         accountingBook: columnBasedDetection.filters.accountingBook || ''
                     });
+                    
+                    // Create period key for deduplication (periods + filters, NOT accounts)
+                    const periodKey = `${periods.join(',')}:${filterKey}`;
+                    
+                    // PERIOD-BASED DEDUPLICATION: Check for active period query BEFORE creating batch
+                    // This allows us to merge account lists before the query is sent
+                    let accounts = Array.from(columnBasedDetection.allAccounts);
+                    let activePeriodQuery = activePeriodQueries.get(periodKey);
+                    
+                    if (activePeriodQuery) {
+                        // Period query already active - check if our account is already in the query
+                        console.log(`🔄 PERIOD DEDUP: Periods ${periods.join(', ')} already being queried`);
+                        console.log(`   Existing accounts: ${activePeriodQuery.accounts.size}, Our accounts: ${accounts.length}`);
+                        
+                        // Check if our account is already in the active query
+                        const ourAccountInQuery = accounts.some(acc => activePeriodQuery.accounts.has(acc));
+                        
+                        if (ourAccountInQuery) {
+                            // Our account is already being queried - wait for results
+                            console.log(`   ✅ Account ${account} already in query, awaiting results...`);
+                            try {
+                                const batchResults = await activePeriodQuery.promise;
+                                const balance = batchResults[account]?.[toPeriod];
+                                
+                                if (balance !== undefined && balance !== null && typeof balance === 'number') {
+                                    cache.balance.set(cacheKey, balance);
+                                    console.log(`✅ PERIOD DEDUP RESULT: ${account} for ${toPeriod} = ${balance}`);
+                                    pendingEvaluation.balance.delete(evalKey);
+                                    return balance;
+                                }
+                            } catch (error) {
+                                console.warn(`⚠️ PERIOD DEDUP: Error in existing query: ${error.message}`);
+                            }
+                        } else {
+                            // Our account is NOT in the active query - merge accounts for future queries
+                            console.log(`   📊 Account ${account} not in existing query, merging for future batches`);
+                            accounts.forEach(acc => activePeriodQuery.accounts.add(acc));
+                            accounts = Array.from(activePeriodQuery.accounts).sort();
+                            // Continue to create new batch with merged accounts
+                        }
+                    }
+                    
+                    // No active query for these periods, or we need to create one with merged accounts
+                    // Create grid key with merged accounts
                     const gridKey = `grid:${accounts.join(',')}:${periods.join(',')}:${filterKey}`;
+                    
+                    // Check if this exact grid is already being executed
+                    let batchPromise = activeColumnBatchExecutions.get(gridKey);
                     
                     // ATOMIC CHECK-AND-SET: Prevent race conditions when multiple cells evaluate simultaneously
                     // Strategy: Check if batch exists, if not create promise immediately (synchronously) and set it
-                    let batchPromise = activeColumnBatchExecutions.get(gridKey);
-                    
                     if (!batchPromise) {
                         // No batch exists - create one immediately (synchronously) to prevent race conditions
-                        const accountCount = columnBasedDetection.allAccounts.size;
-                        const periodCount = columnBasedDetection.columns.length;
+                        const accountCount = accounts.length;
+                        const periodCount = periods.length;
                         console.log(`🚀 COLUMN-BASED BS BATCH EXECUTING: ${accountCount} accounts × ${periodCount} periods (gridKey: ${gridKey.substring(0, 50)}...)`);
                         console.log(`📊 Querying translated ending balances (chunked processing: 2 periods per chunk)`);
                         
+                        // Update grid with merged accounts
+                        const updatedGrid = {
+                            ...columnBasedDetection,
+                            allAccounts: new Set(accounts)
+                        };
+                        
                         // Create promise synchronously and set it immediately
-                        batchPromise = executeColumnBasedBSBatch(columnBasedDetection)
+                        // Also track in activePeriodQueries for period-based deduplication
+                        batchPromise = executeColumnBasedBSBatch(updatedGrid)
                             .then(results => {
+                                // Remove from active period queries when complete
+                                activePeriodQueries.delete(periodKey);
+                                
                                 // Resolve ALL pending evaluations for this grid
                                 for (const [evalKey, evalRequest] of pendingEvaluation.balance.entries()) {
                                     const { account: evalAccount, toPeriod: evalPeriod } = evalRequest;
@@ -6718,8 +6778,27 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                             .catch(error => {
                                 // Clean up on error
                                 activeColumnBatchExecutions.delete(gridKey);
+                                activePeriodQueries.delete(periodKey);
                                 throw error;
                             });
+                        
+                        // Store in activePeriodQueries BEFORE setting in activeColumnBatchExecutions
+                        // This ensures other cells checking for period overlap will find it
+                        // CRITICAL: Set synchronously to prevent race conditions
+                        if (!activePeriodQuery) {
+                            activePeriodQueries.set(periodKey, {
+                                promise: batchPromise,
+                                accounts: new Set(accounts),
+                                periods: new Set(periods),
+                                filters: columnBasedDetection.filters,
+                                gridKey: gridKey
+                            });
+                        } else {
+                            // Update existing period query with merged accounts and new promise
+                            activePeriodQuery.promise = batchPromise;
+                            activePeriodQuery.accounts = new Set(accounts);
+                            activePeriodQuery.gridKey = gridKey;
+                        }
                         
                         // Set the promise immediately (synchronously) to prevent race conditions
                         // This ensures that any other cell checking after this point will see the promise
