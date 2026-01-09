@@ -10141,6 +10141,95 @@ For licensing inquiries, contact: legal@celigo.com
                 funFactInterval = null;
             }
         }
+        
+        // ========================================================================
+        // SINGLE-PROMISE PRELOAD PROGRESS LISTENER
+        // Watches localStorage for progress updates from functions.js
+        // ========================================================================
+        let lastPreloadProgressTimestamp = 0;
+        let preloadProgressInterval = null;
+        
+        function checkPreloadProgress() {
+            try {
+                const progressJson = localStorage.getItem('xavi_preload_progress');
+                if (!progressJson) {
+                    // No progress update - check if we should hide loading
+                    // (only if it was showing preload progress)
+                    const overlay = document.getElementById('loadingOverlay');
+                    if (overlay && overlay.classList.contains('active')) {
+                        const messageEl = document.getElementById('loadingMessage');
+                        if (messageEl && messageEl.textContent.includes('Preloading')) {
+                            // Preload progress cleared - hide after delay
+                            setTimeout(() => {
+                                const currentProgress = localStorage.getItem('xavi_preload_progress');
+                                if (!currentProgress) {
+                                    hideLoading();
+                                }
+                            }, 2500);
+                        }
+                    }
+                    return;
+                }
+                
+                const progress = JSON.parse(progressJson);
+                
+                // Only process if new (timestamp check to avoid duplicate processing)
+                const timestamp = Date.now();
+                if (progress.timestamp && progress.timestamp <= lastPreloadProgressTimestamp) {
+                    return;
+                }
+                lastPreloadProgressTimestamp = progress.timestamp || timestamp;
+                
+                // Update loading overlay based on status
+                if (progress.status === 'started' || progress.status === 'querying' || progress.status === 'processing') {
+                    const titleEl = document.getElementById('loadingTitle');
+                    if (titleEl) titleEl.textContent = progress.message || '⚡ Preloading';
+                    showLoading(
+                        progress.message || '⚡ Preloading',
+                        progress.stats || 'Getting initial balances for a period can take some time as we work with your NetSuite data to sum values from the beginning of time. Good news - once this formula is resolved all balance sheet accounts for the same period will resolve instantly',
+                        progress.progress || 10
+                    );
+                } else if (progress.status === 'completed') {
+                    const titleEl = document.getElementById('loadingTitle');
+                    if (titleEl) titleEl.textContent = progress.message || '✅ Preload complete';
+                    updateLoading(
+                        progress.message || '✅ Preload complete',
+                        progress.progress || 100,
+                        progress.stats || 'All accounts cached'
+                    );
+                    // Auto-hide after 2 seconds
+                    setTimeout(() => {
+                        hideLoading();
+                    }, 2000);
+                } else if (progress.status === 'error') {
+                    const titleEl = document.getElementById('loadingTitle');
+                    if (titleEl) titleEl.textContent = progress.message || '❌ Preload failed';
+                    updateLoading(
+                        progress.message || '❌ Preload failed',
+                        0,
+                        progress.stats || 'An error occurred'
+                    );
+                    // Auto-hide after 3 seconds
+                    setTimeout(() => {
+                        hideLoading();
+                    }, 3000);
+                }
+                
+            } catch (e) {
+                console.warn('checkPreloadProgress error:', e);
+            }
+        }
+        
+        function startPreloadProgressListener() {
+            // Check immediately
+            checkPreloadProgress();
+            
+            // Then poll every 200ms
+            if (preloadProgressInterval) {
+                clearInterval(preloadProgressInterval);
+            }
+            preloadProgressInterval = setInterval(checkPreloadProgress, 200);
+        }
 
         // ========================================================================
         // TOAST NOTIFICATION SYSTEM
@@ -18406,6 +18495,7 @@ export default {
             
             // Start polling for pending drilldowns (from context menu)
             startPendingDrilldownListener();
+            startPreloadProgressListener(); // Start listening for single-promise preload progress
             
             // SAFETY: Hide any stale loading overlays from previous sessions/crashes
             const staleOverlay = document.getElementById('loadingOverlay');

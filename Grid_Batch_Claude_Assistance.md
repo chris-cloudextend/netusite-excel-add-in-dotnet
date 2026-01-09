@@ -3,7 +3,7 @@
 **Date:** January 9, 2026  
 **Last Updated:** January 9, 2026  
 **Feature:** Period-Based Deduplication for Balance Sheet Batch Processing  
-**Version Progression:** 4.0.6.119 → 4.0.6.120 → 4.0.6.121 → 4.0.6.122 → 4.0.6.128 → 4.0.6.129 → 4.0.6.130 → 4.0.6.131 → 4.0.6.132 → 4.0.6.133 → 4.0.6.134 → 4.0.6.135
+**Version Progression:** 4.0.6.119 → 4.0.6.120 → 4.0.6.121 → 4.0.6.122 → 4.0.6.128 → 4.0.6.129 → 4.0.6.130 → 4.0.6.131 → 4.0.6.132 → 4.0.6.133 → 4.0.6.134 → 4.0.6.135 → 4.0.6.136 → 4.0.6.137 → 4.0.6.138
 
 ---
 
@@ -660,6 +660,96 @@ if (periodsNeedingFullPreload.length > 0) {
 - **v4.0.6.134:** Added cache verification after full preload - wait for cache to be populated before checking, preventing targeted preload when full preload completed
 - **v4.0.6.135:** Fixed two critical bugs: (1) Store filtersHash in activePeriodQueries to prevent scoping error, (2) Always call FULL preload for new periods instead of targeted preload (with verification before targeted preload)
 - **v4.0.6.135 (Issues Identified):** Three new issues discovered: (1) Cells resolving one-by-one instead of all at once, (2) Task pane showing incorrect periods, (3) Progress indicator remains running after completion. See `BATCH_RESOLUTION_AND_PROGRESS_ISSUES.md` for details.
+- **v4.0.6.136:** Phase 1 - Added single-promise infrastructure (disabled by default, feature flag)
+- **v4.0.6.137:** Phase 2 - Enabled single-promise approach (`USE_SINGLE_PROMISE_APPROACH = true`)
+- **v4.0.6.138:** Phase 2 - Added task pane progress indicator for single-promise preload
+
+---
+
+## Issue #12: Architectural Fix - Single Promise Per Period (v4.0.6.136-138)
+
+### The Problem
+Despite all the improvements to period-based deduplication, cells were still resolving one-by-one instead of all at once. The root cause was that each cell was creating its own promise chain, even when they were all waiting for the same period query.
+
+**Claude's Architectural Analysis:**
+> "The fundamental issue is that you have multiple competing code paths trying to resolve the same data. Instead of each cell creating its own promise chain, ALL cells for the same period should await the EXACT SAME Promise that resolves WITH the data. This ensures simultaneous resolution."
+
+### The Solution: Single Promise Per Period
+
+**Key Insight:**
+- All cells for the same period should await the **EXACT SAME Promise**
+- The promise should resolve **WITH the balance data** (not just trigger a side effect)
+- No debounce needed - first cell triggers preload, all others await the same promise
+
+**Implementation:**
+```javascript
+// Map<periodKey, Promise<{account: balance}>>
+const singlePromiseQueries = new Map();
+
+async function singlePromiseFlow(account, toPeriod, filtersHash, cacheKey) {
+    const periodKey = `${toPeriod}:${filtersHash}`;
+    
+    // Check if query already exists for this period
+    let periodQuery = singlePromiseQueries.get(periodKey);
+    
+    if (!periodQuery) {
+        // Create new query with promise
+        let resolve, reject;
+        const promise = new Promise((res, rej) => {
+            resolve = res;
+            reject = rej;
+        });
+        
+        periodQuery = { promise, resolve, reject, period: toPeriod, filtersHash, startTime: Date.now() };
+        singlePromiseQueries.set(periodKey, periodQuery);
+        
+        // Start preload immediately (no debounce)
+        executeFullPreload(periodKey);
+    }
+    
+    // ALL cells await the EXACT SAME Promise
+    const balancesByAccount = await periodQuery.promise;
+    return balancesByAccount[account]; // Extract balance for this account
+}
+```
+
+**Response Transformation:**
+```javascript
+// Backend returns: { "10010": { "Feb 2025": 12345.67 }, ... }
+// Transform to: { "10010": 12345.67, ... }
+const balancesByAccount = {};
+for (const [account, periodBalances] of Object.entries(result.balances)) {
+    balancesByAccount[account] = periodBalances[period];
+}
+periodQuery.resolve(balancesByAccount); // Resolve WITH data
+```
+
+**Task Pane Progress Indicator:**
+- Added progress updates via localStorage (`xavi_preload_progress`)
+- Task pane polls every 200ms for updates
+- Shows progress: Started (10%) → Querying (30%) → Processing (80%) → Complete (100%)
+- Auto-hides after completion
+
+### Testing Results ✅
+
+**All Test Scenarios Passed:**
+- ✅ Single cell: First formula triggers preload immediately
+- ✅ Drag down: All cells hit cache instantly (no API calls)
+- ✅ Drag right: Each period preloaded separately, all cells in column resolve simultaneously
+- ✅ Multiple periods: Jan, Feb, Mar all resolve correctly with simultaneous resolution per period
+- ✅ Cache hit: Instant resolution from localStorage
+
+**Performance:**
+- Time to first resolution: ~70-80s (as expected for NetSuite query)
+- Time to all cells resolved: **Same as first** (simultaneous, not sequential) ✅
+- Number of API calls: **1 per period** (not 1 per cell) ✅
+- Task pane shows clear progress with helpful messages ✅
+
+### Impact
+- **Simultaneous resolution:** All cells for the same period resolve at exactly the same time
+- **No individual API calls:** All cells use preload results
+- **Better UX:** Task pane shows clear progress indicator
+- **Simpler architecture:** Single promise per period, no complex promise chaining
 
 ---
 

@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.137';  // Phase 2: Enabled single-promise approach (USE_SINGLE_PROMISE_APPROACH = true)
+const FUNCTIONS_VERSION = '4.0.6.138';  // Phase 2: Added task pane progress indicator for single-promise preload
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -6627,6 +6627,20 @@ async function executeFullPreload(periodKey) {
     
     console.log(`🚀 EXECUTING FULL PRELOAD: ${periodKey}, period=${period}, filtersHash=${filtersHash}`);
     
+    // Notify task pane that preload is starting
+    try {
+        localStorage.setItem('xavi_preload_progress', JSON.stringify({
+            status: 'started',
+            period: period,
+            message: `⚡ Preloading ${period}`,
+            progress: 10,
+            stats: 'Getting initial balances for a period can take some time as we work with your NetSuite data to sum values from the beginning of time. Good news - once this formula is resolved all balance sheet accounts for the same period will resolve instantly',
+            timestamp: Date.now()
+        }));
+    } catch (e) {
+        // Ignore localStorage errors
+    }
+    
     try {
         // Extract filters from filtersHash
         const subsidiary = extractSubsidiary(filtersHash);
@@ -6634,6 +6648,20 @@ async function executeFullPreload(periodKey) {
         const location = extractLocation(filtersHash);
         const classId = extractClass(filtersHash);
         const accountingBook = extractBook(filtersHash);
+        
+        // Update progress: query starting
+        try {
+            localStorage.setItem('xavi_preload_progress', JSON.stringify({
+                status: 'querying',
+                period: period,
+                message: `⚡ Preloading ${period}`,
+                progress: 30,
+                stats: 'Querying NetSuite for all balance sheet accounts...',
+                timestamp: Date.now()
+            }));
+        } catch (e) {
+            // Ignore localStorage errors
+        }
         
         // Call FULL preload endpoint
         const response = await fetch(`${SERVER_URL}/batch/bs_preload`, {
@@ -6674,11 +6702,47 @@ async function executeFullPreload(periodKey) {
         
         console.log(`✅ PRELOAD COMPLETE: ${period}, accounts=${Object.keys(balancesByAccount).length}`);
         
+        // Update progress: processing complete
+        try {
+            localStorage.setItem('xavi_preload_progress', JSON.stringify({
+                status: 'processing',
+                period: period,
+                message: `⚡ Preloading ${period}`,
+                progress: 80,
+                stats: `Processing ${Object.keys(balancesByAccount).length} accounts...`,
+                timestamp: Date.now()
+            }));
+        } catch (e) {
+            // Ignore localStorage errors
+        }
+        
         // Write to localStorage cache (for future lookups)
         writeToLocalStorageCache(balancesByAccount, period, filtersHash);
         
         // Set preload marker
         localStorage.setItem(`preload_complete:${period}:${filtersHash}`, Date.now().toString());
+        
+        // Update progress: complete
+        try {
+            localStorage.setItem('xavi_preload_progress', JSON.stringify({
+                status: 'completed',
+                period: period,
+                message: `✅ Preload complete: ${period}`,
+                progress: 100,
+                stats: `${Object.keys(balancesByAccount).length} accounts cached`,
+                timestamp: Date.now()
+            }));
+            // Clear after a short delay so task pane can show completion
+            setTimeout(() => {
+                try {
+                    localStorage.removeItem('xavi_preload_progress');
+                } catch (e) {
+                    // Ignore
+                }
+            }, 2000);
+        } catch (e) {
+            // Ignore localStorage errors
+        }
         
         // RESOLVE THE PROMISE WITH THE TRANSFORMED DATA
         // This makes ALL awaiting cells get results SIMULTANEOUSLY
@@ -6689,6 +6753,29 @@ async function executeFullPreload(periodKey) {
         
     } catch (error) {
         console.error(`❌ PRELOAD FAILED: ${periodKey}`, error);
+        
+        // Update progress: error
+        try {
+            localStorage.setItem('xavi_preload_progress', JSON.stringify({
+                status: 'error',
+                period: period,
+                message: `❌ Preload failed: ${period}`,
+                progress: 0,
+                stats: error.message || 'An error occurred',
+                timestamp: Date.now()
+            }));
+            // Clear after delay
+            setTimeout(() => {
+                try {
+                    localStorage.removeItem('xavi_preload_progress');
+                } catch (e) {
+                    // Ignore
+                }
+            }, 3000);
+        } catch (e) {
+            // Ignore localStorage errors
+        }
+        
         periodQuery.reject(error);
         singlePromiseQueries.delete(periodKey);
     }
