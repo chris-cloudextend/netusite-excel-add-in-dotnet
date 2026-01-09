@@ -8,12 +8,15 @@
 
 ## Problem Statement
 
-When dragging `XAVI.BALANCE` formulas across multiple columns (periods), the system was creating multiple redundant queries for the same period with different account lists:
+**Important Context:** The system DOES cache entire periods via auto-preload (`/batch/bs_preload`), which queries ALL balance sheet accounts for a period when the first BS formula is entered. However, when dragging across columns, the column-based batching uses **targeted queries** (`/batch/bs_preload_targeted`) with specific account lists.
 
-- **Example:** Dragging 2 columns resulted in 8+ queries for "Jan 2025" with account counts: 13, 20, 10, 11, 21, 12, 16, 19
-- **Each query took 93-288 seconds**
+**The Problem:** When dragging `XAVI.BALANCE` formulas across multiple columns (periods), the column-based batching was creating multiple redundant **targeted queries** for the same period with different account lists:
+
+- **Example:** Dragging 2 columns resulted in 8+ **targeted queries** for "Jan 2025" with account counts: 13, 20, 10, 11, 21, 12, 16, 19
+- **Each targeted query took 93-288 seconds**
 - **Total time:** 10x longer than manually entering formulas one column at a time
-- **Root cause:** `gridKey` included account list, so as grid grew (19 → 20 → 21 accounts), each new account created a different `gridKey`, triggering new batches
+- **Root cause:** `gridKey` included account list, so as grid grew (19 → 20 → 21 accounts), each new account created a different `gridKey`, triggering new targeted batches
+- **Why targeted queries instead of cache?** The localStorage check happens BEFORE batch creation, but if cache is missed (auto-preload didn't complete yet, or account wasn't in preload), it falls back to targeted queries. The problem was these targeted queries were being duplicated instead of merged.
 
 ---
 
@@ -223,17 +226,17 @@ localStorage.setItem('xavi_balance_cache', JSON.stringify(preloadData));
 
 **What Happens:**
 1. Formula evaluates → checks localStorage (miss)
-2. Detects Balance Sheet account → eligible for column-based batching
-3. Grid detection: 1 account, 1 period
-4. Creates batch: `grid:10010:Jan 2025:1::::1`
-5. Queries `/batch/bs_preload_targeted` for account 10010, period Jan 2025
-6. **Results cached:**
-   - In-memory cache: `cache.balance.set(cacheKey, balance)`
-   - localStorage (legacy): `netsuite_balance_cache`
-   - localStorage (preload): `xavi_balance_cache` with key `balance:10010:1::::1:Jan 2025`
-7. **All accounts for Jan 2025 are cached** (via preload endpoint which fetches all BS accounts)
+2. **Auto-preload triggered:** First BS formula triggers auto-preload (`/batch/bs_preload`) which queries **ALL balance sheet accounts** for Jan 2025
+3. Formula waits for auto-preload to complete (up to 120s)
+4. **Auto-preload caches entire period:**
+   - All BS accounts for Jan 2025 are cached in localStorage (`xavi_balance_cache`)
+   - Format: `balance:${account}:${filtersHash}:Jan 2025` for each account
+5. Formula retrieves result from cache
+6. **Alternative path (if auto-preload fails/times out):** Falls back to column-based batching with targeted query (`/batch/bs_preload_targeted`) for account 10010 only
 
-**Result:** Formula resolves, balance displayed
+**Result:** Formula resolves, balance displayed. **All accounts for Jan 2025 are now cached** (via auto-preload)
+
+**Key Point:** Auto-preload (`/batch/bs_preload`) caches the **entire period** (all BS accounts), not just the specific account. This is why dragging down (same column) should hit cache immediately.
 
 ---
 
@@ -279,10 +282,13 @@ if (isCumulativeQuery && lookupPeriod) {
 
 #### Column 2 (Feb 2025) - Second Period
 1. Formula evaluates → checks localStorage (miss for Feb 2025)
-2. Creates batch: `grid:10010:Feb 2025:1::::1`
-3. Tracks in `activePeriodQueries`: `"Feb 2025:1::::1"` → `{ promise, accounts: Set([10010]), ... }`
-4. Queries NetSuite → caches all accounts for Feb 2025
-5. Formula resolves
+2. **Auto-preload triggered:** First BS formula for Feb 2025 triggers auto-preload (`/batch/bs_preload`) which queries **ALL balance sheet accounts** for Feb 2025
+3. Formula waits for auto-preload to complete
+4. **Auto-preload caches entire period:** All BS accounts for Feb 2025 are cached
+5. Formula retrieves result from cache
+6. **Alternative path (if auto-preload fails/times out):** Falls back to column-based batching with targeted query (`/batch/bs_preload_targeted`). Period-based deduplication ensures only 1-2 targeted queries are made (with merged account lists), not 8+ redundant queries.
+
+**Key Point:** Each new period triggers its own auto-preload. If auto-preload completes, no targeted queries are needed. If it fails/times out, period-based deduplication ensures targeted queries are merged efficiently.
 
 #### Column 3 (Mar 2025) - Third Period
 1. Formula evaluates → checks localStorage (miss for Mar 2025)
@@ -336,16 +342,18 @@ if (isCumulativeQuery && lookupPeriod) {
 ## Performance Expectations
 
 ### Before Optimization
-- **8+ queries per period** with overlapping account lists
-- **Each query:** 93-288 seconds
+- **8+ targeted queries per period** (`/batch/bs_preload_targeted`) with overlapping account lists
+- **Each targeted query:** 93-288 seconds
 - **Total for 2 columns:** 800+ seconds (13+ minutes)
 - **Single-cell resolutions:** Many cells resolved one-by-one
+- **Note:** Auto-preload (`/batch/bs_preload`) does cache entire periods, but column-based batching was bypassing cache and making redundant targeted queries
 
 ### After Optimization
-- **1 query per period** (with all accounts merged)
-- **Each query:** ~100 seconds (one comprehensive query)
+- **1-2 targeted queries per period** (with all accounts merged before query is sent)
+- **Each targeted query:** ~100 seconds (one comprehensive query with merged accounts)
 - **Total for 2 columns:** ~200 seconds (3-4 minutes)
 - **No single-cell resolutions:** All cells in column batch together
+- **Cache-first approach:** localStorage check happens BEFORE batch creation, so if auto-preload completed, no targeted queries are needed
 
 ### Drag Down Performance
 - **Before:** Each cell made individual API call or waited for batch
@@ -442,11 +450,13 @@ if (isCumulativeQuery && lookupPeriod) {
 ## Limitations and Future Improvements
 
 ### Current Limitation
-If a query for a period is **already in flight** when a new batch wants to add accounts:
+If a **targeted query** for a period is **already in flight** when a new batch wants to add accounts:
 - The query was already sent with the original account list
 - New accounts are merged into `activePeriodQuery.accounts`
 - But the in-flight query won't include them
-- Result: Supplemental query may still be needed
+- Result: Supplemental targeted query may still be needed
+
+**Note:** This limitation only affects targeted queries. If auto-preload (`/batch/bs_preload`) has already completed and cached the entire period, the localStorage check (which happens BEFORE batch creation) will return immediately, and no targeted queries will be needed.
 
 ### Potential Future Improvement
 Track query state (pending vs. sent):
