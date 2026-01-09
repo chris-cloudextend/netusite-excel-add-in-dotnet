@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.123';  // Period dedup race condition fix: activePeriodQueries.set() before promise creation  // Cloudflare timeout fix: CHUNK_SIZE=1 to avoid 524 errors (will increase after AWS migration)
+const FUNCTIONS_VERSION = '4.0.6.124';  // Period dedup debounce: 100ms window to collect accounts before executing query
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
