@@ -1,8 +1,10 @@
 # Period-Based Deduplication Implementation Summary
 
-**Version:** 4.0.6.119  
+**Version:** 4.0.6.122  
 **Date:** January 9, 2026  
 **Purpose:** Optimize balance sheet batch processing to prevent redundant queries when dragging formulas across columns
+
+**IMPORTANT:** This implementation processes periods one at a time (CHUNK_SIZE = 1) to avoid Cloudflare timeout (524 error). Cloudflare has a ~100 second timeout, but NetSuite queries take 90-150 seconds per period. Once migrated to AWS, this limitation will not apply and we can increase CHUNK_SIZE.
 
 ---
 

@@ -1184,6 +1184,10 @@ public class BalanceController : ControllerBase
             // Build account filter
             var accountFilter = string.Join("', '", request.Accounts.Select(a => NetSuiteService.EscapeSql(a)));
             
+            // CRITICAL: Process periods sequentially (one query per period) to avoid NetSuite query complexity
+            // Each period query takes 90-150 seconds. Processing multiple periods in parallel would hit rate limits.
+            // NOTE: Cloudflare timeout (~100s) limits us to 1 period per request from frontend.
+            // Once migrated to AWS, we can process multiple periods in parallel if needed.
             // Process each period
             foreach (var periodName in request.Periods)
             {
@@ -1264,6 +1268,9 @@ public class BalanceController : ControllerBase
                 _logger.LogInformation("═══════════════════════════════════════════════════════");
                 
                 var queryStartTime = DateTime.UtcNow;
+                // CRITICAL: 120 second timeout matches NetSuite query duration (90-150s typical)
+                // Cloudflare timeout (~100s) is the limiting factor, not this backend timeout.
+                // Once migrated to AWS, Cloudflare timeout will not apply.
                 var queryResult = await _netSuiteService.QueryRawWithErrorAsync(query, 120);
                 var queryElapsed = (DateTime.UtcNow - queryStartTime).TotalSeconds;
                 

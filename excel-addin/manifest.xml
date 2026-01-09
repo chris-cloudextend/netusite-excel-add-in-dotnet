@@ -16,7 +16,7 @@ ARCHITECTURE (v3.0.5.190+):
 - Taskpane UI page: taskpane.html (actual UI)
 - This separation ensures Mac's "Developer Window" is blank, not a duplicate UI
 
-LAST UPDATED: 2026-01-09 (Version 4.0.6.121 - Period dedup fixes: queryState before fetch, promise error handling, explicit supplemental queries, 1hr TTL)
+LAST UPDATED: 2026-01-09 (Version 4.0.6.122 - Cloudflare timeout fix: CHUNK_SIZE=1 to avoid 524 errors, will increase after AWS migration)
 
 Context menu uses ExecuteFunction (runs in blank sharedruntime.html):
 1. ExecuteFunction sets localStorage flag with cell info
@@ -36,8 +36,8 @@ Context menu uses ExecuteFunction (runs in blank sharedruntime.html):
   <DefaultLocale>en-US</DefaultLocale>
   <DisplayName DefaultValue="XAVI for NetSuite"/>
   <Description DefaultValue="XAVI - Financial reporting formulas for NetSuite"/>
-    <IconUrl DefaultValue="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/icon-32.png?v=4.0.6.121"/>
-    <HighResolutionIconUrl DefaultValue="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/icon-64.png?v=4.0.6.121"/>
+    <IconUrl DefaultValue="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/icon-32.png?v=4.0.6.122"/>
+    <HighResolutionIconUrl DefaultValue="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/icon-64.png?v=4.0.6.122"/>
   <SupportUrl DefaultValue="https://www.cloudextend.io"/>
 
   <Hosts>
@@ -53,7 +53,7 @@ Context menu uses ExecuteFunction (runs in blank sharedruntime.html):
 
   <!-- Task Pane (fallback for older Office versions) -->
   <DefaultSettings>
-        <SourceLocation DefaultValue="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/taskpane.html?v=4.0.6.121"/>
+        <SourceLocation DefaultValue="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/taskpane.html?v=4.0.6.122"/>
   </DefaultSettings>
 
   <Permissions>ReadWriteDocument</Permissions>
@@ -183,18 +183,18 @@ Context menu uses ExecuteFunction (runs in blank sharedruntime.html):
 
       <!-- Icons -->
       <bt:Images>
-        <bt:Image id="Icon.16x16" DefaultValue="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/icon-16.png?v=4.0.6.121"/>
-        <bt:Image id="Icon.32x32" DefaultValue="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/icon-32.png?v=4.0.6.121"/>
-        <bt:Image id="Icon.80x80" DefaultValue="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/icon-80.png?v=4.0.6.121"/>
+        <bt:Image id="Icon.16x16" DefaultValue="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/icon-16.png?v=4.0.6.122"/>
+        <bt:Image id="Icon.32x32" DefaultValue="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/icon-32.png?v=4.0.6.122"/>
+        <bt:Image id="Icon.80x80" DefaultValue="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/icon-80.png?v=4.0.6.122"/>
       </bt:Images>
 
       <!-- External Files (cache-busted) -->
       <bt:Urls>
-        <bt:Url id="Taskpane.Url" DefaultValue="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/taskpane.html?v=4.0.6.121"/>
-          <bt:Url id="DrillDown.Url" DefaultValue="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/taskpane.html?v=4.0.6.121&amp;action=drilldown"/>
-          <bt:Url id="SharedRuntime.Url" DefaultValue="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/sharedruntime.html?v=4.0.6.121"/>
-          <bt:Url id="Functions.Script.Url" DefaultValue="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.121"/>
-        <bt:Url id="Functions.Metadata.Url" DefaultValue="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.json?v=4.0.6.121"/>
+        <bt:Url id="Taskpane.Url" DefaultValue="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/taskpane.html?v=4.0.6.122"/>
+          <bt:Url id="DrillDown.Url" DefaultValue="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/taskpane.html?v=4.0.6.122&amp;action=drilldown"/>
+          <bt:Url id="SharedRuntime.Url" DefaultValue="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/sharedruntime.html?v=4.0.6.122"/>
+          <bt:Url id="Functions.Script.Url" DefaultValue="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.122"/>
+        <bt:Url id="Functions.Metadata.Url" DefaultValue="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.json?v=4.0.6.122"/>
         <bt:Url id="GetStarted.LearnMoreUrl" DefaultValue="https://www.cloudextend.io"/>
       </bt:Urls>
 

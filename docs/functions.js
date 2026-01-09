@@ -1129,8 +1129,11 @@ async function executeColumnBasedBSBatch(grid, periodKey = null, activePeriodQue
         return aDate.getTime() - bDate.getTime();
     });
     
-    // Process periods in chunks of 2-3 for incremental progress
-    const CHUNK_SIZE = 2; // Process 2 periods at a time
+    // CRITICAL: Process periods ONE AT A TIME to avoid Cloudflare timeout (524 error)
+    // Cloudflare has a ~100 second timeout, but NetSuite queries take 90-150 seconds per period.
+    // Processing 2 periods sequentially (180-300 seconds) exceeds Cloudflare's timeout.
+    // NOTE: Once migrated to AWS, this limitation will not apply and we can increase CHUNK_SIZE.
+    const CHUNK_SIZE = 1; // Process 1 period at a time (Cloudflare timeout constraint)
     const allResults = {}; // Accumulate results across all chunks
     
     if (DEBUG_COLUMN_BASED_BS_BATCHING) {
@@ -1143,8 +1146,11 @@ async function executeColumnBasedBSBatch(grid, periodKey = null, activePeriodQue
         const chunkNumber = Math.floor(i / CHUNK_SIZE) + 1;
         const totalChunks = Math.ceil(periods.length / CHUNK_SIZE);
         
-        console.log(`📦 Processing chunk ${chunkNumber}/${totalChunks}: ${chunk.length} periods (${chunk.join(', ')})`);
+        console.log(`📦 Processing chunk ${chunkNumber}/${totalChunks}: ${chunk.length} period(s) (${chunk.join(', ')})`);
         
+        // CRITICAL: Query ONE period at a time to avoid Cloudflare timeout
+        // Backend processes periods sequentially, so 2 periods = 2× query time (180-300s) → exceeds Cloudflare ~100s timeout
+        // NOTE: Once migrated to AWS, we can batch multiple periods per request
         // Query translated ending balances for this chunk
         const requestBody = {
             accounts: accounts,

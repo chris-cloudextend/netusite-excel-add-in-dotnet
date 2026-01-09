@@ -347,6 +347,7 @@ The final implementation (v4.0.6.121) is more robust, reliable, and maintainable
 - **v4.0.6.119:** Initial period-based deduplication implementation
 - **v4.0.6.120:** First round of improvements (query state tracking, promise chaining, chronological sort, batched localStorage)
 - **v4.0.6.121:** Critical fixes from Claude review (queryState timing, error handling, explicit paths, 1hr TTL)
+- **v4.0.6.122:** Cloudflare timeout fix (CHUNK_SIZE=1 to avoid 524 errors, will increase after AWS migration)
 
 ---
 
