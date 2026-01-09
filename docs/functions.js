@@ -1102,6 +1102,67 @@ function inferAnchorPeriod(periods) {
 }
 
 /**
+ * Execute debounced query for a period key.
+ * Called after debounce timeout expires, executes query with all collected accounts.
+ * 
+ * @param {string} periodKey - Period key for the query
+ * @param {Map} activePeriodQueries - Map of active period queries
+ * @param {Object} columnBasedDetection - Grid detection result
+ * @param {string} filterKey - Filter key
+ * @returns {Promise<Object>} - Map of {account: {period: balance}} or throws error
+ */
+async function executeDebouncedQuery(periodKey, activePeriodQueries, columnBasedDetection, filterKey) {
+    const activePeriodQuery = activePeriodQueries.get(periodKey);
+    if (!activePeriodQuery || activePeriodQuery.queryState !== 'collecting') {
+        console.warn(`⚠️ executeDebouncedQuery: Query not in 'collecting' state for ${periodKey}, skipping`);
+        return {};
+    }
+    
+    // Transition to 'sent' state
+    activePeriodQuery.queryState = 'sent';
+    console.log(`📤 DEBOUNCE: Executing query for ${periodKey} with ${activePeriodQuery.accounts.size} accounts (debounce window closed)`);
+    
+    // Clear timeout (should already be cleared, but safety check)
+    if (activePeriodQuery.executeTimeout) {
+        clearTimeout(activePeriodQuery.executeTimeout);
+        activePeriodQuery.executeTimeout = null;
+    }
+    
+    // Prepare grid with all collected accounts
+    const accounts = Array.from(activePeriodQuery.accounts).sort();
+    const periods = Array.from(activePeriodQuery.periods);
+    const updatedGrid = {
+        ...columnBasedDetection,
+        allAccounts: new Set(accounts),
+        columns: periods.map(period => ({ period }))
+    };
+    
+    try {
+        // Execute the batch query
+        const results = await executeColumnBasedBSBatch(updatedGrid, periodKey, activePeriodQueries);
+        
+        // Resolve placeholder promise with results
+        if (activePeriodQuery._resolvePlaceholder) {
+            activePeriodQuery._resolvePlaceholder(results);
+        }
+        
+        // Clean up
+        activePeriodQueries.delete(periodKey);
+        
+        return results;
+    } catch (error) {
+        // Reject placeholder promise with error
+        if (activePeriodQuery._rejectPlaceholder) {
+            activePeriodQuery._rejectPlaceholder(error);
+        }
+        
+        // Clean up on error
+        activePeriodQueries.delete(periodKey);
+        throw error;
+    }
+}
+
+/**
  * Execute column-based balance sheet batch query.
  * 
  * CRITICAL: This function queries translated ending balances directly from NetSuite,
@@ -6748,8 +6809,34 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                             }
                         } else {
                             // Our account is NOT in the active query
-                            if (activePeriodQuery.queryState === 'pending') {
-                                // Query hasn't been sent yet - merge accounts and update query
+                            if (activePeriodQuery.queryState === 'collecting') {
+                                // DEBOUNCE WINDOW OPEN: Merge accounts into existing query
+                                console.log(`   📊 Account ${account} not in existing query, merging during debounce window (collecting state)`);
+                                accounts.forEach(acc => activePeriodQuery.accounts.add(acc));
+                                accounts = Array.from(activePeriodQuery.accounts).sort();
+                                
+                                // Update gridKey with merged accounts
+                                const mergedGridKey = `grid:${accounts.join(',')}:${periods.join(',')}:${filterKey}`;
+                                activePeriodQuery.gridKey = mergedGridKey;
+                                
+                                // Return placeholder promise - will resolve when debounced query executes
+                                console.log(`   ⏳ Awaiting debounced query execution (${activePeriodQuery.accounts.size} accounts collected so far)...`);
+                                try {
+                                    const batchResults = await activePeriodQuery.promise;
+                                    const balance = batchResults[account]?.[toPeriod];
+                                    
+                                    if (balance !== undefined && balance !== null && typeof balance === 'number') {
+                                        cache.balance.set(cacheKey, balance);
+                                        console.log(`✅ PERIOD DEDUP RESULT (debounced): ${account} for ${toPeriod} = ${balance}`);
+                                        pendingEvaluation.balance.delete(evalKey);
+                                        return balance;
+                                    }
+                                } catch (error) {
+                                    console.warn(`⚠️ PERIOD DEDUP: Error in debounced query: ${error.message}`);
+                                    // Fall through to create supplemental batch
+                                }
+                            } else if (activePeriodQuery.queryState === 'pending') {
+                                // Legacy state (shouldn't happen with debounce, but handle for safety)
                                 console.log(`   📊 Account ${account} not in existing query, merging before query is sent`);
                                 accounts.forEach(acc => activePeriodQuery.accounts.add(acc));
                                 accounts = Array.from(activePeriodQuery.accounts).sort();
@@ -6808,41 +6895,64 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                         // This ensures other cells checking for active queries will find it immediately
                         // If we register after promise creation, there's a gap where other cells won't see the active query
                         if (!activePeriodQuery) {
-                            // Create a placeholder promise that will be replaced
+                            // DEBOUNCE MECHANISM: Create placeholder promise and register immediately
                             // This ensures activePeriodQueries entry exists synchronously
+                            // Query will execute after 100ms debounce window to collect all accounts
                             let resolvePlaceholder, rejectPlaceholder;
                             const placeholderPromise = new Promise((resolve, reject) => {
                                 resolvePlaceholder = resolve;
                                 rejectPlaceholder = reject;
                             });
                             
+                            // DEBOUNCE WINDOW: 100ms to collect accounts before executing
+                            const DEBOUNCE_MS = 100;
+                            
+                            // Register immediately with 'collecting' state
                             activePeriodQueries.set(periodKey, {
                                 promise: placeholderPromise,
                                 accounts: new Set(accounts),
                                 periods: new Set(periods),
                                 filters: columnBasedDetection.filters,
                                 gridKey: gridKey,
-                                queryState: 'pending',  // Will be set to 'sent' inside executeColumnBasedBSBatch() before fetch()
+                                queryState: 'collecting',  // Debounce window open - accounts can merge
                                 _resolvePlaceholder: resolvePlaceholder,
-                                _rejectPlaceholder: rejectPlaceholder
+                                _rejectPlaceholder: rejectPlaceholder,
+                                executeTimeout: null  // Will be set below
                             });
                             
-                            // Now create the actual batch promise
-                            // The placeholder promise will resolve when this promise resolves
-                            batchPromise = executeColumnBasedBSBatch(updatedGrid, periodKey, activePeriodQueries)
+                            // Start debounce timer - execute query after DEBOUNCE_MS
+                            const activeQuery = activePeriodQueries.get(periodKey);
+                            activeQuery.executeTimeout = setTimeout(() => {
+                                executeDebouncedQuery(periodKey, activePeriodQueries, columnBasedDetection, filterKey)
+                                    .then(results => {
+                                        // Results already resolved placeholder in executeDebouncedQuery
+                                        // Update batchPromise for cells that check after execution starts
+                                        const query = activePeriodQueries.get(periodKey);
+                                        if (query) {
+                                            query.promise = Promise.resolve(results);
+                                        }
+                                    })
+                                    .catch(error => {
+                                        // Error already rejected placeholder in executeDebouncedQuery
+                                        const query = activePeriodQueries.get(periodKey);
+                                        if (query) {
+                                            query.promise = Promise.reject(error);
+                                        }
+                                    });
+                            }, DEBOUNCE_MS);
+                            
+                            console.log(`⏱️ DEBOUNCE: Started ${DEBOUNCE_MS}ms window for ${periodKey} (${accounts.length} accounts initially)`);
+                            
+                            // Set batchPromise to placeholder - will resolve when debounced query completes
+                            batchPromise = placeholderPromise
                                 .then(results => {
-                                    // Resolve placeholder promise with actual results (cells awaiting placeholder will get results)
-                                    if (resolvePlaceholder) {
-                                        resolvePlaceholder(results);
-                                    }
-                                    
-                                    // Remove from active period queries when complete
-                                    activePeriodQueries.delete(periodKey);
-                                    
                                     // Resolve ALL pending evaluations for this grid
+                                    const finalAccounts = Array.from(activeQuery.accounts);
+                                    const finalPeriods = Array.from(activeQuery.periods);
+                                    
                                     for (const [evalKey, evalRequest] of pendingEvaluation.balance.entries()) {
                                         const { account: evalAccount, toPeriod: evalPeriod } = evalRequest;
-                                        if (accounts.includes(evalAccount) && periods.includes(evalPeriod)) {
+                                        if (finalAccounts.includes(evalAccount) && finalPeriods.includes(evalPeriod)) {
                                             const balance = results[evalAccount]?.[evalPeriod];
                                             if (balance !== undefined && balance !== null && typeof balance === 'number') {
                                                 const evalCacheKey = getCacheKey('balance', {
@@ -6890,14 +7000,15 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                                     return results;
                                 })
                                 .catch(error => {
-                                    // Reject placeholder promise with error (cells awaiting placeholder will get error)
-                                    if (rejectPlaceholder) {
-                                        rejectPlaceholder(error);
-                                    }
-                                    
                                     // Clean up on error
                                     activeColumnBatchExecutions.delete(gridKey);
-                                    activePeriodQueries.delete(periodKey);
+                                    if (activePeriodQueries.has(periodKey)) {
+                                        const query = activePeriodQueries.get(periodKey);
+                                        if (query.executeTimeout) {
+                                            clearTimeout(query.executeTimeout);
+                                        }
+                                        activePeriodQueries.delete(periodKey);
+                                    }
                                     throw error;
                                 });
                             
