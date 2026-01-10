@@ -1,75 +1,77 @@
 # XAVI for NetSuite - Engineering Handoff Documentation
 
-## Overview
-
-XAVI is an Excel Add-in that provides financial reporting formulas for NetSuite. Users can type formulas like `=XAVI.BALANCE("4010", "Jan 2025", "Dec 2025")` directly in Excel cells to pull live data from their NetSuite account.
-
+**Purpose:** Knowledge transfer document for engineers taking over the XAVI Excel Add-in project  
 **Current Version:** 4.0.6.145  
 **Last Updated:** January 2026
 
 ---
 
-## Recent Changes (v4.0.6.144 - v4.0.6.145)
+## Use Cases
 
-### Income Statement Pre-Caching (v4.0.6.144)
-- **Feature:** Income Statement accounts now pre-cache automatically when first P&L formula is entered
-- **Implementation:** New `/batch/pl_preload` endpoint fetches all Income, COGS, Expense, OthIncome, OthExpense accounts for specified periods
-- **Performance:** Dramatically improves Income Statement report building - dragging formulas across 12 months resolves instantly after first period
-- **Location:** `docs/functions.js` - `triggerIncomePreload()` function, `docs/taskpane.html` - `processIncomePreloadTriggers()` function
-- **Backend:** `backend-dotnet/Controllers/BalanceController.cs` - `PreloadIncomeStatementAccounts()` endpoint
+### Primary Use Case: Financial Reporting in Excel
+Finance teams build dynamic financial reports (Income Statements, Balance Sheets, Budget vs. Actual) directly in Excel using formulas that pull live data from NetSuite. Users can:
+- Build reports by typing formulas like `=XAVI.BALANCE("4010", "Jan 2025", "Dec 2025")`
+- Drag formulas across rows/columns to build multi-period reports
+- Use "Refresh All" to update all formulas after posting new transactions
+- Drill down into any balance to see underlying transactions
 
-### Refresh All Smart Detection (v4.0.6.145)
-- **Fix:** Refresh All now correctly detects P&L sheets (12 periods) vs Balance Sheet sheets (1 period)
-- **Problem:** Previously defaulted to fetching BS accounts when account extraction failed, causing timeouts on Income Statement sheets
-- **Solution:** Smart inference based on period count - 12 periods = P&L sheet, 1 period = Balance Sheet
-- **Impact:** Income Statement sheets refresh in ~30 seconds instead of timing out
-- **Location:** `docs/taskpane.html` - `refreshCurrentSheet()` function
+### Secondary Use Cases
+- **Quick Start Reports:** Pre-built templates (CFO Flash Report, Full Income Statement) generate complete reports in seconds
+- **Multi-Dimensional Analysis:** Filter by subsidiary, department, location, class, and accounting book
+- **Budget Analysis:** Compare actuals to budgets using `XAVI.BUDGET` formulas
+- **Account Discovery:** Search accounts by type, category, or name using the taskpane UI
+
+For complete feature documentation, see [DOCUMENTATION.md](DOCUMENTATION.md).
 
 ---
 
-## Current Architecture
+## Architecture Overview
 
-### Why Public GitHub?
-
-The project currently uses a **public GitHub repository** for one primary reason:
-
-**GitHub Pages requires public repos on the free tier.** The Excel Add-in manifest points to GitHub Pages URLs for hosting the static frontend files (HTML, JS, CSS). This was the fastest path to a working prototype.
+### High-Level Flow
 
 ```
-Excel Add-in → GitHub Pages (static files) → Cloudflare Worker (proxy) → Cloudflare Tunnel → Local Backend → NetSuite REST API
+Excel Add-in (Office.js)
+    ↓
+GitHub Pages (static files: HTML, JS, CSS)
+    ↓
+Cloudflare Worker (proxy)
+    ↓
+Cloudflare Tunnel (development only)
+    ↓
+.NET Backend (localhost:5002 in dev)
+    ↓
+NetSuite REST API (SuiteQL queries)
 ```
 
-### Component Breakdown
+### Why This Architecture?
 
-| Component | Current Location | Purpose |
-|-----------|-----------------|---------|
-| **Excel Manifest** | `excel-addin/manifest-claude.xml` | Tells Excel where to load the add-in from |
-| **Frontend (Taskpane)** | `docs/taskpane.html` | The sidebar UI users interact with |
-| **Custom Functions** | `docs/functions.js` + `docs/functions.json` | Excel formulas (XAVI.BALANCE, etc.) |
-| **Shared Runtime** | `docs/sharedruntime.html` | Blank page hosting shared runtime (no UI) |
-| **Backend Server** | `backend-dotnet/` | .NET backend server that queries NetSuite (Python `backend/` is legacy, kept for reference) |
-| **Cloudflare Worker** | `CLOUDFLARE-WORKER-CODE.js` | Proxy that routes requests to the tunnel |
+**Current State (Development):**
+- **Public GitHub Repository:** Required for GitHub Pages (free tier limitation)
+- **GitHub Pages:** Hosts static frontend files (fastest path to working prototype)
+- **Cloudflare Worker:** Provides stable proxy URL that forwards to tunnel
+- **Cloudflare Tunnel:** Exposes local backend to internet during development
+- **Local .NET Backend:** Runs on developer machine, connects to NetSuite
 
-### Current Request Flow
+**Production Target:**
+- Private Git repository
+- Static files hosted on AWS S3 + CloudFront (or Azure Blob + CDN)
+- Backend deployed to AWS Lambda/ECS or Azure App Service
+- Direct cloud hosting (no tunnel needed)
+- Multi-tenant authentication via CEFI
 
-```
-1. User types =XAVI.BALANCE(...) in Excel
-2. Excel calls functions.js (via shared runtime)
-3. functions.js calls Cloudflare Worker (netsuite-proxy.chris-corcoran.workers.dev)
-4. Worker proxies to Cloudflare Tunnel (*.trycloudflare.com)
-5. Tunnel connects to local .NET backend (localhost:5002)
-6. Backend authenticates with NetSuite REST API using OAuth 1.0
-7. Response flows back through the chain to Excel
-```
+---
 
-### Why Cloudflare Tunnel?
+## Component Breakdown
 
-The backend needs to connect to NetSuite using OAuth 1.0 credentials stored in `appsettings.Development.json`. During development:
-- The backend runs locally on the developer's machine
-- Cloudflare Tunnel exposes it to the internet with a temporary URL
-- The Cloudflare Worker provides a stable URL that forwards to whatever tunnel is active
-
-This allowed rapid iteration without deploying to a server for every change.
+| Component | Location | Purpose | Key Files |
+|-----------|----------|---------|-----------|
+| **Excel Manifest** | `excel-addin/manifest.xml` | Defines add-in metadata, URLs, and runtime configuration | `manifest.xml` |
+| **Frontend UI** | `docs/taskpane.html` | Main sidebar UI, drill-down logic, report builders, Quick Actions | `taskpane.html` |
+| **Custom Functions** | `docs/functions.js` | Excel formula implementations (XAVI.BALANCE, etc.) | `functions.js`, `functions.json` |
+| **Shared Runtime** | `docs/sharedruntime.html` | Blank page hosting shared runtime context (prevents duplicate UI on Mac) | `sharedruntime.html` |
+| **Backend API** | `backend-dotnet/` | .NET Core Web API that queries NetSuite | `Controllers/`, `Services/` |
+| **Legacy Backend** | `backend/` | Python Flask backend (kept for reference only) | `server.py` |
+| **Cloudflare Worker** | `CLOUDFLARE-WORKER-CODE.js` | Proxy that routes requests to tunnel | `CLOUDFLARE-WORKER-CODE.js` |
 
 ---
 
@@ -102,13 +104,149 @@ The add-in uses Office's **Shared Runtime** where all components share a single 
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### Why sharedruntime.html is Blank
+**Key Points:**
+- `taskpane.html` and `functions.js` share the same JavaScript context
+- They communicate via `localStorage` and direct function calls
+- `sharedruntime.html` is intentionally blank to prevent duplicate UI on Mac Excel
+- All custom functions are registered in `functions.js` via `CustomFunctions.associate()`
 
-On Mac Excel, `ExecuteFunction` commands can cause a "Developer Window" to appear. If this window loads `taskpane.html`, users see a duplicate UI. By using a blank `sharedruntime.html`, the Developer Window (if it appears) shows nothing.
+For detailed implementation, see [DEVELOPER_CHECKLIST.md](DEVELOPER_CHECKLIST.md).
 
 ---
 
-## Known Platform Issues
+## Request Flow
+
+### Formula Evaluation Flow
+
+```
+1. User types =XAVI.BALANCE("4010", "Jan 2025", "Jan 2025") in Excel
+2. Excel calls functions.js (via shared runtime)
+3. functions.js checks in-memory cache → cache miss
+4. functions.js checks localStorage cache → cache miss
+5. functions.js calls Cloudflare Worker (netsuite-proxy.chris-corcoran.workers.dev)
+6. Worker proxies to Cloudflare Tunnel (*.trycloudflare.com)
+7. Tunnel connects to local .NET backend (localhost:5002)
+8. Backend authenticates with NetSuite REST API using OAuth 1.0
+9. Backend executes SuiteQL query via NetSuite REST API
+10. Response flows back through the chain to Excel
+11. Result is cached in-memory and localStorage
+12. Excel displays the value
+```
+
+### Caching Strategy
+
+**Three-Tier Caching:**
+1. **In-Memory Cache** (functions.js): Fastest, session-only
+2. **localStorage Cache**: Persists across Excel sessions, shared between taskpane and functions.js
+3. **Backend Cache**: Optional, not currently implemented
+
+**Pre-Caching:**
+- **Balance Sheet:** Automatically pre-caches all BS accounts when first BS formula is entered for a period
+- **Income Statement:** Automatically pre-caches all P&L accounts when first P&L formula is entered for a period
+- **Full Year Refresh:** When 12 periods detected, fetches all months in single optimized query
+
+For detailed caching documentation, see [DOCUMENTATION.md#pre-caching--drag-drop-optimization](DOCUMENTATION.md#pre-caching--drag-drop-optimization).
+
+---
+
+## Backend Architecture
+
+### .NET Core Web API
+
+**Location:** `backend-dotnet/`
+
+**Key Controllers:**
+- `BalanceController.cs` - Balance queries, batch operations, preload endpoints
+- `SpecialFormulaController.cs` - RETAINEDEARNINGS, NETINCOME, CTA calculations
+- `TypeBalanceController.cs` - Account type totals (TYPEBALANCE formula)
+- `BudgetController.cs` - Budget queries
+- `LookupController.cs` - Account metadata, subsidiaries, periods, etc.
+
+**Key Services:**
+- `NetSuiteService.cs` - SuiteQL query execution, OAuth 1.0 authentication
+- `BalanceService.cs` - Balance query construction and processing
+- `LookupService.cs` - Subsidiary resolution, period resolution, account lookups
+
+**Configuration:**
+- Credentials stored in `appsettings.Development.json` (DO NOT COMMIT)
+- OAuth 1.0 authentication with NetSuite
+- Uses SuiteQL REST API endpoint
+
+### SuiteQL Queries
+
+All financial data is retrieved via SuiteQL (NetSuite's SQL-like query language). Key patterns:
+
+**Balance Sheet Query Pattern:**
+```sql
+SELECT SUM(
+    TO_NUMBER(BUILTIN.CONSOLIDATE(
+        tal.amount, 'LEDGER', 'DEFAULT', 'DEFAULT',
+        {target_sub}, {target_period_id}, 'DEFAULT'
+    ))
+) AS balance
+FROM TransactionAccountingLine tal
+JOIN Transaction t ON t.id = tal.transaction
+JOIN Account a ON a.id = tal.account
+WHERE t.posting = 'T'
+  AND tal.posting = 'T'
+  AND ap.enddate <= {period_end_date}
+  AND tal.accountingbook = {book}
+```
+
+**P&L Query Pattern:**
+```sql
+SELECT SUM(
+    TO_NUMBER(BUILTIN.CONSOLIDATE(
+        tal.amount, 'LEDGER', 'DEFAULT', 'DEFAULT',
+        {target_sub}, t.postingperiod, 'DEFAULT'
+    )) * -1
+) AS balance
+FROM TransactionAccountingLine tal
+JOIN Transaction t ON t.id = tal.transaction
+JOIN Account a ON a.id = tal.account
+WHERE t.posting = 'T'
+  AND tal.posting = 'T'
+  AND a.accttype IN ('Income', 'COGS', 'Expense', ...)
+  AND t.postingperiod = {period_id}
+```
+
+**Critical:** Always use `BUILTIN.CONSOLIDATE` for multi-currency support. See [BUILTIN_CONSOLIDATE_AUDIT.md](BUILTIN_CONSOLIDATE_AUDIT.md) for complete usage audit.
+
+For complete SuiteQL reference, see [SUITEQL-QUERIES-SUMMARY.md](SUITEQL-QUERIES-SUMMARY.md).
+
+---
+
+## Key Features & Implementation
+
+### Formula Batching
+When multiple formulas are entered (via drag-down or copy-paste), they are automatically batched into single API calls. This dramatically improves performance for large reports.
+
+**Implementation:**
+- Formulas queue requests in `localStorage`
+- Batch timer (500ms) collects requests
+- Single API call processes all queued requests
+- Results distributed to all waiting formulas
+
+### Pre-Caching
+Automatically pre-caches all accounts for a period when first formula is entered:
+- **Balance Sheet:** Pre-caches all BS accounts when first BS formula detected
+- **Income Statement:** Pre-caches all P&L accounts when first P&L formula detected
+
+**Performance Impact:**
+- First formula: ~2-3 seconds (triggers preload)
+- Subsequent formulas: Instant (from cache)
+
+### Refresh All
+"Refresh All" button clears cache and re-fetches all formulas on the sheet:
+- **Smart Detection:** Automatically detects P&L sheets (12 periods) vs BS sheets (1 period)
+- **Optimized Fetching:** Only fetches appropriate account types
+- **Sequential Refresh:** Special formulas (RE, NI, CTA) refresh after BALANCE data loads
+
+For complete feature documentation, see [DOCUMENTATION.md](DOCUMENTATION.md).
+
+---
+
+## Platform-Specific Issues
 
 ### ⚠️ CRITICAL: Mac Parameter Order Issue
 
@@ -120,89 +258,206 @@ Mac Excel caches custom function parameter metadata aggressively. If you change 
 
 **Prevention:** Finalize parameter order before deployment. Never change it after users have started using the function.
 
-See [MAC_PARAMETER_ORDER_ISSUE.md](MAC_PARAMETER_ORDER_ISSUE.md) for complete details.
-
----
-
 ### Right-Click Context Menu on Mac
 
-⚠️ **The right-click "View Transactions" context menu has Mac platform limitations:**
+The right-click "View Transactions" context menu has Mac platform limitations:
+- May open Developer Window (unreliable)
+- **Recommended:** Use Quick Actions "Drill Down" button instead (works reliably on both platforms)
 
-| Platform | Right-Click Behavior | Recommended Alternative |
-|----------|---------------------|------------------------|
-| **Windows** | Should work correctly | Works as expected |
-| **Mac** | May open Developer Window, unreliable | Use Quick Actions "Drill Down" button |
+### Mac Manifest Sideload Location
 
-**Technical Details:**
-- Mac Excel's WebView handling for `ExecuteFunction` is inconsistent
-- Even with `event.completed()` called immediately, Mac may open a debug window
-- This is a known Office for Mac limitation, not a code bug
+**Correct location (Microsoft 365):**
+```
+~/Library/Containers/com.microsoft.Excel/Data/Documents/wef/
+```
 
-**Current Workaround:**
-The Quick Actions "Drill Down" button in the taskpane works reliably on both platforms. Users should be directed to use this instead of right-click on Mac.
+**NOT the old locations:**
+- ❌ `~/Library/Group Containers/UBF8T346G9.Office/User Content.localized/Wef/`
+- ❌ `~/Library/Group Containers/UBF8T346G9.Office/User Content/Wef/`
 
-**Implementation:**
-1. `sharedruntime.html` hosts the `drillDownFromContextMenu` function
-2. When triggered, it stores cell context in `localStorage`
-3. Calls `Office.addin.showAsTaskpane()` to ensure taskpane is visible
-4. `taskpane.html` polls `localStorage` for pending drill-down requests
-5. Executes drill-down with full UI feedback when found
+For complete Mac setup instructions, see [DEVELOPER_CHECKLIST.md](DEVELOPER_CHECKLIST.md).
 
 ---
 
-## Drill-Down Feature
+## What's Missing / Needs to Be Done
 
-### Two-Level Drill-Down for TYPEBALANCE
+### 1. Production Deployment
 
-TYPEBALANCE formulas aggregate multiple accounts, so drill-down works in two steps:
+**Current State:** Development setup using GitHub Pages + Cloudflare Tunnel  
+**Needs:**
+- Move static files to private hosting (AWS S3 + CloudFront or Azure Blob + CDN)
+- Deploy backend to cloud (AWS Lambda/ECS or Azure App Service)
+- Remove Cloudflare Tunnel dependency
+- Update manifest URLs to production endpoints
 
-**Level 1: TYPEBALANCE → Account List**
-```
-User clicks XAVI.TYPEBALANCE("Income", "Jan 2025", "Dec 2025")
-    ↓
-Creates "DrillDown_Income" sheet with all Income accounts and balances
-```
+**Required Changes:**
+1. Update `excel-addin/manifest.xml` - Replace all GitHub Pages URLs
+2. Update `docs/taskpane.html` and `docs/functions.js` - Change `SERVER_URL` constant
+3. Configure backend to read credentials from environment variables or secrets manager
+4. Remove `CLOUDFLARE-WORKER-CODE.js` (no longer needed)
 
-**Level 2: Account Row → Transactions**
-```
-User selects account row on DrillDown_Income sheet
-    ↓
-Quick Actions shows "Account row selected • Drill Down to transactions"
-    ↓
-User clicks Drill Down → Creates transaction detail sheet
-```
+See "Code Changes Required for Cloud Deployment" section below.
 
-### Quick Actions Bar
+### 2. Multi-Tenant Authentication (CEFI Integration)
 
-The Quick Actions bar at the bottom of the taskpane provides context-aware buttons:
+**Current State:** Single set of NetSuite credentials shared by all users  
+**Needs:**
+- CEFI (Celigo's identity platform) authentication
+- Per-user NetSuite credential storage
+- Token validation middleware
+- Credential retrieval from secure store
 
-| Selection | Status Message | Drill Button |
-|-----------|---------------|--------------|
-| XAVI.BALANCE cell | "BALANCE selected • Drill Down ready" | Enabled |
-| XAVI.TYPEBALANCE cell | "TYPEBALANCE selected • Drill Down ready" | Enabled |
-| DrillDown_ sheet row | "Account row selected • Drill Down to transactions" | Enabled |
-| Empty cell | "No XAVI formulas yet" | Disabled |
+**Required Changes:**
+1. Frontend: Add CEFI login flow, token storage, token validation
+2. Backend: Add authentication middleware, credential retrieval service
+3. Storage: Encrypted database or credential vault for per-user NetSuite credentials
+
+See "Multi-Tenant Architecture (CEFI Login)" section below.
+
+### 3. Error Handling & Monitoring
+
+**Current State:** Basic error handling, console logging  
+**Needs:**
+- Structured logging (e.g., Serilog, Application Insights)
+- Error tracking (e.g., Sentry, Application Insights)
+- Performance monitoring
+- Rate limiting
+
+### 4. Testing
+
+**Current State:** Manual testing, some test scripts  
+**Needs:**
+- Unit tests for backend services
+- Integration tests for API endpoints
+- End-to-end tests for formula evaluation
+- Automated test suite
+
+### 5. Documentation
+
+**Current State:** Comprehensive documentation exists  
+**Needs:**
+- API documentation (Swagger/OpenAPI)
+- Deployment runbooks
+- Troubleshooting guides
+- Performance tuning guides
 
 ---
 
-## Migration to Private Git + Cloud Hosting
+## Code Changes Required for Cloud Deployment
 
-### What Needs to Change
+### 1. Update Manifest URLs
 
-1. **Static File Hosting** - Move from GitHub Pages to:
-   - AWS S3 + CloudFront, OR
-   - Azure Blob Storage + CDN, OR
-   - Any static file hosting service
+In `excel-addin/manifest.xml`, replace all GitHub Pages URLs:
 
-2. **Backend Hosting** - Deploy Flask backend to:
-   - AWS: EC2, ECS, Lambda + API Gateway, or Elastic Beanstalk
-   - Azure: App Service, Container Instances, or Functions
+```xml
+<!-- FROM -->
+<SourceLocation DefaultValue="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/taskpane.html"/>
 
-3. **Remove Cloudflare Tunnel** - Replace with direct cloud hosting
+<!-- TO (example for AWS) -->
+<SourceLocation DefaultValue="https://d1234567890.cloudfront.net/taskpane.html"/>
+```
 
-4. **Update Manifest URLs** - Point to new hosting locations
+**All URLs to update:**
+- `SourceLocation` (taskpane)
+- `SharedRuntime.Url` (sharedruntime.html)
+- `Functions.Script.Url` (functions.js)
+- `Functions.Metadata.Url` (functions.json)
+- Icon URLs (icon-32.png, icon-64.png, etc.)
 
-### Recommended AWS Architecture
+### 2. Update SERVER_URL in Frontend
+
+In `docs/taskpane.html` and `docs/functions.js`, update the server URL:
+
+```javascript
+// FROM
+const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
+
+// TO (example)
+const SERVER_URL = 'https://api.xavi.cloudextend.io';
+```
+
+### 3. Backend Configuration
+
+The backend currently reads credentials from `appsettings.Development.json`. For cloud deployment:
+
+**Option A: Environment Variables**
+```csharp
+// In Program.cs or appsettings.json
+var accountId = Environment.GetEnvironmentVariable("NETSUITE_ACCOUNT_ID");
+var consumerKey = Environment.GetEnvironmentVariable("NETSUITE_CONSUMER_KEY");
+// etc.
+```
+
+**Option B: Secrets Manager (AWS) / Key Vault (Azure)**
+```csharp
+// Using AWS SDK for .NET
+using Amazon.SecretsManager;
+var client = new AmazonSecretsManagerClient();
+var response = await client.GetSecretValueAsync(new GetSecretValueRequest
+{
+    SecretId = "netsuite-credentials"
+});
+```
+
+**Note:** Legacy Python backend (`backend/server.py`) is kept for reference only.
+
+### 4. Remove Cloudflare Dependencies
+
+- Delete `CLOUDFLARE-WORKER-CODE.js` (no longer needed)
+- Remove any references to trycloudflare.com tunnel URLs
+- Update CORS configuration to allow production Excel origins
+
+---
+
+## Multi-Tenant Architecture (CEFI Login)
+
+### Current State
+The backend currently uses a single set of NetSuite credentials configured in `appsettings.Development.json`. All users share these credentials.
+
+### Target State
+Each user authenticates via CEFI (Celigo's identity platform), and the backend retrieves their NetSuite credentials from a secure store.
+
+### Required Changes
+
+**1. Frontend Authentication Flow**
+```javascript
+// On add-in load, check if user is authenticated
+async function checkAuth() {
+    const token = localStorage.getItem('cefi_token');
+    if (!token) {
+        // Redirect to CEFI login
+        window.location.href = 'https://auth.celigo.com/login?redirect=...';
+    }
+    // Validate token with backend
+    const response = await fetch(`${SERVER_URL}/auth/validate`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+    });
+}
+```
+
+**2. Backend Token Validation**
+```csharp
+// In Program.cs or middleware
+app.Use(async (context, next) =>
+{
+    var token = context.Request.Headers["Authorization"].ToString();
+    // Validate with CEFI
+    // Retrieve user's NetSuite credentials from secure store
+    // Set credentials for this request
+    await next();
+});
+```
+
+**3. Credential Storage**
+- Store per-user NetSuite credentials in encrypted database
+- Or use CEFI's credential vault if available
+- Credentials should include: Account ID, Consumer Key/Secret, Token Key/Secret
+
+---
+
+## Recommended Cloud Architecture
+
+### AWS Architecture
 
 ```
                                     ┌─────────────────┐
@@ -238,134 +493,40 @@ The Quick Actions bar at the bottom of the taskpane provides context-aware butto
                                └─────────────────┘
 ```
 
----
+### Azure Architecture
 
-## Code Changes Required for Cloud Deployment
-
-### 1. Update Manifest URLs
-
-In `excel-addin/manifest-claude.xml`, replace all GitHub Pages URLs:
-
-```xml
-<!-- FROM -->
-<SourceLocation DefaultValue="https://chris-cloudextend.github.io/netsuite-excel-addin/taskpane.html"/>
-
-<!-- TO (example for AWS) -->
-<SourceLocation DefaultValue="https://d1234567890.cloudfront.net/taskpane.html"/>
-```
-
-### 2. Update SERVER_URL in Frontend
-
-In `docs/taskpane.html` and `docs/functions.js`, update the server URL:
-
-```javascript
-// FROM
-const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
-
-// TO (example)
-const SERVER_URL = 'https://api.xavi.cloudextend.io';
-```
-
-### 3. Backend Configuration
-
-The backend (`.NET Core`) currently reads credentials from `appsettings.Development.json`. For cloud deployment:
-
-**Option A: Environment Variables**
-```csharp
-// In Program.cs or appsettings.json
-var accountId = Environment.GetEnvironmentVariable("NETSUITE_ACCOUNT_ID");
-var consumerKey = Environment.GetEnvironmentVariable("NETSUITE_CONSUMER_KEY");
-// etc.
-```
-
-**Option B: Secrets Manager (AWS) / Key Vault (Azure)**
-```csharp
-// Using AWS SDK for .NET
-using Amazon.SecretsManager;
-var client = new AmazonSecretsManagerClient();
-var response = await client.GetSecretValueAsync(new GetSecretValueRequest
-{
-    SecretId = "netsuite-credentials"
-});
-```
-
-**Note:** Legacy Python examples (`backend/server.py`) are kept for reference only.
-
-### 4. Remove Cloudflare Dependencies
-
-- Delete `CLOUDFLARE-WORKER-CODE.js` (no longer needed)
-- Remove any references to trycloudflare.com tunnel URLs
-
----
-
-## Multi-Tenant Architecture (CEFI Login)
-
-### Current State
-The backend currently uses a single set of NetSuite credentials configured in `netsuite_config.json`. All users share these credentials.
-
-### Target State
-Each user authenticates via CEFI (Celigo's identity platform), and the backend retrieves their NetSuite credentials from a secure store.
-
-### Required Changes
-
-1. **Frontend Authentication Flow**
-   ```javascript
-   // On add-in load, check if user is authenticated
-   async function checkAuth() {
-       const token = localStorage.getItem('cefi_token');
-       if (!token) {
-           // Redirect to CEFI login
-           window.location.href = 'https://auth.celigo.com/login?redirect=...';
-       }
-       // Validate token with backend
-       const response = await fetch(`${SERVER_URL}/auth/validate`, {
-           headers: { 'Authorization': `Bearer ${token}` }
-       });
-   }
-   ```
-
-2. **Backend Token Validation**
-   ```csharp
-   // In Program.cs or middleware
-   app.Use(async (context, next) =>
-   {
-       var token = context.Request.Headers["Authorization"].ToString();
-       // Validate with CEFI
-       // Retrieve user's NetSuite credentials from secure store
-       // Set credentials for this request
-       await next();
-   });
-   ```
-
-3. **Credential Storage**
-   - Store per-user NetSuite credentials in encrypted database
-   - Or use CEFI's credential vault if available
-   - Credentials should include: Account ID, Consumer Key/Secret, Token Key/Secret
-
----
-
-## Files to Review
-
-| File | Description |
-|------|-------------|
-| `backend-dotnet/` | Main .NET backend - all NetSuite API calls (Python `backend/server.py` is legacy) |
-| `backend/netsuite_config.json` | Current credentials (DO NOT COMMIT to public repo) |
-| `docs/taskpane.html` | Main UI + JavaScript logic + drill-down |
-| `docs/functions.js` | Excel custom functions implementation |
-| `docs/functions.json` | Excel function definitions/metadata |
-| `docs/sharedruntime.html` | Blank shared runtime page |
-| `excel-addin/manifest-claude.xml` | Excel add-in manifest with all URLs |
-| `DEVELOPER_CHECKLIST.md` | Integration points for adding new formulas |
+Similar structure using:
+- Azure Blob Storage + CDN for static files
+- Azure API Management for REST API
+- Azure App Service or Container Instances for backend
+- Azure Key Vault for credentials
 
 ---
 
 ## Security Considerations
 
-1. **Never commit credentials** - `netsuite_config.json` is in `.gitignore`
+1. **Never commit credentials** - `appsettings.Development.json` should be in `.gitignore`
 2. **HTTPS required** - Excel add-ins require HTTPS for all resources
 3. **CORS configuration** - Backend must allow requests from Excel's origin
 4. **Token expiration** - Implement proper token refresh for CEFI auth
 5. **Rate limiting** - Consider adding rate limits to prevent abuse
+6. **SQL injection protection** - All user inputs must be sanitized (use `EscapeSql` helper)
+7. **Input validation** - Validate all parameters before constructing queries
+
+---
+
+## Key Files Reference
+
+| File | Description | When to Modify |
+|------|-------------|----------------|
+| `backend-dotnet/` | Main .NET backend - all NetSuite API calls | Adding new endpoints, modifying queries |
+| `docs/taskpane.html` | Main UI + JavaScript logic + drill-down | UI changes, new features, drill-down logic |
+| `docs/functions.js` | Excel custom functions implementation | Adding/modifying formulas, caching logic |
+| `docs/functions.json` | Excel function definitions/metadata | Adding new formulas, changing parameters |
+| `docs/sharedruntime.html` | Blank shared runtime page | Rarely (only if shared runtime config changes) |
+| `excel-addin/manifest.xml` | Excel add-in manifest with all URLs | Version updates, URL changes, cache-busting |
+| `DEVELOPER_CHECKLIST.md` | Integration points for adding new formulas | When architecture changes |
+| `DOCUMENTATION.md` | Complete feature and API documentation | When features are added/modified |
 
 ---
 
@@ -375,30 +536,37 @@ Each user authenticates via CEFI (Celigo's identity platform), and the backend r
 2. Deploy backend to cloud
 3. Update manifest with new URLs
 4. Sideload updated manifest in Excel
-5. Test all formulas: BALANCE, BUDGET, NAME, TYPEBALANCE, etc.
-6. Test tutorial flow
+5. Test all formulas: BALANCE, BUDGET, NAME, TYPEBALANCE, RETAINEDEARNINGS, NETINCOME, CTA
+6. Test Quick Start reports (CFO Flash Report, Income Statement)
 7. Test drill-down functionality (use Quick Actions button, not right-click on Mac)
-8. Verify multi-subsidiary support
+8. Test multi-subsidiary support
+9. Test Refresh All functionality
+10. Test pre-caching behavior
 
 ---
 
-## Questions for Engineering
+## Additional Documentation
+
+- **[DOCUMENTATION.md](DOCUMENTATION.md)** - Complete feature documentation, API reference, SuiteQL deep dive
+- **[DEVELOPER_CHECKLIST.md](DEVELOPER_CHECKLIST.md)** - Step-by-step guide for adding new formulas
+- **[USER_STORIES.md](USER_STORIES.md)** - User stories and acceptance criteria
+- **[SUITEQL-QUERIES-SUMMARY.md](SUITEQL-QUERIES-SUMMARY.md)** - Complete SuiteQL query reference
+- **[SPECIAL_FORMULAS_REFERENCE.md](SPECIAL_FORMULAS_REFERENCE.md)** - RETAINEDEARNINGS, NETINCOME, CTA implementation details
+- **[BUILTIN_CONSOLIDATE_AUDIT.md](BUILTIN_CONSOLIDATE_AUDIT.md)** - Complete audit of BUILTIN.CONSOLIDATE usage
+- **[ALLOW_ZERO_LIST.md](ALLOW_ZERO_LIST.md)** - When returning 0 is allowed vs. when errors must be thrown
+
+---
+
+## Questions for Engineering Team
 
 1. Which cloud provider (AWS or Azure)?
 2. How will CEFI credentials be passed to the add-in?
 3. Will there be a credential storage service, or should we build one?
 4. What's the domain for the production API? (e.g., api.xavi.cloudextend.io)
 5. Do we need to support on-premise NetSuite deployments?
+6. What monitoring/observability tools should we integrate?
+7. What's the deployment strategy (CI/CD pipeline)?
 
 ---
 
-## Contact
-
-This prototype was developed by the CloudExtend team. For questions about the codebase, refer to:
-- `DEVELOPER_CHECKLIST.md` - How to add new formulas
-- `DOCUMENTATION.md` - API and feature documentation
-- `USER_GUIDE.md` - End-user documentation
-
----
-
-*Last updated: December 2025*
+*This document is maintained as a knowledge transfer resource. For feature-specific documentation, see [DOCUMENTATION.md](DOCUMENTATION.md).*

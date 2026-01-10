@@ -506,6 +506,7 @@ public const string CRED_CARD = "CredCard";               // NOT "CreditCard"
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
 | `/batch/full_year_refresh` | POST | Fetch all P&L accounts for fiscal year |
+| `/batch/pl_preload` | POST | Pre-cache all Income Statement accounts for specified periods (v4.0.6.144+) |
 | `/batch/bs_periods` | POST | Fetch all BS accounts for specific periods |
 | `/batch/balance` | POST | Fetch specific accounts for specific periods |
 | `/batch/account_types` | POST | Get account types for a list of accounts |
@@ -518,7 +519,16 @@ public const string CRED_CARD = "CredCard";               // NOT "CreditCard"
 
 ---
 
-*Document Version: 2.0*
-*Last Updated: December 2025*
-*Add-in Version: 3.0.5.161*
+*Document Version: 2.1*
+*Last Updated: January 2026*
+*Add-in Version: 4.0.6.145*
+
+## Recent Updates (v4.0.6.144 - v4.0.6.145)
+
+### Income Statement Preload Endpoint (v4.0.6.144)
+- **New Endpoint:** `POST /batch/pl_preload`
+- **Purpose:** Pre-cache all Income Statement accounts for specified periods
+- **Location:** `backend-dotnet/Controllers/BalanceController.cs` - `PreloadIncomeStatementAccounts()`
+- **Query:** Similar to `/batch/full_year_refresh` but triggered automatically when first P&L formula is entered
+- **Performance:** Dramatically improves Income Statement report building when dragging formulas across multiple periods
 

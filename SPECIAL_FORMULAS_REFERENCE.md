@@ -1013,4 +1013,13 @@ async function CTA(period, subsidiary, accountingBook) {
 
 ## Version
 
-*Current Version: 3.0.5.161*
+*Current Version: 4.0.6.145*  
+*Last Updated: January 2026*
+
+## Recent Updates (v4.0.6.145)
+
+### Refresh All Smart Detection
+- Refresh All now automatically detects P&L sheets (12 periods) vs Balance Sheet sheets (1 period)
+- Prevents unnecessary Balance Sheet queries on Income Statement sheets
+- Reduces refresh time from timeouts to ~30 seconds for P&L sheets
+- See `ENGINEERING_HANDOFF_NOTES.md` for details

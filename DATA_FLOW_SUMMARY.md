@@ -1,7 +1,12 @@
 # Data Flow Summary: Accounting Book Change → Revenue Display
 
+**Last Updated:** January 2026  
+**Status:** Historical reference - Documents data flow for accounting book changes and TYPEBALANCE caching
+
 ## Overview
 This document explains how financial data flows from NetSuite to Excel when an accounting book is changed, specifically focusing on the TYPEBALANCE batch query and cache population mechanism.
+
+**Note:** Section 5 documents a specific debugging issue. If this issue has been resolved, that section serves as historical reference for troubleshooting similar problems.
 
 ---
 

@@ -294,7 +294,8 @@ Update this file when:
 | 2025-12-17 | 3.0.5.161 | Code cleanup for engineering handoff |
 | 2025-12-17 | 3.0.5.193 | Updated architecture docs, added Mac platform issue note |
 | 2025-12-19 | 3.0.5.233 | Added correct Mac manifest sideload location, cache clearing commands |
+| 2026-01-10 | 4.0.6.145 | Added Refresh All smart detection, Income Statement pre-caching notes |
 
 ---
 
-*Last updated: December 19, 2025*
+*Last updated: January 10, 2026*
