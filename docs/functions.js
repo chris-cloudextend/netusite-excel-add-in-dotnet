@@ -7406,6 +7406,7 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         }
         
         // Extract type string from accountType (handles JSON string or object)
+        // Declare once at function scope - will be reused in both income and balance sheet paths
         let acctTypeStr = '';
         if (!accountType) {
             acctTypeStr = '';
@@ -7591,31 +7592,26 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         // 2. JSON string: '{"account":"10010","type":"Bank","display_name":"Bank"}'
         // 3. Object: { account: "10010", type: "Bank", display_name: "Bank" }
         // We need to extract the actual type string to check against isBalanceSheetType()
-        let acctTypeStr = '';
-        
-        if (!accountType) {
-            acctTypeStr = '';
-        } else if (typeof accountType === 'string') {
-            // Check if it's a JSON string first
-            const trimmed = accountType.trim();
-            if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
-                try {
-                    const parsed = JSON.parse(trimmed);
-                    // Extract type from parsed object
-                    acctTypeStr = (parsed.type || parsed.accountType || '').toString().trim();
-                } catch (e) {
-                    // Not valid JSON, treat as plain string
+        // NOTE: acctTypeStr is already declared above (line 7409) - reuse it here
+        // If it wasn't set (income path didn't run), extract it now
+        if (!acctTypeStr && accountType) {
+            if (typeof accountType === 'string') {
+                const trimmed = accountType.trim();
+                if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+                    try {
+                        const parsed = JSON.parse(trimmed);
+                        acctTypeStr = (parsed.type || parsed.accountType || '').toString().trim();
+                    } catch (e) {
+                        acctTypeStr = trimmed;
+                    }
+                } else {
                     acctTypeStr = trimmed;
                 }
+            } else if (typeof accountType === 'object') {
+                acctTypeStr = (accountType.type || accountType.accountType || '').toString().trim();
             } else {
-                // Plain string type
-                acctTypeStr = trimmed;
+                acctTypeStr = String(accountType).trim();
             }
-        } else if (accountType && typeof accountType === 'object') {
-            // Handle object format: { account: "10010", type: "Bank", display_name: "Bank" }
-            acctTypeStr = (accountType.type || accountType.accountType || '').toString().trim();
-        } else {
-            acctTypeStr = String(accountType).trim();
         }
         
         // Now check if the extracted type string is a Balance Sheet type
