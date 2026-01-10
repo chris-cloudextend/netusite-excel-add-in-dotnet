@@ -6077,7 +6077,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.135"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.142"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -8886,20 +8886,14 @@ For licensing inquiries, contact: legal@celigo.com
                     const allPeriods = new Set();
                     let firstTrigger = null;
                 
-                // 🔬 VALIDATION LOGGING: Log trigger detection
-                console.log(`🔬 TASKPANE: processAutoPreloadTriggers() called at ${new Date().toISOString()}`);
-                
                 try {
                     // Scan localStorage for all trigger keys
                     for (let i = 0; i < localStorage.length; i++) {
                         const key = localStorage.key(i);
                         if (key && key.startsWith('netsuite_auto_preload_trigger_')) {
                             triggerKeys.push(key);
-                            console.log(`🔬 TASKPANE: Found trigger key: ${key}`);
                         }
                     }
-                    
-                    console.log(`🔬 TASKPANE: Found ${triggerKeys.length} trigger key(s)`);
                     
                     // Process all triggers and collect periods
                     for (const triggerKey of triggerKeys) {
@@ -8965,8 +8959,8 @@ For licensing inquiries, contact: legal@celigo.com
                     
                     // Show loading overlay immediately
                     showLoading(
-                        '🔍 Balance Sheet Detected!',
-                        'Scanning your sheet and preloading BS accounts automatically...',
+                        '🔍 Formulas Detected!',
+                        'Scanning your sheet and preloading accounts automatically...',
                         10
                     );
                     
@@ -8974,7 +8968,7 @@ For licensing inquiries, contact: legal@celigo.com
                     setTimeout(async () => {
                         try {
                             console.log(`🔬 TASKPANE: Starting formula scan for preload (periods: ${periodsArray.join(', ')})`);
-                            updateLoading('Scanning Sheet for BS Formulas', 20, 'Finding all Balance Sheet accounts...');
+                            updateLoading('Scanning Sheet for Formulas', 20, 'Finding all accounts...');
                             
                             // Scan the sheet for periods used in BS formulas
                             // We'll preload ALL BS accounts for these periods (not just specific accounts)
@@ -9451,7 +9445,7 @@ For licensing inquiries, contact: legal@celigo.com
                                 updateLoading(
                                     `⚡ Preloading ${periodsText} (${periodChunk.length} period${periodChunk.length > 1 ? 's' : ''})`,
                                     40,
-                                    `Getting initial balances for a period can take some time as we work with your NetSuite data to sum values from the beginning of time. Good news - once this formula is resolved all balance sheet accounts for the same period will resolve instantly`
+                                    `Getting initial balances for a period can take some time as we work with your NetSuite data to sum values from the beginning of time. Good news - once this formula is resolved all accounts for the same period will resolve instantly`
                                 );
                                 
                                 const controller = new AbortController();
@@ -9656,7 +9650,7 @@ For licensing inquiries, contact: legal@celigo.com
                                         updateLoading(
                                             `⚡ Preloading ${activePeriodsText} (${remainingActivePeriods.length} period${remainingActivePeriods.length > 1 ? 's' : ''})`,
                                             40 + Math.floor((allCompleted.length / uncachedPeriods.length) * 40), // Progress based on completion
-                                            `Getting initial balances for a period can take some time as we work with your NetSuite data to sum values from the beginning of time. Good news - once this formula is resolved all balance sheet accounts for the same period will resolve instantly`
+                                            `Getting initial balances for a period can take some time as we work with your NetSuite data to sum values from the beginning of time. Good news - once this formula is resolved all accounts for the same period will resolve instantly`
                                         );
                                     }
                                     
@@ -9744,12 +9738,12 @@ For licensing inquiries, contact: legal@celigo.com
                             
                             if (completedCount === totalRequested) {
                                 showToast({
-                                    title: '✅ Balance Sheet Ready!',
-                                    message: `All ${totalAccountCount} Balance Sheet accounts preloaded for ${completedCount} period(s). Your formulas will now resolve instantly!`,
+                                    title: '✅ Preload Complete!',
+                                    message: `All ${totalAccountCount} accounts preloaded for ${completedCount} period(s). Your formulas will now resolve instantly!`,
                                     type: 'success',
                                     duration: 5000
                                 });
-                                console.log(`✅ AUTO-PRELOAD COMPLETE: ${totalAccountCount} BS accounts × ${completedCount} period(s)`);
+                                console.log(`✅ AUTO-PRELOAD COMPLETE: ${totalAccountCount} accounts × ${completedCount} period(s)`);
                             } else if (completedCount > 0) {
                                 showToast({
                                     title: '⚠️ Partial Preload Complete',
@@ -9933,7 +9927,7 @@ For licensing inquiries, contact: legal@celigo.com
                 // This ensures triggers are processed even if taskpane wasn't open when they were created
                 // NOTE: Storage events handle same-origin triggers, polling handles cross-origin (if needed)
                 let triggerPollInterval = setInterval(() => {
-                    // Check if there are any triggers
+                    // Check if there are any triggers (silent check - no logging unless triggers found)
                     let hasTriggers = false;
                     try {
                         for (let i = 0; i < localStorage.length; i++) {
@@ -9952,7 +9946,6 @@ For licensing inquiries, contact: legal@celigo.com
                     }
                     
                     if (hasTriggers) {
-                        console.log(`🔬 TASKPANE: Polling detected triggers, calling debouncedProcessTriggers()`);
                         debouncedProcessTriggers();
                     }
                 }, 2000); // Check every 2 seconds
@@ -10193,7 +10186,7 @@ For licensing inquiries, contact: legal@celigo.com
                     if (titleEl) titleEl.textContent = progress.message || '⚡ Preloading';
                     showLoading(
                         progress.message || '⚡ Preloading',
-                        progress.stats || 'Getting initial balances for a period can take some time as we work with your NetSuite data to sum values from the beginning of time. Good news - once this formula is resolved all balance sheet accounts for the same period will resolve instantly',
+                        progress.stats || 'Doing the heavy lifting for balance sheet accounts. Getting initial balances for a period can take some time as we work with your NetSuite data to sum values from the beginning of time. Good news - once this formula is resolved all balance sheet accounts for the same period will resolve instantly',
                         progress.progress || 10
                     );
                 } else if (progress.status === 'completed') {
@@ -24190,6 +24183,15 @@ export default {
                 localStorage.removeItem('netsuite_balance_cache');
                 localStorage.removeItem('netsuite_balance_cache_timestamp');
                 
+                // CRITICAL FIX: Signal functions.js to enter build mode BEFORE clearing cache
+                // This ensures formulas are batched instead of evaluated individually
+                // Note: This must be called via localStorage since functions.js runs in separate context
+                console.log('🚀 Signaling build mode for Refresh All to ensure batching...');
+                localStorage.setItem('netsuite_enter_build_mode', JSON.stringify({
+                    timestamp: Date.now(),
+                    reason: 'refresh_all'
+                }));
+                
                 await Excel.run(async (context) => {
                     const sheet = context.workbook.worksheets.getActiveWorksheet();
                     const tempRange = sheet.getRange('ZZ9999');
@@ -24449,8 +24451,14 @@ export default {
                 
                 // ============================================
                 // STEP 6: Re-apply formulas to force evaluation
+                // CRITICAL: Wait a bit after cache is populated to allow build mode to collect formulas
                 // ============================================
-                updateLoading('Re-evaluating formulas...', 90, `${cellsToUpdate.length} formulas`);
+                updateLoading('Preparing to refresh formulas...', 90, 'Waiting for batch collection...');
+                
+                // Wait 1 second to allow build mode to collect all formulas before recalculation
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                
+                updateLoading('Re-evaluating formulas...', 92, `${cellsToUpdate.length} formulas`);
                 
                 let formulasRefreshed = 0;
                 const BATCH_SIZE = 100;
@@ -24468,7 +24476,7 @@ export default {
                         const batchEnd = Math.min(batchStart + BATCH_SIZE, cellsToUpdate.length);
                         const batch = cellsToUpdate.slice(batchStart, batchEnd);
                         
-                        const progress = 90 + Math.round((batchNum / totalBatches) * 8);
+                        const progress = 92 + Math.round((batchNum / totalBatches) * 6);
                         updateLoading(`Refreshing formulas...`, progress, 
                             `Batch ${batchNum + 1}/${totalBatches}`);
                         
@@ -24485,7 +24493,9 @@ export default {
                         }
                     }
                     
-                    updateLoading('Recalculating BALANCE formulas...', 92);
+                    updateLoading('Recalculating formulas...', 98);
+                    // Small delay before calculate to allow formulas to be collected
+                    await new Promise(resolve => setTimeout(resolve, 500));
                     usedRange.calculate();
                     await context.sync();
                 });
@@ -25340,13 +25350,13 @@ export default {
                     }
                     
                     // Remove TYPEBALANCE cells from processing (they're already handled)
-                    cellsWithFormulas = cellsWithFormulas.filter(c => c.formulaType !== 'typebalance');
+                    const cellsToProcess = cellsWithFormulas.filter(c => c.formulaType !== 'typebalance');
                     
                     updateLoading(`Resolving cell references for ${formulaCount} formulas...`, 30);
                     
                     // For each formula, we need to resolve the parameters
                     // Parse formula to extract BOTH quoted literals AND cell references
-                    for (const cell of cellsWithFormulas) {
+                    for (const cell of cellsToProcess) {
                         const formula = cell.formula;
                         
                         try {

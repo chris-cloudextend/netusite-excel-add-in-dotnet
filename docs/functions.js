@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.139';  // Cleanup: Removed feature flag, removed debug logs, added inactive accounts option
+const FUNCTIONS_VERSION = '4.0.6.142';  // Fix: Progress indicator UI improvements, reduced console logging
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -3821,6 +3821,9 @@ function enterBuildMode() {
     }
 }
 
+// Expose globally for Refresh All to use
+window.enterBuildMode = enterBuildMode;
+
 function exitBuildModeAndProcess() {
     if (!buildMode) return;
     
@@ -6631,9 +6634,9 @@ async function executeFullPreload(periodKey) {
         localStorage.setItem('xavi_preload_progress', JSON.stringify({
             status: 'started',
             period: period,
-            message: `⚡ Preloading ${period}`,
+            message: `⚡ Preloading`,
             progress: 10,
-            stats: 'Getting initial balances for a period can take some time as we work with your NetSuite data to sum values from the beginning of time. Good news - once this formula is resolved all balance sheet accounts for the same period will resolve instantly',
+            stats: 'Doing the heavy lifting for balance sheet accounts. Getting initial balances for a period can take some time as we work with your NetSuite data to sum values from the beginning of time. Good news - once this formula is resolved all balance sheet accounts for the same period will resolve instantly',
             timestamp: Date.now()
         }));
     } catch (e) {
@@ -6653,9 +6656,9 @@ async function executeFullPreload(periodKey) {
             localStorage.setItem('xavi_preload_progress', JSON.stringify({
                 status: 'querying',
                 period: period,
-                message: `⚡ Preloading ${period}`,
+                message: `⚡ Preloading`,
                 progress: 30,
-                stats: 'Querying NetSuite for all balance sheet accounts...',
+                stats: 'Doing the heavy lifting for balance sheet accounts. Getting initial balances for a period can take some time as we work with your NetSuite data to sum values from the beginning of time. Good news - once this formula is resolved all balance sheet accounts for the same period will resolve instantly',
                 timestamp: Date.now()
             }));
         } catch (e) {
@@ -6706,7 +6709,7 @@ async function executeFullPreload(periodKey) {
             localStorage.setItem('xavi_preload_progress', JSON.stringify({
                 status: 'processing',
                 period: period,
-                message: `⚡ Preloading ${period}`,
+                message: `⚡ Preloading`,
                 progress: 80,
                 stats: `Processing ${Object.keys(balancesByAccount).length} accounts...`,
                 timestamp: Date.now()
@@ -6726,7 +6729,7 @@ async function executeFullPreload(periodKey) {
             localStorage.setItem('xavi_preload_progress', JSON.stringify({
                 status: 'completed',
                 period: period,
-                message: `✅ Preload complete: ${period}`,
+                message: `✅ Preload complete`,
                 progress: 100,
                 stats: `${Object.keys(balancesByAccount).length} accounts cached`,
                 timestamp: Date.now()
@@ -6758,7 +6761,7 @@ async function executeFullPreload(periodKey) {
             localStorage.setItem('xavi_preload_progress', JSON.stringify({
                 status: 'error',
                 period: period,
-                message: `❌ Preload failed: ${period}`,
+                message: `❌ Preload failed`,
                 progress: 0,
                 stats: error.message || 'An error occurred',
                 timestamp: Date.now()
@@ -6904,9 +6907,25 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
     console.log(`🔍 BALANCE START: account=${account}, period=${toPeriod}, timestamp=${Date.now()}`);
     
     // Cross-context cache invalidation - taskpane signals via localStorage
-    // FIX #1 & #5: Synchronize cache clear - clear in-memory cache FIRST, then check signal
+    // FIX #1 & #5: Synchronize cache clear - taskpane signals via localStorage
     // This ensures cache is cleared before formulas evaluate
     try {
+        // Check for build mode signal (for Refresh All to ensure batching)
+        const buildModeSignal = localStorage.getItem('netsuite_enter_build_mode');
+        if (buildModeSignal) {
+            const { timestamp, reason } = JSON.parse(buildModeSignal);
+            // Extended window to 30 seconds to handle timing issues
+            if (Date.now() - timestamp < 30000) {
+                console.log(`🔨 Entering build mode from Refresh All (${reason})`);
+                enterBuildMode();
+                // Remove signal after processing
+                localStorage.removeItem('netsuite_enter_build_mode');
+            } else {
+                // Signal is stale, remove it
+                localStorage.removeItem('netsuite_enter_build_mode');
+            }
+        }
+        
         // CRITICAL: Clear in-memory cache FIRST (before checking signal)
         // This ensures cache is cleared synchronously, not async
         const clearSignal = localStorage.getItem('netsuite_cache_clear_signal');
@@ -7310,35 +7329,69 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                 console.log(`⏳ Income Statement: Period not yet resolved for ${account} - proceeding to API path`);
                 // Continue to API path below (don't throw - Excel will re-evaluate when period resolves)
             } else {
+                // CRITICAL: Check for build mode signal BEFORE queuing (for Refresh All)
+                // This ensures formulas are batched instead of evaluated individually
+                const buildModeSignal = localStorage.getItem('netsuite_enter_build_mode');
+                if (buildModeSignal && !buildMode) {
+                    const { timestamp, reason } = JSON.parse(buildModeSignal);
+                    if (Date.now() - timestamp < 30000) {
+                        console.log(`🔨 Entering build mode from Refresh All (${reason}) - Income Statement account`);
+                        enterBuildMode();
+                        // Remove signal after processing
+                        localStorage.removeItem('netsuite_enter_build_mode');
+                    }
+                }
+                
                 // Route to queue for batching (skip all manifest/preload logic)
                 cacheStats.misses++;
                 console.log(`📥 QUEUED [Income Statement]: ${account} for ${fromPeriod || '(cumulative)'} → ${toPeriod}`);
                 console.log(`   ✅ PROOF: Income Statement account routed to queue (NOT per-cell path)`);
                 console.log(`   ✅ PROOF: Will be batched with other Income Statement accounts`);
                 console.log(`   ✅ PROOF: Queue size: ${pendingRequests.balance.size + 1} (including this request)`);
+                console.log(`   ✅ PROOF: Build mode active: ${buildMode}`);
                 
                 return new Promise((resolve, reject) => {
-                    pendingRequests.balance.set(cacheKey, {
-                        params,
-                        resolve,
-                        reject,
-                        timestamp: Date.now()
-                    });
-                    
-                    // Start batch timer if not already running
-                    if (!isFullRefreshMode) {
-                        if (batchTimer) {
-                            clearTimeout(batchTimer);
-                            batchTimer = null;
+                    // If build mode is active, add to build mode queue instead
+                    if (buildMode) {
+                        console.log(`   🔨 Adding to build mode queue (${buildModePending.length + 1} items)`);
+                        buildModePending.push({
+                            cacheKey,
+                            params,
+                            resolve,
+                            reject
+                        });
+                        // Reset build mode timer to collect more formulas
+                        if (buildModeTimer) {
+                            clearTimeout(buildModeTimer);
                         }
-                        console.log(`⏱️ STARTING batch timer (${BATCH_DELAY}ms) for Income Statement`);
-                        batchTimer = setTimeout(() => {
-                            console.log('⏱️ Batch timer FIRED!');
-                            batchTimer = null;
-                            processBatchQueue().catch(err => {
-                                console.error('❌ Batch processing error:', err);
-                            });
-                        }, BATCH_DELAY);
+                        buildModeTimer = setTimeout(() => {
+                            buildModeTimer = null;
+                            exitBuildModeAndProcess();
+                        }, BUILD_MODE_SETTLE_MS);
+                    } else {
+                        // Regular queue with batch timer
+                        pendingRequests.balance.set(cacheKey, {
+                            params,
+                            resolve,
+                            reject,
+                            timestamp: Date.now()
+                        });
+                        
+                        // Start batch timer if not already running
+                        if (!isFullRefreshMode) {
+                            if (batchTimer) {
+                                clearTimeout(batchTimer);
+                                batchTimer = null;
+                            }
+                            console.log(`⏱️ STARTING batch timer (${BATCH_DELAY}ms) for Income Statement`);
+                            batchTimer = setTimeout(() => {
+                                console.log('⏱️ Batch timer FIRED!');
+                                batchTimer = null;
+                                processBatchQueue().catch(err => {
+                                    console.error('❌ Batch processing error:', err);
+                                });
+                            }, BATCH_DELAY);
+                        }
                     }
                 });
             }
