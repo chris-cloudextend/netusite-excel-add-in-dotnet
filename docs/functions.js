@@ -7299,8 +7299,17 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         // convertToMonthYear() now handles Range objects internally
         const rawFrom = fromPeriod;
         const rawTo = toPeriod;
-        fromPeriod = normalizePeriodKey(fromPeriod, true) || fromPeriod;   // true = isFromPeriod
-        toPeriod = normalizePeriodKey(toPeriod, false) || toPeriod;      // false = isToPeriod
+        const normalizedFromResult = normalizePeriodKey(fromPeriod, true);   // true = isFromPeriod
+        const normalizedToResult = normalizePeriodKey(toPeriod, false);      // false = isToPeriod
+        
+        // CRITICAL: If normalization fails, log warning but still use fallback
+        // This helps debug why Excel date serials aren't being converted
+        if (normalizedToResult === null && toPeriod && typeof toPeriod === 'number' && toPeriod >= 40000) {
+            console.warn(`⚠️ Period normalization failed for Excel date serial: ${toPeriod} (type: ${typeof toPeriod})`);
+        }
+        
+        fromPeriod = normalizedFromResult || fromPeriod;
+        toPeriod = normalizedToResult || toPeriod;
         
         // ================================================================
         // VALIDATION: Detect common formula syntax errors
@@ -7443,23 +7452,23 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                 return cache.balance.get(cacheKey);
             }
             
-            // Check localStorage cache (from preload)
-            if (toPeriod && toPeriod !== '') {
+            // Check if period is resolved (required for queuing and preload)
+            // CRITICAL: Normalize period again to ensure it's in "Mon YYYY" format (not Excel date serial)
+            const normalizedToPeriod = normalizePeriodKey(toPeriod, false);
+            if (!normalizedToPeriod || normalizedToPeriod === '') {
+                console.log(`⏳ Income Statement: Period not yet resolved for ${account} (raw: ${toPeriod}) - proceeding to API path`);
+                // Continue to API path below (don't throw - Excel will re-evaluate when period resolves)
+            } else {
+                // Check localStorage cache (from preload) using normalized period
                 // Get filtersHash for cache lookup
                 const filtersHash = getFilterKey({ subsidiary, department, location, classId, accountingBook });
-                const localStorageValue = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
+                const localStorageValue = checkLocalStorageCache(account, fromPeriod, normalizedToPeriod, subsidiary, filtersHash);
                 if (localStorageValue !== null) {
                     cacheStats.hits++;
                     cache.balance.set(cacheKey, localStorageValue);
                     return localStorageValue;
                 }
-            }
-            
-            // Check if period is resolved (required for queuing)
-            if (!toPeriod || toPeriod === '') {
-                console.log(`⏳ Income Statement: Period not yet resolved for ${account} - proceeding to API path`);
-                // Continue to API path below (don't throw - Excel will re-evaluate when period resolves)
-            } else {
+                
                 // First Income Statement formula - trigger automatic preload!
                 // Track income formulas to detect first one
                 if (typeof window.totalIncomeFormulasQueued === 'undefined') {
@@ -7468,7 +7477,8 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                 window.totalIncomeFormulasQueued++;
                 
                 if (window.totalIncomeFormulasQueued === 1) {
-                    triggerIncomePreload(account, toPeriod, { subsidiary, department, location, classId, accountingBook });
+                    // CRITICAL: Use normalized period name (not Excel date serial) for preload trigger
+                    triggerIncomePreload(account, normalizedToPeriod, { subsidiary, department, location, classId, accountingBook });
                 }
                 // CRITICAL: Check for build mode signal BEFORE queuing (for Refresh All)
                 // This ensures formulas are batched instead of evaluated individually
@@ -7484,8 +7494,9 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                 }
                 
                 // Route to queue for batching (skip all manifest/preload logic)
+                // CRITICAL: Use normalized period for logging and queue
                 cacheStats.misses++;
-                console.log(`📥 QUEUED [Income Statement]: ${account} for ${fromPeriod || '(cumulative)'} → ${toPeriod}`);
+                console.log(`📥 QUEUED [Income Statement]: ${account} for ${fromPeriod || '(cumulative)'} → ${normalizedToPeriod || toPeriod}`);
                 console.log(`   ✅ PROOF: Income Statement account routed to queue (NOT per-cell path)`);
                 console.log(`   ✅ PROOF: Will be batched with other Income Statement accounts`);
                 console.log(`   ✅ PROOF: Queue size: ${pendingRequests.balance.size + 1} (including this request)`);
