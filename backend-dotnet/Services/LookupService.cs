@@ -1317,6 +1317,7 @@ public class LookupService : ILookupService
                 a.accountsearchdisplaynamecopy AS accountname,
                 a.accttype,
                 a.sspecacct,
+                a.isinactive,
                 p.acctnumber AS parent
             FROM 
                 Account a
@@ -1367,7 +1368,8 @@ public class LookupService : ILookupService
             FullName = null,
             Type = r.TryGetProperty("accttype", out var type) ? type.GetString() ?? "" : "",
             SpecialAccountType = r.TryGetProperty("sspecacct", out var spec) && spec.ValueKind != System.Text.Json.JsonValueKind.Null ? spec.GetString() : null,
-            Parent = r.TryGetProperty("parent", out var p) && p.ValueKind != System.Text.Json.JsonValueKind.Null ? p.GetString() : null
+            Parent = r.TryGetProperty("parent", out var p) && p.ValueKind != System.Text.Json.JsonValueKind.Null ? p.GetString() : null,
+            IsInactive = r.TryGetProperty("isinactive", out var inactive) && inactive.ValueKind != System.Text.Json.JsonValueKind.Null ? inactive.GetString() == "T" : false
         }).ToList();
         
         _logger.LogDebug("[ACCOUNT SEARCH] Complete → {Count} accounts returned", accounts.Count);

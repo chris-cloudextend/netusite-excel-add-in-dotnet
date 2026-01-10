@@ -71,6 +71,9 @@ public class AccountItem
     // Add special account type for cash flow statements
     [JsonPropertyName("sspecacct")]
     public string? SpecialAccountType { get; set; }
+    
+    [JsonPropertyName("isinactive")]
+    public bool IsInactive { get; set; }
 }
 
 /// <summary>Account search result with metadata</summary>

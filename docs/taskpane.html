@@ -5223,6 +5223,13 @@ For licensing inquiries, contact: legal@celigo.com
                             </div>
                         </div>
                         
+                        <div style="margin-top: 12px; margin-bottom: 8px;">
+                            <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; padding: 8px; background: rgba(59,130,246,0.05); border-radius: 6px; border: 1px solid rgba(59,130,246,0.2);">
+                                <input type="checkbox" id="includeInactiveAccounts" style="margin: 0; cursor: pointer;">
+                                <span style="color: var(--deep-sea); font-weight: 500;">Include inactive accounts</span>
+                            </label>
+                        </div>
+                        
                         <button class="btn-primary" style="margin-top: 12px; background: linear-gradient(135deg, var(--anenome) 0%, #06d6a0 100%); color: var(--deep-dive);" onclick="searchAccounts()">
                             <span>➕</span> Bulk Add GL Accounts
                         </button>
@@ -27126,14 +27133,12 @@ export default {
                 console.log('=== ACCOUNT SEARCH START ===');
                 console.log('Pattern:', pattern);
                 
+                // Get include inactive option
+                const includeInactive = document.getElementById('includeInactiveAccounts').checked;
+                
                 // Call backend API
-                // Backend expects 'number' parameter for account number patterns (4*, 42*, etc.)
-                // or 'type' parameter for account types (income, expense, FixedAsset, etc.)
-                // Check for common keywords OR exact NetSuite account type names
-                // UX ENHANCEMENT: Support "Balance" and "Income" keywords for all BS/IS accounts
-                // CRITICAL FIX: Backend expects 'pattern' parameter, not 'type' or 'number'
-                // The backend determines if it's a type search or number search based on the pattern content
-                const url = `${getServerUrl()}/accounts/search?pattern=${encodeURIComponent(pattern)}`;
+                // Backend expects 'pattern' parameter and 'active_only' parameter
+                const url = `${getServerUrl()}/accounts/search?pattern=${encodeURIComponent(pattern)}&active_only=${!includeInactive}`;
                 console.log('API URL:', url);
                 
                 const response = await fetch(url);
@@ -27162,7 +27167,7 @@ export default {
                 
                 // Create results sheet
                 await Excel.run(async (context) => {
-                    await createAccountSearchSheet(context, accounts, pattern);
+                    await createAccountSearchSheet(context, accounts, pattern, includeInactive);
                 });
                 
                 updateLoading('Complete!', 100);
@@ -27338,7 +27343,7 @@ export default {
             console.log(`Inserted ${periods.length} periods successfully`);
         }
 
-        async function createAccountSearchSheet(context, accounts, pattern) {
+        async function createAccountSearchSheet(context, accounts, pattern, includeInactive = false) {
             // INSERT AT CURSOR POSITION (not new sheet!)
             const sheet = context.workbook.worksheets.getActiveWorksheet();
             const range = context.workbook.getSelectedRange();
@@ -27347,28 +27352,39 @@ export default {
             
             console.log(`Inserting ${accounts.length} accounts at ${range.address}`);
             
-            // Headers row - Added Parent column after Account Number
+            // Headers row - conditionally include Inactive column
             const headers = ['Account Type', 'Spec Acct Type', 'Account Number', 'Parent', 'Account Name'];
+            if (includeInactive) {
+                headers.push('Inactive');
+            }
             
-            // Prepare data rows - Parent comes from API response (faster than formula)
-            // Order: Type, Special Account Type, Number, Parent (from API), Name
-            const dataRows = accounts.map(acc => [
-                acc.accttype || '',
-                acc.sspecacct || '',  // Special Account Type (e.g., Retained Earnings)
-                acc.accountnumber || '',
-                acc.parent || '',  // Parent from SuiteQL query (faster than formula)
-                acc.accountname || ''
-            ]);
+            // Prepare data rows
+            const dataRows = accounts.map(acc => {
+                const row = [
+                    acc.accttype || '',
+                    acc.sspecacct || '',  // Special Account Type (e.g., Retained Earnings)
+                    acc.accountnumber || '',
+                    acc.parent || '',  // Parent from SuiteQL query (faster than formula)
+                    acc.accountname || ''
+                ];
+                if (includeInactive) {
+                    row.push(acc.isinactive ? 'Yes' : 'No');
+                }
+                return row;
+            });
             
             // Combine headers + data
             const allRows = [headers, ...dataRows];
+            
+            // Calculate column count
+            const columnCount = includeInactive ? 6 : 5;
             
             // Get the range starting at cursor position (headers + data)
             const targetRange = sheet.getRangeByIndexes(
                 range.rowIndex,
                 range.columnIndex,
                 allRows.length,
-                5  // 5 columns (added Parent)
+                columnCount
             );
             
             // Insert data
@@ -27379,14 +27395,14 @@ export default {
                 range.rowIndex,
                 range.columnIndex,
                 1,
-                5  // 5 columns
+                columnCount
             );
             headerRange.format.font.bold = true;
             headerRange.format.fill.color = '#f3f4f6';
             
             await context.sync();
             
-            console.log(`Inserted ${accounts.length} accounts with headers and Parent column (from SuiteQL) at cursor position`);
+            console.log(`Inserted ${accounts.length} accounts with headers${includeInactive ? ' and Inactive column' : ''} at cursor position`);
         }
 
         // NOTE: drillDownFromContextMenu is defined at the TOP of the script

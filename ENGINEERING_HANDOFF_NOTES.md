@@ -2,6 +2,31 @@
 
 ## Recent Changes (January 2026)
 
+### Single Promise Per Period (v4.0.6.139)
+- **Status:** ✅ Production-ready, default behavior
+- **Location:** `docs/functions.js` - Single-promise infrastructure
+- **Features:**
+  - All cells for the same period await the EXACT SAME Promise
+  - Promise resolves WITH balance data, ensuring simultaneous resolution
+  - Task pane progress indicator shows preload status
+  - No feature flag - now the standard approach
+- **Performance:** ~70-80s per period for full preload, all cells resolve simultaneously
+
+### Inactive Accounts Option (v4.0.6.139)
+- **Location:** `docs/taskpane.html` - Bulk Add GL Accounts section
+- **Features:**
+  - Checkbox to include inactive accounts in bulk add
+  - Inactive column added to output when option is selected
+  - Backend updated to return `isinactive` field in account search results
+- **Backend:** `backend-dotnet/Services/LookupService.cs` - Added `isinactive` to query and response
+
+### Code Cleanup (v4.0.6.139)
+- ✅ Removed feature flag (single-promise now default)
+- ✅ Removed debug/troubleshooting logs
+- ✅ Updated manifest version to 4.0.6.139
+
+## Previous Changes (January 2026)
+
 ### Account Search Implementation
 - **Location:** `backend-dotnet/Services/LookupService.cs` → `SearchAccountsByPatternAsync`
 - **Features:**

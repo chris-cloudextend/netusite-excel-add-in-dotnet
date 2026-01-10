@@ -22,15 +22,14 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.138';  // Phase 2: Added task pane progress indicator for single-promise preload
+const FUNCTIONS_VERSION = '4.0.6.139';  // Cleanup: Removed feature flag, removed debug logs, added inactive accounts option
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
-// FEATURE FLAG: Single Promise Per Period (Claude's Architectural Fix)
-// When enabled, all cells for the same period await the EXACT SAME Promise
-// that resolves WITH the balance data, ensuring simultaneous resolution
+// SINGLE PROMISE PER PERIOD (Architectural Fix)
+// All cells for the same period await the EXACT SAME Promise that resolves
+// WITH the balance data, ensuring simultaneous resolution
 // ============================================================================
-const USE_SINGLE_PROMISE_APPROACH = true; // Phase 2: Enabled for testing
 
 // ============================================================================
 // LRU CACHE - Bounded cache with Least Recently Used eviction
@@ -7431,11 +7430,9 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
         const isBalanceSheet = acctTypeStr && isBalanceSheetType(acctTypeStr);
         
         // ================================================================
-        // SINGLE-PROMISE APPROACH (Claude's Architectural Fix - Phase 1)
-        // When enabled, all cells for the same period await the EXACT SAME Promise
+        // SINGLE-PROMISE APPROACH: All cells for same period await same promise
         // ================================================================
-        if (USE_SINGLE_PROMISE_APPROACH && isCumulativeQuery && lookupPeriod && isBalanceSheet) {
-            console.log(`🔄 SINGLE-PROMISE PATH: account=${account}, period=${lookupPeriod}`);
+        if (isCumulativeQuery && lookupPeriod && isBalanceSheet) {
             try {
                 const balance = await singlePromiseFlow(account, lookupPeriod, filtersHash, cacheKey);
                 pendingEvaluation.balance.delete(evalKey);
