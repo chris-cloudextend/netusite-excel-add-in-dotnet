@@ -2,6 +2,30 @@
 
 ## Recent Changes (January 2026)
 
+### Refresh All Smart Detection (v4.0.6.145)
+- **Status:** ✅ Production-ready
+- **Location:** `docs/taskpane.html` - `refreshCurrentSheet()` function
+- **Problem:** Refresh All was incorrectly fetching Balance Sheet accounts for Income Statement sheets (12 periods), causing timeouts
+- **Solution:** 
+  - Smart inference: 12 periods (or 10-12) → P&L sheet, 1 period → Balance Sheet
+  - Improved account extraction regex to handle more formula variations
+  - Only fetch BS accounts if BS accounts are identified (no fallback to BS)
+- **Impact:** Income Statement sheets now refresh in ~30 seconds instead of timing out
+- **Files Changed:**
+  - `docs/taskpane.html` - Smart sheet type detection, improved account extraction
+  - `excel-addin/manifest.xml` - Version updated to 4.0.6.145
+
+### Income Statement Pre-Caching (v4.0.6.144)
+- **Status:** ✅ Production-ready
+- **Location:** `docs/functions.js` - `triggerIncomePreload()`, `docs/taskpane.html` - `processIncomePreloadTriggers()`
+- **Backend:** `backend-dotnet/Controllers/BalanceController.cs` - `PreloadIncomeStatementAccounts()`
+- **Features:**
+  - Automatically triggers when first Income Statement formula is entered
+  - Pre-caches all Income, COGS, Expense, OthIncome, OthExpense accounts for the period
+  - Works seamlessly with full year refresh (12 months)
+  - Cache persists in localStorage
+- **Performance:** Dragging formulas across 12 months resolves instantly after first period preload
+
 ### Single Promise Per Period (v4.0.6.139)
 - **Status:** ✅ Production-ready, default behavior
 - **Location:** `docs/functions.js` - Single-promise infrastructure

@@ -2,8 +2,8 @@
 
 **Product:** XAVI for NetSuite Excel Add-in  
 **Target Users:** Accountants, Senior Finance Professionals, Financial Analysts, CFOs  
-**Version:** 4.0.6.109  
-**Date:** January 2025
+**Version:** 4.0.6.145  
+**Date:** January 2026
 
 ---
 
@@ -367,6 +367,25 @@
 
 ---
 
+### US-019A: Income Statement Pre-Caching
+
+**As a** financial analyst building Income Statement reports  
+**I want** Income Statement accounts to be pre-cached when I enter the first formula  
+**So that** subsequent formulas resolve instantly without individual API calls
+
+**Acceptance Criteria:**
+- [x] When first Income Statement formula is entered for a period, all Income Statement accounts for that period are pre-cached
+- [x] Pre-caching happens automatically in the background via `/batch/pl_preload` endpoint
+- [x] Pre-caching triggers on first P&L account formula (Income, COGS, Expense, OthIncome, OthExpense)
+- [x] Subsequent formulas resolve immediately from cache
+- [x] Pre-caching respects filters (subsidiary, department, location, class, accounting book)
+- [x] Cache persists across Excel sessions (localStorage)
+- [x] Works seamlessly with full year refresh optimization (12 months)
+
+**Business Value:** Dramatically improves performance for Income Statement reports. When dragging formulas across 12 months, all accounts are pre-cached, reducing resolution time from minutes to seconds.
+
+---
+
 ### US-020: Intelligent Column-Based Batching
 
 **As a** financial analyst dragging formulas down a column  
@@ -390,13 +409,16 @@
 **So that** I can get the latest data after posting new transactions in NetSuite
 
 **Acceptance Criteria:**
-- [ ] Refresh All button is prominently displayed in the task pane
-- [ ] Clicking Refresh All clears cache and re-fetches all formulas
-- [ ] Progress indicator shows refresh status
-- [ ] Formulas update in batches for performance
-- [ ] Refresh works for all formula types
+- [x] Refresh All button is prominently displayed in the task pane
+- [x] Clicking Refresh All clears cache and re-fetches all formulas
+- [x] Progress indicator shows refresh status
+- [x] Formulas update in batches for performance
+- [x] Refresh works for all formula types
+- [x] **Smart Sheet Detection:** Automatically detects P&L sheets (12 periods) vs Balance Sheet sheets (1 period) and fetches appropriate data
+- [x] **Optimized Performance:** P&L sheets refresh in ~30 seconds, Balance Sheet sheets in 2-3 minutes
+- [x] **Account Extraction:** Automatically extracts account numbers from formulas for classification
 
-**Business Value:** Ensures data accuracy and eliminates manual formula recalculation
+**Business Value:** Ensures data accuracy and eliminates manual formula recalculation. Smart detection prevents unnecessary Balance Sheet queries on Income Statement sheets, reducing refresh time from timeouts to ~30 seconds.
 
 ---
 
@@ -525,8 +547,11 @@
 
 **Implemented Features:**
 - Automatic formula batching
-- Balance Sheet pre-caching
+- Balance Sheet pre-caching (US-019)
+- Income Statement pre-caching (US-019A) - v4.0.6.144+
 - Column-based batching for Balance Sheet accounts
+- Full year refresh optimization for P&L sheets (12 months in single query)
+- Smart Refresh All detection (P&L vs BS sheets) - v4.0.6.145+
 - localStorage caching for account metadata
 - File-based persistence for book-subsidiary cache
 

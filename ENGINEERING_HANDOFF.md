@@ -4,7 +4,26 @@
 
 XAVI is an Excel Add-in that provides financial reporting formulas for NetSuite. Users can type formulas like `=XAVI.BALANCE("4010", "Jan 2025", "Dec 2025")` directly in Excel cells to pull live data from their NetSuite account.
 
-**Current Version:** 4.0.0.25
+**Current Version:** 4.0.6.145  
+**Last Updated:** January 2026
+
+---
+
+## Recent Changes (v4.0.6.144 - v4.0.6.145)
+
+### Income Statement Pre-Caching (v4.0.6.144)
+- **Feature:** Income Statement accounts now pre-cache automatically when first P&L formula is entered
+- **Implementation:** New `/batch/pl_preload` endpoint fetches all Income, COGS, Expense, OthIncome, OthExpense accounts for specified periods
+- **Performance:** Dramatically improves Income Statement report building - dragging formulas across 12 months resolves instantly after first period
+- **Location:** `docs/functions.js` - `triggerIncomePreload()` function, `docs/taskpane.html` - `processIncomePreloadTriggers()` function
+- **Backend:** `backend-dotnet/Controllers/BalanceController.cs` - `PreloadIncomeStatementAccounts()` endpoint
+
+### Refresh All Smart Detection (v4.0.6.145)
+- **Fix:** Refresh All now correctly detects P&L sheets (12 periods) vs Balance Sheet sheets (1 period)
+- **Problem:** Previously defaulted to fetching BS accounts when account extraction failed, causing timeouts on Income Statement sheets
+- **Solution:** Smart inference based on period count - 12 periods = P&L sheet, 1 period = Balance Sheet
+- **Impact:** Income Statement sheets refresh in ~30 seconds instead of timing out
+- **Location:** `docs/taskpane.html` - `refreshCurrentSheet()` function
 
 ---
 

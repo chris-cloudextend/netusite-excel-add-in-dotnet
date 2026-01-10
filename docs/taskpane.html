@@ -6077,7 +6077,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.143"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.144"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -24280,11 +24280,17 @@ export default {
                                 if (upperFormula.includes('XAVI.BALANCE')) {
                                 cellsToUpdate.push({ row, col, formula });
                                 
-                                // Try to extract account from formula
-                                const accountMatch = formula.match(/XAVI\.BALANCE\s*\(\s*["']?(\d+)["']?/i);
+                                // Try to extract account from formula - improved regex to handle more variations
+                                // Matches: XAVI.BALANCE(4000, ...), XAVI.BALANCE("4000", ...), XAVI.BALANCE('4000', ...)
+                                // Also handles: XAVI.BALANCE( 4000 , ...) with spaces
+                                const accountMatch = formula.match(/XAVI\.BALANCE\s*\(\s*["']?\s*(\d+)\s*["']?/i);
                                 if (accountMatch) {
-                                    detectedAccounts.add(accountMatch[1]);
-                                    }
+                                    const accountNum = accountMatch[1];
+                                    detectedAccounts.add(accountNum);
+                                    console.log(`   📋 Extracted account ${accountNum} from formula at row ${row + 1}, col ${col + 1}`);
+                                } else {
+                                    console.log(`   ⚠️ Could not extract account from formula at row ${row + 1}, col ${col + 1}: ${formula.substring(0, 50)}...`);
+                                }
                                 }
                                 
                                 // Special formulas - refresh AFTER BALANCE data is loaded
@@ -24386,6 +24392,11 @@ export default {
                 let plAccounts = [];
                 let bsAccounts = [];
                 
+                // SMART INFERENCE: If we have exactly 12 periods (full year), likely P&L sheet
+                // If we have 1 period, likely Balance Sheet (point-in-time snapshot)
+                const isLikelyPLSheet = detectedPeriods.size === 12 || (detectedPeriods.size >= 10 && detectedPeriods.size <= 12);
+                const isLikelyBSSheet = detectedPeriods.size === 1;
+                
                 if (detectedAccounts.size > 0) {
                     try {
                         const typeResponse = await fetch(`${getServerUrl()}/batch/account_types`, {
@@ -24419,13 +24430,39 @@ export default {
                             console.log(`📊 P&L accounts: ${plAccounts.length}, BS accounts: ${bsAccounts.length}`);
                         }
                     } catch (e) {
-                        // If type API fails, fetch BOTH P&L and BS to be safe
-                        // This is slower but ensures no accounts are missed
-                        console.error('❌ Type API failed! Will fetch BOTH P&L and BS:', e);
-                        plAccounts = [...detectedAccounts];
-                        bsAccounts = [...detectedAccounts];
-                        showToast({ type: 'warning', title: 'Account Classification Failed', 
-                            message: 'Could not classify accounts. Fetching both P&L and BS data to be safe (slower).', duration: 8000 });
+                        // If type API fails, use smart inference based on period count
+                        console.error('❌ Type API failed! Using smart inference:', e);
+                        if (isLikelyPLSheet) {
+                            console.log('📊 Smart inference: 12 periods detected → treating as P&L sheet');
+                            plAccounts = [...detectedAccounts];
+                            showToast({ type: 'info', title: 'Account Classification', 
+                                message: 'Could not classify accounts. Detected 12 periods (full year) → fetching P&L data only.', duration: 6000 });
+                        } else if (isLikelyBSSheet) {
+                            console.log('📊 Smart inference: 1 period detected → treating as Balance Sheet');
+                            bsAccounts = [...detectedAccounts];
+                            showToast({ type: 'info', title: 'Account Classification', 
+                                message: 'Could not classify accounts. Detected 1 period → fetching Balance Sheet data only.', duration: 6000 });
+                        } else {
+                            // Ambiguous - fetch both to be safe
+                            console.log('📊 Smart inference: Ambiguous period count → fetching both P&L and BS');
+                            plAccounts = [...detectedAccounts];
+                            bsAccounts = [...detectedAccounts];
+                            showToast({ type: 'warning', title: 'Account Classification Failed', 
+                                message: 'Could not classify accounts. Fetching both P&L and BS data to be safe (slower).', duration: 8000 });
+                        }
+                    }
+                } else if (cellsToUpdate.length > 0) {
+                    // No accounts extracted, but we have BALANCE formulas
+                    // Use smart inference based on period count
+                    console.log('⚠️ No accounts extracted from formulas, using smart inference');
+                    if (isLikelyPLSheet) {
+                        console.log('📊 Smart inference: 12 periods detected → treating as P&L sheet (will fetch all P&L accounts)');
+                        // Don't set plAccounts - we'll fetch all P&L accounts via full_year_refresh
+                    } else if (isLikelyBSSheet) {
+                        console.log('📊 Smart inference: 1 period detected → treating as Balance Sheet');
+                        // Will fetch BS accounts below
+                    } else {
+                        console.log('📊 Smart inference: Ambiguous → will try to infer from first formula evaluation');
                     }
                 }
                 
@@ -24458,13 +24495,13 @@ export default {
                 
                 // ============================================
                 // STEP 3: Fetch P&L accounts (fast ~30s/year)
-                // ONLY fetch P&L if there are actually P&L accounts detected
-                // If detectedAccounts is empty AND there are BALANCE formulas, 
-                // we still need to classify them - skip P&L in that case
+                // Fetch P&L if we have P&L accounts OR if we have 12 periods (full year P&L sheet)
                 // ============================================
                 
-                // ONLY fetch P&L if we actually have P&L accounts identified
-                if (plAccounts.length > 0) {
+                // Fetch P&L if we have P&L accounts OR if we have 12 periods (full year P&L sheet)
+                const shouldFetchPL = plAccounts.length > 0 || (isLikelyPLSheet && cellsToUpdate.length > 0);
+                
+                if (shouldFetchPL) {
                     console.log(`📊 Fetching P&L data for ${plAccounts.length} accounts: ${plAccounts.join(', ')}`);
                     updateLoading('Fetching P&L accounts...', 15, `${plAccounts.length} P&L accounts, Years: ${yearsArray.join(', ')}`);
                     
@@ -24548,7 +24585,11 @@ export default {
                         }
                     }
                 } else {
-                    updateLoading('No P&L accounts to fetch', 50, 'All detected accounts are Balance Sheet type');
+                    if (isLikelyPLSheet) {
+                        updateLoading('No P&L accounts to fetch', 50, 'Could not extract accounts from formulas, but detected 12 periods. Try refreshing individual cells.');
+                    } else {
+                        updateLoading('No P&L accounts to fetch', 50, 'All detected accounts are Balance Sheet type');
+                    }
                 }
                 
                 // ============================================
@@ -24557,8 +24598,12 @@ export default {
                 // Instead of 12 queries (~14 min), runs 1 query (~36 sec)
                 // ============================================
                 
-                // ONLY fetch BS if we have BS accounts, OR if we have no accounts at all (fallback for all BALANCE formulas)
-                if (bsAccounts.length > 0 || (detectedAccounts.size === 0 && cellsToUpdate.length > 0)) {
+                // ONLY fetch BS if we have BS accounts identified
+                // DO NOT default to BS if no accounts detected - use smart inference instead
+                // If we have 12 periods, it's likely a P&L sheet, so skip BS fetch
+                const shouldFetchBS = bsAccounts.length > 0 && !isLikelyPLSheet;
+                
+                if (shouldFetchBS) {
                     const bsCount = bsAccounts.length || 'All detected';
                     console.log(`📊 Fetching BS for ${bsCount} accounts`);
                     updateLoading('Fetching Balance Sheet accounts...', 50, 
