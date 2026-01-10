@@ -24291,6 +24291,62 @@ export default {
                                 } else {
                                     console.log(`   ⚠️ Could not extract account from formula at row ${row + 1}, col ${col + 1}: ${formula.substring(0, 50)}...`);
                                 }
+                                
+                                // CRITICAL: Extract periods from formula parameters (fromPeriod, toPeriod)
+                                // This is more reliable than scanning cells which might have unrelated dates
+                                // Pattern: XAVI.BALANCE(account, fromPeriod, toPeriod, ...)
+                                // Handles: "Jan 2025", Excel serials (45658), cell references, etc.
+                                const periodParamsMatch = formula.match(/XAVI\.BALANCE\s*\([^,]+,\s*([^,]+),\s*([^,]+)/i);
+                                if (periodParamsMatch) {
+                                    const fromPeriodParam = periodParamsMatch[1].trim().replace(/["']/g, '');
+                                    const toPeriodParam = periodParamsMatch[2].trim().replace(/["']/g, '');
+                                    
+                                    // Helper to normalize period from formula parameter
+                                    function normalizePeriodFromFormula(periodStr) {
+                                        if (!periodStr) return null;
+                                        periodStr = periodStr.trim();
+                                        
+                                        // Already in "Mon YYYY" format
+                                        const monYearMatch = periodStr.match(/^([A-Za-z]{3})\s+(20\d{2})$/i);
+                                        if (monYearMatch) {
+                                            const monthIdx = monthNames.findIndex(m => m.toLowerCase() === monYearMatch[1].toLowerCase());
+                                            if (monthIdx >= 0) {
+                                                return `${monthNames[monthIdx]} ${monYearMatch[2]}`;
+                                            }
+                                        }
+                                        
+                                        // Excel serial date (numeric)
+                                        if (/^\d+$/.test(periodStr)) {
+                                            const numValue = parseFloat(periodStr);
+                                            if (numValue >= 40000 && numValue < 60000) {
+                                                const excelEpoch = new Date(1899, 11, 30);
+                                                const jsDate = new Date(excelEpoch.getTime() + numValue * 86400000);
+                                                return toPeriodFormat(jsDate);
+                                            }
+                                        }
+                                        
+                                        return null;
+                                    }
+                                    
+                                    // Extract periods from formula parameters
+                                    const normalizedFrom = normalizePeriodFromFormula(fromPeriodParam);
+                                    const normalizedTo = normalizePeriodFromFormula(toPeriodParam);
+                                    
+                                    if (normalizedTo) {
+                                        detectedPeriods.add(normalizedTo);
+                                        const yearMatch = normalizedTo.match(/\s+(\d{4})$/);
+                                        if (yearMatch) {
+                                            detectedYears.add(parseInt(yearMatch[1]));
+                                        }
+                                    }
+                                    if (normalizedFrom && normalizedFrom !== normalizedTo) {
+                                        detectedPeriods.add(normalizedFrom);
+                                        const yearMatch = normalizedFrom.match(/\s+(\d{4})$/);
+                                        if (yearMatch) {
+                                            detectedYears.add(parseInt(yearMatch[1]));
+                                        }
+                                    }
+                                }
                                 }
                                 
                                 // Special formulas - refresh AFTER BALANCE data is loaded
@@ -24305,7 +24361,8 @@ export default {
                         }
                     }
                     
-                    // Also scan for date values to detect SPECIFIC PERIODS (not just years)
+                    // FALLBACK: Also scan header row for period labels (only if we didn't extract from formulas)
+                    // This helps when formulas use cell references instead of literal periods
                     // Support multiple formats: "Jan 2025", "12/1/24", Excel serial dates
                     const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 
                                        'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -24317,9 +24374,12 @@ export default {
                         return `${monthNames[date.getMonth()]} ${date.getFullYear()}`;
                     }
                     
-                    for (let row = 0; row < Math.min(rowCount, 20); row++) {
+                    // Only scan if we didn't get periods from formulas (fallback)
+                    if (detectedPeriods.size === 0) {
+                        console.log('📊 No periods extracted from formulas, scanning header row as fallback...');
+                        // Scan only first row (header row) for period labels
                         for (let col = 0; col < Math.min(colCount, 50); col++) {
-                            const cellValue = values[row][col];
+                            const cellValue = values[0] && values[0][col];
                             const val = String(cellValue || '').trim();
                             
                             // Check for "Jan 2025" format - already in correct format!
@@ -24369,6 +24429,8 @@ export default {
                 
                 console.log(`📊 Found ${cellsToUpdate.length} XAVI.BALANCE formulas`);
                 console.log(`📊 Found ${specialFormulas.length} special formulas (RETAINEDEARNINGS/NETINCOME/CTA)`);
+                console.log(`📊 Detected ${detectedPeriods.size} period(s) from formulas: ${Array.from(detectedPeriods).join(', ')}`);
+                console.log(`📊 Detected ${detectedAccounts.size} account(s): ${Array.from(detectedAccounts).join(', ')}`);
                 
                 if (cellsToUpdate.length === 0 && specialFormulas.length === 0) {
                     hideLoading();
@@ -24393,9 +24455,20 @@ export default {
                 let bsAccounts = [];
                 
                 // SMART INFERENCE: If we have exactly 12 periods (full year), likely P&L sheet
-                // If we have 1 period, likely Balance Sheet (point-in-time snapshot)
-                const isLikelyPLSheet = detectedPeriods.size === 12 || (detectedPeriods.size >= 10 && detectedPeriods.size <= 12);
-                const isLikelyBSSheet = detectedPeriods.size === 1;
+                // Also check if all periods are from the same year (more reliable indicator)
+                const periodsArray = Array.from(detectedPeriods);
+                const periodsFromSameYear = periodsArray.length > 0 && periodsArray.every(p => {
+                    const yearMatch = p.match(/\s+(\d{4})$/);
+                    return yearMatch && yearMatch[1] === String(yearsArray[0] || new Date().getFullYear());
+                });
+                
+                // P&L sheet: 12 periods of same year OR 10-12 periods of same year
+                const isLikelyPLSheet = (detectedPeriods.size === 12 && periodsFromSameYear) || 
+                                       (detectedPeriods.size >= 10 && detectedPeriods.size <= 12 && periodsFromSameYear);
+                // Balance Sheet: 1 period OR multiple periods from different years (multi-year BS report)
+                const isLikelyBSSheet = detectedPeriods.size === 1 || (detectedPeriods.size > 1 && !periodsFromSameYear);
+                
+                console.log(`📊 Sheet type inference: ${detectedPeriods.size} periods, same year: ${periodsFromSameYear} → ${isLikelyPLSheet ? 'P&L' : isLikelyBSSheet ? 'BS' : 'Ambiguous'}`);
                 
                 if (detectedAccounts.size > 0) {
                     try {
@@ -24499,11 +24572,15 @@ export default {
                 // ============================================
                 
                 // Fetch P&L if we have P&L accounts OR if we have 12 periods (full year P&L sheet)
+                // CRITICAL: If we have 12 periods from same year, ALWAYS fetch P&L (even if no accounts extracted)
                 const shouldFetchPL = plAccounts.length > 0 || (isLikelyPLSheet && cellsToUpdate.length > 0);
                 
+                console.log(`📊 P&L fetch decision: shouldFetchPL=${shouldFetchPL}, plAccounts.length=${plAccounts.length}, isLikelyPLSheet=${isLikelyPLSheet}, cellsToUpdate.length=${cellsToUpdate.length}`);
+                
                 if (shouldFetchPL) {
-                    console.log(`📊 Fetching P&L data for ${plAccounts.length} accounts: ${plAccounts.join(', ')}`);
-                    updateLoading('Fetching P&L accounts...', 15, `${plAccounts.length} P&L accounts, Years: ${yearsArray.join(', ')}`);
+                    const accountInfo = plAccounts.length > 0 ? `${plAccounts.length} accounts: ${plAccounts.join(', ')}` : 'all P&L accounts (12 periods detected)';
+                    console.log(`📊 Fetching P&L data for ${accountInfo}`);
+                    updateLoading('Fetching P&L accounts...', 15, `${plAccounts.length > 0 ? plAccounts.length : 'All'} P&L accounts, Years: ${yearsArray.join(', ')}`);
                     
                     for (let i = 0; i < yearsArray.length; i++) {
                         // Check for cancellation
@@ -24598,10 +24675,11 @@ export default {
                 // Instead of 12 queries (~14 min), runs 1 query (~36 sec)
                 // ============================================
                 
-                // ONLY fetch BS if we have BS accounts identified
-                // DO NOT default to BS if no accounts detected - use smart inference instead
-                // If we have 12 periods, it's likely a P&L sheet, so skip BS fetch
+                // ONLY fetch BS if we have BS accounts identified AND it's NOT a P&L sheet
+                // CRITICAL: If we have 12 periods from same year, it's a P&L sheet - NEVER fetch BS
                 const shouldFetchBS = bsAccounts.length > 0 && !isLikelyPLSheet;
+                
+                console.log(`📊 BS fetch decision: shouldFetchBS=${shouldFetchBS}, bsAccounts.length=${bsAccounts.length}, isLikelyPLSheet=${isLikelyPLSheet}`);
                 
                 if (shouldFetchBS) {
                     const bsCount = bsAccounts.length || 'All detected';
@@ -24621,8 +24699,9 @@ export default {
                                 allPeriods.push(`${month} ${year}`);
                             }
                         }
+                        console.log(`📊 BS: No periods detected, generating all months for year(s): ${yearsArray.join(', ')}`);
                     } else {
-                        console.log(`📊 BS: Fetching ONLY ${allPeriods.length} specific periods (optimized!)`);
+                        console.log(`📊 BS: Fetching ONLY ${allPeriods.length} specific periods (optimized!): ${allPeriods.slice(0, 5).join(', ')}${allPeriods.length > 5 ? '...' : ''}`);
                     }
                     updateLoading(`Fetching BS data (${allPeriods.length} periods)...`, 55, 
                         `Running single query for ${allPeriods.length} BS periods. ~${Math.max(10, allPeriods.length * 2)} seconds.`);

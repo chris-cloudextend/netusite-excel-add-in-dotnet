@@ -634,26 +634,33 @@ GROUP BY a.acctnumber
 
 ## P&L vs Balance Sheet Queries
 
-**The fundamental difference:**
+**Both query types use periods, but in different ways:**
 
-| Type | Date Filter | What it Returns |
-|------|-------------|-----------------|
-| P&L (Income Statement) | `ap.periodname IN ('Jan 2025')` | Activity for the period |
-| Balance Sheet | `ap.enddate <= '2025-01-31'` | Cumulative balance through period end |
+| Type | Period Filter | What it Returns |
+|------|---------------|-----------------|
+| P&L (Income Statement) | `t.postingperiod IN (periodId1, periodId2, ...)` | Activity for the specific period(s) only |
+| Balance Sheet | `ap.enddate <= TO_DATE('2025-01-31', 'YYYY-MM-DD')` | Cumulative balance through period end (all transactions from inception) |
+
+**Key Differences:**
+- **P&L:** Filters transactions by posting period ID - only includes transactions posted in the specified period(s)
+- **Balance Sheet:** Filters transactions by period end date - includes all transactions from company inception through the period end date
+- **Both:** Use the period ID in `BUILTIN.CONSOLIDATE` for currency conversion at the target period's exchange rate
 
 **P&L Query:**
 ```sql
 WHERE ...
-  AND ap.periodname IN ('Jan 2025', 'Feb 2025')  -- Specific periods only
+  AND t.postingperiod IN (345, 346, 347)  -- Only transactions posted in these periods
   AND a.accttype IN ('Income', 'Expense', 'COGS', ...)
 ```
 
 **Balance Sheet Query:**
 ```sql
 WHERE ...
-  AND ap.enddate <= TO_DATE('2025-01-31', 'YYYY-MM-DD')  -- All time through period
+  AND ap.enddate <= TO_DATE('2025-01-31', 'YYYY-MM-DD')  -- All transactions through period end
   AND a.accttype IN ('Bank', 'AcctRec', 'AcctPay', ...)
 ```
+
+**Note:** Both query types use the period ID for currency conversion in `BUILTIN.CONSOLIDATE`, ensuring all amounts are translated at the target period's exchange rate for accurate consolidation.
 
 ## Segment Filters (Class, Department, Location)
 
@@ -1403,5 +1410,5 @@ Backend prints detailed query information:
 
 ---
 
-*Document Version: 4.0.6*
-*Last Updated: January 2, 2025*
+*Document Version: 4.0.6.146*
+*Last Updated: January 10, 2026*
