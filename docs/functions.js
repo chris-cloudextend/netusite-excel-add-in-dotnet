@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.143';  // Feature: Income account pre-caching (similar to balance sheet preload)
+const FUNCTIONS_VERSION = '4.0.6.144';  // Feature: Income account pre-caching (similar to balance sheet preload) + debug logging
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -2752,15 +2752,19 @@ function triggerAutoPreload(firstAccount, firstPeriod, filters = null) {
  * Similar to triggerAutoPreload but for Income Statement accounts.
  */
 function triggerIncomePreload(firstAccount, firstPeriod, filters = null) {
+    console.log(`🔍 triggerIncomePreload called: account=${firstAccount}, period=${firstPeriod}, filters=`, filters);
+    
     // CRITICAL: Normalize period before using it (handles Range objects)
     const normalizedPeriod = normalizePeriodKey(firstPeriod, false);
     if (!normalizedPeriod) {
         console.warn(`⚠️ triggerIncomePreload: Could not normalize period "${firstPeriod}", skipping preload`);
         return;
     }
+    console.log(`✅ Period normalized: "${firstPeriod}" → "${normalizedPeriod}"`);
     
     // Check if this period is already cached (using normalized period)
     const isPeriodCached = checkIfPeriodIsCached(normalizedPeriod);
+    console.log(`🔍 Period cache check for "${normalizedPeriod}": ${isPeriodCached ? 'CACHED' : 'NOT CACHED'}`);
     
     if (isPeriodCached) {
         console.log(`✅ Period ${normalizedPeriod} already cached, skipping income preload`);
@@ -2847,21 +2851,32 @@ function checkIfPeriodIsCached(period) {
         // This handles Range objects and various period formats
         // ✅ Use normalizePeriodKey (synchronous, no await needed)
         const normalizedPeriod = normalizePeriodKey(period, false);
-        if (!normalizedPeriod) return false;
+        if (!normalizedPeriod) {
+            console.log(`🔍 checkIfPeriodIsCached("${period}"): Normalization failed, returning false`);
+            return false;
+        }
         
         const preloadCache = localStorage.getItem('xavi_balance_cache');
-        if (!preloadCache) return false;
+        if (!preloadCache) {
+            console.log(`🔍 checkIfPeriodIsCached("${normalizedPeriod}"): No cache found, returning false`);
+            return false;
+        }
         
         const preloadData = JSON.parse(preloadCache);
         // Check if any account has this period cached
         // We just need to find one account with this period to know it's cached
         // Cache keys are in format: balance:${account}::${normalizedPeriod}
         const periodKey = `::${normalizedPeriod}`;
+        const cacheKeys = Object.keys(preloadData);
+        console.log(`🔍 checkIfPeriodIsCached("${normalizedPeriod}"): Checking ${cacheKeys.length} cache keys for period key "${periodKey}"`);
+        
         for (const key in preloadData) {
             if (key.endsWith(periodKey)) {
+                console.log(`✅ checkIfPeriodIsCached("${normalizedPeriod}"): Found cached period in key "${key}", returning true`);
                 return true;
             }
         }
+        console.log(`🔍 checkIfPeriodIsCached("${normalizedPeriod}"): No matching cache keys found, returning false`);
         return false;
     } catch (e) {
         console.warn('Error checking period cache:', e);
@@ -7475,10 +7490,15 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                     window.totalIncomeFormulasQueued = 0;
                 }
                 window.totalIncomeFormulasQueued++;
+                console.log(`🔍 Income preload check: totalIncomeFormulasQueued = ${window.totalIncomeFormulasQueued}, account = ${account}, period = ${normalizedToPeriod}`);
                 
                 if (window.totalIncomeFormulasQueued === 1) {
+                    console.log(`🚀 About to trigger income preload for first formula: ${account}/${normalizedToPeriod}`);
                     // CRITICAL: Use normalized period name (not Excel date serial) for preload trigger
                     triggerIncomePreload(account, normalizedToPeriod, { subsidiary, department, location, classId, accountingBook });
+                    console.log(`✅ Income preload trigger call completed`);
+                } else {
+                    console.log(`⏭️ Skipping income preload trigger (not first formula: ${window.totalIncomeFormulasQueued})`);
                 }
                 // CRITICAL: Check for build mode signal BEFORE queuing (for Refresh All)
                 // This ensures formulas are batched instead of evaluated individually
