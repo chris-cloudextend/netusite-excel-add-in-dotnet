@@ -8997,14 +8997,19 @@ For licensing inquiries, contact: legal@celigo.com
                                         // Process results and cache
                                         if (result.balances) {
                                             const cacheEntries = {};
-                                            // Build filtersHash similar to functions.js
+                                            // Build filtersHash matching functions.js getFilterKey() format
+                                            // CRITICAL: Must use pipe (|) separator, not colon (:), to match functions.js
                                             const buildFiltersHash = (filters) => {
-                                                const sub = filters.subsidiary || '';
-                                                const dept = filters.department || '';
-                                                const loc = filters.location || '';
-                                                const cls = filters.class || '';
-                                                const book = filters.accountingBook || '1';
-                                                return `${sub}:${dept}:${loc}:${cls}:${book}`;
+                                                const sub = String(filters.subsidiary || '').trim();
+                                                const dept = String(filters.department || '').trim();
+                                                const loc = String(filters.location || '').trim();
+                                                const cls = String(filters.class || '').trim();
+                                                // Normalize empty accountingBook to "1" (Primary Book) for consistent filtersHash
+                                                let book = String(filters.accountingBook || '').trim();
+                                                if (book === '' || book === '1') {
+                                                    book = '1'; // Normalize to "1" for Primary Book
+                                                }
+                                                return `${sub}|${dept}|${loc}|${cls}|${book}`;
                                             };
                                             const filtersHash = buildFiltersHash(preloadFilters);
                                             
