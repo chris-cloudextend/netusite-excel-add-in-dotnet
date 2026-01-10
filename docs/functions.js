@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.142';  // Fix: Progress indicator UI improvements, reduced console logging
+const FUNCTIONS_VERSION = '4.0.6.143';  // Feature: Income account pre-caching (similar to balance sheet preload)
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -7405,11 +7405,37 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
             accountType = await getAccountType(account);
         }
         
+        // Extract type string from accountType (handles JSON string or object)
+        let acctTypeStr = '';
+        if (!accountType) {
+            acctTypeStr = '';
+        } else if (typeof accountType === 'string') {
+            // Check if it's a JSON string first
+            const trimmed = accountType.trim();
+            if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+                try {
+                    const parsed = JSON.parse(trimmed);
+                    acctTypeStr = (parsed.type || parsed.accountType || '').toString().trim();
+                } catch (e) {
+                    // Not valid JSON, treat as plain string
+                    acctTypeStr = trimmed;
+                }
+            } else {
+                // Plain string type
+                acctTypeStr = trimmed;
+            }
+        } else if (accountType && typeof accountType === 'object') {
+            // Handle object format: { account: "10010", type: "Bank", display_name: "Bank" }
+            acctTypeStr = (accountType.type || accountType.accountType || '').toString().trim();
+        } else {
+            acctTypeStr = String(accountType).trim();
+        }
+        
         // INCOME STATEMENT PATH: Route to queue for batching (with preload support)
         // Income/Expense accounts should be batched together for efficient year queries
         // Now includes preload support similar to Balance Sheet accounts
-        if (accountType && (accountType === 'Income' || accountType === 'COGS' || accountType === 'Expense' || 
-            accountType === 'OthIncome' || accountType === 'OthExpense')) {
+        if (acctTypeStr && (acctTypeStr === 'Income' || acctTypeStr === 'COGS' || acctTypeStr === 'Expense' || 
+            acctTypeStr === 'OthIncome' || acctTypeStr === 'OthExpense')) {
             // Check cache first (before queuing)
             if (cache.balance.has(cacheKey)) {
                 cacheStats.hits++;
