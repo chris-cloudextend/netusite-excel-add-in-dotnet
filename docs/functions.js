@@ -2654,6 +2654,8 @@ function extractValueFromRange(value, paramName = 'parameter') {
  */
 let autoPreloadTriggered = false;
 let autoPreloadInProgress = false;
+let incomePreloadTriggered = false;
+let incomePreloadInProgress = false;
 
 function triggerAutoPreload(firstAccount, firstPeriod, filters = null) {
     // CRITICAL: Normalize period before using it (handles Range objects)
@@ -2744,6 +2746,96 @@ function triggerAutoPreload(firstAccount, firstPeriod, filters = null) {
         console.warn('Could not trigger auto-preload:', e);
     }
 }
+
+/**
+ * Trigger automatic Income Statement preload when first P&L formula is detected.
+ * Similar to triggerAutoPreload but for Income Statement accounts.
+ */
+function triggerIncomePreload(firstAccount, firstPeriod, filters = null) {
+    // CRITICAL: Normalize period before using it (handles Range objects)
+    const normalizedPeriod = normalizePeriodKey(firstPeriod, false);
+    if (!normalizedPeriod) {
+        console.warn(`⚠️ triggerIncomePreload: Could not normalize period "${firstPeriod}", skipping preload`);
+        return;
+    }
+    
+    // Check if this period is already cached (using normalized period)
+    const isPeriodCached = checkIfPeriodIsCached(normalizedPeriod);
+    
+    if (isPeriodCached) {
+        console.log(`✅ Period ${normalizedPeriod} already cached, skipping income preload`);
+        return;
+    }
+    
+    // CRITICAL: Allow preload to trigger for NEW periods even if a previous preload is in progress
+    if (incomePreloadInProgress) {
+        console.log(`🔄 Income preload in progress, but ${normalizedPeriod} is new period - triggering additional preload`);
+    }
+    
+    // If this is the first time, mark as triggered
+    if (!incomePreloadTriggered) {
+        incomePreloadTriggered = true;
+        console.log(`🚀 INCOME PRELOAD: Triggered by first P&L formula (${firstAccount}, ${normalizedPeriod})`);
+    } else {
+        console.log(`🚀 INCOME PRELOAD: Triggered for new period (${firstAccount}, ${normalizedPeriod})`);
+    }
+    
+    incomePreloadInProgress = true;
+    
+    // Set localStorage flag so waitForPreload() can detect it
+    try {
+        localStorage.setItem('netsuite_income_preload_status', 'running');
+        localStorage.setItem('netsuite_income_preload_timestamp', Date.now().toString());
+    } catch (e) {
+        console.warn('Could not set income preload status:', e);
+    }
+    
+    // Send signal to taskpane to trigger income preload
+    // Format: netsuite_income_preload_trigger_<timestamp>_<random>
+    try {
+        const triggerId = `netsuite_income_preload_trigger_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        const triggerData = {
+            firstAccount: firstAccount,
+            firstPeriod: normalizedPeriod,
+            timestamp: Date.now(),
+            reason: incomePreloadTriggered ? `New period detected: ${normalizedPeriod}` : 'First Income Statement formula detected',
+            filters: filters || null,
+            accountType: 'income' // Distinguish from BS preload
+        };
+        localStorage.setItem(triggerId, JSON.stringify(triggerData));
+        console.log(`📤 Income preload trigger queued: ${triggerId} (period: ${normalizedPeriod})`);
+        
+        // Trigger custom event for same-window detection
+        try {
+            window.dispatchEvent(new CustomEvent('netsuite-income-preload-trigger', { 
+                detail: { triggerId, triggerData } 
+            }));
+        } catch (e) {
+            console.warn('⚠️ Could not dispatch custom event:', e);
+        }
+    } catch (e) {
+        console.warn('Could not trigger income preload:', e);
+    }
+}
+
+/**
+ * Mark income preload as complete (called from taskpane)
+ */
+function markIncomePreloadComplete() {
+    incomePreloadInProgress = false;
+    
+    try {
+        localStorage.setItem('netsuite_income_preload_status', 'complete');
+        localStorage.setItem('netsuite_income_preload_timestamp', Date.now().toString());
+    } catch (e) {
+        console.warn('Could not update income preload status:', e);
+    }
+    
+    console.log('✅ INCOME PRELOAD: Complete');
+}
+
+// Expose for taskpane
+window.markIncomePreloadComplete = markIncomePreloadComplete;
 
 /**
  * Check if a period is already cached in the preload cache
@@ -7313,9 +7405,9 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
             accountType = await getAccountType(account);
         }
         
-        // INCOME STATEMENT PATH: Route to queue for batching (skip manifest/preload)
+        // INCOME STATEMENT PATH: Route to queue for batching (with preload support)
         // Income/Expense accounts should be batched together for efficient year queries
-        // They skip all manifest/preload logic and go directly to the queue
+        // Now includes preload support similar to Balance Sheet accounts
         if (accountType && (accountType === 'Income' || accountType === 'COGS' || accountType === 'Expense' || 
             accountType === 'OthIncome' || accountType === 'OthExpense')) {
             // Check cache first (before queuing)
@@ -7324,11 +7416,33 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                 return cache.balance.get(cacheKey);
             }
             
+            // Check localStorage cache (from preload)
+            if (toPeriod && toPeriod !== '') {
+                // Get filtersHash for cache lookup
+                const filtersHash = getFilterKey({ subsidiary, department, location, classId, accountingBook });
+                const localStorageValue = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary, filtersHash);
+                if (localStorageValue !== null) {
+                    cacheStats.hits++;
+                    cache.balance.set(cacheKey, localStorageValue);
+                    return localStorageValue;
+                }
+            }
+            
             // Check if period is resolved (required for queuing)
             if (!toPeriod || toPeriod === '') {
                 console.log(`⏳ Income Statement: Period not yet resolved for ${account} - proceeding to API path`);
                 // Continue to API path below (don't throw - Excel will re-evaluate when period resolves)
             } else {
+                // First Income Statement formula - trigger automatic preload!
+                // Track income formulas to detect first one
+                if (typeof window.totalIncomeFormulasQueued === 'undefined') {
+                    window.totalIncomeFormulasQueued = 0;
+                }
+                window.totalIncomeFormulasQueued++;
+                
+                if (window.totalIncomeFormulasQueued === 1) {
+                    triggerIncomePreload(account, toPeriod, { subsidiary, department, location, classId, accountingBook });
+                }
                 // CRITICAL: Check for build mode signal BEFORE queuing (for Refresh All)
                 // This ensures formulas are batched instead of evaluated individually
                 const buildModeSignal = localStorage.getItem('netsuite_enter_build_mode');

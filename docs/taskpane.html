@@ -8880,6 +8880,223 @@ For licensing inquiries, contact: legal@celigo.com
                 }
                 
                 // Function to process auto-preload triggers
+                function processIncomePreloadTriggers() {
+                    // Scan all trigger keys with prefix netsuite_income_preload_trigger_
+                    const triggerKeys = [];
+                    const allPeriods = new Set();
+                    let firstTrigger = null;
+                
+                try {
+                    // Scan localStorage for all income preload trigger keys
+                    for (let i = 0; i < localStorage.length; i++) {
+                        const key = localStorage.key(i);
+                        if (key && key.startsWith('netsuite_income_preload_trigger_')) {
+                            triggerKeys.push(key);
+                        }
+                    }
+                    
+                    // Process all triggers and collect periods
+                    for (const triggerKey of triggerKeys) {
+                        try {
+                            const triggerJson = localStorage.getItem(triggerKey);
+                            if (triggerJson) {
+                                const trigger = JSON.parse(triggerJson);
+                                if (trigger.firstPeriod) {
+                                    allPeriods.add(trigger.firstPeriod);
+                                }
+                                if (!firstTrigger) {
+                                    firstTrigger = trigger;
+                                }
+                                localStorage.removeItem(triggerKey);
+                                console.log(`✅ Processed income preload trigger: ${triggerKey} (period: ${trigger.firstPeriod})`);
+                            }
+                        } catch (e) {
+                            console.warn(`⚠️ Failed to process income trigger ${triggerKey}:`, e);
+                            localStorage.removeItem(triggerKey);
+                        }
+                    }
+                } catch (e) {
+                    console.warn('⚠️ Error scanning income trigger keys:', e);
+                }
+                
+                if (firstTrigger && allPeriods.size > 0) {
+                    const periodsArray = Array.from(allPeriods);
+                    console.log(`🚀 INCOME PRELOAD TRIGGERED: ${allPeriods.size} period(s) - ${periodsArray.join(', ')}`);
+                    
+                    // Check if preload is already running
+                    if (isPreloadRunning()) {
+                        console.log(`⏸️ Preload already in progress - adding ${periodsArray.length} period(s) to queue`);
+                        addToPreloadQueue(periodsArray);
+                        return true;
+                    }
+                    
+                    // Set preload lock
+                    setPreloadLock(periodsArray);
+                    console.log(`🔒 Income preload lock acquired for ${periodsArray.length} period(s)`);
+                    
+                    // Show loading overlay
+                    showLoading(
+                        '🔍 Income Formulas Detected!',
+                        'Preloading all income accounts automatically...',
+                        10
+                    );
+                    
+                    // Start preload
+                    setTimeout(async () => {
+                        try {
+                            updateLoading('Preloading Income Accounts', 20, 'Fetching all income accounts for period(s)...');
+                            
+                            // Extract filters from first trigger
+                            const filters = firstTrigger.filters || {};
+                            const preloadFilters = {
+                                subsidiary: filters.subsidiary || '',
+                                department: filters.department || '',
+                                location: filters.location || '',
+                                class: filters.classId || '',
+                                accountingBook: filters.accountingBook || ''
+                            };
+                            
+                            // Process periods in chunks (same as BS preload)
+                            const CHUNK_SIZE = 1; // Process one period at a time to avoid timeouts
+                            const allCompleted = [];
+                            const allFailed = [];
+                            
+                            for (let i = 0; i < periodsArray.length; i += CHUNK_SIZE) {
+                                const periodChunk = periodsArray.slice(i, i + CHUNK_SIZE);
+                                const periodsText = periodChunk.join(', ');
+                                
+                                updateLoading(
+                                    `⚡ Preloading ${periodsText} (${periodChunk.length} period${periodChunk.length > 1 ? 's' : ''})`,
+                                    40,
+                                    'Getting all income accounts for this period...'
+                                );
+                                
+                                const controller = new AbortController();
+                                const timeoutId = setTimeout(() => controller.abort(), 120000);
+                                
+                                try {
+                                    const preloadResponse = await fetch(`${getServerUrl()}/batch/pl_preload`, {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({
+                                            periods: periodChunk,
+                                            subsidiary: preloadFilters.subsidiary || '',
+                                            department: preloadFilters.department || '',
+                                            location: preloadFilters.location || '',
+                                            class: preloadFilters.class || '',
+                                            accountingBook: preloadFilters.accountingBook || ''
+                                        }),
+                                        signal: controller.signal
+                                    });
+                                    
+                                    clearTimeout(timeoutId);
+                                    
+                                    if (preloadResponse.ok) {
+                                        const result = await preloadResponse.json();
+                                        
+                                        // Process results and cache
+                                        if (result.balances) {
+                                            const cacheEntries = {};
+                                            // Build filtersHash similar to functions.js
+                                            const buildFiltersHash = (filters) => {
+                                                const sub = filters.subsidiary || '';
+                                                const dept = filters.department || '';
+                                                const loc = filters.location || '';
+                                                const cls = filters.class || '';
+                                                const book = filters.accountingBook || '1';
+                                                return `${sub}:${dept}:${loc}:${cls}:${book}`;
+                                            };
+                                            const filtersHash = buildFiltersHash(preloadFilters);
+                                            
+                                            for (const [account, periodBalances] of Object.entries(result.balances)) {
+                                                if (typeof periodBalances === 'object') {
+                                                    for (const [pName, balance] of Object.entries(periodBalances)) {
+                                                        const cacheKey = `balance:${account}:${filtersHash}:${pName}`;
+                                                        cacheEntries[cacheKey] = { value: balance, timestamp: Date.now() };
+                                                        
+                                                        // Legacy key for backward compatibility
+                                                        if (filtersHash === '||||1' || filtersHash === '||||') {
+                                                            const legacyKey = `balance:${account}::${pName}`;
+                                                            cacheEntries[legacyKey] = { value: balance, timestamp: Date.now() };
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            
+                                            // Update localStorage cache
+                                            const existingCache = JSON.parse(localStorage.getItem('xavi_balance_cache') || '{}');
+                                            Object.assign(existingCache, cacheEntries);
+                                            localStorage.setItem('xavi_balance_cache', JSON.stringify(existingCache));
+                                            
+                                            console.log(`✅ Income preload cached ${Object.keys(cacheEntries).length} entries for ${periodChunk.join(', ')}`);
+                                        }
+                                        
+                                        // Mark periods as completed
+                                        if (result.period_results) {
+                                            for (const pr of result.period_results) {
+                                                if (pr.status === 'completed') {
+                                                    allCompleted.push(pr.period);
+                                                } else if (pr.status === 'failed') {
+                                                    allFailed.push({ period: pr.period, error: pr.error });
+                                                }
+                                            }
+                                        } else {
+                                            // Fallback: assume all completed if we have balances
+                                            allCompleted.push(...periodChunk);
+                                        }
+                                    } else {
+                                        const errorText = await preloadResponse.text();
+                                        console.error(`❌ Income preload failed: ${preloadResponse.status} - ${errorText}`);
+                                        allFailed.push(...periodChunk.map(p => ({ period: p, error: `HTTP ${preloadResponse.status}` })));
+                                    }
+                                } catch (fetchError) {
+                                    clearTimeout(timeoutId);
+                                    if (fetchError.name === 'AbortError') {
+                                        console.warn(`⚠️ Income preload timed out for: ${periodsText}`);
+                                        allFailed.push(...periodChunk.map(p => ({ period: p, error: 'Timeout' })));
+                                    } else {
+                                        console.error(`❌ Income preload error:`, fetchError);
+                                        allFailed.push(...periodChunk.map(p => ({ period: p, error: fetchError.message })));
+                                    }
+                                }
+                            }
+                            
+                            // Mark preload complete
+                            if (typeof window.markIncomePreloadComplete === 'function') {
+                                window.markIncomePreloadComplete();
+                            }
+                            
+                            clearPreloadLock();
+                            
+                            if (allCompleted.length > 0) {
+                                showToast({
+                                    title: '✅ Income Preload Complete!',
+                                    message: `All income accounts preloaded for ${allCompleted.length} period(s). Your formulas will now resolve instantly!`,
+                                    type: 'success',
+                                    duration: 5000
+                                });
+                            }
+                            
+                            hideLoading();
+                        } catch (error) {
+                            console.error('❌ Income preload error:', error);
+                            clearPreloadLock();
+                            hideLoading();
+                            showToast({
+                                title: '⚠️ Income Preload Error',
+                                message: error.message || 'An error occurred during preload',
+                                type: 'error',
+                                duration: 5000
+                            });
+                        }
+                    }, 500);
+                    
+                    return true;
+                }
+                
+                return false;
+            }
+
                 function processAutoPreloadTriggers() {
                     // Scan all trigger keys with prefix netsuite_auto_preload_trigger_
                     const triggerKeys = [];
@@ -9880,6 +10097,9 @@ For licensing inquiries, contact: legal@celigo.com
                     } else if (e.key === 'netsuite_auto_preload_trigger') {
                         console.log('🔔 Storage event detected for legacy preload trigger - processing immediately');
                         processAutoPreloadTriggers();
+                    } else if (e.key && e.key.startsWith('netsuite_income_preload_trigger_')) {
+                        console.log('🔔 Storage event detected for income preload trigger - processing immediately');
+                        processIncomePreloadTriggers();
                     }
                 });
                 
@@ -9891,6 +10111,14 @@ For licensing inquiries, contact: legal@celigo.com
                     console.log('🔬 TRIGGER DEBUG: Custom event detail:', e.detail);
                     // Process immediately (no debounce) for faster response
                     processAutoPreloadTriggers();
+                });
+                
+                // Listen for income preload custom events
+                window.addEventListener('netsuite-income-preload-trigger', (e) => {
+                    console.log('🔔 Custom event detected for income preload trigger - processing immediately');
+                    console.log('🔬 TRIGGER DEBUG: Income preload event detail:', e.detail);
+                    // Process immediately (no debounce) for faster response
+                    processIncomePreloadTriggers();
                 });
                 
                 // 🔬 VALIDATION: Add a manual trigger check function for debugging
@@ -9947,6 +10175,24 @@ For licensing inquiries, contact: legal@celigo.com
                     
                     if (hasTriggers) {
                         debouncedProcessTriggers();
+                    }
+                    
+                    // Also check for income preload triggers
+                    let hasIncomeTriggers = false;
+                    try {
+                        for (let i = 0; i < localStorage.length; i++) {
+                            const key = localStorage.key(i);
+                            if (key && key.startsWith('netsuite_income_preload_trigger_')) {
+                                hasIncomeTriggers = true;
+                                break;
+                            }
+                        }
+                    } catch (e) {
+                        // Ignore
+                    }
+                    
+                    if (hasIncomeTriggers) {
+                        processIncomePreloadTriggers();
                     }
                 }, 2000); // Check every 2 seconds
                 

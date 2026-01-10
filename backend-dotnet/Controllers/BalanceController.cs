@@ -1137,6 +1137,234 @@ public class BalanceController : ControllerBase
     /// Used by smart preload feature that scans the sheet first.
     /// Example: If sheet has 15 BS accounts × 2 periods = ~20 seconds (vs ~140 for all accounts)
     /// </remarks>
+    /// <summary>
+    /// Preload ALL P&L (Income Statement) accounts for a given period.
+    /// Similar to bs_preload but for Income Statement accounts.
+    /// After preload, individual P&L formulas hit cache and are instant.
+    /// </summary>
+    /// <remarks>
+    /// Performance: Based on testing, querying all income accounts (~111 accounts) takes ~3.14 seconds,
+    /// which is only 2.29x slower than querying a small subset. This makes pre-caching efficient.
+    /// </remarks>
+    [HttpPost("/batch/pl_preload")]
+    public async Task<IActionResult> PreloadIncomeAccounts([FromBody] BsPreloadRequest request)
+    {
+        var startTime = DateTime.UtcNow;
+        
+        // Support both single period and multiple periods
+        var periodsToLoad = new List<string>();
+        if (request.Periods != null && request.Periods.Any())
+        {
+            periodsToLoad.AddRange(request.Periods.Where(p => !string.IsNullOrEmpty(p)));
+        }
+        else if (!string.IsNullOrEmpty(request.Period))
+        {
+            periodsToLoad.Add(request.Period);
+        }
+        
+        if (!periodsToLoad.Any())
+            return BadRequest(new { error = "period or periods is required" });
+
+        try
+        {
+            _logger.LogInformation("📊 PL PRELOAD: Starting for {Count} period(s): {Periods}", 
+                periodsToLoad.Count, string.Join(", ", periodsToLoad));
+            _logger.LogInformation("🔍 [PL PRELOAD DEBUG] Request received: Book={Book}, Subsidiary={Subsidiary}, Department={Department}, Location={Location}, Class={Class}", 
+                request.Book?.ToString() ?? "null", request.Subsidiary ?? "null", request.Department ?? "null", request.Location ?? "null", request.Class ?? "null");
+            
+            // Results aggregated across all periods
+            var allBalances = new Dictionary<string, Dictionary<string, decimal>>();
+            var allAccountTypes = new Dictionary<string, string>();
+            var allAccountNames = new Dictionary<string, string>();
+            var totalCachedCount = 0;
+            
+            // Resolve common filters (same for all periods)
+            var subsidiaryId = await _lookupService.ResolveSubsidiaryIdAsync(request.Subsidiary);
+            var targetSub = subsidiaryId ?? "1";
+            var hierarchySubs = await _lookupService.GetSubsidiaryHierarchyAsync(targetSub);
+            var subFilter = string.Join(", ", hierarchySubs);
+            
+            var departmentId = await _lookupService.ResolveDimensionIdAsync("department", request.Department);
+            var classId = await _lookupService.ResolveDimensionIdAsync("class", request.Class);
+            var locationId = await _lookupService.ResolveDimensionIdAsync("location", request.Location);
+            
+            var segmentFilters = new List<string> { $"tl.subsidiary IN ({subFilter})" };
+            if (!string.IsNullOrEmpty(departmentId))
+                segmentFilters.Add($"tl.department = {departmentId}");
+            if (!string.IsNullOrEmpty(classId))
+                segmentFilters.Add($"tl.class = {classId}");
+            if (!string.IsNullOrEmpty(locationId))
+                segmentFilters.Add($"tl.location = {locationId}");
+            var segmentWhere = string.Join(" AND ", segmentFilters);
+            
+            var accountingBook = (request.Book ?? DefaultAccountingBook).ToString();
+            _logger.LogInformation("🔍 [PL PRELOAD DEBUG] Accounting book resolved: request.Book={RequestBook}, DefaultAccountingBook={Default}, Final accountingBook={FinalBook}", 
+                request.Book?.ToString() ?? "null", DefaultAccountingBook, accountingBook);
+            var filtersHash = $"{targetSub}:{departmentId ?? ""}:{locationId ?? ""}:{classId ?? ""}:{accountingBook}";
+            var cacheExpiry = TimeSpan.FromMinutes(5);
+            var plTypesSql = Models.AccountType.PlTypesSql;
+            var incomeTypesSql = Models.AccountType.IncomeTypesSql;
+            
+            // Track per-period results
+            var periodResults = new List<PeriodResult>();
+            
+            // Process each period
+            foreach (var periodName in periodsToLoad)
+            {
+                var periodStartTime = DateTime.UtcNow;
+                
+                // Get period info
+                var period = await _netSuiteService.GetPeriodAsync(periodName);
+                if (period?.Id == null)
+                {
+                    _logger.LogWarning("Could not find period {Period}, marking as failed", periodName);
+                    periodResults.Add(new PeriodResult
+                    {
+                        Period = periodName,
+                        Status = "failed",
+                        Error = "Period not found",
+                        AccountCount = 0,
+                        ElapsedSeconds = 0
+                    });
+                    continue;
+                }
+                
+                var periodId = period.Id;
+                
+                _logger.LogInformation("🔍 [PL PRELOAD DEBUG] Period resolution: periodName={PeriodName}, periodId={PeriodId}", 
+                    periodName, periodId);
+            
+                // Sign flip for P&L: Income types are stored as negative credits, need to flip to positive
+                // Expenses are stored as positive debits, no flip needed
+                var signFlipSql = $"CASE WHEN a.accttype IN ({incomeTypesSql}) THEN -1 ELSE 1 END";
+            
+                // P&L query: Use period-specific filtering (not cumulative like BS)
+                // Start from account table with LEFT JOIN to include ALL P&L accounts
+                var query = $@"
+                    SELECT 
+                        a.acctnumber,
+                        a.accountsearchdisplaynamecopy AS account_name,
+                        a.accttype,
+                        COALESCE(SUM(x.cons_amt), 0) AS balance
+                    FROM account a
+                    LEFT JOIN (
+                        SELECT
+                            tal.account,
+                            TO_NUMBER(
+                                BUILTIN.CONSOLIDATE(
+                                    tal.amount,
+                                    'LEDGER',
+                                    'DEFAULT',
+                                    'DEFAULT',
+                                    {targetSub},
+                                    t.postingperiod,
+                                    'DEFAULT'
+                                )
+                            ) * CASE WHEN a.accttype IN ({incomeTypesSql}) THEN -1 ELSE 1 END AS cons_amt
+                        FROM transactionaccountingline tal
+                        JOIN transaction t ON t.id = tal.transaction
+                        JOIN account a ON a.id = tal.account
+                        JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id
+                        WHERE t.posting = 'T'
+                          AND tal.posting = 'T'
+                          AND t.postingperiod = {periodId}
+                          AND tal.accountingbook = {accountingBook}
+                          AND ({segmentWhere})
+                    ) x ON x.account = a.id
+                    WHERE a.accttype IN ({plTypesSql})
+                      AND a.isinactive = 'F'
+                    GROUP BY a.acctnumber, a.accountsearchdisplaynamecopy, a.accttype
+                    ORDER BY a.acctnumber";
+            
+                _logger.LogInformation("🔍 [PL PRELOAD DEBUG] Query for {Period}: {Query}", periodName, 
+                    query.Length > 500 ? query.Substring(0, 500) + "..." : query);
+            
+                var queryResult = await _netSuiteService.QueryRawWithErrorAsync(query, 180);
+                var periodElapsed = (DateTime.UtcNow - periodStartTime).TotalSeconds;
+            
+                if (!queryResult.Success)
+                {
+                    _logger.LogWarning("PL Preload query failed for {Period}: {Error}", periodName, queryResult.ErrorDetails);
+                    periodResults.Add(new PeriodResult
+                    {
+                        Period = periodName,
+                        Status = "failed",
+                        Error = queryResult.ErrorDetails ?? "Query failed",
+                        AccountCount = 0,
+                        ElapsedSeconds = periodElapsed
+                    });
+                    continue;
+                }
+                
+                _logger.LogInformation("PL Preload [{Period}] query time: {Elapsed:F2}s, {Count} accounts", 
+                    periodName, periodElapsed, queryResult.Items.Count);
+                
+                // Process results
+                var periodBalances = new Dictionary<string, decimal>();
+                var nonZeroCount = 0;
+                
+                foreach (var item in queryResult.Items)
+                {
+                    var acctNumber = item.TryGetProperty("acctnumber", out var numProp) ? numProp.GetString() ?? "" : "";
+                    var accountName = item.TryGetProperty("account_name", out var nameProp) ? nameProp.GetString() ?? "" : "";
+                    var acctType = item.TryGetProperty("accttype", out var typeProp) ? typeProp.GetString() ?? "" : "";
+                    var balance = ParseBalance(item.GetProperty("balance"));
+                    
+                    if (!string.IsNullOrEmpty(acctNumber))
+                    {
+                        if (!allBalances.ContainsKey(acctNumber))
+                        {
+                            allBalances[acctNumber] = new Dictionary<string, decimal>();
+                            allAccountTypes[acctNumber] = acctType;
+                            allAccountNames[acctNumber] = accountName;
+                        }
+                        
+                        allBalances[acctNumber][periodName] = balance;
+                        periodBalances[acctNumber] = balance;
+                        
+                        if (balance != 0)
+                            nonZeroCount++;
+                        
+                        // Cache individual account balance
+                        var cacheKey = $"balance:{acctNumber}::{periodName}:{filtersHash}";
+                        _cache.Set(cacheKey, balance, cacheExpiry);
+                        totalCachedCount++;
+                    }
+                }
+                
+                periodResults.Add(new PeriodResult
+                {
+                    Period = periodName,
+                    Status = "completed",
+                    AccountCount = periodBalances.Count,
+                    ElapsedSeconds = periodElapsed
+                });
+                
+                _logger.LogInformation("PL Preload [{Period}]: Cached {Count} accounts ({NonZero} with non-zero balances)", 
+                    periodName, periodBalances.Count, nonZeroCount);
+            }
+            
+            var totalElapsed = (DateTime.UtcNow - startTime).TotalSeconds;
+            _logger.LogInformation("✅ PL PRELOAD COMPLETE: {Count} periods, {TotalAccounts} accounts, {CachedCount} cache entries, {Elapsed:F2}s", 
+                periodsToLoad.Count, allBalances.Count, totalCachedCount, totalElapsed);
+            
+            return Ok(new
+            {
+                balances = allBalances,
+                account_types = allAccountTypes,
+                account_names = allAccountNames,
+                period_results = periodResults,
+                cached_count = totalCachedCount,
+                elapsed_seconds = totalElapsed
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "❌ PL PRELOAD ERROR");
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+
     [HttpPost("/batch/bs_preload_targeted")]
     public async Task<IActionResult> PreloadBalanceSheetTargeted([FromBody] TargetedBsPreloadRequest request)
     {
