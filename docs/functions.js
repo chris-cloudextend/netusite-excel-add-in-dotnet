@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.154';  // Fix: Period-aware Income Statement preload for drag-right
+const FUNCTIONS_VERSION = '4.0.6.155';  // Fix: Full-year optimization for drag-right 3+ columns
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -11144,7 +11144,70 @@ async function processBatchQueue() {
                     console.log(`  ✅ Overriding: Using full_year_refresh for ${periodsArray.length} months (need monthly breakdowns, not FY total)`);
                 }
             }
-            const useFullYearRefreshPatternFinal = shouldUseFullYearRefresh;
+            // CRITICAL FIX: Make useFullYearRefreshPatternFinal mutable so column-based grid can override it
+            let useFullYearRefreshPatternFinal = shouldUseFullYearRefresh;
+            
+            // FALLBACK: Check for column-based grid detection BEFORE finalizing full-year decision
+            // This provides column-first processing as fallback for mixed years or <3 periods
+            // CRITICAL FIX: Also check if column-based grid has 3+ periods from same year
+            // This enables full-year optimization even when periodsArray.length is 1 (drag-right scenario)
+            let useColumnBasedPLGrid = false;
+            let columnBasedPLGrid = null;
+            
+            if (!useFullYearRefreshPatternFinal && !usePeriodRangeOptimization && 
+                allAccountsAreIncomeStatement && uncachedRequests.length > 0) {
+                // Try column-based grid detection as fallback
+                const evaluatingRequests = uncachedRequests.map(r => ({ params: r.request.params }));
+                columnBasedPLGrid = detectColumnBasedPLGrid(evaluatingRequests);
+                
+                if (columnBasedPLGrid && columnBasedPLGrid.eligible) {
+                    // CRITICAL FIX: Check if column-based grid has 3+ periods from same year
+                    // If so, use full-year refresh pattern instead of column-by-column processing
+                    const gridPeriods = columnBasedPLGrid.columns.map(col => col.period);
+                    const periodsByYear = new Map();
+                    
+                    for (const period of gridPeriods) {
+                        const match = period.match(/^(\w+)\s+(\d{4})$/);
+                        if (match) {
+                            const year = match[2];
+                            if (!periodsByYear.has(year)) {
+                                periodsByYear.set(year, []);
+                            }
+                            periodsByYear.get(year).push(period);
+                        }
+                    }
+                    
+                    // Check if any year has 3+ periods
+                    let gridYearForOptimization = null;
+                    for (const [year, yearPeriods] of periodsByYear.entries()) {
+                        if (yearPeriods.length >= 3) {
+                            gridYearForOptimization = year;
+                            break;
+                        }
+                    }
+                    
+                    if (gridYearForOptimization && gridPeriods.length >= 3) {
+                        // Override: Use full-year refresh for 3+ periods from same year
+                        console.log(`  ✅ COLUMN-BASED PL GRID: Detected ${gridPeriods.length} periods from ${gridYearForOptimization}`);
+                        console.log(`     Overriding to use full_year_refresh pattern (faster than column-by-column)`);
+                        
+                        // Set yearForOptimization and trigger full-year refresh
+                        yearForOptimization = gridYearForOptimization;
+                        // Override to use full-year refresh
+                        shouldUseFullYearRefresh = true;
+                        useFullYearRefreshPatternFinal = true;
+                        console.log(`  ✅ OVERRIDE: Using full_year_refresh for ${gridPeriods.length} periods from ${gridYearForOptimization}`);
+                        // Update periodsArray to include all grid periods for proper logging
+                        periodsArray.length = 0;
+                        periodsArray.push(...gridPeriods);
+                    } else {
+                        // Use column-based grid processing (column-by-column)
+                        useColumnBasedPLGrid = true;
+                        console.log(`  ✅ COLUMN-BASED PL GRID DETECTED: ${columnBasedPLGrid.allAccounts.size} accounts × ${columnBasedPLGrid.columns.length} periods`);
+                        console.log(`     Will process periods column-by-column (faster than row-by-row)`);
+                    }
+                }
+            }
             
             // Enhanced logging for full-year pattern detection
             if (useFullYearRefreshPatternFinal) {
@@ -11199,7 +11262,7 @@ async function processBatchQueue() {
                 // For period range, we don't chunk periods - single query handles entire range
                 periodChunks.push([]); // Empty array indicates range mode
             } else if (useFullYearRefreshPatternFinal) {
-                // OPTIMIZATION: For 10+ months of same year, send all in one batch (no chunking)
+                // OPTIMIZATION: For 3+ months of same year, send all in one batch (no chunking)
                 // This is much faster than chunking into 3-4 separate queries
                 periodChunks.push(periodsArray); // Send all periods in one batch
                 console.log(`  ✅ FULL YEAR PATTERN: Sending all ${periodsArray.length} periods in ONE batch (no chunking)`);
@@ -11218,24 +11281,6 @@ async function processBatchQueue() {
             
             // Track which requests have been resolved
             const resolvedRequests = new Set();
-            
-            // FALLBACK: Check for column-based grid detection if full-year not applicable
-            // This provides column-first processing as fallback for mixed years or <3 periods
-            let useColumnBasedPLGrid = false;
-            let columnBasedPLGrid = null;
-            
-            if (!useFullYearRefreshPatternFinal && !usePeriodRangeOptimization && 
-                allAccountsAreIncomeStatement && uncachedRequests.length > 0) {
-                // Try column-based grid detection as fallback
-                const evaluatingRequests = uncachedRequests.map(r => ({ params: r.request.params }));
-                columnBasedPLGrid = detectColumnBasedPLGrid(evaluatingRequests);
-                
-                if (columnBasedPLGrid && columnBasedPLGrid.eligible) {
-                    useColumnBasedPLGrid = true;
-                    console.log(`  ✅ COLUMN-BASED PL GRID DETECTED: ${columnBasedPLGrid.allAccounts.size} accounts × ${columnBasedPLGrid.columns.length} periods`);
-                    console.log(`     Will process periods column-by-column (faster than row-by-row)`);
-                }
-            }
             
             // SPECIAL CASE: If using full_year_refresh, call it ONCE for all accounts
             // (not per chunk, since it returns all accounts anyway)
