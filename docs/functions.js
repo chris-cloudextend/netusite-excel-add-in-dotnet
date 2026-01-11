@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.149';  // Fix: Income Statement formulas now wait for preload to complete before queuing
+const FUNCTIONS_VERSION = '4.0.6.150';  // Fix: Added comprehensive cache hit/miss logging for Income Statement formulas
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -5593,9 +5593,8 @@ function checkLocalStorageCache(account, period, toPeriod = null, subsidiary = '
                         
                     // CRITICAL: Zero balances (0) are valid cached values and must be returned
                     // This prevents redundant API calls for accounts with no transactions
-                    if (cacheStats.hits < 3) {
-                            console.log(`✅ Preload cache hit: ${account}/${lookupPeriod} (key: ${preloadKey}) = ${cachedValue}`);
-                    }
+                    // Always log cache hits (removed < 3 restriction for debugging)
+                    console.log(`✅ Preload cache hit: ${account}/${lookupPeriod} (key: ${preloadKey}) = ${cachedValue}`);
                     return cachedValue;
                 }
                 }
@@ -7501,8 +7500,10 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
             acctTypeStr === 'OthIncome' || acctTypeStr === 'OthExpense')) {
             // Check cache first (before queuing)
             if (cache.balance.has(cacheKey)) {
+                const cachedValue = cache.balance.get(cacheKey);
                 cacheStats.hits++;
-                return cache.balance.get(cacheKey);
+                console.log(`✅ In-memory cache hit: ${account}/${toPeriod} = ${cachedValue}`);
+                return cachedValue;
             }
             
             // Check if period is resolved (required for queuing and preload)
@@ -7519,7 +7520,10 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                 if (localStorageValue !== null) {
                     cacheStats.hits++;
                     cache.balance.set(cacheKey, localStorageValue);
+                    console.log(`✅ localStorage cache hit: ${account}/${normalizedToPeriod} = ${localStorageValue}`);
                     return localStorageValue;
+                } else {
+                    console.log(`❌ Cache miss: ${account}/${normalizedToPeriod} - will queue for API call`);
                 }
                 
                 // Check if income preload is already in progress
