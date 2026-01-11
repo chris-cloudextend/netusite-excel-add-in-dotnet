@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.156';  // Fix: 3-column batching for 3-11 periods, full-year for 12+
+const FUNCTIONS_VERSION = '4.0.6.157';  // Fix: Smart timer management to prevent reset during rapid drag operations
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -6113,6 +6113,11 @@ let budgetBatchTimer = null;  // Timer reference for BUDGET batching
 let titleBatchTimer = null;  // Timer reference for NAME/title batching
 const BATCH_DELAY = 500;           // Wait 500ms to collect multiple requests (matches build mode settle)
 const BUDGET_BATCH_DELAY = 300;    // Faster batch delay for BUDGET (simpler queries)
+
+// Track request timing for smart timer management (prevent reset during rapid drag operations)
+let lastRequestTimestamp = null;  // Timestamp of last request that queued
+const RAPID_REQUEST_THRESHOLD_MS = 100;  // Requests < 100ms apart are considered rapid
+const QUEUE_SIZE_THRESHOLD = 10;  // Don't reset timer if queue size exceeds this
 const TITLE_BATCH_DELAY = 100;     // Fast batch delay for titles (simple lookups)
 const TYPE_BATCH_DELAY = 150;      // Faster batch delay for TYPE (lightweight queries)
 const CHUNK_SIZE = 50;             // Max 50 accounts per batch (balances NetSuite limits)
@@ -7861,19 +7866,36 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                         });
                         
                         // Start batch timer if not already running
+                        // CRITICAL FIX: Smart timer management - don't reset during rapid drag operations
                         if (!isFullRefreshMode) {
-                            if (batchTimer) {
-                                clearTimeout(batchTimer);
-                                batchTimer = null;
+                            const now = Date.now();
+                            const queueSize = pendingRequests.balance.size;
+                            const timeSinceLastRequest = lastRequestTimestamp ? (now - lastRequestTimestamp) : Infinity;
+                            const isRapidRequest = timeSinceLastRequest < RAPID_REQUEST_THRESHOLD_MS;
+                            const shouldPreventReset = batchTimer !== null && isRapidRequest && queueSize >= QUEUE_SIZE_THRESHOLD;
+                            
+                            if (shouldPreventReset) {
+                                // Don't reset timer - let it fire to process the batch
+                                console.log(`⏱️ SKIPPING timer reset (rapid requests: ${timeSinceLastRequest}ms apart, queue: ${queueSize})`);
+                            } else {
+                                // Normal behavior: reset timer
+                                if (batchTimer) {
+                                    clearTimeout(batchTimer);
+                                    batchTimer = null;
+                                }
+                                console.log(`⏱️ STARTING batch timer (${BATCH_DELAY}ms) for Income Statement`);
+                                batchTimer = setTimeout(() => {
+                                    console.log('⏱️ Batch timer FIRED!');
+                                    batchTimer = null;
+                                    lastRequestTimestamp = null; // Reset tracking
+                                    processBatchQueue().catch(err => {
+                                        console.error('❌ Batch processing error:', err);
+                                    });
+                                }, BATCH_DELAY);
                             }
-                            console.log(`⏱️ STARTING batch timer (${BATCH_DELAY}ms) for Income Statement`);
-                            batchTimer = setTimeout(() => {
-                                console.log('⏱️ Batch timer FIRED!');
-                                batchTimer = null;
-                                processBatchQueue().catch(err => {
-                                    console.error('❌ Batch processing error:', err);
-                                });
-                            }, BATCH_DELAY);
+                            
+                            // Update last request timestamp
+                            lastRequestTimestamp = now;
                         }
                     }
                 });
@@ -9410,23 +9432,35 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
             // The task pane will explicitly call processFullRefresh() when ready
             if (!isFullRefreshMode) {
                 // Start batch timer if not already running (Mode 1: small batches)
-                // CRITICAL: Clear existing timer before setting new one (prevent multiple timers)
-                const queueTime = new Date().toISOString();
-                const wasTimerRunning = batchTimer !== null;
+                // CRITICAL FIX: Smart timer management - don't reset during rapid drag operations
+                const now = Date.now();
+                const queueSize = pendingRequests.balance.size;
+                const timeSinceLastRequest = lastRequestTimestamp ? (now - lastRequestTimestamp) : Infinity;
+                const isRapidRequest = timeSinceLastRequest < RAPID_REQUEST_THRESHOLD_MS;
+                const shouldPreventReset = batchTimer !== null && isRapidRequest && queueSize >= QUEUE_SIZE_THRESHOLD;
                 
-                if (batchTimer) {
-                    clearTimeout(batchTimer);
-                    batchTimer = null;
+                if (shouldPreventReset) {
+                    // Don't reset timer - let it fire to process the batch
+                    console.log(`⏱️ SKIPPING timer reset (rapid requests: ${timeSinceLastRequest}ms apart, queue: ${queueSize})`);
+                } else {
+                    // Normal behavior: reset timer
+                    if (batchTimer) {
+                        clearTimeout(batchTimer);
+                        batchTimer = null;
+                    }
+                    console.log(`⏱️ STARTING batch timer (${BATCH_DELAY}ms)`);
+                    batchTimer = setTimeout(() => {
+                        console.log('⏱️ Batch timer FIRED!');
+                        batchTimer = null;
+                        lastRequestTimestamp = null; // Reset tracking
+                        processBatchQueue().catch(err => {
+                            console.error('❌ Batch processing error:', err);
+                        });
+                    }, BATCH_DELAY);
                 }
                 
-                console.log(`⏱️ STARTING batch timer (${BATCH_DELAY}ms)`);
-                batchTimer = setTimeout(() => {
-                    console.log('⏱️ Batch timer FIRED!');
-                    batchTimer = null;
-                    processBatchQueue().catch(err => {
-                        console.error('❌ Batch processing error:', err);
-                    });
-                }, BATCH_DELAY);
+                // Update last request timestamp
+                lastRequestTimestamp = now;
             } else {
                 console.log('   Full refresh mode - NOT starting timer');
             }
@@ -10277,6 +10311,7 @@ window.processFullRefresh = processFullRefresh;
 async function processBatchQueue() {
     const batchStartTime = Date.now();
     batchTimer = null;  // Reset timer reference
+    lastRequestTimestamp = null;  // Reset request timing tracking
     
     console.log('========================================');
     console.log(`🔄 processBatchQueue() CALLED at ${new Date().toLocaleTimeString()}`);
