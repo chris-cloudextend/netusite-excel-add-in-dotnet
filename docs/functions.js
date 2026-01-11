@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.150';  // Fix: Added comprehensive cache hit/miss logging for Income Statement formulas
+const FUNCTIONS_VERSION = '4.0.6.151';  // Fix: Check Income Statement preload cache in processBatchQueue before chunking
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -10566,7 +10566,53 @@ async function processBatchQueue() {
         // Process each group
         for (const [filterKey, groupRequests] of groups.entries()) {
             const filters = JSON.parse(filterKey);
-            const accounts = [...new Set(groupRequests.map(r => r.request.params.account))];
+            
+            // ========================================================================
+            // CRITICAL: Check Income Statement preload cache BEFORE chunking
+            // This ensures drag-down formulas use cached data instead of making API calls
+            // ========================================================================
+            const filtersHash = getFilterKey({
+                subsidiary: filters.subsidiary || '',
+                department: filters.department || '',
+                location: filters.location || '',
+                classId: filters.class || '', // filterKey uses 'class', but getFilterKey expects 'classId'
+                accountingBook: filters.accountingBook || ''
+            });
+            const uncachedRequests = [];
+            let cacheHitsInBatch = 0;
+            
+            for (const { cacheKey, request } of groupRequests) {
+                const { account, fromPeriod, toPeriod, subsidiary } = request.params;
+                
+                // Check localStorage cache (Income Statement preload cache)
+                // Skip for subsidiary-filtered queries (localStorage not subsidiary-aware)
+                if (!subsidiary) {
+                    const cachedValue = checkLocalStorageCache(account, fromPeriod, toPeriod, subsidiary || '', filtersHash);
+                    if (cachedValue !== null) {
+                        console.log(`   ✅ Preload cache hit (batch mode): ${account} for ${fromPeriod || '(cumulative)'} → ${toPeriod} = ${cachedValue}`);
+                        cache.balance.set(cacheKey, cachedValue);
+                        request.resolve(cachedValue);
+                        cacheHitsInBatch++;
+                        continue; // Skip this request - it's cached
+                    }
+                }
+                
+                // Not cached - add to uncached requests for processing
+                uncachedRequests.push({ cacheKey, request });
+            }
+            
+            if (cacheHitsInBatch > 0) {
+                console.log(`   📊 Cache check: ${cacheHitsInBatch} cached, ${uncachedRequests.length} need API calls`);
+            }
+            
+            // If all requests were cached, skip to next group
+            if (uncachedRequests.length === 0) {
+                console.log(`   ✅ All ${groupRequests.length} requests resolved from cache - skipping API calls`);
+                continue;
+            }
+            
+            // Use uncached requests for the rest of processing
+            const accounts = [...new Set(uncachedRequests.map(r => r.request.params.account))];
             
             // ========================================================================
             // PERIOD RANGE OPTIMIZATION: Detect if all requests have same period range
@@ -10577,7 +10623,7 @@ async function processBatchQueue() {
             let commonToPeriod = null;
             
             // Check if all requests have the same fromPeriod and toPeriod
-            for (const r of groupRequests) {
+            for (const r of uncachedRequests) {
                 const { fromPeriod, toPeriod } = r.request.params;
                 if (fromPeriod && toPeriod && fromPeriod !== toPeriod) {
                     // This is a period range request
@@ -10685,7 +10731,7 @@ async function processBatchQueue() {
                 // Track periods by year to detect full year requests
                 const periodsByYear = new Map(); // year -> Set of month names
                 
-                for (const r of groupRequests) {
+                for (const r of uncachedRequests) {
                     const { fromPeriod, toPeriod } = r.request.params;
                     if (fromPeriod && toPeriod && fromPeriod !== toPeriod) {
                         // Check if this is a full year request (Jan to Dec of same year)
@@ -10981,7 +11027,7 @@ async function processBatchQueue() {
                         console.log(`     ✅ All 12 months retrieved in SINGLE query (not per chunk)`);
                         
                         // Distribute results - each request gets its specific month value
-                        for (const {cacheKey, request} of groupRequests) {
+                        for (const {cacheKey, request} of uncachedRequests) {
                             if (resolvedRequests.has(cacheKey)) continue;
                             
                             const account = request.params.account;
@@ -11035,7 +11081,7 @@ async function processBatchQueue() {
                             console.log(`    🎯 RESOLVING (full_year_refresh): ${account} for ${toPeriod} = ${periodValue}`);
                         }
                         
-                        console.log(`  ✅ All ${groupRequests.length} requests resolved from single full_year_refresh call`);
+                        console.log(`  ✅ All ${uncachedRequests.length} requests resolved from single full_year_refresh call`);
                         continue; // Skip chunked processing entirely - go to next filter group
                     }
                 } catch (error) {
@@ -11049,7 +11095,7 @@ async function processBatchQueue() {
             // Only needed for period list mode (not period range mode)
             const requestAccumulators = new Map();
             if (!usePeriodRangeOptimization) {
-                for (const {cacheKey, request} of groupRequests) {
+                for (const {cacheKey, request} of uncachedRequests) {
                     const { fromPeriod, toPeriod } = request.params;
                     let periodsNeeded;
                     if (fromPeriod && toPeriod && fromPeriod !== toPeriod) {
@@ -11095,12 +11141,12 @@ async function processBatchQueue() {
                         
                         console.log(`  ✅ Year endpoint returned ${Object.keys(balances).length} accounts in ${yearTime}s`);
                         console.log(`     ✅ PROOF: Single query completed in ${yearTime}s (target: <30s)`);
-                        console.log(`     ✅ PROOF: Writing back ${groupRequests.length} results simultaneously`);
+                        console.log(`     ✅ PROOF: Writing back ${uncachedRequests.length} results simultaneously`);
                         
                         // Resolve all requests with year totals
                         const resolveStartTime = Date.now();
                         let resolveCount = 0;
-                        for (const {cacheKey, request} of groupRequests) {
+                        for (const {cacheKey, request} of uncachedRequests) {
                             const account = request.params.account;
                             const accountData = balances[account] || {};
                             const total = accountData[periodName] || 0;
@@ -11187,7 +11233,7 @@ async function processBatchQueue() {
                                 }
                                 console.error(`  ❌ API error: ${response.status} - ${errorDetails}`);
                                 // Reject all promises in this chunk
-                                for (const {cacheKey, request} of groupRequests) {
+                                for (const {cacheKey, request} of uncachedRequests) {
                                     if (accountChunk.includes(request.params.account) && !resolvedRequests.has(cacheKey)) {
                                         request.reject(new Error(`API error: ${response.status}`));
                                         resolvedRequests.add(cacheKey);
@@ -11202,7 +11248,7 @@ async function processBatchQueue() {
                             if (data.error) {
                                 console.error(`  ❌ Backend error: ${data.error}`);
                                 // Reject all promises in this chunk with the error
-                                for (const {cacheKey, request} of groupRequests) {
+                                for (const {cacheKey, request} of uncachedRequests) {
                                     if (accountChunk.includes(request.params.account) && !resolvedRequests.has(cacheKey)) {
                                         request.reject(new Error(data.error));
                                         resolvedRequests.add(cacheKey);
@@ -11218,7 +11264,7 @@ async function processBatchQueue() {
                             console.log(`     ✅ PROOF: This was recognized as a SINGLE QUERY (not chunked)`);
                             
                             // Process results - range query returns single total per account
-                            for (const {cacheKey, request} of groupRequests) {
+                            for (const {cacheKey, request} of uncachedRequests) {
                                 if (resolvedRequests.has(cacheKey)) continue;
                                 
                                 const account = request.params.account;
@@ -11240,13 +11286,13 @@ async function processBatchQueue() {
                             }
                         } catch (error) {
                             console.error(`  ❌ Chunk error:`, error);
-                            // Reject all promises in this chunk
-                            for (const {cacheKey, request} of groupRequests) {
-                                if (accountChunk.includes(request.params.account) && !resolvedRequests.has(cacheKey)) {
-                                    request.reject(error);
-                                    resolvedRequests.add(cacheKey);
+                                // Reject all promises in this chunk
+                                for (const {cacheKey, request} of uncachedRequests) {
+                                    if (accountChunk.includes(request.params.account) && !resolvedRequests.has(cacheKey)) {
+                                        request.reject(error);
+                                        resolvedRequests.add(cacheKey);
+                                    }
                                 }
-                            }
                         }
                     } else {
                         // PERIOD LIST MODE: Process each period chunk
@@ -11277,7 +11323,7 @@ async function processBatchQueue() {
                                 if (!response.ok) {
                                     console.error(`  ❌ API error: ${response.status}`);
                                     // Reject all promises in this chunk
-                                    for (const {cacheKey, request} of groupRequests) {
+                                    for (const {cacheKey, request} of uncachedRequests) {
                                         if (accountChunk.includes(request.params.account) && !resolvedRequests.has(cacheKey)) {
                                             request.reject(new Error(`API error: ${response.status}`));
                                             resolvedRequests.add(cacheKey);
@@ -11293,7 +11339,7 @@ async function processBatchQueue() {
                                 console.log(`  ✅ Received data for ${Object.keys(balances).length} accounts in ${chunkTime}s`);
                                 
                                 // Distribute results to waiting Promises
-                                for (const {cacheKey, request} of groupRequests) {
+                                for (const {cacheKey, request} of uncachedRequests) {
                                     // Skip if already resolved
                                     if (resolvedRequests.has(cacheKey)) {
                                         continue;
@@ -11341,7 +11387,7 @@ async function processBatchQueue() {
                             } catch (error) {
                                 console.error(`  ❌ Fetch error:`, error);
                                 // Reject all promises in this chunk
-                                for (const {cacheKey, request} of groupRequests) {
+                                for (const {cacheKey, request} of uncachedRequests) {
                                     if (accountChunk.includes(request.params.account) && !resolvedRequests.has(cacheKey)) {
                                         request.reject(error);
                                         resolvedRequests.add(cacheKey);
@@ -11361,7 +11407,7 @@ async function processBatchQueue() {
                 // Resolve any remaining unresolved requests
                 // Only needed for period list mode (period range mode resolves immediately)
                 if (!usePeriodRangeOptimization) {
-                    for (const {cacheKey, request} of groupRequests) {
+                    for (const {cacheKey, request} of uncachedRequests) {
                         if (!resolvedRequests.has(cacheKey)) {
                             const accum = requestAccumulators.get(cacheKey);
                             if (accum) {
