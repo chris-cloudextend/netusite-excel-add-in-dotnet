@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.151';  // Fix: Check Income Statement preload cache in processBatchQueue before chunking
+const FUNCTIONS_VERSION = '4.0.6.152';  // Fix: Full-year optimization for 3+ periods, column-first grid detection fallback
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -819,6 +819,154 @@ function detectColumnBasedBSGrid(evaluatingRequests) {
         console.log(`🔍 COLUMN-BASED BS DETECT: Not eligible - ${allAccounts.size} account(s), ${byColumn.size} period(s)`);
     }
     
+    return { eligible: false };
+}
+
+/**
+ * Detect column-based Income Statement (P&L) grid pattern.
+ * 
+ * Similar to Balance Sheet grid detection, but for Income Statement accounts.
+ * Processes periods (columns) first, then accounts (rows).
+ * 
+ * Detection modes:
+ * - Primary: Multiple accounts + multiple periods (columns)
+ * - Secondary: Single period + multiple accounts
+ * 
+ * @param {Array} evaluatingRequests - Array of requests currently being evaluated
+ * @returns {Object} - { eligible: boolean, columns?: Array, allAccounts?: Set, filters?: Object }
+ */
+function detectColumnBasedPLGrid(evaluatingRequests) {
+    // Safety limits (fail-fast before any processing)
+    const MAX_ACCOUNTS_PER_BATCH = 200; // Higher limit for P&L (faster queries)
+    const MAX_PERIODS_PER_BATCH = 12; // One year max
+    
+    if (!evaluatingRequests || !Array.isArray(evaluatingRequests) || evaluatingRequests.length === 0) {
+        return { eligible: false };
+    }
+    
+    // Step 1: Filter to Income Statement requests only
+    // Must have both fromPeriod and toPeriod (or just toPeriod for single period)
+    const plRequests = evaluatingRequests.filter(r => {
+        const rParams = r.params || r;
+        
+        // Safety check
+        if (!rParams || typeof rParams !== 'object') {
+            return false;
+        }
+        
+        // Must have toPeriod
+        if (!rParams.toPeriod || rParams.toPeriod === '') {
+            return false;
+        }
+        
+        // For Income Statement, fromPeriod can be empty (single period) or same as toPeriod
+        // Period ranges (fromPeriod !== toPeriod) are also valid
+        
+        return true;
+    });
+    
+    if (plRequests.length === 0) {
+        return { eligible: false };
+    }
+    
+    // Step 2: Group by column (toPeriod + normalized filters)
+    // Filter out requests for periods that are already cached
+    const byColumn = new Map(); // Map<columnKey, {period, filters, accounts: Set}>
+    const allAccounts = new Set();
+    
+    for (const request of plRequests) {
+        const rParams = request.params || request;
+        const rFilters = rParams.filters || rParams;
+        
+        // Check if this specific account+period is cached
+        const filtersHash = getFilterKey({
+            subsidiary: rFilters.subsidiary || '',
+            department: rFilters.department || '',
+            location: rFilters.location || '',
+            classId: rFilters.classId || '',
+            accountingBook: rFilters.accountingBook || ''
+        });
+        const lookupPeriod = normalizePeriodKey(rParams.toPeriod, false);
+        if (lookupPeriod) {
+            const cachedValue = checkLocalStorageCache(rParams.account, rParams.fromPeriod, rParams.toPeriod, rFilters.subsidiary || '', filtersHash);
+            if (cachedValue !== null) {
+                // This account+period is cached - skip it (will resolve from cache, no batch needed)
+                continue;
+            }
+        }
+        
+        // Normalize filters for grouping
+        const normalizedFilterKey = normalizeFiltersForColumnBatching(rFilters);
+        const columnKey = `${rParams.toPeriod}::${normalizedFilterKey}`;
+        
+        if (!byColumn.has(columnKey)) {
+            byColumn.set(columnKey, {
+                period: rParams.toPeriod,
+                filters: rFilters,
+                accounts: new Set()
+            });
+        }
+        
+        const column = byColumn.get(columnKey);
+        column.accounts.add(rParams.account);
+        allAccounts.add(rParams.account);
+    }
+    
+    // Step 3: Safety limit check
+    if (allAccounts.size > MAX_ACCOUNTS_PER_BATCH) {
+        return { eligible: false };
+    }
+    
+    if (byColumn.size > MAX_PERIODS_PER_BATCH) {
+        return { eligible: false };
+    }
+    
+    // Step 4: Primary mode - Multiple accounts + Multiple periods
+    if (allAccounts.size >= 2 && byColumn.size >= 2) {
+        // Verify all columns have same filters (required for batching)
+        const firstColumn = Array.from(byColumn.values())[0];
+        const firstFilterKey = normalizeFiltersForColumnBatching(firstColumn.filters);
+        let allFiltersMatch = true;
+        
+        for (const column of byColumn.values()) {
+            const columnFilterKey = normalizeFiltersForColumnBatching(column.filters);
+            if (columnFilterKey !== firstFilterKey) {
+                allFiltersMatch = false;
+                break;
+            }
+        }
+        
+        if (!allFiltersMatch) {
+            return { eligible: false };
+        }
+        
+        console.log(`🔍 COLUMN-BASED PL DETECT: ✅ PRIMARY MODE - ${allAccounts.size} accounts, ${byColumn.size} periods`);
+        
+        return {
+            eligible: true,
+            mode: 'primary',
+            columns: Array.from(byColumn.values()),
+            allAccounts: allAccounts,
+            filters: firstColumn.filters
+        };
+    }
+    
+    // Step 5: Secondary mode - Single period + Multiple accounts
+    if (byColumn.size === 1 && allAccounts.size >= 2) {
+        const column = Array.from(byColumn.values())[0];
+        
+        console.log(`🔍 COLUMN-BASED PL DETECT: ✅ SECONDARY MODE - ${allAccounts.size} accounts, 1 period (${column.period})`);
+        
+        return {
+            eligible: true,
+            mode: 'secondary',
+            columns: [column],
+            allAccounts: allAccounts,
+            filters: column.filters
+        };
+    }
+    
+    // Step 6: Not eligible
     return { eligible: false };
 }
 
@@ -10882,30 +11030,31 @@ async function processBatchQueue() {
             // so we should use full_year_refresh pattern, NOT year endpoint.
             const useYearEndpoint = false; // DISABLED: Year endpoint doesn't support monthly breakdowns
             
-            // OPTIMIZATION: For individual month requests (10+ months of same year), use full_year_refresh pattern
+            // OPTIMIZATION: For individual month requests (3+ months of same year), use full_year_refresh pattern
             // This gets all 12 months in one query, then we extract the specific months needed
-            // Much more efficient than chunking into 3-4 separate queries
+            // Much more efficient than chunking into separate queries
             // CRITICAL: This is the correct endpoint for monthly breakdowns (not year endpoint)
+            // Changed from >= 10 to >= 3 to optimize for common scenarios (Q1, Q2, etc.)
             const useFullYearRefreshPattern = !usePeriodRangeOptimization && !useYearEndpoint && 
                 allAccountsAreIncomeStatement && yearForOptimization && 
-                periodsArray.length >= 10 && periodsArray.every(p => {
+                periodsArray.length >= 3 && periodsArray.every(p => {
                     const match = p.match(/^\w+\s+(\d{4})$/);
                     return match && match[1] === yearForOptimization;
                 });
             
-            // Also use full_year_refresh if we have all 12 months (even if useYearEndpoint was considered)
+            // Also use full_year_refresh if we have 3+ months of same year (optimized threshold)
             // This ensures monthly breakdowns are returned, not just FY totals
             let shouldUseFullYearRefresh = useFullYearRefreshPattern;
             if (!shouldUseFullYearRefresh && !usePeriodRangeOptimization && !useYearEndpoint &&
-                allAccountsAreIncomeStatement && yearForOptimization && periodsArray.length === 12) {
+                allAccountsAreIncomeStatement && yearForOptimization && periodsArray.length >= 3) {
                 const allSameYear = periodsArray.every(p => {
                     const match = p.match(/^\w+\s+(\d{4})$/);
                     return match && match[1] === yearForOptimization;
                 });
                 if (allSameYear) {
-                    // Override: Use full_year_refresh for 12 months to get monthly breakdowns
+                    // Override: Use full_year_refresh for 3+ months to get monthly breakdowns
                     shouldUseFullYearRefresh = true;
-                    console.log(`  ✅ Overriding: Using full_year_refresh for 12 months (need monthly breakdowns, not FY total)`);
+                    console.log(`  ✅ Overriding: Using full_year_refresh for ${periodsArray.length} months (need monthly breakdowns, not FY total)`);
                 }
             }
             const useFullYearRefreshPatternFinal = shouldUseFullYearRefresh;
@@ -10917,15 +11066,15 @@ async function processBatchQueue() {
                 console.log(`     Periods: ${periodsArray.length} months of ${yearForOptimization}`);
                 console.log(`     ✅ Will send all ${periodsArray.length} periods in ONE batch (no chunking)`);
                 console.log(`     ✅ Will use /batch/full_year_refresh to get monthly breakdowns (not FY total)`);
-            } else if (allAccountsAreIncomeStatement && !usePeriodRangeOptimization && periodsArray.length >= 10) {
+            } else if (allAccountsAreIncomeStatement && !usePeriodRangeOptimization && periodsArray.length >= 3) {
                 // Log why full-year pattern wasn't used
                 console.log(`  ⚠️ FULL YEAR PATTERN NOT USED (but should be?):`);
                 console.log(`     allAccountsAreIncomeStatement: ${allAccountsAreIncomeStatement}`);
                 console.log(`     yearForOptimization: ${yearForOptimization}`);
-                console.log(`     periodsArray.length: ${periodsArray.length} (need >= 10)`);
+                console.log(`     periodsArray.length: ${periodsArray.length} (need >= 3)`);
                 console.log(`     usePeriodRangeOptimization: ${usePeriodRangeOptimization}`);
                 console.log(`     useYearEndpoint: ${useYearEndpoint}`);
-                if (yearForOptimization && periodsArray.length >= 10) {
+                if (yearForOptimization && periodsArray.length >= 3) {
                     const allSameYear = periodsArray.every(p => {
                         const match = p.match(/^\w+\s+(\d{4})$/);
                         return match && match[1] === yearForOptimization;
@@ -10945,9 +11094,9 @@ async function processBatchQueue() {
                 console.log(`  🗓️ YEAR OPTIMIZATION: Using /batch/balance/year for FY ${yearForOptimization} (Income Statement accounts)`);
                 console.log(`     Accounts: ${accounts.length}, Periods: ${periodsArray.length}, Full Year: ${isFullYearRequest}`);
                 console.log(`     ✅ PROOF: Year endpoint will be used (single query for entire year)`);
-            } else if (allAccountsAreIncomeStatement && !usePeriodRangeOptimization && periodsArray.length < 10) {
+            } else if (allAccountsAreIncomeStatement && !usePeriodRangeOptimization && periodsArray.length < 3) {
                 console.log(`  ⚠️ Income Statement accounts detected but year optimization not used:`);
-                console.log(`     isFullYearRequest: ${isFullYearRequest}, yearForOptimization: ${yearForOptimization}, periodsArray.length: ${periodsArray.length} (< 10, need >= 10)`);
+                console.log(`     isFullYearRequest: ${isFullYearRequest}, yearForOptimization: ${yearForOptimization}, periodsArray.length: ${periodsArray.length} (< 3, need >= 3)`);
             }
             
             console.log(`  Batch: ${accounts.length} accounts × ${periodsArray.length} period(s)`);
@@ -10983,11 +11132,42 @@ async function processBatchQueue() {
             // Track which requests have been resolved
             const resolvedRequests = new Set();
             
+            // FALLBACK: Check for column-based grid detection if full-year not applicable
+            // This provides column-first processing as fallback for mixed years or <3 periods
+            let useColumnBasedPLGrid = false;
+            let columnBasedPLGrid = null;
+            
+            if (!useFullYearRefreshPatternFinal && !usePeriodRangeOptimization && 
+                allAccountsAreIncomeStatement && uncachedRequests.length > 0) {
+                // Try column-based grid detection as fallback
+                const evaluatingRequests = uncachedRequests.map(r => ({ params: r.request.params }));
+                columnBasedPLGrid = detectColumnBasedPLGrid(evaluatingRequests);
+                
+                if (columnBasedPLGrid && columnBasedPLGrid.eligible) {
+                    useColumnBasedPLGrid = true;
+                    console.log(`  ✅ COLUMN-BASED PL GRID DETECTED: ${columnBasedPLGrid.allAccounts.size} accounts × ${columnBasedPLGrid.columns.length} periods`);
+                    console.log(`     Will process periods column-by-column (faster than row-by-row)`);
+                }
+            }
+            
             // SPECIAL CASE: If using full_year_refresh, call it ONCE for all accounts
             // (not per chunk, since it returns all accounts anyway)
             // This must happen BEFORE chunking to avoid duplicate calls
             if (useFullYearRefreshPatternFinal && yearForOptimization) {
                 console.log(`  📤 FULL YEAR REFRESH (SINGLE CALL): All ${accounts.length} accounts for year ${yearForOptimization} (fetching all 12 months...)`);
+                
+                // Show progress indicator to reduce perceived slowness
+                try {
+                    if (typeof Office !== 'undefined' && Office.context && Office.context.mailbox) {
+                        // Outlook context - no status API
+                    } else if (typeof Office !== 'undefined' && Office.addin) {
+                        // Excel context - use status API if available
+                        Office.addin.showAsTaskpane();
+                    }
+                } catch (e) {
+                    // Ignore errors - progress indicator is optional
+                }
+                
                 const fullYearStartTime = Date.now();
                 
                 try {
@@ -11025,6 +11205,7 @@ async function processBatchQueue() {
                         
                         console.log(`  ✅ Full year refresh returned ${Object.keys(balances).length} accounts in ${fullYearTime}s`);
                         console.log(`     ✅ All 12 months retrieved in SINGLE query (not per chunk)`);
+                        console.log(`     ✅ Progress: Fetching ${yearForOptimization} data complete - updating all cells`);
                         
                         // Distribute results - each request gets its specific month value
                         for (const {cacheKey, request} of uncachedRequests) {
@@ -11086,7 +11267,95 @@ async function processBatchQueue() {
                     }
                 } catch (error) {
                     console.error(`  ❌ Full year refresh error:`, error);
-                    console.log(`  ⚠️ Falling back to regular /batch/balance endpoint`);
+                    console.log(`  ⚠️ Falling back to column-based grid or regular /batch/balance endpoint`);
+                    // Fall through to column-based grid or regular chunked processing
+                }
+            }
+            
+            // FALLBACK: Column-based PL grid processing (period-first, then accounts)
+            // This processes periods sequentially, fetching all accounts for each period
+            if (useColumnBasedPLGrid && columnBasedPLGrid && !useFullYearRefreshPatternFinal) {
+                console.log(`  📊 COLUMN-BASED PL GRID: Processing ${columnBasedPLGrid.allAccounts.size} accounts × ${columnBasedPLGrid.columns.length} periods`);
+                console.log(`     Strategy: Process periods column-by-column (faster than row-by-row)`);
+                
+                try {
+                    const gridAccounts = Array.from(columnBasedPLGrid.allAccounts);
+                    const gridPeriods = columnBasedPLGrid.columns.map(col => col.period).sort((a, b) => {
+                        const aDate = parsePeriodToDate(a);
+                        const bDate = parsePeriodToDate(b);
+                        if (!aDate || !bDate) return 0;
+                        return aDate.getTime() - bDate.getTime();
+                    });
+                    
+                    // Process each period sequentially (column-by-column)
+                    for (let i = 0; i < gridPeriods.length; i++) {
+                        const period = gridPeriods[i];
+                        const periodNumber = i + 1;
+                        console.log(`  📦 Processing column ${periodNumber}/${gridPeriods.length}: ${period} (${gridAccounts.length} accounts)`);
+                        
+                        // Fetch all accounts for this period in one query
+                        const periodStartTime = Date.now();
+                        const response = await fetch(`${SERVER_URL}/batch/balance`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                accounts: gridAccounts,
+                                periods: [period],
+                                subsidiary: filters.subsidiary || '',
+                                department: filters.department || '',
+                                location: filters.location || '',
+                                class: filters.class || '',
+                                book: filters.accountingBook || ''
+                            })
+                        });
+                        
+                        if (!response.ok) {
+                            const errorText = await response.text();
+                            console.error(`  ❌ Column-based PL batch error for ${period}: ${response.status} - ${errorText}`);
+                            // Reject requests for this period
+                            for (const {cacheKey, request} of uncachedRequests) {
+                                if (request.params.toPeriod === period && !resolvedRequests.has(cacheKey)) {
+                                    request.reject(new Error(`API error: ${response.status}`));
+                                    resolvedRequests.add(cacheKey);
+                                }
+                            }
+                            continue; // Skip to next period
+                        }
+                        
+                        const data = await response.json();
+                        const balances = data.balances || {};
+                        const periodTime = ((Date.now() - periodStartTime) / 1000).toFixed(1);
+                        console.log(`  ✅ Column ${periodNumber} complete: ${Object.keys(balances).length} accounts in ${periodTime}s`);
+                        
+                        // Resolve all requests for this period
+                        for (const {cacheKey, request} of uncachedRequests) {
+                            if (resolvedRequests.has(cacheKey)) continue;
+                            
+                            const account = request.params.account;
+                            const toPeriod = request.params.toPeriod;
+                            
+                            if (toPeriod === period && gridAccounts.includes(account)) {
+                                const accountData = balances[account] || {};
+                                const periodValue = accountData[period] || 0;
+                                
+                                // Cache and resolve
+                                cache.balance.set(cacheKey, periodValue);
+                                request.resolve(periodValue);
+                                resolvedRequests.add(cacheKey);
+                                
+                                console.log(`    🎯 RESOLVING (column-based PL): ${account} for ${period} = ${periodValue}`);
+                            }
+                        }
+                        
+                        // Update cells incrementally as each column completes
+                        console.log(`  ✅ Column ${periodNumber}/${gridPeriods.length} complete: All cells for ${period} updated`);
+                    }
+                    
+                    console.log(`  ✅ All columns complete: ${resolvedRequests.size} requests resolved`);
+                    continue; // Skip to next filter group
+                } catch (error) {
+                    console.error(`  ❌ Column-based PL grid error:`, error);
+                    console.log(`  ⚠️ Falling back to regular chunked processing`);
                     // Fall through to regular chunked processing
                 }
             }
