@@ -295,6 +295,8 @@ Update this file when:
 | 2025-12-17 | 3.0.5.193 | Updated architecture docs, added Mac platform issue note |
 | 2025-12-19 | 3.0.5.233 | Added correct Mac manifest sideload location, cache clearing commands |
 | 2026-01-10 | 4.0.6.145 | Added Refresh All smart detection, Income Statement pre-caching notes |
+| 2026-01-10 | 4.0.6.158 | Early grid detection to skip preload wait for 3+ columns |
+| 2026-01-10 | 4.0.6.159 | Reverted to full-year refresh for 3+ periods (removed 3-column batching) |
 
 ---
 

@@ -519,13 +519,24 @@ public const string CRED_CARD = "CredCard";               // NOT "CreditCard"
 
 ---
 
-*Document Version: 2.1*
-*Last Updated: January 2026*
-*Add-in Version: 4.0.6.145*
+*Document Version: 2.2*
+*Last Updated: January 10, 2026*
+*Add-in Version: 4.0.6.159*
 
-## Recent Updates (v4.0.6.144 - v4.0.6.145)
+## Recent Updates
 
-### Income Statement Preload Endpoint (v4.0.6.144)
+### v4.0.6.159: Full-Year Refresh Optimization
+- **Change:** Full-year refresh now triggers for 3+ periods from same year (previously 12+)
+- **Impact:** Single optimized query fetches all months at once (5-15 seconds) instead of incremental batching
+- **Endpoint:** `/batch/full_year_refresh` - unchanged, but now used more frequently
+- **Performance:** Better overall performance for multi-period reports, all data appears simultaneously
+
+### v4.0.6.158: Early Grid Detection
+- **Change:** Added early grid detection to skip preload wait for 3+ columns
+- **Impact:** Prevents sequential preload waits during drag operations, enables batch processing
+- **Location:** `docs/functions.js` - `BALANCE()` function (lines 7709-7848)
+
+### v4.0.6.144: Income Statement Preload Endpoint
 - **New Endpoint:** `POST /batch/pl_preload`
 - **Purpose:** Pre-cache all Income Statement accounts for specified periods
 - **Location:** `backend-dotnet/Controllers/BalanceController.cs` - `PreloadIncomeStatementAccounts()`

@@ -1013,13 +1013,23 @@ async function CTA(period, subsidiary, accountingBook) {
 
 ## Version
 
-*Current Version: 4.0.6.145*  
-*Last Updated: January 2026*
+*Current Version: 4.0.6.159*  
+*Last Updated: January 10, 2026*
 
-## Recent Updates (v4.0.6.145)
+## Recent Updates
 
-### Refresh All Smart Detection
-- Refresh All now automatically detects P&L sheets (12 periods) vs Balance Sheet sheets (1 period)
+### v4.0.6.159: Full-Year Refresh for 3+ Periods
+- Changed threshold from 12+ to 3+ periods for full-year refresh optimization
+- Removed 3-column batching logic - all 3+ periods from same year now use single full-year refresh query
+- Provides better overall performance (5-15 seconds for full year) with all data appearing at once
+- See `DRAG_RIGHT_9_COLUMN_ANALYSIS.md` for detailed analysis
+
+### v4.0.6.158: Early Grid Detection
+- Added early grid detection in `BALANCE()` function to detect grid pattern (3+ periods × 2+ accounts) before preload wait
+- Skips individual preload waits for grid patterns, allowing batch processing to handle all requests together
+- Prevents sequential preload waits that would delay batch processing during drag operations
+
+### v4.0.6.145: Refresh All Smart Detection
+- Refresh All now automatically detects P&L sheets (2+ periods from same year) vs Balance Sheet sheets (1 period)
 - Prevents unnecessary Balance Sheet queries on Income Statement sheets
 - Reduces refresh time from timeouts to ~30 seconds for P&L sheets
-- See `ENGINEERING_HANDOFF_NOTES.md` for details

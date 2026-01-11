@@ -1,6 +1,6 @@
 # Data Flow Summary: Accounting Book Change → Revenue Display
 
-**Last Updated:** January 2026  
+**Last Updated:** January 10, 2026  
 **Status:** Historical reference - Documents data flow for accounting book changes and TYPEBALANCE caching
 
 ## Overview

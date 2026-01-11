@@ -324,6 +324,6 @@ If a cell reference points to an empty cell, the function will return an error:
 
 ---
 
-**Last Updated:** December 31, 2025  
-**Version:** 3.0.5.234
+**Last Updated:** January 10, 2026  
+**Version:** 4.0.6.159
 

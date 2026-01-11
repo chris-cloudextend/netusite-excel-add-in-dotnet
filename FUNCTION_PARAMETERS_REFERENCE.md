@@ -318,6 +318,6 @@ This prevents silent `0` values that could be mistakes.
 
 ---
 
-**Last Updated:** December 25, 2025  
-**Version:** 4.0.0.12
+**Last Updated:** January 10, 2026  
+**Version:** 4.0.6.159
 

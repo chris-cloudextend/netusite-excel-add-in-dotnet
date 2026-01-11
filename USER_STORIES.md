@@ -2,7 +2,7 @@
 
 **Product:** XAVI for NetSuite Excel Add-in  
 **Target Users:** Accountants, Senior Finance Professionals, Financial Analysts, CFOs  
-**Version:** 4.0.6.145  
+**Version:** 4.0.6.159  
 **Date:** January 2026
 
 ---
@@ -380,9 +380,10 @@
 - [x] Subsequent formulas resolve immediately from cache
 - [x] Pre-caching respects filters (subsidiary, department, location, class, accounting book)
 - [x] Cache persists across Excel sessions (localStorage)
-- [x] Works seamlessly with full year refresh optimization (12 months)
+- [x] **Early Grid Detection (v4.0.6.158+):** When dragging 3+ columns, grid pattern is detected early and preload wait is skipped, allowing batch processing to handle all requests together
+- [x] **Full-Year Refresh (v4.0.6.159+):** For 3+ periods from the same year, uses single full-year refresh query instead of incremental batching, providing faster overall performance
 
-**Business Value:** Dramatically improves performance for Income Statement reports. When dragging formulas across 12 months, all accounts are pre-cached, reducing resolution time from minutes to seconds.
+**Business Value:** Dramatically improves performance for Income Statement reports. When dragging formulas across multiple months, all accounts are fetched in a single optimized query, reducing resolution time from minutes to seconds. Early grid detection ensures batch processing works correctly even during rapid drag operations.
 
 ---
 
@@ -414,11 +415,12 @@
 - [x] Progress indicator shows refresh status
 - [x] Formulas update in batches for performance
 - [x] Refresh works for all formula types
-- [x] **Smart Sheet Detection:** Automatically detects P&L sheets (12 periods) vs Balance Sheet sheets (1 period) and fetches appropriate data
-- [x] **Optimized Performance:** P&L sheets refresh in ~30 seconds, Balance Sheet sheets in 2-3 minutes
+- [x] **Smart Sheet Detection:** Automatically detects P&L sheets (2+ periods from same year) vs Balance Sheet sheets (1 period) and fetches appropriate data
+- [x] **Optimized Performance:** P&L sheets with 2+ periods use full-year refresh (single query), Balance Sheet sheets use period-specific queries
 - [x] **Account Extraction:** Automatically extracts account numbers from formulas for classification
+- [x] **Full-Year Refresh:** For P&L sheets with 2+ periods from the same year, uses optimized `/batch/full_year_refresh` endpoint to fetch all months in a single query
 
-**Business Value:** Ensures data accuracy and eliminates manual formula recalculation. Smart detection prevents unnecessary Balance Sheet queries on Income Statement sheets, reducing refresh time from timeouts to ~30 seconds.
+**Business Value:** Ensures data accuracy and eliminates manual formula recalculation. Smart detection prevents unnecessary Balance Sheet queries on Income Statement sheets, reducing refresh time from timeouts to ~30 seconds. Full-year refresh optimization provides faster overall performance for multi-period reports.
 
 ---
 
@@ -550,7 +552,8 @@
 - Balance Sheet pre-caching (US-019)
 - Income Statement pre-caching (US-019A) - v4.0.6.144+
 - Column-based batching for Balance Sheet accounts
-- Full year refresh optimization for P&L sheets (12 months in single query)
+- Full year refresh optimization for P&L sheets (3+ periods in single query) - v4.0.6.159+
+- Early grid detection to skip preload wait for 3+ columns - v4.0.6.158+
 - Smart Refresh All detection (P&L vs BS sheets) - v4.0.6.145+
 - localStorage caching for account metadata
 - File-based persistence for book-subsidiary cache
@@ -595,6 +598,6 @@
 ---
 
 **Document Owner:** Product Management  
-**Last Updated:** January 2025  
-**Next Review:** Q2 2025
+**Last Updated:** January 10, 2026  
+**Next Review:** Q2 2026
 

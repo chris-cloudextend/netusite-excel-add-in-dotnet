@@ -1385,6 +1385,9 @@ Backend prints detailed query information:
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 4.0.6.159 | Jan 2026 | **Full-year refresh for 3+ periods** - Reverted to full-year refresh for all 3+ periods from same year (removed 3-column batching). Single optimized query fetches all months at once (5-15 seconds), all data appears simultaneously. See `DRAG_RIGHT_9_COLUMN_ANALYSIS.md` for analysis. |
+| 4.0.6.158 | Jan 2026 | **Early grid detection** - Added early grid detection in `BALANCE()` function to detect grid pattern (3+ periods × 2+ accounts) before preload wait. Skips individual preload waits for grid patterns, allowing batch processing to handle all requests together. |
+| 4.0.6.145 | Jan 2026 | **Refresh All smart detection** - Automatically detects P&L sheets (2+ periods from same year) vs Balance Sheet sheets (1 period). Prevents unnecessary Balance Sheet queries on Income Statement sheets, reducing refresh time from timeouts to ~30 seconds. |
 | 4.0.0.76 | Dec 2025 | **Precache BUSY delay fix** - Fixed 60+ second delay after precache completion. Formulas now resolve within 1-2 seconds using status change detection and Office.js recalculation triggers. See `PRECACHE_BUSY_DELAY_FIX_IMPLEMENTED.md` for details. |
 | 4.0.0.75 | Dec 2025 | **Financial integrity fix** - Fixed Income Statement showing incorrect revenue when class filter applied. Cache now cleared and saved with correct filters. Reduced excessive logging. |
 | 4.0.0.74 | Dec 2025 | **Syntax fix** - Fixed missing closing brace in BALANCE function causing CFO Flash report #VALUE errors. |
@@ -1410,5 +1413,5 @@ Backend prints detailed query information:
 
 ---
 
-*Document Version: 4.0.6.146*
+*Document Version: 4.0.6.159*
 *Last Updated: January 10, 2026*

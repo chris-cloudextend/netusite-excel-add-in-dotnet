@@ -1,8 +1,8 @@
 # XAVI for NetSuite - Engineering Handoff Documentation
 
 **Purpose:** Knowledge transfer document for engineers taking over the XAVI Excel Add-in project  
-**Current Version:** 4.0.6.145  
-**Last Updated:** January 2026
+**Current Version:** 4.0.6.159  
+**Last Updated:** January 10, 2026
 
 ---
 
@@ -143,7 +143,8 @@ For detailed implementation, see [DEVELOPER_CHECKLIST.md](DEVELOPER_CHECKLIST.md
 **Pre-Caching:**
 - **Balance Sheet:** Automatically pre-caches all BS accounts when first BS formula is entered for a period
 - **Income Statement:** Automatically pre-caches all P&L accounts when first P&L formula is entered for a period
-- **Full Year Refresh:** When 12 periods detected, fetches all months in single optimized query
+- **Full Year Refresh (v4.0.6.159+):** When 3+ periods from same year detected, fetches all months in single optimized query
+- **Early Grid Detection (v4.0.6.158+):** Detects grid pattern (3+ periods × 2+ accounts) before preload wait, skipping individual preloads and allowing batch processing to handle all requests together
 
 For detailed caching documentation, see [DOCUMENTATION.md#pre-caching--drag-drop-optimization](DOCUMENTATION.md#pre-caching--drag-drop-optimization).
 
@@ -236,10 +237,23 @@ Automatically pre-caches all accounts for a period when first formula is entered
 - First formula: ~2-3 seconds (triggers preload)
 - Subsequent formulas: Instant (from cache)
 
+**Early Grid Detection (v4.0.6.158+):**
+- When dragging 3+ columns, grid pattern is detected early (before preload wait)
+- Skips individual preload waits for each period
+- All requests queue together and are processed via full-year refresh (3+ periods) or batch processing
+- Prevents sequential preload waits that would delay batch processing
+
+**Full-Year Refresh (v4.0.6.159+):**
+- For 3+ periods from the same year, uses single `/batch/full_year_refresh` query
+- Fetches all months in one optimized query (5-15 seconds)
+- All data appears at once after query completes
+- Provides better overall performance than incremental 3-column batching
+
 ### Refresh All
 "Refresh All" button clears cache and re-fetches all formulas on the sheet:
-- **Smart Detection:** Automatically detects P&L sheets (12 periods) vs BS sheets (1 period)
+- **Smart Detection:** Automatically detects P&L sheets (2+ periods from same year) vs BS sheets (1 period)
 - **Optimized Fetching:** Only fetches appropriate account types
+- **Full-Year Refresh:** P&L sheets with 2+ periods use `/batch/full_year_refresh` endpoint for optimal performance
 - **Sequential Refresh:** Special formulas (RE, NI, CTA) refresh after BALANCE data loads
 
 For complete feature documentation, see [DOCUMENTATION.md](DOCUMENTATION.md).
@@ -566,6 +580,24 @@ Similar structure using:
 5. Do we need to support on-premise NetSuite deployments?
 6. What monitoring/observability tools should we integrate?
 7. What's the deployment strategy (CI/CD pipeline)?
+
+---
+
+## Recent Changes (v4.0.6.158-159)
+
+### v4.0.6.158: Early Grid Detection
+- **Issue:** When dragging 3+ columns, formulas were waiting 120s for individual preloads, preventing batch processing
+- **Fix:** Added early grid detection in `BALANCE()` function that detects grid pattern (3+ periods × 2+ accounts) before preload wait
+- **Impact:** Skips preload wait for grid patterns, allowing batch processing to handle all requests together
+- **Files Modified:** `docs/functions.js` (lines 7709-7848)
+- **Documentation:** See `DRAG_RIGHT_SINGLE_CELL_BUG_REPORT.md` and `DRAG_RIGHT_FIX_IMPLEMENTATION_PLAN.md`
+
+### v4.0.6.159: Full-Year Refresh for 3+ Periods
+- **Issue:** 3-column batching provided incremental updates but felt slow due to perceived lack of progress
+- **Fix:** Reverted to full-year refresh for all 3+ periods from same year (removed 3-column batching logic)
+- **Impact:** Single optimized query fetches all months at once (5-15 seconds), all data appears simultaneously
+- **Files Modified:** `docs/functions.js` (lines 11218-11293)
+- **Analysis:** See `DRAG_RIGHT_9_COLUMN_ANALYSIS.md` for detailed findings and rationale
 
 ---
 
