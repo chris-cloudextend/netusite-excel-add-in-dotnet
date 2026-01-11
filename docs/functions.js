@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.152';  // Fix: Full-year optimization for 3+ periods, column-first grid detection fallback
+const FUNCTIONS_VERSION = '4.0.6.154';  // Fix: Period-aware Income Statement preload for drag-right
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -3025,7 +3025,7 @@ async function waitForIncomePreloadComplete(maxWaitMs = 120000) {
  * Check if a period is already cached in the preload cache
  * CRITICAL: Normalizes period to ensure cache key matching works correctly
  */
-function checkIfPeriodIsCached(period) {
+function checkIfPeriodIsCached(period, filtersHash = null) {
     try {
         // Normalize period to ensure it matches cache key format
         // This handles Range objects and various period formats
@@ -3043,19 +3043,42 @@ function checkIfPeriodIsCached(period) {
         }
         
         const preloadData = JSON.parse(preloadCache);
-        // Check if any account has this period cached
-        // We just need to find one account with this period to know it's cached
-        // Cache keys are in format: balance:${account}::${normalizedPeriod}
-        const periodKey = `::${normalizedPeriod}`;
         const cacheKeys = Object.keys(preloadData);
-        console.log(`🔍 checkIfPeriodIsCached("${normalizedPeriod}"): Checking ${cacheKeys.length} cache keys for period key "${periodKey}"`);
+        console.log(`🔍 checkIfPeriodIsCached("${normalizedPeriod}"): Checking ${cacheKeys.length} cache keys`);
         
-        for (const key in preloadData) {
-            if (key.endsWith(periodKey)) {
-                console.log(`✅ checkIfPeriodIsCached("${normalizedPeriod}"): Found cached period in key "${key}", returning true`);
+        // Check for legacy format: balance:${account}::${normalizedPeriod} (no filters)
+        const legacyPeriodKey = `::${normalizedPeriod}`;
+        for (const key of cacheKeys) {
+            if (key.endsWith(legacyPeriodKey)) {
+                console.log(`✅ checkIfPeriodIsCached("${normalizedPeriod}"): Found cached period (legacy format) in key "${key}", returning true`);
                 return true;
             }
         }
+        
+        // Check for new format: balance:${account}:${filtersHash}:${normalizedPeriod} (with filters)
+        // If filtersHash provided, check for exact match; otherwise check for any filtersHash pattern
+        if (filtersHash) {
+            const newPeriodKey = `:${filtersHash}:${normalizedPeriod}`;
+            for (const key of cacheKeys) {
+                if (key.endsWith(newPeriodKey)) {
+                    console.log(`✅ checkIfPeriodIsCached("${normalizedPeriod}"): Found cached period (with filters) in key "${key}", returning true`);
+                    return true;
+                }
+            }
+        } else {
+            // No filtersHash provided - check for any filtersHash pattern
+            // Pattern: balance:${account}:${anything}:${normalizedPeriod}
+            // Escape special regex characters in normalizedPeriod
+            const escapedPeriod = normalizedPeriod.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const periodKeyPattern = new RegExp(`:[^:]+:${escapedPeriod}$`);
+            for (const key of cacheKeys) {
+                if (periodKeyPattern.test(key)) {
+                    console.log(`✅ checkIfPeriodIsCached("${normalizedPeriod}"): Found cached period (any filters) in key "${key}", returning true`);
+                    return true;
+                }
+            }
+        }
+        
         console.log(`🔍 checkIfPeriodIsCached("${normalizedPeriod}"): No matching cache keys found, returning false`);
         return false;
     } catch (e) {
@@ -7676,33 +7699,91 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                 
                 // Check if income preload is already in progress
                 let preloadInProgress = false;
+                let preloadTimestamp = null;
                 try {
                     const preloadStatus = localStorage.getItem('netsuite_income_preload_status');
                     preloadInProgress = (preloadStatus === 'running' || preloadStatus === 'requested');
+                    const timestampStr = localStorage.getItem('netsuite_income_preload_timestamp');
+                    if (timestampStr) {
+                        preloadTimestamp = parseInt(timestampStr);
+                    }
                 } catch (e) {
                     // Ignore localStorage errors
                 }
                 
-                // First Income Statement formula - trigger automatic preload!
-                // Track income formulas to detect first one
-                if (typeof window.totalIncomeFormulasQueued === 'undefined') {
-                    window.totalIncomeFormulasQueued = 0;
+                // Income Statement preload: Period-aware triggering (similar to Balance Sheet)
+                // Check if this period is already cached
+                const isPeriodCached = checkIfPeriodIsCached(normalizedToPeriod, filtersHash);
+                console.log(`🔍 Income preload check: period = ${normalizedToPeriod}, isPeriodCached = ${isPeriodCached}, preloadInProgress = ${preloadInProgress}`);
+                
+                // Check if this period is already pending preload (duplicate trigger prevention)
+                const pendingKey = `income_preload_pending:${normalizedToPeriod}:${filtersHash || ''}`;
+                let isPending = false;
+                try {
+                    const pendingTimestamp = localStorage.getItem(pendingKey);
+                    if (pendingTimestamp) {
+                        const pendingAge = Date.now() - parseInt(pendingTimestamp);
+                        // Consider pending if less than 2 minutes old (preload should complete within 120s)
+                        if (pendingAge < 120000) {
+                            isPending = true;
+                        } else {
+                            // Stale pending flag - clear it
+                            localStorage.removeItem(pendingKey);
+                        }
+                    }
+                } catch (e) {
+                    // Ignore localStorage errors
                 }
-                window.totalIncomeFormulasQueued++;
-                console.log(`🔍 Income preload check: totalIncomeFormulasQueued = ${window.totalIncomeFormulasQueued}, account = ${account}, period = ${normalizedToPeriod}, preloadInProgress = ${preloadInProgress}`);
                 
                 let shouldWaitForPreload = false;
-                if (window.totalIncomeFormulasQueued === 1) {
-                    console.log(`🚀 About to trigger income preload for first formula: ${account}/${normalizedToPeriod}`);
+                
+                // CRITICAL FIX: Trigger preload for NEW periods (not just first formula ever)
+                // This matches Balance Sheet behavior: each new period gets its own preload
+                if (!isPeriodCached && !isPending) {
+                    // Mark as pending BEFORE triggering to prevent duplicate triggers
+                    try {
+                        localStorage.setItem(pendingKey, Date.now().toString());
+                    } catch (e) {
+                        console.warn('Could not set pending flag:', e);
+                    }
+                    console.log(`🚀 Period ${normalizedToPeriod} not cached - triggering income preload`);
                     // CRITICAL: Use normalized period name (not Excel date serial) for preload trigger
                     triggerIncomePreload(account, normalizedToPeriod, { subsidiary, department, location, classId, accountingBook });
                     console.log(`✅ Income preload trigger call completed`);
                     shouldWaitForPreload = true; // Wait for the preload we just triggered
+                } else if (isPending) {
+                    console.log(`⏳ Period ${normalizedToPeriod} preload already pending - will wait for it to complete`);
+                    shouldWaitForPreload = true; // Wait for pending preload
                 } else if (preloadInProgress) {
                     console.log(`⏳ Income preload already in progress - will wait for it to complete`);
                     shouldWaitForPreload = true; // Wait for existing preload
+                } else if (preloadTimestamp && (Date.now() - preloadTimestamp < 10000)) {
+                    // CRITICAL FIX: If preload was triggered recently (within last 10 seconds), wait for it
+                    // This handles the race condition where drag-down formulas evaluate before preload status is set
+                    console.log(`⏳ Income preload was recently triggered (${Math.round((Date.now() - preloadTimestamp) / 1000)}s ago) - will wait for it to complete`);
+                    shouldWaitForPreload = true;
+                } else if (isPeriodCached) {
+                    // Period is cached - no need to wait for preload
+                    console.log(`✅ Period ${normalizedToPeriod} is already cached - no preload needed`);
                 } else {
-                    console.log(`⏭️ Skipping income preload trigger (not first formula: ${window.totalIncomeFormulasQueued})`);
+                    // Fallback: Re-check preload status after brief delay (handles race conditions)
+                    console.log(`⏳ Re-checking preload status for ${normalizedToPeriod}...`);
+                    await new Promise(r => setTimeout(r, 50));
+                    try {
+                        const recheckStatus = localStorage.getItem('netsuite_income_preload_status');
+                        const recheckTimestamp = localStorage.getItem('netsuite_income_preload_timestamp');
+                        if (recheckStatus === 'running' || recheckStatus === 'requested') {
+                            console.log(`⏳ Income preload detected on recheck - will wait for it to complete`);
+                            shouldWaitForPreload = true;
+                        } else if (recheckTimestamp && (Date.now() - parseInt(recheckTimestamp) < 10000)) {
+                            console.log(`⏳ Income preload timestamp found (recent) - will wait for it to complete`);
+                            shouldWaitForPreload = true;
+                        } else {
+                            console.log(`⏭️ No preload detected for ${normalizedToPeriod} - proceeding to queue`);
+                        }
+                    } catch (e) {
+                        console.log(`⏭️ Error rechecking preload status - proceeding to queue`);
+                    }
                 }
                 
                 // CRITICAL FIX: Wait for preload to complete before proceeding to queue
@@ -7717,6 +7798,12 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                             console.log(`✅ Cache hit after preload: ${account}/${normalizedToPeriod} = ${cachedAfterPreload}`);
                             cacheStats.hits++;
                             cache.balance.set(cacheKey, cachedAfterPreload);
+                            // Clear pending flag since preload completed and cache is populated
+                            try {
+                                localStorage.removeItem(pendingKey);
+                            } catch (e) {
+                                // Ignore localStorage errors
+                            }
                             return cachedAfterPreload;
                         }
                         console.log(`⚠️ Preload completed but cache miss for ${account}/${normalizedToPeriod} - proceeding to queue`);
