@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.147';  // Fix: Refresh All now uses full year refresh for 2+ periods (not just 12)
+const FUNCTIONS_VERSION = '4.0.6.149';  // Fix: Income Statement formulas now wait for preload to complete before queuing
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -2842,6 +2842,38 @@ function markIncomePreloadComplete() {
 window.markIncomePreloadComplete = markIncomePreloadComplete;
 
 /**
+ * Wait for income preload to complete (similar to waitForPeriodCompletion for BS)
+ * Returns true if preload completed, false if timeout
+ */
+async function waitForIncomePreloadComplete(maxWaitMs = 120000) {
+    const startTime = Date.now();
+    const pollInterval = 1000;  // Check every 1s
+    
+    while (Date.now() - startTime < maxWaitMs) {
+        try {
+            const status = localStorage.getItem('netsuite_income_preload_status');
+            if (status === 'complete') {
+                console.log('✅ Income preload completed - cache should now be populated');
+                // Give taskpane a moment to finish writing to cache
+                await new Promise(r => setTimeout(r, 500));
+                return true;
+            } else if (status === 'failed' || status === 'error') {
+                console.warn('⚠️ Income preload failed - proceeding without waiting');
+                return false;
+            }
+            // Status is 'running' or null - continue waiting
+        } catch (e) {
+            console.warn('Error checking income preload status:', e);
+        }
+        
+        await new Promise(r => setTimeout(r, pollInterval));
+    }
+    
+    console.warn(`⏱️ Income preload wait timeout after ${maxWaitMs}ms - proceeding anyway`);
+    return false;  // Timeout
+}
+
+/**
  * Check if a period is already cached in the preload cache
  * CRITICAL: Normalizes period to ensure cache key matching works correctly
  */
@@ -3760,6 +3792,12 @@ window.clearAllCaches = function() {
     // Reset stats
     cacheStats.hits = 0;
     cacheStats.misses = 0;
+    
+    // Reset income preload counter so preload can trigger again
+    if (typeof window !== 'undefined') {
+        window.totalIncomeFormulasQueued = 0;
+        console.log('  Reset income preload counter');
+    }
     
     console.log('✅ ALL CACHES CLEARED');
     return true;
@@ -7484,21 +7522,55 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                     return localStorageValue;
                 }
                 
+                // Check if income preload is already in progress
+                let preloadInProgress = false;
+                try {
+                    const preloadStatus = localStorage.getItem('netsuite_income_preload_status');
+                    preloadInProgress = (preloadStatus === 'running' || preloadStatus === 'requested');
+                } catch (e) {
+                    // Ignore localStorage errors
+                }
+                
                 // First Income Statement formula - trigger automatic preload!
                 // Track income formulas to detect first one
                 if (typeof window.totalIncomeFormulasQueued === 'undefined') {
                     window.totalIncomeFormulasQueued = 0;
                 }
                 window.totalIncomeFormulasQueued++;
-                console.log(`🔍 Income preload check: totalIncomeFormulasQueued = ${window.totalIncomeFormulasQueued}, account = ${account}, period = ${normalizedToPeriod}`);
+                console.log(`🔍 Income preload check: totalIncomeFormulasQueued = ${window.totalIncomeFormulasQueued}, account = ${account}, period = ${normalizedToPeriod}, preloadInProgress = ${preloadInProgress}`);
                 
+                let shouldWaitForPreload = false;
                 if (window.totalIncomeFormulasQueued === 1) {
                     console.log(`🚀 About to trigger income preload for first formula: ${account}/${normalizedToPeriod}`);
                     // CRITICAL: Use normalized period name (not Excel date serial) for preload trigger
                     triggerIncomePreload(account, normalizedToPeriod, { subsidiary, department, location, classId, accountingBook });
                     console.log(`✅ Income preload trigger call completed`);
+                    shouldWaitForPreload = true; // Wait for the preload we just triggered
+                } else if (preloadInProgress) {
+                    console.log(`⏳ Income preload already in progress - will wait for it to complete`);
+                    shouldWaitForPreload = true; // Wait for existing preload
                 } else {
                     console.log(`⏭️ Skipping income preload trigger (not first formula: ${window.totalIncomeFormulasQueued})`);
+                }
+                
+                // CRITICAL FIX: Wait for preload to complete before proceeding to queue
+                // This ensures cache is populated before formulas evaluate, making drag-down instant
+                if (shouldWaitForPreload) {
+                    console.log(`⏳ Waiting for income preload to complete (max 120s)...`);
+                    const preloadCompleted = await waitForIncomePreloadComplete(120000);
+                    if (preloadCompleted) {
+                        // Preload completed - check cache again before queuing
+                        const cachedAfterPreload = checkLocalStorageCache(account, fromPeriod, normalizedToPeriod, subsidiary, filtersHash);
+                        if (cachedAfterPreload !== null) {
+                            console.log(`✅ Cache hit after preload: ${account}/${normalizedToPeriod} = ${cachedAfterPreload}`);
+                            cacheStats.hits++;
+                            cache.balance.set(cacheKey, cachedAfterPreload);
+                            return cachedAfterPreload;
+                        }
+                        console.log(`⚠️ Preload completed but cache miss for ${account}/${normalizedToPeriod} - proceeding to queue`);
+                    } else {
+                        console.log(`⚠️ Preload wait timeout or failed - proceeding to queue anyway`);
+                    }
                 }
                 // CRITICAL: Check for build mode signal BEFORE queuing (for Refresh All)
                 // This ensures formulas are batched instead of evaluated individually
@@ -13067,6 +13139,11 @@ function CLEARCACHE(itemsJson) {
 
 (function registerCustomFunctions() {
     function doRegistration() {
+        // Initialize income preload counter on page load
+        if (typeof window !== 'undefined' && typeof window.totalIncomeFormulasQueued === 'undefined') {
+            window.totalIncomeFormulasQueued = 0;
+        }
+        
         if (typeof CustomFunctions !== 'undefined' && CustomFunctions.associate) {
             try {
                 CustomFunctions.associate('NAME', NAME);
