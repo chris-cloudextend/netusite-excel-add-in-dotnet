@@ -24462,9 +24462,9 @@ export default {
                     return yearMatch && yearMatch[1] === String(yearsArray[0] || new Date().getFullYear());
                 });
                 
-                // P&L sheet: 12 periods of same year OR 10-12 periods of same year
-                const isLikelyPLSheet = (detectedPeriods.size === 12 && periodsFromSameYear) || 
-                                       (detectedPeriods.size >= 10 && detectedPeriods.size <= 12 && periodsFromSameYear);
+                // P&L sheet: Multiple periods (2+) from same year = P&L sheet (use full year refresh for optimal performance)
+                // Full year refresh is faster than individual queries even for partial years (2-11 months)
+                const isLikelyPLSheet = detectedPeriods.size >= 2 && periodsFromSameYear;
                 // Balance Sheet: 1 period OR multiple periods from different years (multi-year BS report)
                 const isLikelyBSSheet = detectedPeriods.size === 1 || (detectedPeriods.size > 1 && !periodsFromSameYear);
                 
@@ -24506,10 +24506,10 @@ export default {
                         // If type API fails, use smart inference based on period count
                         console.error('❌ Type API failed! Using smart inference:', e);
                         if (isLikelyPLSheet) {
-                            console.log('📊 Smart inference: 12 periods detected → treating as P&L sheet');
+                            console.log(`📊 Smart inference: ${detectedPeriods.size} periods from same year detected → treating as P&L sheet`);
                             plAccounts = [...detectedAccounts];
                             showToast({ type: 'info', title: 'Account Classification', 
-                                message: 'Could not classify accounts. Detected 12 periods (full year) → fetching P&L data only.', duration: 6000 });
+                                message: `Could not classify accounts. Detected ${detectedPeriods.size} periods from same year → fetching P&L data only.`, duration: 6000 });
                         } else if (isLikelyBSSheet) {
                             console.log('📊 Smart inference: 1 period detected → treating as Balance Sheet');
                             bsAccounts = [...detectedAccounts];
@@ -24529,7 +24529,7 @@ export default {
                     // Use smart inference based on period count
                     console.log('⚠️ No accounts extracted from formulas, using smart inference');
                     if (isLikelyPLSheet) {
-                        console.log('📊 Smart inference: 12 periods detected → treating as P&L sheet (will fetch all P&L accounts)');
+                        console.log(`📊 Smart inference: ${detectedPeriods.size} periods from same year detected → treating as P&L sheet (will fetch all P&L accounts via full year refresh)`);
                         // Don't set plAccounts - we'll fetch all P&L accounts via full_year_refresh
                     } else if (isLikelyBSSheet) {
                         console.log('📊 Smart inference: 1 period detected → treating as Balance Sheet');
@@ -24571,14 +24571,17 @@ export default {
                 // Fetch P&L if we have P&L accounts OR if we have 12 periods (full year P&L sheet)
                 // ============================================
                 
-                // Fetch P&L if we have P&L accounts OR if we have 12 periods (full year P&L sheet)
-                // CRITICAL: If we have 12 periods from same year, ALWAYS fetch P&L (even if no accounts extracted)
+                // Fetch P&L if we have P&L accounts OR if we have 2+ periods from same year (P&L sheet)
+                // CRITICAL: If we have 2+ periods from same year, use full year refresh for optimal performance
+                // Full year refresh fetches all P&L accounts for the entire year (~30s), which is faster than
+                // individual queries even if we only need 2 months of data
                 const shouldFetchPL = plAccounts.length > 0 || (isLikelyPLSheet && cellsToUpdate.length > 0);
                 
                 console.log(`📊 P&L fetch decision: shouldFetchPL=${shouldFetchPL}, plAccounts.length=${plAccounts.length}, isLikelyPLSheet=${isLikelyPLSheet}, cellsToUpdate.length=${cellsToUpdate.length}`);
                 
                 if (shouldFetchPL) {
-                    const accountInfo = plAccounts.length > 0 ? `${plAccounts.length} accounts: ${plAccounts.join(', ')}` : 'all P&L accounts (12 periods detected)';
+                    // Use full year refresh for optimal performance (even for partial years like 2 months)
+                    const accountInfo = plAccounts.length > 0 ? `${plAccounts.length} accounts: ${plAccounts.join(', ')}` : `all P&L accounts (${detectedPeriods.size} periods detected, using full year refresh for optimal speed)`;
                     console.log(`📊 Fetching P&L data for ${accountInfo}`);
                     updateLoading('Fetching P&L accounts...', 15, `${plAccounts.length > 0 ? plAccounts.length : 'All'} P&L accounts, Years: ${yearsArray.join(', ')}`);
                     
@@ -24663,7 +24666,7 @@ export default {
                     }
                 } else {
                     if (isLikelyPLSheet) {
-                        updateLoading('No P&L accounts to fetch', 50, 'Could not extract accounts from formulas, but detected 12 periods. Try refreshing individual cells.');
+                        updateLoading('No P&L accounts to fetch', 50, `Could not extract accounts from formulas, but detected ${detectedPeriods.size} periods from same year. Try refreshing individual cells.`);
                     } else {
                         updateLoading('No P&L accounts to fetch', 50, 'All detected accounts are Balance Sheet type');
                     }
