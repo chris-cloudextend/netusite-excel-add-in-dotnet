@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.158';  // Fix: Early grid detection to skip preload wait for 3+ columns
+const FUNCTIONS_VERSION = '4.0.6.159';  // Revert: Use full-year refresh for 3+ periods (remove 3-column batching)
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -7763,7 +7763,7 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                 // ================================================================
                 // GRID DETECTION: Check for multi-period pattern BEFORE preload wait
                 // If grid detected (3+ periods, 2+ accounts), skip preload wait
-                // and let processBatchQueue() handle all requests together with 3-column batching
+                // and let processBatchQueue() handle all requests together with full-year refresh
                 // ================================================================
                 const evaluatingRequests = Array.from(pendingEvaluation.balance.values());
                 const uniquePeriods = new Set();
@@ -7785,7 +7785,7 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                     // GRID MODE: Skip preload wait - batch queue will handle efficiently
                     // ================================================================
                     console.log(`📊 GRID MODE DETECTED: ${uniquePeriods.size} periods × ${uniqueAccounts.size} accounts`);
-                    console.log(`   ⏭️ Skipping preload wait - batch queue will use 3-column batching`);
+                    console.log(`   ⏭️ Skipping preload wait - batch queue will use full-year refresh`);
                     shouldWaitForPreload = false;
                     
                     // Still trigger preload in background (for cache population) but DON'T wait
@@ -11215,28 +11215,28 @@ async function processBatchQueue() {
             // This gets all 12 months in one query, then we extract the specific months needed
             // Much more efficient than chunking into separate queries
             // CRITICAL: This is the correct endpoint for monthly breakdowns (not year endpoint)
-            // Changed to >= 12 to use full-year refresh only for full year scenarios
-            // 3-11 periods will use 3-column batching via column-based grid detection (incremental updates)
+            // Changed to >= 3 to use full-year refresh for 3+ periods (single query, all data at once)
+            // This provides better overall performance than 3-column batching
             const useFullYearRefreshPattern = !usePeriodRangeOptimization && !useYearEndpoint && 
                 allAccountsAreIncomeStatement && yearForOptimization && 
-                periodsArray.length >= 12 && periodsArray.every(p => {
+                periodsArray.length >= 3 && periodsArray.every(p => {
                     const match = p.match(/^\w+\s+(\d{4})$/);
                     return match && match[1] === yearForOptimization;
                 });
             
-            // Also use full_year_refresh if we have 12+ months of same year
+            // Also use full_year_refresh if we have 3+ months of same year
             // This ensures monthly breakdowns are returned, not just FY totals
             let shouldUseFullYearRefresh = useFullYearRefreshPattern;
             if (!shouldUseFullYearRefresh && !usePeriodRangeOptimization && !useYearEndpoint &&
-                allAccountsAreIncomeStatement && yearForOptimization && periodsArray.length >= 12) {
+                allAccountsAreIncomeStatement && yearForOptimization && periodsArray.length >= 3) {
                 const allSameYear = periodsArray.every(p => {
                     const match = p.match(/^\w+\s+(\d{4})$/);
                     return match && match[1] === yearForOptimization;
                 });
                 if (allSameYear) {
-                    // Override: Use full_year_refresh for 12+ months to get monthly breakdowns
+                    // Override: Use full_year_refresh for 3+ months to get monthly breakdowns
                     shouldUseFullYearRefresh = true;
-                    console.log(`  ✅ Overriding: Using full_year_refresh for ${periodsArray.length} months (12+ periods, full year)`);
+                    console.log(`  ✅ Overriding: Using full_year_refresh for ${periodsArray.length} months (3+ periods, same year)`);
                 }
             }
             // CRITICAL FIX: Make useFullYearRefreshPatternFinal mutable so column-based grid can override it
@@ -11257,8 +11257,7 @@ async function processBatchQueue() {
                 
                 if (columnBasedPLGrid && columnBasedPLGrid.eligible) {
                     // NEW LOGIC: Check period count and year distribution
-                    // 3-11 periods: Use 3-column batching (incremental updates)
-                    // 12+ periods: Use full-year refresh (single query)
+                    // 3+ periods: Use full-year refresh (single query, all data at once)
                     // Multiple years: Process each year separately
                     const gridPeriods = columnBasedPLGrid.columns.map(col => col.period);
                     const periodsByYear = new Map();
@@ -11278,11 +11277,11 @@ async function processBatchQueue() {
                     const yearCount = periodsByYear.size;
                     const periodsInLargestYear = Math.max(...Array.from(periodsByYear.values()).map(p => p.length));
                     
-                    if (yearCount === 1 && periodsInLargestYear >= 12) {
-                        // Single year, 12+ periods: Use full-year refresh
+                    if (yearCount === 1 && periodsInLargestYear >= 3) {
+                        // Single year, 3+ periods: Use full-year refresh (single query, all data at once)
                         const gridYearForOptimization = Array.from(periodsByYear.keys())[0];
                         console.log(`  ✅ COLUMN-BASED PL GRID: Detected ${gridPeriods.length} periods from ${gridYearForOptimization}`);
-                        console.log(`     Using full_year_refresh pattern (12+ periods, single year)`);
+                        console.log(`     Using full_year_refresh pattern (3+ periods, single year)`);
                         
                         yearForOptimization = gridYearForOptimization;
                         shouldUseFullYearRefresh = true;
@@ -11290,11 +11289,6 @@ async function processBatchQueue() {
                         console.log(`  ✅ OVERRIDE: Using full_year_refresh for ${gridPeriods.length} periods from ${gridYearForOptimization}`);
                         periodsArray.length = 0;
                         periodsArray.push(...gridPeriods);
-                    } else if (yearCount === 1 && periodsInLargestYear >= 3 && periodsInLargestYear <= 11) {
-                        // Single year, 3-11 periods: Use 3-column batching (incremental updates)
-                        useColumnBasedPLGrid = true;
-                        console.log(`  ✅ COLUMN-BASED PL GRID DETECTED: ${columnBasedPLGrid.allAccounts.size} accounts × ${gridPeriods.length} periods`);
-                        console.log(`     Using 3-column batching for incremental updates (3-11 periods, single year)`);
                     } else if (yearCount > 1) {
                         // Multiple years: Process column-by-column (handles year boundaries)
                         useColumnBasedPLGrid = true;
