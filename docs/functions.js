@@ -2898,38 +2898,56 @@ function triggerAutoPreload(firstAccount, firstPeriod, filters = null) {
 /**
  * Trigger automatic Income Statement preload when first P&L formula is detected.
  * Similar to triggerAutoPreload but for Income Statement accounts.
+ * Now supports period ranges (fromPeriod ≠ toPeriod) for quarterly reporting.
  */
-function triggerIncomePreload(firstAccount, firstPeriod, filters = null) {
-    console.log(`🔍 triggerIncomePreload called: account=${firstAccount}, period=${firstPeriod}, filters=`, filters);
+function triggerIncomePreload(firstAccount, firstPeriod, filters = null, fromPeriod = null) {
+    console.log(`🔍 triggerIncomePreload called: account=${firstAccount}, period=${firstPeriod}, fromPeriod=${fromPeriod}, filters=`, filters);
     
-    // CRITICAL: Normalize period before using it (handles Range objects)
+    // CRITICAL: Normalize periods before using them (handles Range objects)
     const normalizedPeriod = normalizePeriodKey(firstPeriod, false);
+    const normalizedFromPeriod = fromPeriod ? normalizePeriodKey(fromPeriod, true) : null;
+    
+    // Detect if this is a range query (quarterly scenario)
+    const isRangeQuery = normalizedFromPeriod && normalizedFromPeriod !== normalizedPeriod;
+    
     if (!normalizedPeriod) {
         console.warn(`⚠️ triggerIncomePreload: Could not normalize period "${firstPeriod}", skipping preload`);
         return;
     }
-    console.log(`✅ Period normalized: "${firstPeriod}" → "${normalizedPeriod}"`);
     
-    // Check if this period is already cached (using normalized period)
-    const isPeriodCached = checkIfPeriodIsCached(normalizedPeriod);
-    console.log(`🔍 Period cache check for "${normalizedPeriod}": ${isPeriodCached ? 'CACHED' : 'NOT CACHED'}`);
-    
-    if (isPeriodCached) {
-        console.log(`✅ Period ${normalizedPeriod} already cached, skipping income preload`);
+    if (isRangeQuery && !normalizedFromPeriod) {
+        console.warn(`⚠️ triggerIncomePreload: Range query detected but could not normalize fromPeriod "${fromPeriod}", skipping preload`);
         return;
     }
     
-    // CRITICAL: Allow preload to trigger for NEW periods even if a previous preload is in progress
+    console.log(`✅ Period normalized: "${firstPeriod}" → "${normalizedPeriod}"${isRangeQuery ? `, fromPeriod: "${fromPeriod}" → "${normalizedFromPeriod}"` : ''}`);
+    
+    // Build cache key: range queries use "fromPeriod::toPeriod", single period uses just "toPeriod"
+    const filtersHash = filters ? getFilterKey(filters) : '';
+    const cacheKey = isRangeQuery 
+        ? `income::${normalizedFromPeriod}::${normalizedPeriod}::${filtersHash}`
+        : `income::${normalizedPeriod}::${filtersHash}`;
+    
+    // Check if this period/range is already cached
+    const isPeriodCached = checkIfPeriodIsCached(cacheKey, filtersHash);
+    console.log(`🔍 Period cache check for "${cacheKey}": ${isPeriodCached ? 'CACHED' : 'NOT CACHED'}`);
+    
+    if (isPeriodCached) {
+        console.log(`✅ ${isRangeQuery ? 'Range' : 'Period'} ${cacheKey} already cached, skipping income preload`);
+        return;
+    }
+    
+    // CRITICAL: Allow preload to trigger for NEW periods/ranges even if a previous preload is in progress
     if (incomePreloadInProgress) {
-        console.log(`🔄 Income preload in progress, but ${normalizedPeriod} is new period - triggering additional preload`);
+        console.log(`🔄 Income preload in progress, but ${cacheKey} is new ${isRangeQuery ? 'range' : 'period'} - triggering additional preload`);
     }
     
     // If this is the first time, mark as triggered
     if (!incomePreloadTriggered) {
         incomePreloadTriggered = true;
-        console.log(`🚀 INCOME PRELOAD: Triggered by first P&L formula (${firstAccount}, ${normalizedPeriod})`);
+        console.log(`🚀 INCOME PRELOAD: Triggered by first P&L formula (${firstAccount}, ${cacheKey})`);
     } else {
-        console.log(`🚀 INCOME PRELOAD: Triggered for new period (${firstAccount}, ${normalizedPeriod})`);
+        console.log(`🚀 INCOME PRELOAD: Triggered for new ${isRangeQuery ? 'range' : 'period'} (${firstAccount}, ${cacheKey})`);
     }
     
     incomePreloadInProgress = true;
@@ -2949,13 +2967,18 @@ function triggerIncomePreload(firstAccount, firstPeriod, filters = null) {
         const triggerData = {
             firstAccount: firstAccount,
             firstPeriod: normalizedPeriod,
+            fromPeriod: normalizedFromPeriod, // Include fromPeriod for range queries
+            isRangeQuery: isRangeQuery,
+            cacheKey: cacheKey,
             timestamp: Date.now(),
-            reason: incomePreloadTriggered ? `New period detected: ${normalizedPeriod}` : 'First Income Statement formula detected',
+            reason: incomePreloadTriggered 
+                ? `New ${isRangeQuery ? 'range' : 'period'} detected: ${cacheKey}` 
+                : `First Income Statement formula detected${isRangeQuery ? ' (range query)' : ''}`,
             filters: filters || null,
             accountType: 'income' // Distinguish from BS preload
         };
         localStorage.setItem(triggerId, JSON.stringify(triggerData));
-        console.log(`📤 Income preload trigger queued: ${triggerId} (period: ${normalizedPeriod})`);
+        console.log(`📤 Income preload trigger queued: ${triggerId} (${isRangeQuery ? 'range' : 'period'}: ${cacheKey})`);
         
         // Trigger custom event for same-window detection
         try {
@@ -3025,61 +3048,101 @@ async function waitForIncomePreloadComplete(maxWaitMs = 120000) {
  * Check if a period is already cached in the preload cache
  * CRITICAL: Normalizes period to ensure cache key matching works correctly
  */
-function checkIfPeriodIsCached(period, filtersHash = null) {
+function checkIfPeriodIsCached(periodOrCacheKey, filtersHash = null) {
     try {
-        // Normalize period to ensure it matches cache key format
-        // This handles Range objects and various period formats
-        // ✅ Use normalizePeriodKey (synchronous, no await needed)
-        const normalizedPeriod = normalizePeriodKey(period, false);
-        if (!normalizedPeriod) {
-            console.log(`🔍 checkIfPeriodIsCached("${period}"): Normalization failed, returning false`);
-            return false;
+        // Support both period strings and full cache keys (for range queries)
+        // If periodOrCacheKey contains "::" it's a range cache key (e.g., "income::Jan 2025::Mar 2025::filtersHash")
+        // Otherwise it's a single period (e.g., "Jan 2025")
+        const isCacheKey = typeof periodOrCacheKey === 'string' && periodOrCacheKey.includes('::');
+        
+        let normalizedPeriod = null;
+        let cacheKeyPattern = null;
+        
+        if (isCacheKey) {
+            // This is already a cache key - check for exact match
+            cacheKeyPattern = periodOrCacheKey;
+            console.log(`🔍 checkIfPeriodIsCached: Checking cache key "${cacheKeyPattern}"`);
+        } else {
+            // Normalize period to ensure it matches cache key format
+            // This handles Range objects and various period formats
+            // ✅ Use normalizePeriodKey (synchronous, no await needed)
+            normalizedPeriod = normalizePeriodKey(periodOrCacheKey, false);
+            if (!normalizedPeriod) {
+                console.log(`🔍 checkIfPeriodIsCached("${periodOrCacheKey}"): Normalization failed, returning false`);
+                return false;
+            }
         }
         
         const preloadCache = localStorage.getItem('xavi_balance_cache');
         if (!preloadCache) {
-            console.log(`🔍 checkIfPeriodIsCached("${normalizedPeriod}"): No cache found, returning false`);
+            console.log(`🔍 checkIfPeriodIsCached: No cache found, returning false`);
             return false;
         }
         
         const preloadData = JSON.parse(preloadCache);
         const cacheKeys = Object.keys(preloadData);
-        console.log(`🔍 checkIfPeriodIsCached("${normalizedPeriod}"): Checking ${cacheKeys.length} cache keys`);
+        console.log(`🔍 checkIfPeriodIsCached: Checking ${cacheKeys.length} cache keys`);
         
-        // Check for legacy format: balance:${account}::${normalizedPeriod} (no filters)
-        const legacyPeriodKey = `::${normalizedPeriod}`;
-        for (const key of cacheKeys) {
-            if (key.endsWith(legacyPeriodKey)) {
-                console.log(`✅ checkIfPeriodIsCached("${normalizedPeriod}"): Found cached period (legacy format) in key "${key}", returning true`);
-                return true;
-            }
-        }
-        
-        // Check for new format: balance:${account}:${filtersHash}:${normalizedPeriod} (with filters)
-        // If filtersHash provided, check for exact match; otherwise check for any filtersHash pattern
-        if (filtersHash) {
-            const newPeriodKey = `:${filtersHash}:${normalizedPeriod}`;
+        // If checking a cache key directly (range query), look for exact match
+        if (isCacheKey) {
+            // Check for exact match: income::fromPeriod::toPeriod::filtersHash or balance:account::fromPeriod::toPeriod::filtersHash
             for (const key of cacheKeys) {
-                if (key.endsWith(newPeriodKey)) {
-                    console.log(`✅ checkIfPeriodIsCached("${normalizedPeriod}"): Found cached period (with filters) in key "${key}", returning true`);
+                if (key === cacheKeyPattern || key.endsWith(`:${cacheKeyPattern}`)) {
+                    console.log(`✅ checkIfPeriodIsCached: Found cached range in key "${key}", returning true`);
                     return true;
+                }
+            }
+            // Also check for pattern match (account prefix may vary)
+            const keyParts = cacheKeyPattern.split('::');
+            if (keyParts.length >= 3) {
+                const fromPeriod = keyParts[keyParts.length - 3];
+                const toPeriod = keyParts[keyParts.length - 2];
+                const filters = keyParts[keyParts.length - 1];
+                const rangePattern = new RegExp(`::${fromPeriod.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}::${toPeriod.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}::${filters.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`);
+                for (const key of cacheKeys) {
+                    if (rangePattern.test(key)) {
+                        console.log(`✅ checkIfPeriodIsCached: Found cached range (pattern match) in key "${key}", returning true`);
+                        return true;
+                    }
                 }
             }
         } else {
-            // No filtersHash provided - check for any filtersHash pattern
-            // Pattern: balance:${account}:${anything}:${normalizedPeriod}
-            // Escape special regex characters in normalizedPeriod
-            const escapedPeriod = normalizedPeriod.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            const periodKeyPattern = new RegExp(`:[^:]+:${escapedPeriod}$`);
+            // Single period check (existing logic)
+            // Check for legacy format: balance:${account}::${normalizedPeriod} (no filters)
+            const legacyPeriodKey = `::${normalizedPeriod}`;
             for (const key of cacheKeys) {
-                if (periodKeyPattern.test(key)) {
-                    console.log(`✅ checkIfPeriodIsCached("${normalizedPeriod}"): Found cached period (any filters) in key "${key}", returning true`);
+                if (key.endsWith(legacyPeriodKey)) {
+                    console.log(`✅ checkIfPeriodIsCached("${normalizedPeriod}"): Found cached period (legacy format) in key "${key}", returning true`);
                     return true;
+                }
+            }
+            
+            // Check for new format: balance:${account}:${filtersHash}:${normalizedPeriod} (with filters)
+            // If filtersHash provided, check for exact match; otherwise check for any filtersHash pattern
+            if (filtersHash) {
+                const newPeriodKey = `:${filtersHash}:${normalizedPeriod}`;
+                for (const key of cacheKeys) {
+                    if (key.endsWith(newPeriodKey)) {
+                        console.log(`✅ checkIfPeriodIsCached("${normalizedPeriod}"): Found cached period (with filters) in key "${key}", returning true`);
+                        return true;
+                    }
+                }
+            } else {
+                // No filtersHash provided - check for any filtersHash pattern
+                // Pattern: balance:${account}:${anything}:${normalizedPeriod}
+                // Escape special regex characters in normalizedPeriod
+                const escapedPeriod = normalizedPeriod.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                const periodKeyPattern = new RegExp(`:[^:]+:${escapedPeriod}$`);
+                for (const key of cacheKeys) {
+                    if (periodKeyPattern.test(key)) {
+                        console.log(`✅ checkIfPeriodIsCached("${normalizedPeriod}"): Found cached period (any filters) in key "${key}", returning true`);
+                        return true;
+                    }
                 }
             }
         }
         
-        console.log(`🔍 checkIfPeriodIsCached("${normalizedPeriod}"): No matching cache keys found, returning false`);
+        console.log(`🔍 checkIfPeriodIsCached: No matching cache keys found, returning false`);
         return false;
     } catch (e) {
         console.warn('Error checking period cache:', e);
@@ -6103,6 +6166,12 @@ const activeColumnBatchExecutions = new Map();
 // queryState: 'pending' = query not yet sent (can merge accounts), 'sent' = query already in flight
 const activePeriodQueries = new Map();
 
+// RANGE-BASED DEDUPLICATION: Track active queries per period range to merge account lists
+// Map<rangeKey, { promise, accounts: Set, fromPeriod, toPeriod, filters, timestamp }>
+// rangeKey = `${fromPeriod}::${toPeriod}:${filtersHash}` (e.g., "Jan 2025::Mar 2025:1::::1")
+// Used for quarterly ranges where fromPeriod ≠ toPeriod
+const activeRangeQueries = new Map();
+
 const pendingEvaluation = {
     balance: new Map()  // Map<cacheKey, {account, fromPeriod, toPeriod, filters}>
 };
@@ -7683,8 +7752,13 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
             }
             
             // Check if period is resolved (required for queuing and preload)
-            // CRITICAL: Normalize period again to ensure it's in "Mon YYYY" format (not Excel date serial)
+            // CRITICAL: Normalize periods again to ensure they're in "Mon YYYY" format (not Excel date serial)
             const normalizedToPeriod = normalizePeriodKey(toPeriod, false);
+            const normalizedFromPeriod = fromPeriod ? normalizePeriodKey(fromPeriod, true) : null;
+            
+            // Detect if this is a range query (quarterly scenario: fromPeriod ≠ toPeriod)
+            const isRangeQuery = normalizedFromPeriod && normalizedFromPeriod !== normalizedToPeriod;
+            
             if (!normalizedToPeriod || normalizedToPeriod === '') {
                 console.log(`⏳ Income Statement: Period not yet resolved for ${account} (raw: ${toPeriod}) - proceeding to API path`);
                 // Continue to API path below (don't throw - Excel will re-evaluate when period resolves)
@@ -7696,14 +7770,14 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                 if (localStorageValue !== null) {
                     cacheStats.hits++;
                     cache.balance.set(cacheKey, localStorageValue);
-                    console.log(`✅ localStorage cache hit: ${account}/${normalizedToPeriod} = ${localStorageValue}`);
+                    console.log(`✅ localStorage cache hit: ${account}/${normalizedToPeriod}${isRangeQuery ? ` (range: ${normalizedFromPeriod} to ${normalizedToPeriod})` : ''} = ${localStorageValue}`);
                     // Clean up pendingEvaluation on early return (evalKey defined below)
                     const filtersForCleanup = { subsidiary, department, location, classId, accountingBook };
                     const evalKeyForCleanup = `IS::${account}::${fromPeriod || ''}::${normalizedToPeriod}::${filtersHash}`;
                     pendingEvaluation.balance.delete(evalKeyForCleanup);
                     return localStorageValue;
                 } else {
-                    console.log(`❌ Cache miss: ${account}/${normalizedToPeriod} - will queue for API call`);
+                    console.log(`❌ Cache miss: ${account}/${normalizedToPeriod}${isRangeQuery ? ` (range: ${normalizedFromPeriod} to ${normalizedToPeriod})` : ''} - will queue for API call`);
                 }
                 
                 // ================================================================
@@ -7718,7 +7792,14 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                     toPeriod: normalizedToPeriod, 
                     filters
                 });
-                console.log(`📊 Income Statement: Added to pendingEvaluation (${pendingEvaluation.balance.size} total)`);
+                console.log(`📊 Income Statement: Added to pendingEvaluation (${pendingEvaluation.balance.size} total)${isRangeQuery ? ' [RANGE QUERY]' : ''}`);
+                
+                // Build cache key for range/period check
+                // Range queries: income::fromPeriod::toPeriod::filtersHash
+                // Single period: income::toPeriod::filtersHash
+                const periodCacheKey = isRangeQuery 
+                    ? `income::${normalizedFromPeriod}::${normalizedToPeriod}::${filtersHash}`
+                    : `income::${normalizedToPeriod}::${filtersHash}`;
                 
                 // Check if income preload is already in progress
                 let preloadInProgress = false;
@@ -7734,13 +7815,26 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                     // Ignore localStorage errors
                 }
                 
-                // Income Statement preload: Period-aware triggering (similar to Balance Sheet)
-                // Check if this period is already cached
-                const isPeriodCached = checkIfPeriodIsCached(normalizedToPeriod, filtersHash);
-                console.log(`🔍 Income preload check: period = ${normalizedToPeriod}, isPeriodCached = ${isPeriodCached}, preloadInProgress = ${preloadInProgress}`);
+                // Income Statement preload: Range-aware triggering (similar to Balance Sheet)
+                // Check if this period/range is already cached
+                const isPeriodCached = checkIfPeriodIsCached(periodCacheKey, filtersHash);
+                console.log(`🔍 Income preload check: ${isRangeQuery ? 'range' : 'period'} = ${periodCacheKey}, isPeriodCached = ${isPeriodCached}, preloadInProgress = ${preloadInProgress}`);
                 
-                // Check if this period is already pending preload (duplicate trigger prevention)
-                const pendingKey = `income_preload_pending:${normalizedToPeriod}:${filtersHash || ''}`;
+                // RACE CONDITION PROTECTION: Check activeRangeQueries for range queries
+                // This handles the scenario where user drags before first formula completes
+                let activeRangeQuery = null;
+                if (isRangeQuery) {
+                    activeRangeQuery = activeRangeQueries.get(periodCacheKey);
+                    if (activeRangeQuery) {
+                        console.log(`🔍 RANGE QUERY CHECK: Found active range query for "${periodCacheKey}" with ${activeRangeQuery.accounts.size} accounts`);
+                        // Add this account to the active query's account set
+                        activeRangeQuery.accounts.add(account);
+                        console.log(`   ✅ Added account ${account} to active range query (now ${activeRangeQuery.accounts.size} accounts)`);
+                    }
+                }
+                
+                // Check if this period/range is already pending preload (duplicate trigger prevention)
+                const pendingKey = `income_preload_pending:${periodCacheKey}`;
                 let isPending = false;
                 try {
                     const pendingTimestamp = localStorage.getItem(pendingKey);
@@ -7767,56 +7861,87 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                 // ================================================================
                 const evaluatingRequests = Array.from(pendingEvaluation.balance.values());
                 const uniquePeriods = new Set();
+                const uniqueRanges = new Set(); // Track unique ranges for range queries
                 const uniqueAccounts = new Set();
                 for (const req of evaluatingRequests) {
                     if (req.toPeriod) {
                         const normalized = normalizePeriodKey(req.toPeriod, false);
-                        if (normalized) uniquePeriods.add(normalized);
+                        const normalizedFrom = req.fromPeriod ? normalizePeriodKey(req.fromPeriod, true) : null;
+                        if (normalized) {
+                            if (normalizedFrom && normalizedFrom !== normalized) {
+                                // This is a range query
+                                const rangeKey = `${normalizedFrom}::${normalized}`;
+                                uniqueRanges.add(rangeKey);
+                            } else {
+                                // Single period
+                                uniquePeriods.add(normalized);
+                            }
+                        }
                     }
                     if (req.account) uniqueAccounts.add(req.account);
                 }
 
-                // Grid pattern threshold: 3+ periods AND 2+ accounts
+                // Grid pattern threshold: 3+ periods/ranges AND 2+ accounts
                 // This matches detectColumnBasedPLGrid() requirements (line 925)
-                const isGridPattern = uniquePeriods.size >= 3 && uniqueAccounts.size >= 2;
+                const totalPeriodsOrRanges = uniquePeriods.size + uniqueRanges.size;
+                const isGridPattern = totalPeriodsOrRanges >= 3 && uniqueAccounts.size >= 2;
 
                 if (isGridPattern) {
                     // ================================================================
                     // GRID MODE: Skip preload wait - batch queue will handle efficiently
                     // ================================================================
-                    console.log(`📊 GRID MODE DETECTED: ${uniquePeriods.size} periods × ${uniqueAccounts.size} accounts`);
+                    console.log(`📊 GRID MODE DETECTED: ${totalPeriodsOrRanges} ${isRangeQuery ? 'ranges' : 'periods'} × ${uniqueAccounts.size} accounts`);
                     console.log(`   ⏭️ Skipping preload wait - batch queue will use full-year refresh`);
                     shouldWaitForPreload = false;
                     
                     // Still trigger preload in background (for cache population) but DON'T wait
-                    if (!isPeriodCached && !isPending) {
+                    if (!isPeriodCached && !isPending && !activeRangeQuery) {
                         try {
                             localStorage.setItem(pendingKey, Date.now().toString());
                         } catch (e) {
                             console.warn('Could not set pending flag:', e);
                         }
-                        console.log(`🚀 Triggering background preload for ${normalizedToPeriod} (no wait)`);
-                        triggerIncomePreload(account, normalizedToPeriod, { subsidiary, department, location, classId, accountingBook });
+                        console.log(`🚀 Triggering background preload for ${periodCacheKey} (no wait)`);
+                        triggerIncomePreload(account, normalizedToPeriod, { subsidiary, department, location, classId, accountingBook }, normalizedFromPeriod);
                     }
                 } else {
                     // ================================================================
-                    // NORMAL MODE: Few periods - use preload wait for optimal single-period performance
+                    // NORMAL MODE: Few periods/ranges - use preload wait for optimal performance
                     // ================================================================
-                    console.log(`📊 NORMAL MODE: ${uniquePeriods.size} periods × ${uniqueAccounts.size} accounts - using preload wait`);
+                    console.log(`📊 NORMAL MODE: ${totalPeriodsOrRanges} ${isRangeQuery ? 'ranges' : 'periods'} × ${uniqueAccounts.size} accounts - using preload wait`);
                     
-                    if (!isPeriodCached && !isPending) {
+                    // RACE CONDITION PROTECTION: If active range query exists, wait for it
+                    if (activeRangeQuery) {
+                        console.log(`⏳ Range query already in progress for "${periodCacheKey}" - waiting for existing promise`);
+                        shouldWaitForPreload = true;
+                    } else if (!isPeriodCached && !isPending) {
                         // Mark as pending BEFORE triggering to prevent duplicate triggers
                         try {
                             localStorage.setItem(pendingKey, Date.now().toString());
                         } catch (e) {
                             console.warn('Could not set pending flag:', e);
                         }
-                        console.log(`🚀 Period ${normalizedToPeriod} not cached - triggering income preload`);
-                        triggerIncomePreload(account, normalizedToPeriod, { subsidiary, department, location, classId, accountingBook });
+                        
+                        // Register in activeRangeQueries BEFORE creating promise (for range queries)
+                        if (isRangeQuery) {
+                            const rangeQueryEntry = {
+                                promise: null, // Will be set when promise is created
+                                accounts: new Set([account]),
+                                fromPeriod: normalizedFromPeriod,
+                                toPeriod: normalizedToPeriod,
+                                filters: filters,
+                                timestamp: Date.now()
+                            };
+                            activeRangeQueries.set(periodCacheKey, rangeQueryEntry);
+                            console.log(`📝 Registered range query in activeRangeQueries: "${periodCacheKey}"`);
+                        }
+                        
+                        console.log(`🚀 ${isRangeQuery ? 'Range' : 'Period'} ${periodCacheKey} not cached - triggering income preload`);
+                        triggerIncomePreload(account, normalizedToPeriod, { subsidiary, department, location, classId, accountingBook }, normalizedFromPeriod);
                         console.log(`✅ Income preload trigger call completed`);
                         shouldWaitForPreload = true;
                     } else if (isPending) {
-                        console.log(`⏳ Period ${normalizedToPeriod} preload already pending - will wait for it to complete`);
+                        console.log(`⏳ ${isRangeQuery ? 'Range' : 'Period'} ${periodCacheKey} preload already pending - will wait for it to complete`);
                         shouldWaitForPreload = true;
                     } else if (preloadInProgress) {
                         console.log(`⏳ Income preload already in progress - will wait for it to complete`);
@@ -7825,7 +7950,7 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                         console.log(`⏳ Income preload was recently triggered (${Math.round((Date.now() - preloadTimestamp) / 1000)}s ago) - will wait for it to complete`);
                         shouldWaitForPreload = true;
                     } else if (isPeriodCached) {
-                        console.log(`✅ Period ${normalizedToPeriod} is already cached - no preload needed`);
+                        console.log(`✅ ${isRangeQuery ? 'Range' : 'Period'} ${periodCacheKey} is already cached - no preload needed`);
                     } else {
                         // Fallback: Re-check preload status after brief delay (handles race conditions)
                         console.log(`⏳ Re-checking preload status for ${normalizedToPeriod}...`);
@@ -7851,6 +7976,27 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                 // CRITICAL FIX: Wait for preload to complete before proceeding to queue
                 // This ensures cache is populated before formulas evaluate, making drag-down instant
                 if (shouldWaitForPreload) {
+                    // For range queries, wait for activeRangeQuery promise if it exists
+                    if (isRangeQuery && activeRangeQuery && activeRangeQuery.promise) {
+                        console.log(`⏳ Waiting for active range query promise for "${periodCacheKey}" (${activeRangeQuery.accounts.size} accounts)...`);
+                        try {
+                            await activeRangeQuery.promise;
+                            console.log(`✅ Active range query completed for "${periodCacheKey}"`);
+                            // Check cache after promise resolves
+                            const cachedAfterPreload = checkLocalStorageCache(account, fromPeriod, normalizedToPeriod, subsidiary, filtersHash);
+                            if (cachedAfterPreload !== null) {
+                                cacheStats.hits++;
+                                cache.balance.set(cacheKey, cachedAfterPreload);
+                                console.log(`✅ Range query cache hit after preload: ${account}/${periodCacheKey} = ${cachedAfterPreload}`);
+                                pendingEvaluation.balance.delete(evalKey);
+                                return cachedAfterPreload;
+                            }
+                        } catch (e) {
+                            console.warn(`⚠️ Error waiting for active range query: ${e.message}`);
+                            // Continue to normal preload wait below
+                        }
+                    }
+                    
                     console.log(`⏳ Waiting for income preload to complete (max 120s)...`);
                     const preloadCompleted = await waitForIncomePreloadComplete(120000);
                     if (preloadCompleted) {
