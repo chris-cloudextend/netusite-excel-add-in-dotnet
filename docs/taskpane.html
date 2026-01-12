@@ -6077,7 +6077,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.162"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.163"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -9049,18 +9049,29 @@ For licensing inquiries, contact: legal@celigo.com
                                                 if (typeof periodBalances === 'object') {
                                                     // Sum balances for all periods in the range
                                                     let rangeBalance = 0;
+                                                    let periodsInRange = 0;
                                                     for (const [pName, balance] of Object.entries(periodBalances)) {
                                                         // Check if period is in range (simple string comparison for "Mon YYYY" format)
                                                         // This works because "Mon YYYY" format sorts correctly (Jan 2025 < Feb 2025 < Mar 2025)
                                                         if (pName >= fromPeriod && pName <= toPeriod) {
                                                             rangeBalance += parseFloat(balance) || 0;
+                                                            periodsInRange++;
                                                         }
                                                     }
                                                     
+                                                    // CRITICAL: Cache ALL accounts, even if rangeBalance is 0
+                                                    // Zero is a valid cached value and prevents redundant API calls
                                                     // Cache per-account range balance: balance:account:filtersHash:fromPeriod::toPeriod
                                                     // The double colon (::) indicates this is a range, not a single period
-                                                    const accountRangeKey = `balance:${account}:${filtersHash}:${fromPeriod}::${toPeriod}`;
+                                                    // CRITICAL: Convert account to string to ensure consistent cache keys
+                                                    const accountStr = String(account);
+                                                    const accountRangeKey = `balance:${accountStr}:${filtersHash}:${fromPeriod}::${toPeriod}`;
                                                     cacheEntries[accountRangeKey] = { value: rangeBalance, timestamp: Date.now() };
+                                                    
+                                                    // Debug log for first few accounts
+                                                    if (Object.keys(cacheEntries).length <= 5) {
+                                                        console.log(`🔍 DEBUG: Caching account ${accountStr}: rangeBalance=${rangeBalance}, periodsInRange=${periodsInRange}, key=${accountRangeKey}`);
+                                                    }
                                                     
                                                     // Also cache under range indicator key for checkIfPeriodIsCached() to find
                                                     // Format: income::fromPeriod::toPeriod::filtersHash (no account, indicates range is cached)
