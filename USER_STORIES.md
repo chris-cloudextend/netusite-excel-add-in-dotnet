@@ -1,4 +1,4 @@
-# XAVI for NetSuite - User Stories
+# XAVI Financial Reporting Engine (FRE) for NetSuite - User Stories
 
 **Product:** XAVI for NetSuite Excel Add-in  
 **Target Users:** Accountants, Senior Finance Professionals, Financial Analysts, CFOs  
