@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.160';  // Fix: Clear cache before structure sync, remove showAsTaskpane call
+const FUNCTIONS_VERSION = '4.0.6.161';  // Add: Quarterly range pre-caching (Solution 4A + 5A)
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
