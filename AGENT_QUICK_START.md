@@ -15,7 +15,7 @@ cd /Users/chriscorcoran/Documents/Cursor/NetSuite-Excel-AddIn-DotNet
 ```
 
 This will:
-1. Setup PATH for dotnet automatically
+1. Setup PATH  for dotnet automatically
 2. Start .NET server on port 5002
 3. Start Cloudflare tunnel
 4. Display the tunnel URL
