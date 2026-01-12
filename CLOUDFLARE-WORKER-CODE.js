@@ -1,0 +1,99 @@
+// ════════════════════════════════════════════════════════════════════
+// XAVI for NetSuite - Cloudflare Worker Proxy
+// ════════════════════════════════════════════════════════════════════
+// 
+// Copyright (c) 2025 Celigo, Inc.
+// All rights reserved.
+// 
+// This source code is proprietary and confidential. Unauthorized copying,
+// modification, distribution, or use of this software, via any medium,
+// is strictly prohibited without the express written permission of Celigo, Inc.
+// 
+// For licensing inquiries, contact: legal@celigo.com
+// 
+// ════════════════════════════════════════════════════════════════════
+// 
+// INSTRUCTIONS:
+// 1. Go to: https://dash.cloudflare.com
+// 2. Navigate to: Workers & Pages → Your Worker
+// 3. Click: Edit Code
+// 4. Replace ALL code with this file
+// 5. Click: Save and Deploy
+//
+// CURRENT TUNNEL URL: https://buildings-escape-lan-singing.trycloudflare.com
+// CURRENT ACCOUNT: 589861 (Production)
+// BACKEND: .NET Core (backend-dotnet/) - PRIMARY/TARGET
+// NOTE: Python backend (backend/server.py) is legacy and being replaced
+// Last Updated: Jan 07, 2026 (Tunnel: buildings-escape-lan-singing)
+// ════════════════════════════════════════════════════════════════════
+
+export default {
+  async fetch(request) {
+    // .NET backend tunnel (ALL endpoints now use .NET backend)
+    // ⚠️ UPDATE THIS when .NET backend tunnel URL changes
+    // To get the URL, run: cloudflared tunnel --url http://localhost:5002
+    // Copy the https://xxxxx.trycloudflare.com URL and paste it here
+    const TUNNEL_URL = 'https://buildings-escape-lan-singing.trycloudflare.com';
+
+    // Handle CORS preflight requests
+    if (request.method === 'OPTIONS') {
+      return new Response(null, {
+        status: 204,
+        headers: {
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+          'Access-Control-Allow-Headers': '*',
+          'Access-Control-Expose-Headers': '*',
+          'Access-Control-Max-Age': '86400'
+        }
+      });
+    }
+
+    try {
+      // Forward ALL requests to .NET backend tunnel
+      const url = new URL(request.url);
+      const targetUrl = TUNNEL_URL + url.pathname + url.search;
+      
+      const headers = new Headers(request.headers);
+      headers.delete('host');
+
+      const response = await fetch(targetUrl, {
+        method: request.method,
+        headers,
+        body: request.method !== 'GET' && request.method !== 'HEAD' ? request.body : undefined
+      });
+
+      // Add CORS headers to response
+      const newHeaders = new Headers(response.headers);
+      newHeaders.set('Access-Control-Allow-Origin', '*');
+      newHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+      newHeaders.set('Access-Control-Allow-Headers', '*');
+      newHeaders.set('Access-Control-Expose-Headers', '*');
+      newHeaders.set('Cache-Control', 'no-cache');
+
+      return new Response(response.body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: newHeaders
+      });
+      
+    } catch (error) {
+      // Error response with CORS
+      return new Response(JSON.stringify({
+        error: 'Proxy error',
+        message: error.message,
+        path: new URL(request.url).pathname,
+        tunnelUrl: TUNNEL_URL,
+        timestamp: new Date().toISOString()
+      }), {
+        status: 502,
+        headers: {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Headers': '*',
+          'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS'
+        }
+      });
+    }
+  }
+};

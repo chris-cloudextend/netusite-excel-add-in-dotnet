@@ -1,0 +1,129 @@
+# ===================================
+# .NET / C# Build Artifacts
+# ===================================
+bin/
+obj/
+out/
+publish/
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.dll
+*.exe
+*.pdb
+*.cache
+
+# .NET Core / ASP.NET
+project.lock.json
+project.fragment.lock.json
+artifacts/
+**/Properties/launchSettings.json
+
+# NuGet
+*.nupkg
+**/packages/*
+!**/packages/build/
+*.nuget.props
+*.nuget.targets
+.nuget/
+
+# Rider IDE
+.idea/
+*.sln.iml
+
+# ===================================
+# Python (legacy - for reference)
+# ===================================
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+pip-log.txt
+pip-delete-this-directory.txt
+
+# ===================================
+# CREDENTIALS - NEVER COMMIT THESE
+# ===================================
+# NetSuite OAuth credentials
+backend/netsuite_config.json
+**/netsuite_config.json
+netsuite_config.json
+
+# Generic secrets
+.env
+.env.*
+*.env
+secrets.json
+credentials.json
+appsettings.Development.json
+appsettings.Local.json
+appsettings.*.json
+!appsettings.json
+!appsettings.Production.json.template
+!appsettings.Development.json.template
+!*.template
+
+# SSL/TLS certificates and keys
+*.pem
+*.key
+*.p12
+*.pfx
+*.cer
+*.crt
+
+# OAuth tokens
+*.token
+token.json
+oauth_token.json
+
+# ===================================
+# macOS
+# ===================================
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# ===================================
+# Windows
+# ===================================
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# ===================================
+# IDE / Editor
+# ===================================
+*.swp
+*.swo
+*~
+.vscode/settings.json
+.vscode/launch.json
+
+# ===================================
+# Logs
+# ===================================
+logs/
+*.log
+npm-debug.log*
+
+# ===================================
+# Node.js (if any)
+# ===================================
+node_modules/
+package-lock.json
+
+# ===================================
+# Misc
+# ===================================
+*.tmp
+*.temp
+*.bak
+*.backup
+*.zip

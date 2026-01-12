@@ -1,0 +1,549 @@
+{
+  "functions": [
+    {
+      "id": "NAME",
+      "name": "NAME",
+      "description": "Get account name from account number",
+      "result": {
+        "type": "string",
+        "dimensionality": "scalar"
+      },
+      "parameters": [
+        {
+          "name": "accountNumber",
+          "description": "The account number or ID (can be text or numeric)",
+          "type": "any",
+          "dimensionality": "scalar"
+        }
+      ],
+      "options": {
+        "stream": false,
+        "cancelable": true,
+        "volatile": false
+      }
+    },
+    {
+      "id": "TYPE",
+      "name": "TYPE",
+      "description": "Get account type (Income, Expense, Bank, etc.)",
+      "result": {
+        "type": "string",
+        "dimensionality": "scalar"
+      },
+      "parameters": [
+        {
+          "name": "accountNumber",
+          "description": "The account number or ID",
+          "type": "any",
+          "dimensionality": "scalar"
+        }
+      ],
+      "options": {
+        "stream": false,
+        "cancelable": true,
+        "volatile": false
+      }
+    },
+    {
+      "id": "PARENT",
+      "name": "PARENT",
+      "description": "Get parent account number",
+      "result": {
+        "type": "string",
+        "dimensionality": "scalar"
+      },
+      "parameters": [
+        {
+          "name": "accountNumber",
+          "description": "The account number or ID",
+          "type": "any",
+          "dimensionality": "scalar"
+        }
+      ],
+      "options": {
+        "stream": false,
+        "cancelable": true,
+        "volatile": false
+      }
+    },
+    {
+      "id": "BALANCE",
+      "name": "BALANCE",
+      "description": "Get GL account balance with filters (non-volatile - only recalculates when explicitly refreshed)",
+      "result": {
+        "type": "number",
+        "dimensionality": "scalar"
+      },
+      "parameters": [
+        {
+          "name": "account",
+          "description": "Account number or ID (can be text or numeric)",
+          "type": "any",
+          "dimensionality": "scalar"
+        },
+        {
+          "name": "fromPeriod",
+          "description": "Starting period name (e.g., \"Jan 2025\")",
+          "type": "any",
+          "dimensionality": "scalar"
+        },
+        {
+          "name": "toPeriod",
+          "description": "Ending period name (e.g., \"Dec 2025\")",
+          "type": "any",
+          "dimensionality": "scalar"
+        },
+        {
+          "name": "subsidiary",
+          "description": "Subsidiary ID (optional, use \"\" to ignore)",
+          "type": "any",
+          "dimensionality": "scalar",
+          "optional": true
+        },
+        {
+          "name": "department",
+          "description": "Department ID (optional, use \"\" to ignore)",
+          "type": "any",
+          "dimensionality": "scalar",
+          "optional": true
+        },
+        {
+          "name": "location",
+          "description": "Location ID (optional, use \"\" to ignore)",
+          "type": "any",
+          "dimensionality": "scalar",
+          "optional": true
+        },
+        {
+          "name": "classId",
+          "description": "Class ID (optional, use \"\" to ignore)",
+          "type": "any",
+          "dimensionality": "scalar",
+          "optional": true
+        },
+        {
+          "name": "accountingBook",
+          "description": "Accounting Book ID (optional, defaults to Primary Book). For Multi-Book Accounting.",
+          "type": "any",
+          "dimensionality": "scalar",
+          "optional": true
+        }
+      ],
+      "options": {
+        "stream": false,
+        "cancelable": false,
+        "volatile": false
+      }
+    },
+    {
+      "id": "BALANCECURRENCY",
+      "name": "BALANCECURRENCY",
+      "description": "Get GL account balance with explicit currency control for consolidation. Currency parameter determines consolidation root, while subsidiary filters transactions to exact match. For Balance Sheet accounts, fromPeriod can be null/comma/empty (calculates from inception).",
+      "result": {
+        "type": "number",
+        "dimensionality": "scalar"
+      },
+      "parameters": [
+        {
+          "name": "account",
+          "description": "Account number or ID (can be text or numeric)",
+          "type": "any",
+          "dimensionality": "scalar"
+        },
+        {
+          "name": "fromPeriod",
+          "description": "Starting period name (required for P&L, can be empty for BS - use \"\" or comma)",
+          "type": "any",
+          "dimensionality": "scalar"
+        },
+        {
+          "name": "toPeriod",
+          "description": "Ending period name (required)",
+          "type": "any",
+          "dimensionality": "scalar"
+        },
+        {
+          "name": "subsidiary",
+          "description": "Subsidiary filter (optional, use \"\" for all). Filters transactions to exact match, not hierarchy.",
+          "type": "any",
+          "dimensionality": "scalar",
+          "optional": true
+        },
+        {
+          "name": "currency",
+          "description": "Currency code for consolidation root (e.g., \"USD\", \"EUR\") - optional. If not provided, uses filtered subsidiary as consolidation root.",
+          "type": "any",
+          "dimensionality": "scalar",
+          "optional": true
+        },
+        {
+          "name": "department",
+          "description": "Department filter (optional, use \"\" for all)",
+          "type": "any",
+          "dimensionality": "scalar",
+          "optional": true
+        },
+        {
+          "name": "location",
+          "description": "Location filter (optional, use \"\" for all)",
+          "type": "any",
+          "dimensionality": "scalar",
+          "optional": true
+        },
+        {
+          "name": "classId",
+          "description": "Class filter (optional, use \"\" for all)",
+          "type": "any",
+          "dimensionality": "scalar",
+          "optional": true
+        },
+        {
+          "name": "accountingBook",
+          "description": "Accounting Book ID (optional, defaults to Primary Book)",
+          "type": "any",
+          "dimensionality": "scalar",
+          "optional": true
+        }
+      ],
+      "options": {
+        "stream": false,
+        "cancelable": false,
+        "volatile": false
+      }
+    },
+    {
+      "id": "BUDGET",
+      "name": "BUDGET",
+      "description": "Get budget amount with filters",
+      "result": {
+        "type": "number",
+        "dimensionality": "scalar"
+      },
+      "parameters": [
+        {
+          "name": "account",
+          "description": "Account number or ID (can be text or numeric)",
+          "type": "any",
+          "dimensionality": "scalar"
+        },
+        {
+          "name": "fromPeriod",
+          "description": "Starting period name (e.g., \"Jan 2025\")",
+          "type": "any",
+          "dimensionality": "scalar"
+        },
+        {
+          "name": "toPeriod",
+          "description": "Ending period name (e.g., \"Dec 2025\")",
+          "type": "any",
+          "dimensionality": "scalar"
+        },
+        {
+          "name": "subsidiary",
+          "description": "Subsidiary filter (use \"\" for all)",
+          "type": "any",
+          "dimensionality": "scalar",
+          "optional": true
+        },
+        {
+          "name": "department",
+          "description": "Department filter (use \"\" for all)",
+          "type": "any",
+          "dimensionality": "scalar",
+          "optional": true
+        },
+        {
+          "name": "location",
+          "description": "Location filter (use \"\" for all)",
+          "type": "any",
+          "dimensionality": "scalar",
+          "optional": true
+        },
+        {
+          "name": "classId",
+          "description": "Class filter (use \"\" for all)",
+          "type": "any",
+          "dimensionality": "scalar",
+          "optional": true
+        },
+        {
+          "name": "accountingBook",
+          "description": "Accounting Book ID (use \"\" for Primary Book)",
+          "type": "any",
+          "dimensionality": "scalar",
+          "optional": true
+        },
+        {
+          "name": "budgetCategory",
+          "description": "Budget Category name or ID (use \"\" for all categories)",
+          "type": "any",
+          "dimensionality": "scalar",
+          "optional": true
+        }
+      ],
+      "options": {
+        "stream": false,
+        "cancelable": false,
+        "volatile": false
+      }
+    },
+    {
+      "id": "CLEARCACHE",
+      "name": "CLEARCACHE",
+      "description": "Internal: Clear in-memory cache (used by Refresh Selected)",
+      "result": {
+        "type": "string",
+        "dimensionality": "scalar"
+      },
+      "parameters": [
+        {
+          "name": "itemsJson",
+          "description": "JSON string of items to clear, or 'ALL' for full clear",
+          "type": "string",
+          "dimensionality": "scalar",
+          "optional": true
+        }
+      ],
+      "options": {
+        "stream": false,
+        "cancelable": false,
+        "volatile": true
+      }
+    },
+    {
+      "id": "RETAINEDEARNINGS",
+      "name": "RETAINEDEARNINGS",
+      "description": "Get calculated retained earnings (prior years' cumulative P&L). NetSuite calculates this dynamically - no account number needed.",
+      "result": {
+        "type": "number",
+        "dimensionality": "scalar"
+      },
+      "parameters": [
+        {
+          "name": "period",
+          "description": "Accounting period (e.g., \"Mar 2025\")",
+          "type": "any",
+          "dimensionality": "scalar"
+        },
+        {
+          "name": "subsidiary",
+          "description": "Subsidiary ID (optional)",
+          "type": "any",
+          "dimensionality": "scalar",
+          "optional": true
+        },
+        {
+          "name": "accountingBook",
+          "description": "Accounting Book ID (optional, defaults to Primary Book)",
+          "type": "any",
+          "dimensionality": "scalar",
+          "optional": true
+        },
+        {
+          "name": "classId",
+          "description": "Class filter (optional)",
+          "type": "any",
+          "dimensionality": "scalar",
+          "optional": true
+        },
+        {
+          "name": "department",
+          "description": "Department filter (optional)",
+          "type": "any",
+          "dimensionality": "scalar",
+          "optional": true
+        },
+        {
+          "name": "location",
+          "description": "Location filter (optional)",
+          "type": "any",
+          "dimensionality": "scalar",
+          "optional": true
+        }
+      ],
+      "options": {
+        "stream": false,
+        "cancelable": false,
+        "volatile": false
+      }
+    },
+    {
+      "id": "NETINCOME",
+      "name": "NETINCOME",
+      "description": "Get net income for a period range. Use fromPeriod and toPeriod explicitly.",
+      "result": {
+        "type": "number",
+        "dimensionality": "scalar"
+      },
+      "parameters": [
+        {
+          "name": "fromPeriod",
+          "description": "Start period (e.g., \"Jan 2025\" or cell reference)",
+          "type": "any",
+          "dimensionality": "scalar"
+        },
+        {
+          "name": "toPeriod",
+          "description": "End period (defaults to fromPeriod if empty)",
+          "type": "any",
+          "dimensionality": "scalar",
+          "optional": true
+        },
+        {
+          "name": "subsidiary",
+          "description": "Subsidiary name or ID (optional)",
+          "type": "any",
+          "dimensionality": "scalar",
+          "optional": true
+        },
+        {
+          "name": "accountingBook",
+          "description": "Accounting Book ID (optional)",
+          "type": "any",
+          "dimensionality": "scalar",
+          "optional": true
+        },
+        {
+          "name": "classId",
+          "description": "Class filter (optional)",
+          "type": "any",
+          "dimensionality": "scalar",
+          "optional": true
+        },
+        {
+          "name": "department",
+          "description": "Department filter (optional)",
+          "type": "any",
+          "dimensionality": "scalar",
+          "optional": true
+        },
+        {
+          "name": "location",
+          "description": "Location filter (optional)",
+          "type": "any",
+          "dimensionality": "scalar",
+          "optional": true
+        }
+      ],
+      "options": {
+        "stream": false,
+        "cancelable": false,
+        "volatile": false
+      }
+    },
+    {
+      "id": "TYPEBALANCE",
+      "name": "TYPEBALANCE",
+      "description": "Get total balance for all accounts of a specific type. Use useSpecialAccount=1 for special types (AcctRec, InvtAsset, etc.) for cash flow statements.",
+      "result": {
+        "type": "number",
+        "dimensionality": "scalar"
+      },
+      "parameters": [
+        {
+          "name": "accountType",
+          "description": "Account type (e.g., \"OthAsset\") or special type (e.g., \"AcctRec\", \"InvtAsset\")",
+          "type": "any",
+          "dimensionality": "scalar"
+        },
+        {
+          "name": "fromPeriod",
+          "description": "Start period (required for P&L, ignored for BS)",
+          "type": "any",
+          "dimensionality": "scalar",
+          "optional": true
+        },
+        {
+          "name": "toPeriod",
+          "description": "End period (required for calculation)",
+          "type": "any",
+          "dimensionality": "scalar",
+          "optional": true
+        },
+        {
+          "name": "subsidiary",
+          "description": "Subsidiary name or ID (optional)",
+          "type": "any",
+          "dimensionality": "scalar",
+          "optional": true
+        },
+        {
+          "name": "department",
+          "description": "Department filter (optional)",
+          "type": "any",
+          "dimensionality": "scalar",
+          "optional": true
+        },
+        {
+          "name": "location",
+          "description": "Location filter (optional)",
+          "type": "any",
+          "dimensionality": "scalar",
+          "optional": true
+        },
+        {
+          "name": "classId",
+          "description": "Class filter (optional)",
+          "type": "any",
+          "dimensionality": "scalar",
+          "optional": true
+        },
+        {
+          "name": "accountingBook",
+          "description": "Accounting Book ID (optional)",
+          "type": "any",
+          "dimensionality": "scalar",
+          "optional": true
+        },
+        {
+          "name": "useSpecialAccount",
+          "description": "Set to 1 to filter by special account type (sspecacct) instead of regular type. For cash flow: AcctRec, AcctPay, InvtAsset, etc.",
+          "type": "any",
+          "dimensionality": "scalar",
+          "optional": true
+        }
+      ],
+      "options": {
+        "stream": false,
+        "cancelable": false,
+        "volatile": false
+      }
+    },
+    {
+      "id": "CTA",
+      "name": "CTA",
+      "description": "Get cumulative translation adjustment for consolidated multi-currency reports. This is a 'plug' figure that balances the Balance Sheet after currency translation.",
+      "result": {
+        "type": "number",
+        "dimensionality": "scalar"
+      },
+      "parameters": [
+        {
+          "name": "period",
+          "description": "Accounting period (e.g., \"Mar 2025\")",
+          "type": "any",
+          "dimensionality": "scalar"
+        },
+        {
+          "name": "subsidiary",
+          "description": "Subsidiary ID (optional)",
+          "type": "any",
+          "dimensionality": "scalar",
+          "optional": true
+        },
+        {
+          "name": "accountingBook",
+          "description": "Accounting Book ID (optional, defaults to Primary Book)",
+          "type": "any",
+          "dimensionality": "scalar",
+          "optional": true
+        }
+      ],
+      "options": {
+        "stream": false,
+        "cancelable": false,
+        "volatile": false
+      }
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+# Copy and paste these commands one at a time into Terminal:
+
+# 1. Stop the server
+pkill -9 -f "dotnet.*run"
+
+# 2. Navigate to backend directory
+cd /Users/chriscorcoran/Documents/Cursor/NetSuite-Excel-AddIn-DotNet/backend-dotnet
+
+# 3. Clean and rebuild
+dotnet clean
+dotnet build
+
+# 4. Start the server
+rm -f /tmp/dotnet-server.log
+nohup dotnet run > /tmp/dotnet-server.log 2>&1 &
+
+# 5. Wait 60 seconds, then check logs
+sleep 60
+tail -100 /tmp/dotnet-server.log | grep -i "cache\|Building accounting book"
+
+# 6. Or manually trigger cache initialization
+curl -X POST http://localhost:5002/lookups/cache/initialize
+
+# 7. Wait 30 seconds and check again
+sleep 30
+tail -100 /tmp/dotnet-server.log | grep -i "cache\|Building accounting book\|Book-subsidiary cache built"
+
+# 8. Test the endpoint
+curl http://localhost:5002/lookups/accountingbook/2/subsidiaries
+

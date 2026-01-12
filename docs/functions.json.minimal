@@ -1,0 +1,27 @@
+{
+  "functions": [
+    {
+      "id": "NAME",
+      "name": "NAME",
+      "description": "Get account name from account number",
+      "result": {
+        "type": "string",
+        "dimensionality": "scalar"
+      },
+      "parameters": [
+        {
+          "name": "accountNumber",
+          "description": "The account number or ID",
+          "type": "string",
+          "dimensionality": "scalar"
+        }
+      ],
+      "options": {
+        "stream": false,
+        "cancelable": false,
+        "volatile": false
+      }
+    }
+  ]
+}
+

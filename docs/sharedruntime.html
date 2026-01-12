@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>XAVI Shared Runtime</title>
+    <!-- Hide immediately to prevent any flash -->
+    <script>document.documentElement.style.display = "none";</script>
+    <!-- Office.js for shared runtime -->
+    <script src="https://appsforoffice.microsoft.com/lib/1.1/hosted/office.js"></script>
+    <!-- Custom functions -->
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.160"></script>
+    <style>
+        /* Completely blank - no UI */
+        html, body { 
+            margin: 0; 
+            padding: 0; 
+            background: transparent; 
+            display: none !important; 
+        }
+    </style>
+</head>
+<body>
+    <!-- 
+    SHARED RUNTIME PAGE - NO UI
+    
+    This page hosts:
+    1. Custom functions (via functions.js)
+    2. ExecuteFunction commands (drillDownFromContextMenu)
+    
+    Mac's "Developer Window" will show this blank page instead of duplicate UI.
+    -->
+    <script>
+        console.log('📋 sharedruntime.html loaded (no UI)');
+        
+        // ================================================================
+        // DRILL-DOWN COMMAND - Runs here, sets flag, shows taskpane
+        // ================================================================
+        async function drillDownFromContextMenu(event) {
+            console.log('=== DRILL-DOWN COMMAND (sharedruntime.html) ===');
+            
+            // Complete the event immediately to prevent timeout
+            if (event && event.completed) {
+                event.completed();
+                console.log('✅ event.completed()');
+            }
+            
+            try {
+                // Get the selected cell info
+                await Excel.run(async (context) => {
+                    const range = context.workbook.getSelectedRange();
+                    const sheet = context.workbook.worksheets.getActiveWorksheet();
+                    range.load(['formulas', 'values', 'address']);
+                    sheet.load('name');
+                    await context.sync();
+                    
+                    // Store drill-down request in localStorage
+                    const request = {
+                        timestamp: Date.now(),
+                        address: range.address,
+                        formula: range.formulas[0][0],
+                        value: range.values[0][0],
+                        sheetName: sheet.name
+                    };
+                    
+                    localStorage.setItem('xavi_pending_drilldown', JSON.stringify(request));
+                    console.log('📤 Pending drilldown stored:', request);
+                });
+                
+                // Show the taskpane (it will read the flag)
+                await Office.addin.showAsTaskpane();
+                console.log('✅ Taskpane shown');
+                
+            } catch (err) {
+                console.error('Drill-down command error:', err);
+            }
+        }
+        
+        // Make globally available
+        window.drillDownFromContextMenu = drillDownFromContextMenu;
+        
+        // Signal that shared runtime is ready
+        Office.onReady((info) => {
+            console.log('✅ Shared runtime ready');
+            console.log('   Platform:', info.platform);
+            console.log('   Host:', info.host);
+            
+            // Register the command
+            if (Office.actions && Office.actions.associate) {
+                Office.actions.associate("drillDownFromContextMenu", drillDownFromContextMenu);
+                console.log('✅ drillDownFromContextMenu registered');
+            }
+            
+            // Signal readiness via storage
+            try {
+                localStorage.setItem('xavi_shared_runtime_ready', 'true');
+            } catch (e) {}
+        });
+    </script>
+</body>
+</html>
+

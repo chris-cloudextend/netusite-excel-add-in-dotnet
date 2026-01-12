@@ -1,0 +1,557 @@
+/*
+ * XAVI for NetSuite - Account Controller
+ *
+ * Copyright (c) 2025 Celigo, Inc.
+ * All rights reserved.
+ */
+
+using Microsoft.AspNetCore.Mvc;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using XaviApi.Models;
+using XaviApi.Services;
+
+namespace XaviApi.Controllers;
+
+/// <summary>
+/// Controller for account queries.
+/// </summary>
+[ApiController]
+public class AccountController : ControllerBase
+{
+    private readonly ILookupService _lookupService;
+    private readonly INetSuiteService _netSuiteService;
+    private readonly IBalanceService _balanceService;
+    private readonly ILogger<AccountController> _logger;
+
+    public AccountController(
+        ILookupService lookupService, 
+        INetSuiteService netSuiteService,
+        IBalanceService balanceService,
+        ILogger<AccountController> logger)
+    {
+        _lookupService = lookupService;
+        _netSuiteService = netSuiteService;
+        _balanceService = balanceService;
+        _logger = logger;
+    }
+
+    /// <summary>
+    /// Get accounts that have actual transaction activity for a given period.
+    /// </summary>
+    [HttpGet("/accounts/with-activity")]
+    public async Task<IActionResult> GetAccountsWithActivity(
+        [FromQuery] string period = "Jan 2025",
+        [FromQuery] int limit = 10,
+        [FromQuery] string types = "Income,Expense,COGS")
+    {
+        try
+        {
+            // Parse period to get date range
+            var periodData = await _netSuiteService.GetPeriodAsync(period);
+            if (periodData == null)
+                return BadRequest(new { error = $"Invalid period: {period}" });
+
+            // Convert dates to SQL format
+            var startDate = ConvertToSqlDate(periodData.StartDate);
+            var endDate = ConvertToSqlDate(periodData.EndDate);
+
+            // Build type filter
+            var typesList = types.Split(',').Select(t => $"'{t.Trim()}'");
+            var typesSql = string.Join(",", typesList);
+
+            var query = $@"
+                SELECT 
+                    a.id,
+                    a.acctnumber,
+                    a.accountsearchdisplaynamecopy AS accountname,
+                    a.accttype,
+                    a.parent,
+                    SUM(ABS(tal.amount)) AS activity_amount,
+                    SUM(tal.amount) AS balance
+                FROM 
+                    Transaction t
+                    JOIN TransactionAccountingLine tal ON t.id = tal.transaction
+                    JOIN Account a ON tal.account = a.id
+                WHERE 
+                    t.posting = 'T'
+                    AND t.trandate >= TO_DATE('{startDate}', 'YYYY-MM-DD')
+                    AND t.trandate <= TO_DATE('{endDate}', 'YYYY-MM-DD')
+                    AND a.accttype IN ({typesSql})
+                    AND a.parent IS NOT NULL
+                    AND a.isinactive = 'F'
+                GROUP BY 
+                    a.id, a.acctnumber, a.accountsearchdisplaynamecopy, a.accttype, a.parent
+                HAVING 
+                    SUM(ABS(tal.amount)) > 0
+                ORDER BY 
+                    CASE a.accttype 
+                        WHEN 'Income' THEN 1 
+                        WHEN 'OthIncome' THEN 2 
+                        WHEN 'COGS' THEN 3 
+                        WHEN 'Expense' THEN 4 
+                        WHEN 'OthExpense' THEN 5 
+                        ELSE 6 
+                    END,
+                    SUM(ABS(tal.amount)) DESC
+                FETCH FIRST {limit * 2} ROWS ONLY";
+
+            var results = await _netSuiteService.QueryRawAsync(query);
+            
+            var accounts = new List<object>();
+            foreach (var row in results.Take(limit))
+            {
+                var balance = 0m;
+                if (row.TryGetProperty("balance", out var balProp))
+                {
+                    if (balProp.ValueKind == System.Text.Json.JsonValueKind.String)
+                        decimal.TryParse(balProp.GetString(), out balance);
+                    else if (balProp.ValueKind == System.Text.Json.JsonValueKind.Number)
+                        balance = balProp.GetDecimal();
+                }
+
+                var acctType = row.TryGetProperty("accttype", out var typeProp) ? typeProp.GetString() ?? "" : "";
+                
+                // Apply sign convention for Income
+                if (acctType == "Income" || acctType == "OthIncome")
+                    balance = -balance;
+
+                accounts.Add(new
+                {
+                    id = row.TryGetProperty("id", out var idProp) ? idProp.ToString() : "",
+                    accountnumber = row.TryGetProperty("acctnumber", out var numProp) ? numProp.GetString() : "",
+                    accountname = row.TryGetProperty("accountname", out var nameProp) ? nameProp.GetString() : "",
+                    accttype = acctType,
+                    balance = Math.Round(balance, 2)
+                });
+            }
+
+            return Ok(new
+            {
+                period,
+                count = accounts.Count,
+                accounts
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting accounts with activity");
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+
+    private string ConvertToSqlDate(string? mmddyyyy)
+    {
+        if (string.IsNullOrEmpty(mmddyyyy)) return "";
+        if (DateTime.TryParseExact(mmddyyyy, "M/d/yyyy", null, System.Globalization.DateTimeStyles.None, out var date))
+            return date.ToString("yyyy-MM-dd");
+        if (DateTime.TryParseExact(mmddyyyy, "MM/dd/yyyy", null, System.Globalization.DateTimeStyles.None, out date))
+            return date.ToString("yyyy-MM-dd");
+        return mmddyyyy;
+    }
+
+    /// <summary>
+    /// Get account types for multiple accounts.
+    /// Used by smart preload to identify which accounts are Balance Sheet accounts.
+    /// </summary>
+    [HttpPost("/accounts/types")]
+    public async Task<IActionResult> GetAccountTypes([FromBody] AccountTypesRequest request)
+    {
+        if (request.Accounts == null || request.Accounts.Count == 0)
+            return BadRequest(new { error = "accounts array is required" });
+
+        try
+        {
+            _logger.LogInformation("Getting types for {Count} accounts", request.Accounts.Count);
+            
+            // Build query to get account types
+            var accountFilter = string.Join("', '", request.Accounts.Select(a => NetSuiteService.EscapeSql(a)));
+            var query = $@"
+                SELECT acctnumber, accttype 
+                FROM Account 
+                WHERE acctnumber IN ('{accountFilter}')";
+            
+            var items = await _netSuiteService.QueryAsync<dynamic>(query);
+            
+            var result = new Dictionary<string, string>();
+            foreach (var item in items)
+            {
+                var acctNumber = item.GetProperty("acctnumber").GetString() ?? "";
+                var acctType = item.GetProperty("accttype").GetString() ?? "";
+                if (!string.IsNullOrEmpty(acctNumber))
+                {
+                    result[acctNumber] = acctType;
+                }
+            }
+            
+            _logger.LogInformation("Retrieved types for {Count} accounts", result.Count);
+            return Ok(result);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting account types");
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+    
+    /// <summary>
+    /// Search for accounts by account number or type.
+    /// Supports pattern parameter (like Python backend) for backward compatibility.
+    /// </summary>
+    [HttpGet("/accounts/search")]
+    public async Task<IActionResult> SearchAccounts(
+        [FromQuery] string? pattern = null,
+        [FromQuery] string? number = null,
+        [FromQuery] string? type = null,
+        [FromQuery] string? active_only = "true")
+    {
+        try
+        {
+            // Support both pattern (Python-style) and number/type (legacy) parameters
+            // If pattern is provided, use it; otherwise fall back to number/type
+            string? searchPattern = pattern;
+            if (string.IsNullOrEmpty(searchPattern))
+            {
+                // Legacy support: combine number and type into pattern
+                if (!string.IsNullOrEmpty(number) && !string.IsNullOrEmpty(type))
+                    searchPattern = $"{number}|{type}";
+                else if (!string.IsNullOrEmpty(number))
+                    searchPattern = number;
+                else if (!string.IsNullOrEmpty(type))
+                    searchPattern = type;
+            }
+
+            if (string.IsNullOrEmpty(searchPattern))
+                return BadRequest(new { error = "Pattern parameter is required" });
+
+            var activeOnly = active_only?.ToLower() == "true";
+            var result = await _lookupService.SearchAccountsByPatternAsync(searchPattern, activeOnly);
+            
+            // Return format matching Python backend
+            return Ok(new 
+            { 
+                pattern = searchPattern,
+                search_type = result.SearchType,
+                accounts = result.Items,
+                count = result.Items.Count 
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error searching accounts");
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Get account name (POST method for security).
+    /// </summary>
+    [HttpPost("/account/name")]
+    public async Task<IActionResult> GetAccountName([FromBody] AccountNumberRequest request)
+    {
+        if (string.IsNullOrEmpty(request.Account))
+            return BadRequest(new { error = "Account number is required" });
+
+        try
+        {
+            var name = await _lookupService.GetAccountNameAsync(request.Account);
+            return Ok(new { account = request.Account, name = name ?? "Unknown" });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting account name for {Account}", request.Account);
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Get account name (GET - deprecated, use POST).
+    /// </summary>
+    [HttpGet("/account/{account_number}/name")]
+    public async Task<IActionResult> GetAccountNameDeprecated(string account_number)
+    {
+        try
+        {
+            var name = await _lookupService.GetAccountNameAsync(account_number);
+            return Ok(new { account = account_number, name = name ?? "Unknown" });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting account name for {Account}", account_number);
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Get account type (POST method for security).
+    /// </summary>
+    [HttpPost("/account/type")]
+    public async Task<IActionResult> GetAccountType([FromBody] AccountNumberRequest request)
+    {
+        if (string.IsNullOrEmpty(request.Account))
+            return BadRequest(new { error = "Account number is required" });
+
+        try
+        {
+            var type = await _lookupService.GetAccountTypeAsync(request.Account);
+            var displayName = type != null ? AccountType.GetDisplayName(type) : "Unknown";
+
+            return Ok(new
+            {
+                account = request.Account,
+                type,
+                display_name = displayName
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting account type for {Account}", request.Account);
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Get account type (GET - deprecated, use POST).
+    /// </summary>
+    [HttpGet("/account/{account_number}/type")]
+    public async Task<IActionResult> GetAccountTypeDeprecated(string account_number)
+    {
+        try
+        {
+            var type = await _lookupService.GetAccountTypeAsync(account_number);
+            var displayName = type != null ? AccountType.GetDisplayName(type) : "Unknown";
+
+            return Ok(new
+            {
+                account = account_number,
+                type,
+                display_name = displayName
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting account type for {Account}", account_number);
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Get parent account number (POST method for security).
+    /// Returns plain text to match Python behavior.
+    /// </summary>
+    [HttpPost("/account/parent")]
+    public async Task<IActionResult> GetAccountParent([FromBody] AccountNumberRequest request)
+    {
+        _logger.LogInformation("GetAccountParent called with account: '{Account}'", request?.Account ?? "(null)");
+        
+        if (string.IsNullOrEmpty(request?.Account))
+        {
+            _logger.LogWarning("GetAccountParent: Account number is empty or null");
+            return BadRequest(new { error = "Account number is required" });
+        }
+
+        try
+        {
+            _logger.LogInformation("GetAccountParent: Looking up parent for account '{Account}'", request.Account);
+            var parent = await _lookupService.GetAccountParentAsync(request.Account);
+            _logger.LogInformation("GetAccountParent: Parent for '{Account}' is '{Parent}'", request.Account, parent ?? "(null)");
+            // Return plain text like Python does
+            return Content(parent ?? "", "text/plain");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting account parent for {Account}", request?.Account);
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Get parent account (GET - deprecated, use POST).
+    /// Returns plain text to match Python behavior.
+    /// </summary>
+    [HttpGet("/account/{account_number}/parent")]
+    public async Task<IActionResult> GetAccountParentDeprecated(string account_number)
+    {
+        try
+        {
+            var parent = await _lookupService.GetAccountParentAsync(account_number);
+            // Return plain text like Python does
+            return Content(parent ?? "", "text/plain");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting account parent for {Account}", account_number);
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Preload all account titles into cache.
+    /// Prevents 429 rate limit errors from concurrent individual requests.
+    /// </summary>
+    [HttpGet("/account/preload_titles")]
+    public async Task<IActionResult> PreloadAccountTitles()
+    {
+        try
+        {
+            var titles = await _lookupService.GetAllAccountTitlesAsync();
+            _logger.LogInformation("Preloaded {Count} account titles", titles.Count);
+            
+            // Return format expected by frontend: { loaded: count, status: "success", titles: {...} }
+            return Ok(new
+            {
+                loaded = titles.Count,
+                status = "success",
+                titles = titles
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error preloading account titles");
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Get multiple account types at once.
+    /// </summary>
+    [HttpPost("/batch/account_types")]
+    public async Task<IActionResult> BatchGetAccountTypes([FromBody] BatchAccountRequest request)
+    {
+        if (request.Accounts == null || !request.Accounts.Any())
+            return BadRequest(new { error = "At least one account is required" });
+
+        try
+        {
+            var result = new Dictionary<string, string>();
+
+            foreach (var account in request.Accounts)
+            {
+                var type = await _lookupService.GetAccountTypeAsync(account);
+                result[account] = type ?? "Unknown";
+            }
+
+            return Ok(new { account_types = result });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting batch account types");
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Get multiple account names at once (for XAVI.NAME batch lookup).
+    /// Returns a simple dictionary: { "10010": "Cash", "10020": "AR", ... }
+    /// </summary>
+    [HttpPost("/account/names")]
+    public async Task<IActionResult> BatchGetAccountNames([FromBody] BatchAccountRequest request)
+    {
+        if (request.Accounts == null || !request.Accounts.Any())
+            return BadRequest(new { error = "At least one account is required" });
+
+        try
+        {
+            var result = new Dictionary<string, string>();
+
+            // Get all account titles at once (cached in service)
+            var allTitles = await _lookupService.GetAllAccountTitlesAsync();
+
+            foreach (var account in request.Accounts)
+            {
+                if (allTitles.TryGetValue(account, out var name))
+                {
+                    result[account] = name;
+                }
+                else
+                {
+                    // Try to fetch individually
+                    var title = await _lookupService.GetAccountNameAsync(account);
+                    result[account] = title ?? "";
+                }
+            }
+
+            // Return as simple object (frontend expects just account → name mapping)
+            return Ok(result);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting batch account names");
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Get accounts by type (for TYPEBALANCE drill-down).
+    /// </summary>
+    [HttpGet("/accounts/by-type")]
+    public async Task<IActionResult> GetAccountsByType(
+        [FromQuery] string? account_type = null,
+        [FromQuery] string? from_period = null,
+        [FromQuery] string? to_period = null,
+        [FromQuery] string? subsidiary = null,
+        [FromQuery] string? department = null,
+        [FromQuery] string? location = null,
+        [FromQuery(Name = "class")] string? @class = null,
+        [FromQuery(Name = "accounting_book")] int? accounting_book = null,
+        [FromQuery] string? use_special = null)
+    {
+        if (string.IsNullOrEmpty(account_type))
+            return BadRequest(new { error = "account_type is required" });
+
+        try
+        {
+            _logger.LogInformation("GetAccountsByType: type={Type}, from={From}, to={To}", account_type, from_period, to_period);
+            
+            var useSpecial = use_special == "1" || use_special?.ToLower() == "true";
+
+            // Build request matching TypeBalance semantics
+            var req = new TypeBalanceRequest
+            {
+                AccountType = account_type,
+                FromPeriod = string.IsNullOrEmpty(from_period) ? to_period ?? "" : from_period,
+                ToPeriod = string.IsNullOrEmpty(to_period) ? from_period ?? "" : to_period,
+                Subsidiary = subsidiary,
+                Department = department,
+                Location = location,
+                Class = @class,
+                Book = accounting_book
+            };
+
+            var accounts = await _balanceService.GetTypeBalanceAccountsAsync(req, useSpecial);
+
+            return Ok(new { accounts, count = accounts.Count });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting accounts by type {Type}", account_type);
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+}
+
+/// <summary>
+/// Request with a single account number.
+/// </summary>
+public class AccountNumberRequest
+{
+    [JsonPropertyName("account")]
+    public string Account { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// Request with multiple account numbers.
+/// </summary>
+public class BatchAccountRequest
+{
+    public List<string> Accounts { get; set; } = new();
+}
+
+/// <summary>
+/// Request to get types for multiple accounts.
+/// </summary>
+public class AccountTypesRequest
+{
+    public List<string> Accounts { get; set; } = new();
+}
+
