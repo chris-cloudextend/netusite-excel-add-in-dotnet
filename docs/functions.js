@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.161';  // Add: Quarterly range pre-caching (Solution 4A + 5A)
+const FUNCTIONS_VERSION = '4.0.6.162';  // Fix: Taskpane range preload + checkLocalStorageCache range support
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -5767,6 +5767,11 @@ window.setTypeBalanceCache = function(balances, year, subsidiary = '', departmen
 // ✅ Updated to accept filtersHash parameter for manifest-aware caching
 function checkLocalStorageCache(account, period, toPeriod = null, subsidiary = '', filtersHash = null) {
     try {
+        // CRITICAL: Check if this is a range query (both period and toPeriod provided and different)
+        const normalizedPeriod = period ? normalizePeriodKey(period, true) : null;
+        const normalizedToPeriod = toPeriod ? normalizePeriodKey(toPeriod, false) : null;
+        const isRangeQuery = normalizedPeriod && normalizedToPeriod && normalizedPeriod !== normalizedToPeriod;
+        
         // CRITICAL: Normalize lookupPeriod to ensure cache key matching works
         // This ensures periods are in consistent "Mon YYYY" format before building cache keys
         let lookupPeriod = (period && period !== '') ? period : toPeriod;
@@ -5795,19 +5800,34 @@ function checkLocalStorageCache(account, period, toPeriod = null, subsidiary = '
                 
                 const keysToTry = [];
                 
-                // Key format 1: With full filtersHash (most specific)
+                // For range queries, check for range cache keys first
+                if (isRangeQuery && normalizedPeriod && normalizedToPeriod) {
+                    // Range cache key format: balance:account:filtersHash:fromPeriod::toPeriod
+                    if (filtersHash) {
+                        keysToTry.push(`balance:${account}:${filtersHash}:${normalizedPeriod}::${normalizedToPeriod}`);
+                    }
+                    // Also try with partial filters
+                    if (subsidiary && subsidiary !== '') {
+                        const partialHash = `${subsidiary}||||1`;
+                        keysToTry.push(`balance:${account}:${partialHash}:${normalizedPeriod}::${normalizedToPeriod}`);
+                    }
+                    // Also try without filters (backward compatibility)
+                    keysToTry.push(`balance:${account}::${normalizedPeriod}::${normalizedToPeriod}`);
+                }
+                
+                // Key format 1: With full filtersHash (most specific) - single period
                 if (filtersHash) {
                     keysToTry.push(`balance:${account}:${filtersHash}:${lookupPeriod}`);
                 }
                 
-                // Key format 2: With partial filters (subsidiary only, if provided)
+                // Key format 2: With partial filters (subsidiary only, if provided) - single period
                 if (subsidiary && subsidiary !== '') {
                     // Try with subsidiary only (assumes empty dept/loc/class, book=1)
                     const partialHash = `${subsidiary}||||1`;
                     keysToTry.push(`balance:${account}:${partialHash}:${lookupPeriod}`);
                 }
                 
-                // Key format 3: Without filters (backward compatibility - old format)
+                // Key format 3: Without filters (backward compatibility - old format) - single period
                 keysToTry.push(`balance:${account}::${lookupPeriod}`);
                 
                 // Try each key format in order of specificity

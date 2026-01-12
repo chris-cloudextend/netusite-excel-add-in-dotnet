@@ -6077,7 +6077,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.161"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.162"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -8895,20 +8895,27 @@ For licensing inquiries, contact: legal@celigo.com
                         }
                     }
                     
-                    // Process all triggers and collect periods
+                    // Process all triggers and collect periods/ranges
                     for (const triggerKey of triggerKeys) {
                         try {
                             const triggerJson = localStorage.getItem(triggerKey);
                             if (triggerJson) {
                                 const trigger = JSON.parse(triggerJson);
-                                if (trigger.firstPeriod) {
+                                // Check if this is a range query
+                                if (trigger.isRangeQuery && trigger.fromPeriod && trigger.firstPeriod) {
+                                    // Range query: store as range key for processing
+                                    const rangeKey = `${trigger.fromPeriod}::${trigger.firstPeriod}`;
+                                    allPeriods.add(rangeKey);
+                                    console.log(`✅ Processed income preload trigger: ${triggerKey} (RANGE: ${trigger.fromPeriod} to ${trigger.firstPeriod})`);
+                                } else if (trigger.firstPeriod) {
+                                    // Single period query
                                     allPeriods.add(trigger.firstPeriod);
+                                    console.log(`✅ Processed income preload trigger: ${triggerKey} (period: ${trigger.firstPeriod})`);
                                 }
                                 if (!firstTrigger) {
                                     firstTrigger = trigger;
                                 }
                                 localStorage.removeItem(triggerKey);
-                                console.log(`✅ Processed income preload trigger: ${triggerKey} (period: ${trigger.firstPeriod})`);
                             }
                         } catch (e) {
                             console.warn(`⚠️ Failed to process income trigger ${triggerKey}:`, e);
@@ -8919,9 +8926,27 @@ For licensing inquiries, contact: legal@celigo.com
                     console.warn('⚠️ Error scanning income trigger keys:', e);
                 }
                 
+                // Check if first trigger is a range query
+                const isRangeQuery = firstTrigger && firstTrigger.isRangeQuery && firstTrigger.fromPeriod && firstTrigger.firstPeriod;
+                
+                // Debug logging
+                if (firstTrigger) {
+                    console.log(`🔍 DEBUG: First trigger data:`, {
+                        isRangeQuery: firstTrigger.isRangeQuery,
+                        fromPeriod: firstTrigger.fromPeriod,
+                        firstPeriod: firstTrigger.firstPeriod,
+                        cacheKey: firstTrigger.cacheKey
+                    });
+                }
+                
                 if (firstTrigger && allPeriods.size > 0) {
                     const periodsArray = Array.from(allPeriods);
-                    console.log(`🚀 INCOME PRELOAD TRIGGERED: ${allPeriods.size} period(s) - ${periodsArray.join(', ')}`);
+                    if (isRangeQuery) {
+                        console.log(`🚀 INCOME PRELOAD TRIGGERED: RANGE QUERY - ${firstTrigger.fromPeriod} to ${firstTrigger.firstPeriod}`);
+                        console.log(`🔍 DEBUG: Range query detected, cacheKey: ${firstTrigger.cacheKey}`);
+                    } else {
+                        console.log(`🚀 INCOME PRELOAD TRIGGERED: ${allPeriods.size} period(s) - ${periodsArray.join(', ')}`);
+                    }
                     
                     // Check if preload is already running
                     if (isPreloadRunning()) {
@@ -8956,30 +8981,38 @@ For licensing inquiries, contact: legal@celigo.com
                                 accountingBook: filters.accountingBook || ''
                             };
                             
-                            // Process periods in chunks (same as BS preload)
-                            const CHUNK_SIZE = 1; // Process one period at a time to avoid timeouts
+                            // Handle range queries vs single period queries
                             const allCompleted = [];
                             const allFailed = [];
                             
-                            for (let i = 0; i < periodsArray.length; i += CHUNK_SIZE) {
-                                const periodChunk = periodsArray.slice(i, i + CHUNK_SIZE);
-                                const periodsText = periodChunk.join(', ');
+                            if (isRangeQuery) {
+                                // ================================================================
+                                // RANGE QUERY: Use full_year_refresh to get all data, then cache as range
+                                // ================================================================
+                                const fromPeriod = firstTrigger.fromPeriod;
+                                const toPeriod = firstTrigger.firstPeriod;
+                                const cacheKey = firstTrigger.cacheKey; // e.g., "income::Jan 2025::Mar 2025::||||1"
                                 
                                 updateLoading(
-                                    `⚡ Preloading ${periodsText} (${periodChunk.length} period${periodChunk.length > 1 ? 's' : ''})`,
+                                    `⚡ Preloading Range: ${fromPeriod} to ${toPeriod}`,
                                     40,
-                                    'Getting all income accounts for this period...'
+                                    'Getting all income accounts for this range...'
                                 );
                                 
+                                // Extract year from toPeriod (e.g., "Mar 2025" -> 2025)
+                                const yearMatch = toPeriod.match(/\d{4}/);
+                                const year = yearMatch ? parseInt(yearMatch[0]) : new Date().getFullYear();
+                                
                                 const controller = new AbortController();
-                                const timeoutId = setTimeout(() => controller.abort(), 120000);
+                                const timeoutId = setTimeout(() => controller.abort(), 180000); // 3 min timeout for full year
                                 
                                 try {
-                                    const preloadResponse = await fetch(`${getServerUrl()}/batch/pl_preload`, {
+                                    console.log(`📤 Range preload: Using full_year_refresh for year ${year}, then caching as range ${cacheKey}`);
+                                    const preloadResponse = await fetch(`${getServerUrl()}/batch/full_year_refresh`, {
                                         method: 'POST',
                                         headers: { 'Content-Type': 'application/json' },
                                         body: JSON.stringify({
-                                            periods: periodChunk,
+                                            year: year,
                                             subsidiary: preloadFilters.subsidiary || '',
                                             department: preloadFilters.department || '',
                                             location: preloadFilters.location || '',
@@ -8988,6 +9021,115 @@ For licensing inquiries, contact: legal@celigo.com
                                         }),
                                         signal: controller.signal
                                     });
+                                    
+                                    clearTimeout(timeoutId);
+                                    
+                                    if (preloadResponse.ok) {
+                                        const result = await preloadResponse.json();
+                                        
+                                        // Process results and cache as RANGE
+                                        if (result.balances) {
+                                            const cacheEntries = {};
+                                            const buildFiltersHash = (filters) => {
+                                                const sub = String(filters.subsidiary || '').trim();
+                                                const dept = String(filters.department || '').trim();
+                                                const loc = String(filters.location || '').trim();
+                                                const cls = String(filters.class || '').trim();
+                                                let book = String(filters.accountingBook || '').trim();
+                                                if (book === '' || book === '1') {
+                                                    book = '1';
+                                                }
+                                                return `${sub}|${dept}|${loc}|${cls}|${book}`;
+                                            };
+                                            const filtersHash = buildFiltersHash(preloadFilters);
+                                            
+                                            // Extract period names from result to find which periods are in range
+                                            // For range queries, we need to sum balances across all periods in the range
+                                            for (const [account, periodBalances] of Object.entries(result.balances)) {
+                                                if (typeof periodBalances === 'object') {
+                                                    // Sum balances for all periods in the range
+                                                    let rangeBalance = 0;
+                                                    for (const [pName, balance] of Object.entries(periodBalances)) {
+                                                        // Check if period is in range (simple string comparison for "Mon YYYY" format)
+                                                        // This works because "Mon YYYY" format sorts correctly (Jan 2025 < Feb 2025 < Mar 2025)
+                                                        if (pName >= fromPeriod && pName <= toPeriod) {
+                                                            rangeBalance += parseFloat(balance) || 0;
+                                                        }
+                                                    }
+                                                    
+                                                    // Cache per-account range balance: balance:account:filtersHash:fromPeriod::toPeriod
+                                                    // The double colon (::) indicates this is a range, not a single period
+                                                    const accountRangeKey = `balance:${account}:${filtersHash}:${fromPeriod}::${toPeriod}`;
+                                                    cacheEntries[accountRangeKey] = { value: rangeBalance, timestamp: Date.now() };
+                                                    
+                                                    // Also cache under range indicator key for checkIfPeriodIsCached() to find
+                                                    // Format: income::fromPeriod::toPeriod::filtersHash (no account, indicates range is cached)
+                                                    const rangeIndicatorKey = `income::${fromPeriod}::${toPeriod}::${filtersHash}`;
+                                                    // Store a marker value (we don't need the actual balance here, just that the range exists)
+                                                    if (!cacheEntries[rangeIndicatorKey]) {
+                                                        cacheEntries[rangeIndicatorKey] = { value: 'RANGE_CACHED', timestamp: Date.now() };
+                                                    }
+                                                }
+                                            }
+                                            
+                                            // Update localStorage cache
+                                            const existingCache = JSON.parse(localStorage.getItem('xavi_balance_cache') || '{}');
+                                            Object.assign(existingCache, cacheEntries);
+                                            localStorage.setItem('xavi_balance_cache', JSON.stringify(existingCache));
+                                            
+                                            console.log(`✅ Range preload cached ${Object.keys(cacheEntries).length} entries for range ${fromPeriod} to ${toPeriod}`);
+                                            console.log(`🔍 DEBUG: Sample cache keys:`, Object.keys(cacheEntries).slice(0, 5));
+                                            console.log(`🔍 DEBUG: Cache key format: balance:account:${filtersHash}:${fromPeriod}::${toPeriod}`);
+                                            allCompleted.push(`${fromPeriod} to ${toPeriod}`);
+                                        }
+                                    } else {
+                                        const errorText = await preloadResponse.text();
+                                        console.error(`❌ Range preload failed: ${preloadResponse.status} - ${errorText}`);
+                                        allFailed.push({ period: `${fromPeriod} to ${toPeriod}`, error: `HTTP ${preloadResponse.status}` });
+                                    }
+                                } catch (fetchError) {
+                                    clearTimeout(timeoutId);
+                                    if (fetchError.name === 'AbortError') {
+                                        console.warn(`⚠️ Range preload timed out for: ${fromPeriod} to ${toPeriod}`);
+                                        allFailed.push({ period: `${fromPeriod} to ${toPeriod}`, error: 'Timeout' });
+                                    } else {
+                                        console.error(`❌ Range preload error:`, fetchError);
+                                        allFailed.push({ period: `${fromPeriod} to ${toPeriod}`, error: fetchError.message });
+                                    }
+                                }
+                            } else {
+                                // ================================================================
+                                // SINGLE PERIOD: Use existing pl_preload logic
+                                // ================================================================
+                                const CHUNK_SIZE = 1; // Process one period at a time to avoid timeouts
+                                
+                                for (let i = 0; i < periodsArray.length; i += CHUNK_SIZE) {
+                                    const periodChunk = periodsArray.slice(i, i + CHUNK_SIZE);
+                                    const periodsText = periodChunk.join(', ');
+                                    
+                                    updateLoading(
+                                        `⚡ Preloading ${periodsText} (${periodChunk.length} period${periodChunk.length > 1 ? 's' : ''})`,
+                                        40,
+                                        'Getting all income accounts for this period...'
+                                    );
+                                    
+                                    const controller = new AbortController();
+                                    const timeoutId = setTimeout(() => controller.abort(), 120000);
+                                    
+                                    try {
+                                        const preloadResponse = await fetch(`${getServerUrl()}/batch/pl_preload`, {
+                                            method: 'POST',
+                                            headers: { 'Content-Type': 'application/json' },
+                                            body: JSON.stringify({
+                                                periods: periodChunk,
+                                                subsidiary: preloadFilters.subsidiary || '',
+                                                department: preloadFilters.department || '',
+                                                location: preloadFilters.location || '',
+                                                class: preloadFilters.class || '',
+                                                accountingBook: preloadFilters.accountingBook || ''
+                                            }),
+                                            signal: controller.signal
+                                        });
                                     
                                     clearTimeout(timeoutId);
                                     
