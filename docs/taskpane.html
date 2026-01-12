@@ -6077,7 +6077,7 @@ For licensing inquiries, contact: legal@celigo.com
     
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- SHARED RUNTIME: functions.js must be loaded here for custom functions to work -->
-    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.144"></script>
+    <script src="https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js?v=4.0.6.160"></script>
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
@@ -23786,6 +23786,30 @@ export default {
                 if (shouldSyncStructure) {
                     showLoading('Refresh All', `Syncing structure for ${syncYear}...`, 10);
                     console.log(`🚀 ENTERING STRUCTURE SYNC for year ${syncYear}, subsidiary: "${syncSubsidiary}"`);
+                    
+                    // CRITICAL: Clear cache BEFORE creating new formulas
+                    // Otherwise new formulas will use stale cached data
+                    console.log('🗑️ Clearing cache before structure sync...');
+                    localStorage.removeItem('netsuite_balance_cache');
+                    localStorage.removeItem('netsuite_balance_cache_timestamp');
+                    
+                    // Signal functions.js to clear in-memory cache
+                    localStorage.setItem('netsuite_enter_build_mode', JSON.stringify({
+                        timestamp: Date.now(),
+                        reason: 'structure_sync'
+                    }));
+                    
+                    // Clear cache via formula (functions.js runs in separate context)
+                    await Excel.run(async (context) => {
+                        const sheet = context.workbook.worksheets.getActiveWorksheet();
+                        const tempRange = sheet.getRange('ZZ9998');
+                        tempRange.formulas = [[`=XAVI.BALANCE("__CLEARCACHE__","ALL","")`]];
+                        await context.sync();
+                        await new Promise(r => setTimeout(r, 500));
+                        tempRange.clear();
+                        await context.sync();
+                    });
+                    console.log('✅ Cache cleared before structure sync');
                     
                     // Get currency format for the selected subsidiary
                     let currencyFormat = '$#,##0.00';  // Default to USD

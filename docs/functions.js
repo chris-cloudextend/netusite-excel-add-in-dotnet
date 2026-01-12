@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.159';  // Revert: Use full-year refresh for 3+ periods (remove 3-column batching)
+const FUNCTIONS_VERSION = '4.0.6.160';  // Fix: Clear cache before structure sync, remove showAsTaskpane call
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -11383,17 +11383,10 @@ async function processBatchQueue() {
             if (useFullYearRefreshPatternFinal && yearForOptimization) {
                 console.log(`  📤 FULL YEAR REFRESH (SINGLE CALL): All ${accounts.length} accounts for year ${yearForOptimization} (fetching all 12 months...)`);
                 
-                // Show progress indicator to reduce perceived slowness
-                try {
-                    if (typeof Office !== 'undefined' && Office.context && Office.context.mailbox) {
-                        // Outlook context - no status API
-                    } else if (typeof Office !== 'undefined' && Office.addin) {
-                        // Excel context - use status API if available
-                        Office.addin.showAsTaskpane();
-                    }
-                } catch (e) {
-                    // Ignore errors - progress indicator is optional
-                }
+                // REMOVED: Office.addin.showAsTaskpane() call
+                // This was causing an empty add-in window to open during Refresh All
+                // The taskpane is already open when Refresh All runs, so this call is unnecessary
+                // Progress is already shown in the taskpane UI via updateLoading() calls
                 
                 const fullYearStartTime = Date.now();
                 
