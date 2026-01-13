@@ -1,6 +1,6 @@
 # XAVI for NetSuite - User Guide
 
-**Version 4.0.6.159** | Last Updated: January 10, 2026
+**Version 4.0.6.163** | Last Updated: January 12, 2026
 
 ---
 

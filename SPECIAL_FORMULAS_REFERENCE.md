@@ -1013,7 +1013,7 @@ async function CTA(period, subsidiary, accountingBook) {
 
 ## Version
 
-*Current Version: 4.0.6.159*  
+*Current Version: 4.0.6.163*  
 *Last Updated: January 10, 2026*
 
 ## Recent Updates

@@ -28,6 +28,7 @@ This folder contains the Excel Add-in files hosted via GitHub Pages.
 | `XAVI.RETAINEDEARNINGS` | Calculate Retained Earnings |
 | `XAVI.NETINCOME` | Calculate Net Income |
 | `XAVI.CTA` | Calculate CTA (multi-currency) |
+| `XAVI.CLEARCACHE` | Internal: Clear in-memory cache (used by Refresh Selected) |
 
 ## Drill-Down Functionality
 
@@ -73,4 +74,4 @@ Files are served from GitHub Pages. After pushing changes:
 
 ---
 
-*Current Version: 4.0.0.25*
+*Current Version: 4.0.6.163*

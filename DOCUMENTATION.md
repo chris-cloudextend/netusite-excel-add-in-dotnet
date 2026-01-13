@@ -199,12 +199,11 @@ When running consolidated reports across subsidiaries:
 ├── docs/
 │   ├── functions.js           # Custom Excel functions + caching
 │   ├── functions.json         # Function metadata for Excel
-│   ├── functions.html         # Functions runtime page
+│   ├── functions.html         # Functions runtime page (legacy)
 │   ├── taskpane.html          # Taskpane UI + refresh logic
-│   ├── commands.html          # Ribbon commands
-│   └── commands.js            # Command implementations
+│   └── sharedruntime.html     # Blank shared runtime page (no UI)
 ├── excel-addin/
-│   └── manifest-claude.xml    # Excel add-in manifest
+│   └── manifest.xml           # Excel add-in manifest
 ├── CLOUDFLARE-WORKER-CODE.js  # Proxy worker code
 └── DOCUMENTATION.md           # This file
 ```
@@ -566,10 +565,12 @@ Why?
 │  - TTL: 5 minutes                                       │
 │  - Shared: Between taskpane and custom functions        │
 ├─────────────────────────────────────────────────────────┤
-│  TIER 3: Backend Cache (.NET backend)                   │
+│  TIER 3: Backend Cache (IMemoryCache - ASP.NET Core)    │
 │  - Speed: Avoids NetSuite roundtrip                     │
-│  - TTL: 5 minutes                                       │
+│  - TTL: 5 minutes (balance results), 24 hours (lookups)│
 │  - Benefit: Shared across all users                     │
+│  - Book-Subsidiary Cache: Persistent dictionary with   │
+│    disk backup (survives server restarts)                │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -1385,6 +1386,8 @@ Backend prints detailed query information:
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 4.0.6.163 | Jan 2026 | **Performance: Increased CHUNK_SIZE from 50 to 100** - Backend tested and confirmed to support 114+ accounts in single request. Performance improvement: ~5.5s vs ~13.8s for 114 accounts (60% faster batch processing). |
+| 4.0.6.162 | Jan 2026 | **Taskpane range preload + checkLocalStorageCache range support** - Fixed cache misses for quarterly ranges by updating taskpane preload logic to correctly cache range data using full_year_refresh and range-specific cache keys. |
 | 4.0.6.159 | Jan 2026 | **Full-year refresh for 3+ periods** - Reverted to full-year refresh for all 3+ periods from same year (removed 3-column batching). Single optimized query fetches all months at once (5-15 seconds), all data appears simultaneously. See `DRAG_RIGHT_9_COLUMN_ANALYSIS.md` for analysis. |
 | 4.0.6.158 | Jan 2026 | **Early grid detection** - Added early grid detection in `BALANCE()` function to detect grid pattern (3+ periods × 2+ accounts) before preload wait. Skips individual preload waits for grid patterns, allowing batch processing to handle all requests together. |
 | 4.0.6.145 | Jan 2026 | **Refresh All smart detection** - Automatically detects P&L sheets (2+ periods from same year) vs Balance Sheet sheets (1 period). Prevents unnecessary Balance Sheet queries on Income Statement sheets, reducing refresh time from timeouts to ~30 seconds. |
@@ -1413,5 +1416,5 @@ Backend prints detailed query information:
 
 ---
 
-*Document Version: 4.0.6.159*
-*Last Updated: January 10, 2026*
+*Document Version: 4.0.6.163*
+*Last Updated: January 12, 2026*

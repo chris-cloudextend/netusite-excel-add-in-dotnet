@@ -31,7 +31,7 @@ cp excel-addin/manifest.xml ~/Library/Containers/com.microsoft.Excel/Data/Docume
 
 **Windows:**
 ```
-Copy manifest-claude.xml to %USERPROFILE%\AppData\Local\Microsoft\Office\16.0\Wef\
+Copy manifest.xml to %USERPROFILE%\AppData\Local\Microsoft\Office\16.0\Wef\
 ```
 
 Then in Excel: **Insert → My Add-ins → Shared Folder** → Select the manifest
@@ -97,7 +97,7 @@ Users can drill down into any balance to see underlying transactions:
 │   ├── taskpane.html     # Taskpane UI + all drill-down logic
 │   └── sharedruntime.html # Blank shared runtime page
 ├── excel-addin/          # Manifest file
-│   └── manifest-claude.xml
+│   └── manifest.xml
 └── DOCUMENTATION.md      # Main documentation
 ```
 
@@ -134,7 +134,5 @@ See [DOCUMENTATION.md](DOCUMENTATION.md) for detailed troubleshooting.
 
 ---
 
-*Current Version: 4.0.6.159*
- 
-# Retry deployment: Mon Jan 12 12:13:41 EST 2026
+*Current Version: 4.0.6.163*
  

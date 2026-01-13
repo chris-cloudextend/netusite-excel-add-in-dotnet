@@ -105,7 +105,7 @@ The add-in uses Office's **Shared Runtime** where all components share a single 
 | `docs/functions.json` | Function entry | `id`, `name`, `description` |
 | `docs/functions.json` | Parameters array | Names, descriptions, types, optional flags |
 | `docs/functions.json` | Options | `stream`, `cancelable`, `volatile` settings |
-| `docs/functions.js` | **`CustomFunctions.associate()`** | **MUST add function binding (~line 5280)** |
+| `docs/functions.js` | **`CustomFunctions.associate()`** | **MUST add function binding (~line 13885)** |
 
 > ⚠️ **CRITICAL #1**: Missing `CustomFunctions.associate('FUNCTIONNAME', FUNCTIONNAME)` will cause  
 > the entire add-in to fail with "We can't start this add-in because it isn't set up properly."
@@ -144,7 +144,7 @@ The add-in uses Office's **Shared Runtime** where all components share a single 
 ### 5. Manifest & Versioning ⚠️ CRITICAL
 | File | Location | What to Update |
 |------|----------|----------------|
-| `excel-addin/manifest.xml` | `<Version>` tag | Main version (line ~32) |
+| `excel-addin/manifest.xml` | `<Version>` tag | Main version (line ~34) |
 | `excel-addin/manifest.xml` | ALL `?v=X.X.X.X` URLs | Cache-busting parameters |
 | `docs/taskpane.html` | Footer version | Hardcoded display (~line 3960) |
 | `docs/sharedruntime.html` | functions.js URL | Cache-busting parameter |

@@ -1,8 +1,8 @@
 # XAVI for NetSuite - Engineering Handoff Documentation
 
 **Purpose:** Knowledge transfer document for engineers taking over the XAVI Excel Add-in project  
-**Current Version:** 4.0.6.159  
-**Last Updated:** January 10, 2026
+**Current Version:** 4.0.6.163  
+**Last Updated:** January 12, 2026
 
 ---
 
@@ -138,7 +138,10 @@ For detailed implementation, see [DEVELOPER_CHECKLIST.md](DEVELOPER_CHECKLIST.md
 **Three-Tier Caching:**
 1. **In-Memory Cache** (functions.js): Fastest, session-only
 2. **localStorage Cache**: Persists across Excel sessions, shared between taskpane and functions.js
-3. **Backend Cache**: Optional, not currently implemented
+3. **Backend Cache** (IMemoryCache): ASP.NET Core in-memory cache with configurable TTL
+   - Balance results: 5-minute TTL (default) or 24-hour TTL for range queries
+   - Lookup data: 24-hour TTL (subsidiaries, periods, account types)
+   - Book-Subsidiary mapping: Persistent dictionary with disk backup (survives server restarts)
 
 **Pre-Caching:**
 - **Balance Sheet:** Automatically pre-caches all BS accounts when first BS formula is entered for a period
@@ -165,13 +168,24 @@ For detailed caching documentation, see [DOCUMENTATION.md#pre-caching--drag-drop
 
 **Key Services:**
 - `NetSuiteService.cs` - SuiteQL query execution, OAuth 1.0 authentication
-- `BalanceService.cs` - Balance query construction and processing
-- `LookupService.cs` - Subsidiary resolution, period resolution, account lookups
+- `BalanceService.cs` - Balance query construction and processing, balance result caching
+- `LookupService.cs` - Subsidiary resolution, period resolution, account lookups, book-subsidiary mapping cache
 
 **Configuration:**
 - Credentials stored in `appsettings.Development.json` (DO NOT COMMIT)
 - OAuth 1.0 authentication with NetSuite
 - Uses SuiteQL REST API endpoint
+
+**Backend Caching:**
+- **IMemoryCache** (ASP.NET Core): In-memory cache for balance results and lookup data
+  - Balance results: 5-minute TTL (default) or 24-hour TTL for range queries
+  - Lookup data (subsidiaries, periods, account types): 24-hour TTL
+- **Book-Subsidiary Association Cache**: Persistent in-memory dictionary with disk backup
+  - **Storage**: `Dictionary<string, List<string>>` mapping `accountingBookId -> List<subsidiaryId>`
+  - **Initialization**: Built on server startup by querying NetSuite for distinct (accountingbook, subsidiary) pairs from `TransactionAccountingLine` and `TransactionLine`
+  - **Persistence**: Saved to disk at `~/Library/Application Support/XaviApi/book-subsidiary-cache.json` (Mac) or equivalent on other OS
+  - **Purpose**: Validates which subsidiaries have transactions for each accounting book, used for query optimization and validation
+  - **Lifetime**: Persists across server restarts (loaded from disk on startup, rebuilt from NetSuite if disk cache is missing or stale)
 
 ### SuiteQL Queries
 
@@ -583,14 +597,20 @@ Similar structure using:
 
 ---
 
-## Recent Changes (v4.0.6.158-159)
+## Recent Changes (v4.0.6.162-163)
 
-### v4.0.6.158: Early Grid Detection
-- **Issue:** When dragging 3+ columns, formulas were waiting 120s for individual preloads, preventing batch processing
-- **Fix:** Added early grid detection in `BALANCE()` function that detects grid pattern (3+ periods × 2+ accounts) before preload wait
-- **Impact:** Skips preload wait for grid patterns, allowing batch processing to handle all requests together
-- **Files Modified:** `docs/functions.js` (lines 7709-7848)
-- **Documentation:** See `DRAG_RIGHT_SINGLE_CELL_BUG_REPORT.md` and `DRAG_RIGHT_FIX_IMPLEMENTATION_PLAN.md`
+### v4.0.6.163: Performance - Increased CHUNK_SIZE from 50 to 100
+- **Issue:** Frontend was chunking accounts into groups of 50, but backend supports 100+ accounts per request
+- **Fix:** Increased `CHUNK_SIZE` constant from 50 to 100 in `docs/functions.js` (line 6241)
+- **Impact:** 60% faster batch processing for large batches (tested with 114 accounts: ~5.5s vs ~13.8s)
+- **Files Modified:** `docs/functions.js`, `excel-addin/manifest.xml`, `docs/taskpane.html`, `docs/sharedruntime.html`, `docs/functions.html`
+- **Testing:** Backend tested and confirmed to support 114+ accounts in single request
+
+### v4.0.6.162: Taskpane Range Preload + Cache Range Support
+- **Issue:** Cache misses for quarterly ranges (e.g., `XAVI.BALANCE("4220", "1/1/25", "3/31/25")`)
+- **Fix:** Updated taskpane preload logic to detect range queries, call `/batch/full_year_refresh`, sum balances, and cache with range-specific keys
+- **Impact:** Quarterly range formulas now properly cached and resolve quickly after first evaluation
+- **Files Modified:** `docs/taskpane.html`, `docs/functions.js`
 
 ### v4.0.6.159: Full-Year Refresh for 3+ Periods
 - **Issue:** 3-column batching provided incremental updates but felt slow due to perceived lack of progress
@@ -598,6 +618,13 @@ Similar structure using:
 - **Impact:** Single optimized query fetches all months at once (5-15 seconds), all data appears simultaneously
 - **Files Modified:** `docs/functions.js` (lines 11218-11293)
 - **Analysis:** See `DRAG_RIGHT_9_COLUMN_ANALYSIS.md` for detailed findings and rationale
+
+### v4.0.6.158: Early Grid Detection
+- **Issue:** When dragging 3+ columns, formulas were waiting 120s for individual preloads, preventing batch processing
+- **Fix:** Added early grid detection in `BALANCE()` function that detects grid pattern (3+ periods × 2+ accounts) before preload wait
+- **Impact:** Skips preload wait for grid patterns, allowing batch processing to handle all requests together
+- **Files Modified:** `docs/functions.js` (lines 7709-7848)
+- **Documentation:** See `DRAG_RIGHT_SINGLE_CELL_BUG_REPORT.md` and `DRAG_RIGHT_FIX_IMPLEMENTATION_PLAN.md`
 
 ---
 
