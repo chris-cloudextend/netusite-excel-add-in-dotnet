@@ -156,6 +156,90 @@ When running consolidated reports across subsidiaries:
 
 ---
 
+### XAVI.BALANCECURRENCY - Multi-Currency Consolidation
+
+**BALANCECURRENCY** provides explicit currency control for multi-currency consolidation. Unlike `BALANCE`, which returns amounts in the subsidiary's base currency, `BALANCECURRENCY` allows you to specify the target currency for consolidation.
+
+**Syntax:**
+```
+=XAVI.BALANCECURRENCY(account, fromPeriod, toPeriod, subsidiary, currency, [department], [location], [class], [accountingBook])
+```
+
+**Key Differences from BALANCE:**
+1. **Currency Parameter:** Position 5 (after subsidiary, before department)
+2. **Individual API Calls:** Uses `/balancecurrency` endpoint (not batch endpoint)
+3. **Cache Key:** Includes currency parameter to prevent cache collisions
+4. **Date Handling:** Supports Excel date serials (e.g., `45658` → `"Jan 2025"`)
+
+**Examples:**
+```excel
+=XAVI.BALANCECURRENCY("60010", "1/1/2025", "1/1/2025", "Celigo India Pvt Ltd", "USD")
+=XAVI.BALANCECURRENCY($A5, C$4, C$4, $M$2, $O$2)  // Currency in $O$2
+=XAVI.BALANCECURRENCY("60010", "Jan 2025", "Mar 2025", "", "EUR")  // All subsidiaries, EUR
+```
+
+#### Why Not All Subsidiary/Currency Combinations Work
+
+**CRITICAL CONSTRAINT:** Not every currency can be used with every subsidiary. The backend uses NetSuite's `ConsolidatedExchangeRate` table to resolve currency to a valid consolidation root.
+
+**How It Works:**
+1. **Subsidiary Filter:** Filters transactions to the specified subsidiary (or all if empty)
+2. **Currency Resolution:** Backend looks up the currency in `ConsolidatedExchangeRate` table to find a valid consolidation root subsidiary
+3. **Consolidation:** Uses `BUILTIN.CONSOLIDATE` to translate amounts to the consolidation root's currency
+
+**Valid Combinations:**
+- Currency must be a valid consolidation root for the filtered subsidiary
+- Consolidation path must exist in NetSuite's `ConsolidatedExchangeRate` table
+- If no valid path exists, returns `INV_SUB_CUR` error (balance = 0)
+
+**Example Scenario:**
+```
+Subsidiary: Celigo India Pvt Ltd (base currency: INR)
+Valid currencies: USD (consolidation root: Parent), INR (base currency)
+Invalid currencies: EUR (no consolidation path defined)
+```
+
+**Error Handling:**
+- If currency cannot be resolved to a consolidation root, returns `error: "INV_SUB_CUR"` and `balance: 0`
+- Frontend displays the error to the user
+- Cache key includes currency to prevent collisions when changing currency cell references
+
+#### Recent Fixes (v4.0.6.164 - v4.0.6.167)
+
+**v4.0.6.164 - Excel Date Serial Normalization:**
+- Fixed issue where Excel date serials (e.g., `45658` for `1/1/2025`) were not normalized
+- Now converts Excel date serials to `"Mon YYYY"` format before sending to backend
+- Backend also handles date strings like `"1/1/2025"` as fallback
+
+**v4.0.6.166 - Individual Endpoint Routing:**
+- Fixed issue where BALANCECURRENCY requests were routed to batch endpoint
+- Batch endpoint doesn't support currency parameter, causing incorrect results
+- Now routes to individual `/balancecurrency` endpoint for proper currency handling
+
+**v4.0.6.167 - Currency in Cache Key:**
+- Fixed cache collision issue when changing currency cell references
+- Cache key now includes currency parameter to differentiate USD vs INR vs other currencies
+- Changing currency from USD to INR (or vice versa) now triggers new API call instead of returning cached value
+
+#### Technical Implementation Details
+
+**Frontend (functions.js):**
+- Period normalization: `normalizePeriodKey()` converts Excel date serials to `"Mon YYYY"` format
+- Routing: `processBatchQueue()` checks `endpoint === '/balancecurrency'` and routes separately
+- Cache key: `getCacheKey('balancecurrency', params)` includes currency in JSON structure
+
+**Backend (BalanceService.cs):**
+- Currency resolution: `ResolveCurrencyToConsolidationRootAsync()` queries `ConsolidatedExchangeRate` table
+- Consolidation: Uses `BUILTIN.CONSOLIDATE` with consolidation root as `target_sub`
+- Error handling: Returns `INV_SUB_CUR` if no valid consolidation path exists
+
+**Cache Behavior:**
+- Each currency gets its own cache entry (e.g., `balancecurrency:60010:Jan 2025:Jan 2025:USD` vs `balancecurrency:60010:Jan 2025:Jan 2025:INR`)
+- Changing currency cell reference triggers cache miss and new API call
+- Cache TTL: 5 minutes (backend `IMemoryCache`)
+
+---
+
 # For Engineers (Technical Reference)
 
 ## Architecture (Current)
@@ -1430,5 +1514,5 @@ Backend prints detailed query information:
 
 ---
 
-*Document Version: 4.0.6.163*
+*Document Version: 4.0.6.167*
 *Last Updated: January 12, 2026*

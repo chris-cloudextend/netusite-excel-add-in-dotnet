@@ -1,7 +1,7 @@
 # XAVI for NetSuite - Engineering Handoff Documentation
 
 **Purpose:** Knowledge transfer document for engineers taking over the XAVI Excel Add-in project  
-**Current Version:** 4.0.6.163  
+**Current Version:** 4.0.6.167  
 **Last Updated:** January 12, 2026
 
 ---
@@ -228,6 +228,65 @@ WHERE t.posting = 'T'
 **Critical:** Always use `BUILTIN.CONSOLIDATE` for multi-currency support. See [BUILTIN_CONSOLIDATE_AUDIT.md](BUILTIN_CONSOLIDATE_AUDIT.md) for complete usage audit.
 
 For complete SuiteQL reference, see [SUITEQL-QUERIES-SUMMARY.md](SUITEQL-QUERIES-SUMMARY.md).
+
+---
+
+## BALANCECURRENCY Function - Technical Details
+
+### Why Not All Subsidiary/Currency Combinations Work
+
+**CRITICAL CONSTRAINT:** The backend uses NetSuite's `ConsolidatedExchangeRate` table to resolve currency to a valid consolidation root. Not every currency can be used with every subsidiary.
+
+**Backend Resolution Logic (`LookupService.ResolveCurrencyToConsolidationRootAsync`):**
+1. **Step 1:** Check if currency matches filtered subsidiary's base currency (direct match)
+2. **Step 2:** Query `ConsolidatedExchangeRate` table for consolidation path:
+   ```sql
+   SELECT cer.tosubsidiary AS consolidationRootId
+   FROM ConsolidatedExchangeRate cer
+   JOIN Subsidiary s ON s.id = cer.tosubsidiary
+   JOIN Currency c ON c.id = s.currency
+   WHERE cer.fromsubsidiary = {filteredSubId}
+     AND UPPER(c.symbol) = UPPER('{currencyCode}')
+     AND s.iselimination = 'F'
+   ```
+3. **Step 3:** If no path found, return `null` → backend returns `INV_SUB_CUR` error
+
+**Valid Combinations:**
+- Currency must be a valid consolidation root for the filtered subsidiary
+- Consolidation path must exist in `ConsolidatedExchangeRate` table
+- If no path exists, returns `error: "INV_SUB_CUR"` and `balance: 0`
+
+**Example:**
+- Subsidiary: "Celigo India Pvt Ltd" (base currency: INR)
+- Valid: USD (if parent consolidation root defined), INR (base currency)
+- Invalid: EUR (unless consolidation path explicitly configured in NetSuite)
+
+### Frontend Implementation
+
+**Routing (`processBatchQueue`):**
+- Checks `endpoint === '/balancecurrency'` before routing
+- Routes to `balanceCurrencyRequests` array (separate from `regularRequests`)
+- Processes individually using `/balancecurrency` endpoint (not batch endpoint)
+
+**Cache Key (`getCacheKey('balancecurrency', params)`):**
+- Includes currency parameter in JSON structure: `{"type":"balancecurrency","currency":"USD",...}`
+- Separate cache entries for each currency (prevents collisions)
+- Changing currency cell reference triggers cache miss → new API call
+
+**Period Normalization:**
+- Uses `normalizePeriodKey()` to convert Excel date serials (45658 → "Jan 2025")
+- Backend also handles date strings like "1/1/2025" as fallback
+
+### Backend Implementation
+
+**Endpoint:** `GET /balancecurrency`
+- Individual endpoint (not batch endpoint)
+- Supports currency parameter for consolidation root resolution
+
+**Service Method:** `BalanceService.GetBalanceBetaAsync()`
+- Resolves currency to consolidation root via `ResolveCurrencyToConsolidationRootAsync()`
+- Uses `BUILTIN.CONSOLIDATE` with consolidation root as `target_sub`
+- Returns `INV_SUB_CUR` error if no valid consolidation path exists
 
 ---
 
@@ -597,7 +656,28 @@ Similar structure using:
 
 ---
 
-## Recent Changes (v4.0.6.162-163)
+## Recent Changes (v4.0.6.162-167)
+
+### v4.0.6.167: BALANCECURRENCY - Currency in Cache Key
+- **Issue:** Changing currency cell reference (USD to INR or vice versa) didn't update formula result - returned cached value
+- **Root Cause:** `getCacheKey()` function didn't handle `'balancecurrency'` type, returning empty string `''`, causing all BALANCECURRENCY requests to share same cache key regardless of currency
+- **Fix:** Added `'balancecurrency'` handler to `getCacheKey()` function that includes currency parameter in cache key JSON structure
+- **Impact:** Separate cache entries for each currency (USD vs INR vs other currencies), changing currency cell reference triggers new API call
+- **Files Modified:** `docs/functions.js` (lines 6555-6582), `excel-addin/manifest.xml`, `docs/taskpane.html`, `docs/sharedruntime.html`, `docs/functions.html`
+
+### v4.0.6.166: BALANCECURRENCY - Individual Endpoint Routing
+- **Issue:** BALANCECURRENCY was returning values in default currency (Rupees) instead of requested currency (USD)
+- **Root Cause:** BALANCECURRENCY requests were routed to `regularRequests` and processed through batch endpoint (`/batch/balance`), which doesn't support currency parameter
+- **Fix:** Added `balanceCurrencyRequests` array in `processBatchQueue()` to separate BALANCECURRENCY requests, check `endpoint === '/balancecurrency'` before routing, process individually using `/balancecurrency` endpoint
+- **Impact:** BALANCECURRENCY now routes to individual `/balancecurrency` endpoint, currency parameter properly sent and processed
+- **Files Modified:** `docs/functions.js` (lines 10610-11075), `excel-addin/manifest.xml`, `docs/taskpane.html`, `docs/sharedruntime.html`, `docs/functions.html`
+
+### v4.0.6.164-165: BALANCECURRENCY - Excel Date Serial Normalization
+- **Issue:** BALANCECURRENCY returned 0 when using Excel date serials (e.g., `45658` for `1/1/2025`) instead of normalizing to `"Jan 2025"`
+- **Root Cause:** Second BALANCECURRENCY function definition (line 12316) only converted to strings without normalizing Excel date serials
+- **Fix:** Updated second BALANCECURRENCY function to use `normalizePeriodKey()` for Excel date serials, added `extractValueFromRange()` for cell references, removed duplicate `rawAccountingBook` declaration
+- **Impact:** Excel date serials now properly normalized to `"Mon YYYY"` format, backend also handles date strings like `"1/1/2025"` as fallback
+- **Files Modified:** `docs/functions.js` (lines 12347-12506), `backend-dotnet/Services/NetSuiteService.cs` (GetPeriodAsync date parsing), `excel-addin/manifest.xml`, `docs/taskpane.html`, `docs/sharedruntime.html`, `docs/functions.html`
 
 ### v4.0.6.163: Performance - Increased CHUNK_SIZE from 50 to 100
 - **Issue:** Frontend was chunking accounts into groups of 50, but backend supports 100+ accounts per request

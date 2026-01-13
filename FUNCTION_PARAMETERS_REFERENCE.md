@@ -83,6 +83,9 @@
 - Currency parameter is **position 5** (not position 4 like in BALANCE)
 - If you want to skip subsidiary but include currency, use: `=XAVI.BALANCECURRENCY(account, from, to, "", currency)`
 - Empty currency cell references will return `#EMPTY_CURRENCY#` error
+- **Currency/Subsidiary Compatibility:** Not all currency/subsidiary combinations are valid. Currency must be a valid consolidation root for the filtered subsidiary (checked via NetSuite's `ConsolidatedExchangeRate` table). Invalid combinations return `INV_SUB_CUR` error.
+- **Excel Date Serial Support:** Supports Excel date serials (e.g., `45658` for `1/1/2025`) - automatically converts to `"Jan 2025"` format
+- **Cache Behavior:** Cache key includes currency parameter, so changing currency cell reference triggers new API call
 
 ---
 

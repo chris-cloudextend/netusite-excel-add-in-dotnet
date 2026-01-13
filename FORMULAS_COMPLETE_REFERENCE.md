@@ -60,11 +60,38 @@
 
 **Description:** Similar to BALANCE but with explicit currency control. The currency parameter determines the consolidation root currency, while subsidiary filters transactions to exact match.
 
+**⚠️ CRITICAL: Currency/Subsidiary Compatibility**
+
+Not all currency/subsidiary combinations are valid. The backend uses NetSuite's `ConsolidatedExchangeRate` table to resolve currency to a valid consolidation root. If no valid consolidation path exists, the function returns `INV_SUB_CUR` error (balance = 0).
+
+**How Currency Resolution Works:**
+1. Backend checks if the currency is the subsidiary's base currency (direct match)
+2. If not, queries `ConsolidatedExchangeRate` table for a valid consolidation path
+3. Uses the consolidation root subsidiary for currency translation via `BUILTIN.CONSOLIDATE`
+4. If no path exists, returns error `INV_SUB_CUR`
+
+**Valid Combinations:**
+- Currency must be a valid consolidation root for the filtered subsidiary
+- Consolidation path must exist in NetSuite's `ConsolidatedExchangeRate` table
+- Example: Subsidiary "Celigo India Pvt Ltd" (INR base) can use USD (if parent consolidation root) or INR (base currency), but not EUR (unless consolidation path defined)
+
 **Examples:**
 ```excel
 =XAVI.BALANCECURRENCY("60010", , "Jan 2025", "Celigo Australia Pty Ltd", "USD")
+=XAVI.BALANCECURRENCY("60010", "1/1/2025", "1/1/2025", "Celigo India Pvt Ltd", "USD")  // Excel date serials supported
+=XAVI.BALANCECURRENCY($A5, C$4, C$4, $M$2, $O$2)  // Currency in $O$2
 =XAVI.BALANCECURRENCY("60010", "Jan 2025", "Mar 2025", "", "EUR")  // All subsidiaries, EUR
 ```
+
+**Recent Fixes (v4.0.6.164 - v4.0.6.167):**
+- **v4.0.6.164:** Excel date serial normalization (45658 → "Jan 2025")
+- **v4.0.6.166:** Individual endpoint routing (not batch endpoint)
+- **v4.0.6.167:** Currency included in cache key to prevent collisions
+
+**Technical Notes:**
+- Uses individual `/balancecurrency` endpoint (not batch endpoint)
+- Cache key includes currency parameter: `{"type":"balancecurrency","account":"60010","currency":"USD",...}`
+- Changing currency cell reference triggers new API call (cache miss)
 
 ---
 
