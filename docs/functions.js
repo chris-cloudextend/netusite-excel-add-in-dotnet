@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.164';  // Fix: BALANCECURRENCY now normalizes Excel date serials (e.g., 45658 → "Jan 2025")
+const FUNCTIONS_VERSION = '4.0.6.165';  // Fix: Removed duplicate rawAccountingBook declaration in BALANCECURRENCY
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -12413,7 +12413,7 @@ async function BALANCECURRENCY(account, fromPeriod, toPeriod, subsidiary, curren
         // This ensures formulas with accountingBook="" and accountingBook="1" use the same cache/manifest
         // Note: API calls will still omit book parameter for "1" (handled in API call logic)
         // CRITICAL: Use extractValueFromRange to properly handle Excel Range objects (e.g., $H$1)
-        const rawAccountingBook = accountingBook;
+        // Note: rawAccountingBook already declared above (line 12335)
         accountingBook = extractValueFromRange(accountingBook, 'accountingBook');
         
         const params = { account, fromPeriod, toPeriod, subsidiary, department, location, classId, accountingBook, currency };
