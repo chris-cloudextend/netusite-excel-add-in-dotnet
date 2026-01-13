@@ -561,7 +561,21 @@ public class NetSuiteService : INetSuiteService
         // Check if input is a numeric ID (period ID)
         bool isNumericId = int.TryParse(periodNameOrId, out var periodId);
         
-        var cacheKey = isNumericId ? $"period:id:{periodNameOrId}" : $"period:{periodNameOrId}";
+        // CRITICAL FIX: Handle date strings like "1/1/2025" or "2025-01-01"
+        // Convert to "Mon YYYY" format before querying
+        string normalizedPeriod = periodNameOrId;
+        if (!isNumericId && !IsYearOnly(periodNameOrId))
+        {
+            // Try to parse as date string (handles formats like "1/1/2025", "01/01/2025", "2025-01-01")
+            if (DateTime.TryParse(periodNameOrId, out var parsedDate))
+            {
+                var monthNames = new[] { "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+                normalizedPeriod = $"{monthNames[parsedDate.Month - 1]} {parsedDate.Year}";
+                _logger.LogInformation("GetPeriodAsync: Converted date string '{DateString}' to period name '{PeriodName}'", periodNameOrId, normalizedPeriod);
+            }
+        }
+        
+        var cacheKey = isNumericId ? $"period:id:{periodNameOrId}" : $"period:{normalizedPeriod}";
         return await GetOrSetCacheAsync(cacheKey, async () =>
         {
             string query;
@@ -578,11 +592,11 @@ public class NetSuiteService : INetSuiteService
             }
             else
             {
-                // Query by period name
+                // Query by period name (use normalized period name)
                 query = $@"
                     SELECT id, periodname, startdate, enddate, isquarter, isyear
                     FROM AccountingPeriod
-                    WHERE periodname = '{EscapeSql(periodNameOrId)}'
+                    WHERE periodname = '{EscapeSql(normalizedPeriod)}'
                     AND isquarter = 'F'
                     AND isyear = 'F'
                     FETCH FIRST 1 ROWS ONLY";
