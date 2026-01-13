@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.163';  // Performance: Increased CHUNK_SIZE from 50 to 100 (60% faster for large batches)
+const FUNCTIONS_VERSION = '4.0.6.164';  // Fix: BALANCECURRENCY now normalizes Excel date serials (e.g., 45658 → "Jan 2025")
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -12344,26 +12344,77 @@ async function BALANCECURRENCY(account, fromPeriod, toPeriod, subsidiary, curren
             throw new Error('EMPTY_CELL');
         }
         
-        // Normalize parameters
-        account = String(account || '').trim();
-        fromPeriod = fromPeriod !== undefined && fromPeriod !== null ? String(fromPeriod).trim() : '';
-        toPeriod = String(toPeriod || '').trim();
-        subsidiary = String(subsidiary || '').trim();
-        currency = String(currency || '').trim();
-        department = String(department || '').trim();
-        location = String(location || '').trim();
-        classId = String(classId || '').trim();
-        accountingBook = String(accountingBook || '').trim();
+        // Normalize account number
+        account = normalizeAccountNumber(account);
         
         if (!account) {
-            console.error('❌ BALANCECURRENCY: Account is required');
-            throw new Error('MISSING_ACCOUNT');
+            console.error('❌ BALANCECURRENCY: account parameter is required');
+            throw new Error('MISSING_ACCT');
+        }
+        
+        // Convert date values to "Mon YYYY" format (supports both dates and period strings)
+        // For year-only format ("2025"), expand to "Jan 2025" and "Dec 2025"
+        // NOTE: Matching BALANCE function approach - Excel typically passes date serials as numbers
+        // normalizePeriodKey handles both numbers and string representations of Excel date serials
+        const rawFrom = fromPeriod;
+        const rawTo = toPeriod;
+        fromPeriod = normalizePeriodKey(fromPeriod, true) || fromPeriod;   // true = isFromPeriod
+        toPeriod = normalizePeriodKey(toPeriod, false) || toPeriod;      // false = isToPeriod
+        
+        // Debug log the period conversion
+        console.log(`📅 BALANCECURRENCY periods: ${rawFrom} → "${fromPeriod}", ${rawTo} → "${toPeriod}"`);
+        
+        // Validate that periods were converted successfully
+        // Allow:
+        // - "Mon YYYY" format (e.g., "Jan 2025")
+        // - Year-only "YYYY" format (e.g., "2025") - backend handles expansion
+        // - Period ID format (e.g., "344") - numeric ID that backend resolves to period
+        const periodPattern = /^([A-Za-z]{3}\s+\d{4}|\d{4}|\d{1,6})$/;
+        if (fromPeriod && !periodPattern.test(fromPeriod)) {
+            console.error(`❌ Invalid fromPeriod after conversion: "${fromPeriod}" (raw: ${rawFrom})`);
+        }
+        if (toPeriod && !periodPattern.test(toPeriod)) {
+            console.error(`❌ Invalid toPeriod after conversion: "${toPeriod}" (raw: ${rawTo})`);
         }
         
         if (!toPeriod) {
             console.error('❌ BALANCECURRENCY: toPeriod is required');
             throw new Error('MISSING_PERIOD');
         }
+        
+        // Balance Sheet detection: If fromPeriod is empty/null, treat as cumulative (BS account)
+        // This matches the logic in BALANCE function
+        const isBSRequest = isCumulativeRequest(fromPeriod);
+        if (isBSRequest) {
+            // For BS accounts, clear fromPeriod to signal cumulative calculation
+            fromPeriod = '';
+            console.log(`📊 BALANCECURRENCY: BS account detected - using cumulative through ${toPeriod}`);
+        }
+        
+        // Other parameters as strings
+        // CRITICAL FIX: Use extractValueFromRange for ALL parameters that might be cell references
+        // This ensures that when cell values change, the parameters are properly extracted and cache keys update
+        // Excel may pass Range objects for cell references, which need special handling
+        subsidiary = extractValueFromRange(subsidiary, 'subsidiary');
+        
+        // Extract currency value - handle Range objects from cell references
+        // Excel custom functions with @requiresAddress receive Range objects
+        // Use the robust extraction helper to handle all possible Range formats
+        const originalCurrency = currency;
+        const wasCurrencyProvided = currency !== undefined && currency !== null;
+        currency = extractValueFromRange(currency, 'currency');
+        
+        department = extractValueFromRange(department, 'department');
+        location = extractValueFromRange(location, 'location');
+        classId = extractValueFromRange(classId, 'classId');
+        
+        // Multi-Book Accounting support - default to empty (uses Primary Book on backend)
+        // CRITICAL FIX: Normalize empty accountingBook to "1" (Primary Book) for consistent cache keys and filtersHash
+        // This ensures formulas with accountingBook="" and accountingBook="1" use the same cache/manifest
+        // Note: API calls will still omit book parameter for "1" (handled in API call logic)
+        // CRITICAL: Use extractValueFromRange to properly handle Excel Range objects (e.g., $H$1)
+        const rawAccountingBook = accountingBook;
+        accountingBook = extractValueFromRange(accountingBook, 'accountingBook');
         
         const params = { account, fromPeriod, toPeriod, subsidiary, department, location, classId, accountingBook, currency };
         const cacheKey = getCacheKey('balancecurrency', params);
