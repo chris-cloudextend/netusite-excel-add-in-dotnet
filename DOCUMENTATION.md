@@ -75,7 +75,7 @@ The `account` parameter supports wildcards using `*` to match multiple accounts 
 **Example:**
 ```
 =XAVI.BALANCE("4*", "Jan 2025", "Dec 2025")  → Sum of ALL revenue accounts
-=XAVI.BALANCE("60*", "Q1 2025", "Q1 2025")  → Sum of 60xx expense accounts
+=XAVI.BALANCE("60*", "Jan 2025", "Mar 2025")  → Sum of 60xx expense accounts for Q1 2025
 ```
 
 This is particularly useful for creating summary rows without listing every account individually.
@@ -295,7 +295,7 @@ Wildcards let you create executive dashboards without manually listing every acc
 
 ### Real-World Examples
 
-**Example 1: CFO Flash Report (4 rows)**
+**Example 1: Executive Summary Report (4 rows)**
 ```
 A               B                                           C
 Revenue         =XAVI.BALANCE("4*", "Jan 2025", "Jan 2025") $8,289,880
@@ -304,11 +304,13 @@ Gross Profit    =B1-B2                                      $7,055,313
 Operating Exp   =XAVI.BALANCE("6*", "Jan 2025", "Jan 2025") $4,500,000
 ```
 
+> **Note:** The CFO Flash Report (available via Quick Start) uses `XAVI.TYPEBALANCE` with account types (e.g., "Income", "COGS", "Expense") rather than `XAVI.BALANCE` with wildcards. The example above demonstrates wildcard usage for custom reports.
+
 **Example 2: Departmental Expense Summary**
 ```
-=XAVI.BALANCE("6*", "Q1 2025", "Q1 2025", "", "Sales")       → Sales Dept OpEx
-=XAVI.BALANCE("6*", "Q1 2025", "Q1 2025", "", "Engineering") → Engineering OpEx
-=XAVI.BALANCE("6*", "Q1 2025", "Q1 2025", "", "Marketing")   → Marketing OpEx
+=XAVI.BALANCE("6*", "Jan 2025", "Mar 2025", "", "Sales")       → Sales Dept OpEx for Q1 2025
+=XAVI.BALANCE("6*", "Jan 2025", "Mar 2025", "", "Engineering") → Engineering OpEx for Q1 2025
+=XAVI.BALANCE("6*", "Jan 2025", "Mar 2025", "", "Marketing")   → Marketing OpEx for Q1 2025
 ```
 
 **Example 3: Subsidiary Comparison**
@@ -468,19 +470,19 @@ When users drag formulas across cells, Excel creates formulas nearly simultaneou
 
 ```
 User drags formula across 12 months:
-  → Formula 1: triggers Build Mode (3+ formulas in 500ms)
-  → Formula 2-12: queued, show #BUSY placeholder
+  → Formula 1-2: triggers Build Mode (2+ formulas in 800ms)
+  → Formula 3-12: queued, show #BUSY placeholder
   → User stops dragging
-  → 800ms passes (settle time)
+  → 500ms passes (settle time)
   → Single optimized batch request for ALL data
   → All cells update simultaneously
 ```
 
 **Detection Criteria:**
 ```javascript
-const BUILD_MODE_THRESHOLD = 3;       // Formulas to trigger
-const BUILD_MODE_WINDOW_MS = 500;     // Detection window
-const BUILD_MODE_SETTLE_MS = 800;     // Wait after last formula
+const BUILD_MODE_THRESHOLD = 2;       // Formulas to trigger (2+ rapid formulas)
+const BUILD_MODE_WINDOW_MS = 800;     // Detection window (800ms to count formulas)
+const BUILD_MODE_SETTLE_MS = 500;     // Wait after last formula before batch (500ms)
 ```
 
 ### Pivoted Query Optimization (Periods as Columns)
@@ -497,28 +499,37 @@ The **key innovation** is returning multiple periods as columns in a single row,
 
 **Our Approach (Fast):**
 ```sql
--- Single query returns ALL months as columns
+-- Single query returns ALL months as columns (pivoted)
 SELECT
   a.acctnumber,
-  SUM(CASE WHEN TO_CHAR(ap.startdate,'YYYY-MM')='2025-01' THEN amount ELSE 0 END) AS jan_2025,
-  SUM(CASE WHEN TO_CHAR(ap.startdate,'YYYY-MM')='2025-02' THEN amount ELSE 0 END) AS feb_2025,
-  SUM(CASE WHEN TO_CHAR(ap.startdate,'YYYY-MM')='2025-03' THEN amount ELSE 0 END) AS mar_2025,
-  -- ... all 12 months
+  SUM(CASE WHEN t.postingperiod = 345 THEN 
+    TO_NUMBER(BUILTIN.CONSOLIDATE(tal.amount, ...)) * 
+    CASE WHEN a.accttype IN ('Income', 'OthIncome') THEN -1 ELSE 1 END
+  ELSE 0 END) AS jan_2025,
+  SUM(CASE WHEN t.postingperiod = 346 THEN 
+    TO_NUMBER(BUILTIN.CONSOLIDATE(tal.amount, ...)) * 
+    CASE WHEN a.accttype IN ('Income', 'OthIncome') THEN -1 ELSE 1 END
+  ELSE 0 END) AS feb_2025,
+  -- ... all 12 months (one CASE per period ID)
 FROM TransactionAccountingLine tal
   JOIN Transaction t ON t.id = tal.transaction
   JOIN Account a ON a.id = tal.account
-  JOIN AccountingPeriod ap ON ap.id = t.postingperiod
+  JOIN TransactionLine tl ON t.id = tl.transaction AND tal.transactionline = tl.id
 WHERE t.posting = 'T'
-  AND a.accttype IN ('Income', 'Expense', ...)
-  AND EXTRACT(YEAR FROM ap.startdate) = 2025
-GROUP BY a.acctnumber
+  AND tal.posting = 'T'
+  AND a.accttype IN ('Income', 'COGS', 'Expense', 'OthIncome', 'OthExpense')
+  AND t.postingperiod IN (345, 346, 347, ...)  -- All period IDs for the year
+  AND tal.accountingbook = {accountingBook}
+  AND {segmentFilters}  -- Subsidiary, department, location, class filters
+GROUP BY a.acctnumber, a.accountsearchdisplaynamecopy, a.accttype
+ORDER BY a.acctnumber
 ```
 
 **Result:** One query returns 200 accounts × 12 months = 2,400 data points.
 
 ### Full Year Refresh Endpoint
 
-When Build Mode detects 6+ months for the same fiscal year, it triggers `/batch/full_year_refresh`:
+When Build Mode detects 10+ months for the same fiscal year (or all 12 months), it triggers `/batch/full_year_refresh`. Regular batch processing also uses this endpoint when 3+ periods from the same year are detected:
 
 ```javascript
 // Endpoint automatically:
@@ -735,19 +746,20 @@ A January transaction in EUR at 1.10 USD/EUR:
 
 The Balance Sheet must show ALL amounts at the **same period-end rate** to balance correctly.
 
-## When NOT to Use BUILTIN.CONSOLIDATE
+## BUILTIN.CONSOLIDATE Usage Policy
 
-- Single-currency environments (no translation needed)
-- Single subsidiary (no consolidation needed)
-- Non-OneWorld NetSuite accounts
+**BUILTIN.CONSOLIDATE is used in ALL balance queries**, regardless of:
+- Single-currency vs. multi-currency environments
+- Single subsidiary vs. multi-subsidiary
+- OneWorld vs. non-OneWorld NetSuite accounts
 
-The backend detects these cases:
-```python
-if target_sub:
-    cons_amount = f"BUILTIN.CONSOLIDATE(tal.amount, ...)"
-else:
-    cons_amount = "tal.amount"  # Use raw amount
-```
+**Why use it everywhere?**
+- **OneWorld accounts:** Performs currency consolidation and translation
+- **Non-OneWorld accounts:** Returns original amount unchanged (pass-through)
+- **Single-currency:** No harm - returns amount as-is
+- **Single-subsidiary:** No harm - returns amount as-is
+
+**Result:** Universal compatibility across all NetSuite account types and configurations. The backend always uses `BUILTIN.CONSOLIDATE` in all balance queries.
 
 ---
 
@@ -769,9 +781,9 @@ else:
 
 ```csharp
 // CORRECT (from backend-dotnet/Models/AccountTypes.cs)
-public const string DEFERRED_EXPENSE = "DeferExpense";    // NOT "DeferExpens"
-public const string DEFERRED_REVENUE = "DeferRevenue";    // NOT "DeferRevenu"
-CRED_CARD = 'CredCard'               # NOT 'CreditCard'
+public const string DeferExpense = "DeferExpense";        // NOT "DeferExpens"
+public const string DeferRevenue = "DeferRevenue";        // NOT "DeferRevenu"
+public const string CredCard = "CredCard";                 // NOT "CreditCard"
 ```
 
 These typos caused a $60M+ CTA discrepancy. The queries silently exclude accounts with misspelled types.
@@ -808,11 +820,13 @@ RetainedEarnings  Retained Earnings
 ```
 Income            Revenue
 OthIncome         Other Income
-COGS              Cost of Goods Sold (modern)
-Cost of Goods Sold  COGS (legacy - include BOTH!)
+COGS              Cost of Goods Sold (modern - preferred)
+Cost of Goods Sold  Cost of Goods Sold (legacy spelling - include BOTH!)
 Expense           Operating Expense
 OthExpense        Other Expense
 ```
+
+**Important:** NetSuite uses both `"COGS"` (modern) and `"Cost of Goods Sold"` (legacy) in different contexts. The backend includes both when filtering for Cost of Goods Sold accounts to ensure all accounts are captured.
 
 ## NetSuite Display Signs vs. GL Signs
 
