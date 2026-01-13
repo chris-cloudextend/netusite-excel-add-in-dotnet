@@ -573,7 +573,7 @@ Why?
 │  TIER 2: localStorage Cache                             │
 │  - Speed: Milliseconds                                  │
 │  - Scope: Persists across taskpane refreshes            │
-│  - TTL: 5 minutes                                       │
+│  - TTL: 1 hour (3600000ms)                              │
 │  - Shared: Between taskpane and custom functions        │
 ├─────────────────────────────────────────────────────────┤
 │  TIER 3: Backend Cache (IMemoryCache - ASP.NET Core)    │

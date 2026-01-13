@@ -95,7 +95,7 @@ Get the GL account balance for a specific period or date range.
 =XAVI.BALANCE("4010", "Jan 2025", "Jan 2025")
 =XAVI.BALANCE("4010", "Jan 2025", "Dec 2025")            ← Full year
 =XAVI.BALANCE("4*", "Jan 2025", "Dec 2025")             ← All revenue accounts
-=XAVI.BALANCE("4010", "Q1 2025", "Q1 2025", "Celigo Inc.")
+=XAVI.BALANCE("4010", "Jan 2025", "Mar 2025", "Celigo Inc.")  → Q1 2025
 =XAVI.BALANCE(A2, B$1, B$1, $P$3, $Q$3, $R$3, $S$3)    ← With cell references
 ```
 
@@ -125,7 +125,7 @@ Get the budget amount for an account and period.
 ```
 =XAVI.BUDGET("5000", "Jan 2025", "Dec 2025")
 =XAVI.BUDGET("6*", "Jan 2025", "Dec 2025")              ← All expense budgets
-=XAVI.BUDGET("5000", "Q1 2025", "Q1 2025", "Celigo Inc.", "Sales")
+=XAVI.BUDGET("5000", "Jan 2025", "Mar 2025", "Celigo Inc.", "Sales")  → Q1 2025
 ```
 
 ---
@@ -226,8 +226,8 @@ Build a complete P&L summary in just 4 formulas:
 ### Example: Departmental Expense Comparison
 
 ```
-=XAVI.BALANCE("6*", "Q1 2025", "Q1 2025", "", "Sales")        → Sales OpEx
-=XAVI.BALANCE("6*", "Q1 2025", "Q1 2025", "", "Engineering")  → Engineering OpEx
+=XAVI.BALANCE("6*", "Jan 2025", "Mar 2025", "", "Sales")        → Sales OpEx for Q1 2025
+=XAVI.BALANCE("6*", "Jan 2025", "Mar 2025", "", "Engineering")  → Engineering OpEx for Q1 2025
 =XAVI.BALANCE("6*", "Q1 2025", "Q1 2025", "", "Marketing")    → Marketing OpEx
 ```
 
