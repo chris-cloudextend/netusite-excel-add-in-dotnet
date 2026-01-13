@@ -171,6 +171,8 @@ When running consolidated reports across subsidiaries:
 3. **Cache Key:** Includes currency parameter to prevent cache collisions
 4. **Date Handling:** Supports Excel date serials (e.g., `45658` → `"Jan 2025"`)
 
+**Important:** BALANCECURRENCY applies NetSuite's consolidation logic at the presentation layer. It does not override transaction posting logic or introduce alternate FX assumptions.
+
 **Examples:**
 ```excel
 =XAVI.BALANCECURRENCY("60010", "1/1/2025", "1/1/2025", "Celigo India Pvt Ltd", "USD")

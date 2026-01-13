@@ -4,6 +4,8 @@
 
 **BALANCECURRENCY** enables **dynamic, formula-driven currency conversion** directly in Excel, eliminating the need to rebuild NetSuite reports or configure complex consolidation setups for each currency view. This is a significant competitive advantage because native NetSuite requires pre-configured report templates and cannot dynamically switch currencies within a single report.
 
+**Key Principle:** BALANCECURRENCY applies NetSuite's consolidation logic at the presentation layer. It does not override transaction posting logic or introduce alternate FX assumptions.
+
 ---
 
 ## The Problem Native NetSuite Has
@@ -193,7 +195,17 @@ WHERE cer.fromsubsidiary = {filteredSubId}
 - Automatic currency conversion
 - One-click refresh
 
-### 4. **User Experience: Complex vs Simple**
+### 4. **Accuracy: Native NetSuite Logic**
+
+**Key Principle:** BALANCECURRENCY applies NetSuite's consolidation logic at the presentation layer. It does not override transaction posting logic or introduce alternate FX assumptions. All exchange rates come from NetSuite's `ConsolidatedExchangeRate` table, ensuring consistency with NetSuite's native consolidation behavior.
+
+**Why This Matters:**
+- Same consolidation logic as NetSuite reports
+- Same exchange rates as NetSuite's native consolidation
+- No risk of discrepancies between Excel and NetSuite
+- Trusted by finance teams for accuracy
+
+### 5. **User Experience: Complex vs Simple**
 
 **Native NetSuite:**
 - Requires NetSuite report building knowledge

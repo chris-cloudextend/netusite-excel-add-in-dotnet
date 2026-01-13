@@ -358,6 +358,8 @@ WHERE cer.fromsubsidiary = {filteredSubId}
 
 ### Custom Exchange Rates: ⚠️ **LIMITED SUPPORT**
 
+**Important Principle:** BALANCECURRENCY applies NetSuite's consolidation logic at the presentation layer. It does not override transaction posting logic or introduce alternate FX assumptions. All exchange rates come from NetSuite's `ConsolidatedExchangeRate` table, ensuring consistency with NetSuite's native consolidation behavior.
+
 **What Works:**
 - Custom rates in `ConsolidatedExchangeRate` table (manual or imported)
 - Period-specific and subsidiary-specific rates

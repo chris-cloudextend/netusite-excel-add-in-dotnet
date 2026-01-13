@@ -60,6 +60,8 @@
 
 **Description:** Similar to BALANCE but with explicit currency control. The currency parameter determines the consolidation root currency, while subsidiary filters transactions to exact match.
 
+**Important:** BALANCECURRENCY applies NetSuite's consolidation logic at the presentation layer. It does not override transaction posting logic or introduce alternate FX assumptions.
+
 **⚠️ CRITICAL: Currency/Subsidiary Compatibility**
 
 Not all currency/subsidiary combinations are valid. The backend uses NetSuite's `ConsolidatedExchangeRate` table to resolve currency to a valid consolidation root. If no valid consolidation path exists, the function returns `INV_SUB_CUR` error (balance = 0).

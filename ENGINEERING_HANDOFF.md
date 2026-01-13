@@ -233,6 +233,8 @@ For complete SuiteQL reference, see [SUITEQL-QUERIES-SUMMARY.md](SUITEQL-QUERIES
 
 ## BALANCECURRENCY Function - Technical Details
 
+**Key Principle:** BALANCECURRENCY applies NetSuite's consolidation logic at the presentation layer. It does not override transaction posting logic or introduce alternate FX assumptions. All exchange rates come from NetSuite's `ConsolidatedExchangeRate` table, ensuring consistency with NetSuite's native consolidation behavior.
+
 ### Why Not All Subsidiary/Currency Combinations Work
 
 **CRITICAL CONSTRAINT:** The backend uses NetSuite's `ConsolidatedExchangeRate` table to resolve currency to a valid consolidation root. Not every currency can be used with every subsidiary.
