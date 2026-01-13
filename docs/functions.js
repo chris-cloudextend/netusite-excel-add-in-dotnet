@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.166';  // Fix: Route BALANCECURRENCY requests to individual /balancecurrency endpoint (not batch)
+const FUNCTIONS_VERSION = '4.0.6.167';  // Fix: Include currency in BALANCECURRENCY cache key to prevent cache collisions
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -6572,6 +6572,26 @@ function getCacheKey(type, params) {
             fromPeriod: params.fromPeriod,
             toPeriod: params.toPeriod,
             subsidiary: params.subsidiary || '',
+            department: params.department || '',
+            location: params.location || '',
+            class: params.classId || '',
+            book: book
+        });
+    } else if (type === 'balancecurrency') {
+        // CRITICAL: Include currency in cache key to differentiate USD vs INR vs other currencies
+        // Without currency in cache key, changing currency cell reference would return cached value
+        // CRITICAL FIX: Normalize empty accountingBook to "1" (Primary Book) for consistent cache keys
+        let book = String(params.accountingBook || '').trim();
+        if (book === '' || book === '1') {
+            book = '1'; // Normalize to "1" for Primary Book
+        }
+        return JSON.stringify({
+            type: 'balancecurrency',
+            account: normalizeAccountNumber(params.account),
+            fromPeriod: params.fromPeriod,
+            toPeriod: params.toPeriod,
+            subsidiary: params.subsidiary || '',
+            currency: params.currency || '',  // CRITICAL: Include currency to differentiate cache entries
             department: params.department || '',
             location: params.location || '',
             class: params.classId || '',
