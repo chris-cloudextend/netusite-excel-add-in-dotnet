@@ -7253,6 +7253,28 @@ For licensing inquiries, contact: legal@celigo.com
                 if (syncTriggerCells.includes(normalizedAddr)) {
                     console.log(`🔓 User applied value to ${normalizedAddr} - unlocking isSyncInProgress`);
                     isSyncInProgress = false;
+                    
+                    // CRITICAL FIX: For Q3 (subsidiary) changes from parameter UI, directly trigger sync
+                    // The sheet change event may not fire for programmatic writes, so we trigger manually
+                    if (normalizedAddr === 'Q3') {
+                        console.log('🏢 Q3 changed via parameter UI - triggering subsidiary change handler...');
+                        // Use a small delay to ensure Excel has processed the write
+                        setTimeout(async () => {
+                            // Check if this is part of an accounting book change (U3 -> Q3 flow)
+                            // If so, handleAccountingBookChange will handle the sync
+                            const isBookChangeInProgress = localStorage.getItem('netsuite_book_change_in_progress') === 'true';
+                            if (!isBookChangeInProgress) {
+                                // This is a direct Q3 change, trigger subsidiary change handler
+                                await handleSubsidiaryChange();
+                            } else {
+                                console.log('⏸️ Accounting book change in progress - subsidiary change will be handled by handleAccountingBookChange');
+                                // Clear the flag after a delay
+                                setTimeout(() => {
+                                    localStorage.removeItem('netsuite_book_change_in_progress');
+                                }, 2000);
+                            }
+                        }, 100);
+                    }
                 }
                 
                 // Show brief success feedback
@@ -12951,8 +12973,8 @@ For licensing inquiries, contact: legal@celigo.com
                         } catch (e) {}
                     };
                     
-                    // Helper to write account row
-                    const writeAccountRow = async (acct, row) => {
+                    // Helper to write account row (non-async, just queues writes)
+                    const writeAccountRow = (acct, row) => {
                         sheet.getRange(`A${row}`).values = [[acct.number]];
                         sheet.getRange(`B${row}`).formulas = [[`=XAVI.NAME($A${row})`]];  // Reference account number for drag-ability
                         
@@ -13033,13 +13055,18 @@ For licensing inquiries, contact: legal@celigo.com
                         currentRow++;
                         revenueStartRow = currentRow;
                         
-                        for (const acct of categories.income) {
-                            await writeAccountRow(acct, currentRow);
-                            currentRow++;
+                        // OPTIMIZATION: Write accounts in chunks of 20 for better performance
+                        const CHUNK_SIZE = 20;
+                        for (let i = 0; i < categories.income.length; i += CHUNK_SIZE) {
+                            const chunk = categories.income.slice(i, i + CHUNK_SIZE);
+                            for (const acct of chunk) {
+                                writeAccountRow(acct, currentRow); // Queue writes (no await)
+                                currentRow++;
+                            }
+                            await context.sync(); // Sync after each chunk
                         }
                         revenueEndRow = currentRow - 1;
                         
-                        await context.sync();
                         await writeSubtotalRow('Total Revenue', revenueStartRow, revenueEndRow, currentRow);
                         revenueTotalRow = currentRow;
                         await createNamedRange('_Total_Revenue', currentRow);
@@ -13054,13 +13081,18 @@ For licensing inquiries, contact: legal@celigo.com
                         currentRow++;
                         cogsStartRow = currentRow;
                         
-                        for (const acct of categories.cogs) {
-                            await writeAccountRow(acct, currentRow);
-                            currentRow++;
+                        // OPTIMIZATION: Write accounts in chunks of 20 for better performance
+                        const CHUNK_SIZE = 20;
+                        for (let i = 0; i < categories.cogs.length; i += CHUNK_SIZE) {
+                            const chunk = categories.cogs.slice(i, i + CHUNK_SIZE);
+                            for (const acct of chunk) {
+                                writeAccountRow(acct, currentRow); // Queue writes (no await)
+                                currentRow++;
+                            }
+                            await context.sync(); // Sync after each chunk
                         }
                         cogsEndRow = currentRow - 1;
                         
-                        await context.sync();
                         await writeSubtotalRow('Total Cost of Sales', cogsStartRow, cogsEndRow, currentRow);
                         cogsTotalRow = currentRow;
                         await createNamedRange('_Total_COGS', currentRow);
@@ -13102,13 +13134,18 @@ For licensing inquiries, contact: legal@celigo.com
                         currentRow++;
                         expenseStartRow = currentRow;
                         
-                        for (const acct of categories.expense) {
-                            await writeAccountRow(acct, currentRow);
-                            currentRow++;
+                        // OPTIMIZATION: Write accounts in chunks of 20 for better performance
+                        const CHUNK_SIZE = 20;
+                        for (let i = 0; i < categories.expense.length; i += CHUNK_SIZE) {
+                            const chunk = categories.expense.slice(i, i + CHUNK_SIZE);
+                            for (const acct of chunk) {
+                                writeAccountRow(acct, currentRow); // Queue writes (no await)
+                                currentRow++;
+                            }
+                            await context.sync(); // Sync after each chunk
                         }
                         expenseEndRow = currentRow - 1;
                         
-                        await context.sync();
                         await writeSubtotalRow('Total Operating Expenses', expenseStartRow, expenseEndRow, currentRow);
                         expenseTotalRow = currentRow;
                         await createNamedRange('_Total_Operating_Expenses', currentRow);
@@ -13148,13 +13185,18 @@ For licensing inquiries, contact: legal@celigo.com
                         currentRow++;
                         othIncomeStartRow = currentRow;
                         
-                        for (const acct of categories.othIncome) {
-                            await writeAccountRow(acct, currentRow);
-                            currentRow++;
+                        // OPTIMIZATION: Write accounts in chunks of 20 for better performance
+                        const CHUNK_SIZE = 20;
+                        for (let i = 0; i < categories.othIncome.length; i += CHUNK_SIZE) {
+                            const chunk = categories.othIncome.slice(i, i + CHUNK_SIZE);
+                            for (const acct of chunk) {
+                                writeAccountRow(acct, currentRow); // Queue writes (no await)
+                                currentRow++;
+                            }
+                            await context.sync(); // Sync after each chunk
                         }
                         othIncomeEndRow = currentRow - 1;
                         
-                        await context.sync();
                         await writeSubtotalRow('Total Other Income', othIncomeStartRow, othIncomeEndRow, currentRow);
                         othIncomeTotalRow = currentRow;
                         await createNamedRange('_Total_Other_Income', currentRow);
@@ -13167,13 +13209,18 @@ For licensing inquiries, contact: legal@celigo.com
                         currentRow++;
                         othExpenseStartRow = currentRow;
                         
-                        for (const acct of categories.othExpense) {
-                            await writeAccountRow(acct, currentRow);
-                            currentRow++;
+                        // OPTIMIZATION: Write accounts in chunks of 20 for better performance
+                        const CHUNK_SIZE = 20;
+                        for (let i = 0; i < categories.othExpense.length; i += CHUNK_SIZE) {
+                            const chunk = categories.othExpense.slice(i, i + CHUNK_SIZE);
+                            for (const acct of chunk) {
+                                writeAccountRow(acct, currentRow); // Queue writes (no await)
+                                currentRow++;
+                            }
+                            await context.sync(); // Sync after each chunk
                         }
                         othExpenseEndRow = currentRow - 1;
                         
-                        await context.sync();
                         await writeSubtotalRow('Total Other Expense', othExpenseStartRow, othExpenseEndRow, currentRow);
                         othExpenseTotalRow = currentRow;
                         await createNamedRange('_Total_Other_Expense', currentRow);
@@ -19364,6 +19411,9 @@ export default {
                                 );
                                 
                                 if (selectedSubsidiary) {
+                                    // CRITICAL: Set flag to prevent parameter UI from triggering separate sync
+                                    localStorage.setItem('netsuite_book_change_in_progress', 'true');
+                                    
                                     // Update Q3 with selected subsidiary
                                     await Excel.run(async (context) => {
                                         const sheet = context.workbook.worksheets.getActiveWorksheet();
@@ -19392,6 +19442,13 @@ export default {
                                     } catch (e) {
                                         console.warn('⚠️ Could not update transition flag:', e.message);
                                     }
+                                    
+                                    // Clear the flag after a delay to allow sheet change handler to process
+                                    // The sheet change handler will trigger the sync via debounce
+                                    setTimeout(() => {
+                                        localStorage.removeItem('netsuite_book_change_in_progress');
+                                        console.log('🔓 Cleared book change flag for Primary Book - sheet change handler can now trigger sync');
+                                    }, 600); // Slightly longer than debounce (500ms) to ensure it fires first
                                 }
                             } else {
                                 // Fallback: just filter dropdown
@@ -19692,6 +19749,9 @@ export default {
                         // User selected a subsidiary - update Q3 and clear transition flag
                         console.log(`📚 User selected subsidiary: "${selectedSubsidiary}" - updating Q3...`);
                         
+                        // CRITICAL: Set flag to prevent parameter UI from triggering separate sync
+                        localStorage.setItem('netsuite_book_change_in_progress', 'true');
+                        
                         // CRITICAL: Clear cache AGAIN after subsidiary selection (in case any old cache was written)
                         // This ensures formulas will fetch fresh data with the new book+subsidiary combination
                         console.log(`🗑️ Clearing typebalance cache (subsidiary changed to "${selectedSubsidiary}")...`);
@@ -19805,6 +19865,10 @@ export default {
                         } catch (e) {
                             console.error('❌ handleAccountingBookChange() threw error:', e.message);
                         } finally {
+                            // Clear the flag after sync completes (or errors)
+                            localStorage.removeItem('netsuite_book_change_in_progress');
+                            console.log('🔓 Cleared book change flag - parameter UI can now trigger syncs');
+                            
                             // Clean up after a delay
                             setTimeout(() => {
                                 localStorage.removeItem('netsuite_pending_subsidiary');
