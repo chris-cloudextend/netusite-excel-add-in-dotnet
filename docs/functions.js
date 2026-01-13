@@ -22,7 +22,7 @@
 
 const SERVER_URL = 'https://netsuite-proxy.chris-corcoran.workers.dev';
 const REQUEST_TIMEOUT = 30000;  // 30 second timeout for NetSuite queries
-const FUNCTIONS_VERSION = '4.0.6.165';  // Fix: Removed duplicate rawAccountingBook declaration in BALANCECURRENCY
+const FUNCTIONS_VERSION = '4.0.6.166';  // Fix: Route BALANCECURRENCY requests to individual /balancecurrency endpoint (not batch)
 console.log(`📦 XAVI functions.js loaded - version ${FUNCTIONS_VERSION}`);
 
 // ============================================================================
@@ -10607,10 +10607,12 @@ async function processBatchQueue() {
     
     // ================================================================
     // ROUTE REQUESTS BY TYPE:
+    // 0. BALANCECURRENCY REQUESTS: Must use individual /balancecurrency calls (batch doesn't support currency)
     // 1. CUMULATIVE BS QUERIES: empty fromPeriod with toPeriod → direct /balance API calls
     // 2. PERIOD ACTIVITY QUERIES: both fromPeriod and toPeriod (BS accounts only) → direct /balance API calls
     // 3. REGULAR REQUESTS: P&L period ranges (with both fromPeriod and toPeriod) → batch endpoint
     // ================================================================
+    const balanceCurrencyRequests = [];  // BALANCECURRENCY requests - must use individual /balancecurrency endpoint
     let cumulativeRequests = [];  // Changed to 'let' to allow reassignment after batch filtering
     const periodActivityRequests = [];  // BS period activity queries (both fromPeriod and toPeriod, BS accounts only)
     const regularRequests = [];  // P&L accounts with both fromPeriod and toPeriod - should be batched
@@ -10621,6 +10623,14 @@ async function processBatchQueue() {
     // Account types are only used for optimizations (year endpoint, grid detection)
     // ================================================================
     for (const [cacheKey, request] of requests) {
+        // CRITICAL: Check if this is a BALANCECURRENCY request FIRST
+        // BALANCECURRENCY requests must use individual /balancecurrency endpoint (batch doesn't support currency)
+        const endpoint = request.endpoint || '/balance';
+        if (endpoint === '/balancecurrency') {
+            balanceCurrencyRequests.push([cacheKey, request]);
+            continue;  // Skip other routing logic
+        }
+        
         const { account, fromPeriod, toPeriod } = request.params;
         const isCumulative = (!fromPeriod || fromPeriod === '') && toPeriod && toPeriod !== '';
         
@@ -11055,6 +11065,65 @@ async function processBatchQueue() {
         
         if (cacheHits > 0 || apiCalls > 0 || deduplicated > 0) {
             console.log(`   📊 Cumulative summary: ${cacheHits} cache hits, ${apiCalls} API calls, ${deduplicated} deduplicated`);
+        }
+    }
+    
+    // ================================================================
+    // BALANCECURRENCY REQUESTS: Must use individual /balancecurrency endpoint
+    // Batch endpoint doesn't support currency parameter
+    // ================================================================
+    if (balanceCurrencyRequests.length > 0) {
+        console.log(`💱 Processing ${balanceCurrencyRequests.length} BALANCECURRENCY requests individually (batch endpoint doesn't support currency)...`);
+        
+        for (const [cacheKey, request] of balanceCurrencyRequests) {
+            const { account, fromPeriod, toPeriod, subsidiary, currency, department, location, classId, accountingBook } = request.params;
+            
+            try {
+                // Check cache first
+                if (cache.balance.has(cacheKey)) {
+                    const cachedValue = cache.balance.get(cacheKey);
+                    console.log(`   ✅ BALANCECURRENCY cache hit: ${account} = ${cachedValue}`);
+                    request.resolve(cachedValue);
+                    continue;
+                }
+                
+                // Make individual API call to /balancecurrency endpoint
+                const apiParams = new URLSearchParams({
+                    account: account,
+                    from_period: fromPeriod || '',
+                    to_period: toPeriod,
+                    subsidiary: subsidiary || '',
+                    currency: currency || '',
+                    department: department || '',
+                    location: location || '',
+                    class: classId || '',
+                    book: accountingBook || ''
+                });
+                
+                console.log(`   📤 BALANCECURRENCY API: ${account} for ${fromPeriod || '(cumulative)'} → ${toPeriod} (currency: ${currency || 'default'})`);
+                
+                const response = await fetch(`${SERVER_URL}/balancecurrency?${apiParams.toString()}`);
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    const balance = data.balance || 0;
+                    
+                    // Cache the result
+                    cache.balance.set(cacheKey, balance);
+                    
+                    console.log(`   ✅ BALANCECURRENCY: ${account} = ${balance.toLocaleString()} (${currency || 'default'})`);
+                    
+                    // Resolve the request
+                    request.resolve(balance);
+                } else {
+                    const errorText = await response.text();
+                    console.error(`   ❌ BALANCECURRENCY API error: ${response.status} → ${errorText}`);
+                    request.reject(new Error(`BALANCECURRENCY API error: ${response.status}`));
+                }
+            } catch (error) {
+                console.error(`   ❌ BALANCECURRENCY fetch error: ${error.message}`);
+                request.reject(error);
+            }
         }
     }
     
