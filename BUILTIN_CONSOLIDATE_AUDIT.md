@@ -1,6 +1,6 @@
 # BUILTIN.CONSOLIDATE Usage Audit
 
-**Last Updated:** January 10, 2026
+**Last Updated:** January 12, 2026
 
 ## Summary
 **Status:** ✅ BUILTIN.CONSOLIDATE is used in ALL finance-critical scenarios
@@ -13,9 +13,10 @@
   - Balance Sheet: Uses `BUILTIN.CONSOLIDATE(..., {targetPeriodId}, ...)` ✓
   - P&L: Uses `BUILTIN.CONSOLIDATE(..., {targetPeriodId}, ...)` ✓
   
-- **GetBalanceBetaAsync** - Alternative balance endpoint
-  - Balance Sheet: Uses `BUILTIN.CONSOLIDATE(..., {targetPeriodId}, ...)` ✓
-  - P&L: Uses `BUILTIN.CONSOLIDATE(..., {targetPeriodId}, ...)` ✓
+- **GetBalanceBetaAsync** - Alternative balance endpoint (also used by BALANCECURRENCY)
+  - Balance Sheet: Uses `BUILTIN.CONSOLIDATE(..., {targetPeriodId}, ...)` with consolidation root ✓
+  - P&L: Uses `BUILTIN.CONSOLIDATE(..., t.postingperiod, ...)` with consolidation root ✓
+  - **Note:** When currency parameter is provided, uses `ResolveCurrencyToConsolidationRootAsync` to determine consolidation root
 
 - **GetTypeBalanceAsync** - Account type balance queries
   - Balance Sheet: Uses `BUILTIN.CONSOLIDATE(..., {targetPeriodId}, ...)` ✓
@@ -30,6 +31,11 @@
 
 - **GetBalanceYear** - Annual balance totals
   - Uses `BUILTIN.CONSOLIDATE(..., t.postingperiod, ...)` ✓
+
+- **GetBalanceCurrency** - Balance with explicit currency control (BALANCECURRENCY)
+  - Balance Sheet: Uses `BUILTIN.CONSOLIDATE(..., {targetPeriodId}, ...)` with consolidation root ✓
+  - P&L: Uses `BUILTIN.CONSOLIDATE(..., t.postingperiod, ...)` with consolidation root ✓
+  - **Note:** Uses `ResolveCurrencyToConsolidationRootAsync` to determine consolidation root based on currency parameter
 
 - **GetBsGridOpeningBalances** - Balance Sheet opening balances
   - Uses `BUILTIN.CONSOLIDATE(..., {targetPeriodId}, ...)` ✓
@@ -152,3 +158,17 @@ BUILTIN.CONSOLIDATE(
 
 **One exception:** `/accounts/with-activity` endpoint uses raw `tal.amount`, but this is a discovery/UI helper, not a financial reporting endpoint. It could be enhanced to use BUILTIN.CONSOLIDATE if needed, but it's not currently finance-critical.
 
+---
+
+## BALANCECURRENCY Endpoint (v4.0.6.164+)
+
+The `/balancecurrency` endpoint (used by `XAVI.BALANCECURRENCY` formula) uses `BUILTIN.CONSOLIDATE` with a **consolidation root** determined by the currency parameter:
+
+- **Currency Resolution:** Uses `ResolveCurrencyToConsolidationRootAsync` to find a valid consolidation path from the filtered subsidiary to a subsidiary with the requested currency as its base currency
+- **Consolidation Root:** The `targetSub` parameter in `BUILTIN.CONSOLIDATE` is set to the resolved consolidation root (not the filtered subsidiary)
+- **Period Usage:** 
+  - Balance Sheet: Uses `{targetPeriodId}` (all transactions at same rate)
+  - P&L: Uses `t.postingperiod` (each transaction at its own period rate)
+- **Error Handling:** Returns `INV_SUB_CUR` error (balance = 0) if no valid consolidation path exists
+
+This endpoint is **finance-critical** and correctly uses `BUILTIN.CONSOLIDATE` for multi-currency consolidation.
