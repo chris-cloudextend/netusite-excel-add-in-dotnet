@@ -80,7 +80,7 @@
 ```
 
 **⚠️ Important Notes:**
-- Currency parameter is **position 5** (not position 4 like in BALANCE)
+- **Currency parameter is position 5** (after `subsidiary`, before `department`). Note: BALANCE does not have a currency parameter.
 - If you want to skip subsidiary but include currency, use: `=XAVI.BALANCECURRENCY(account, from, to, "", currency)`
 - Empty currency cell references will return `#EMPTY_CURRENCY#` error
 - **Currency/Subsidiary Compatibility:** Not all currency/subsidiary combinations are valid. Currency must be a valid consolidation root for the filtered subsidiary (checked via NetSuite's `ConsolidatedExchangeRate` table). Invalid combinations return `INV_SUB_CUR` error.
@@ -279,7 +279,7 @@ All parameters can use cell references:
 See [MAC_PARAMETER_ORDER_ISSUE.md](../MAC_PARAMETER_ORDER_ISSUE.md) for complete details.
 
 ### BALANCECURRENCY Parameter Order
-**CRITICAL:** The `currency` parameter is in **position 5** (after `subsidiary`, before `department`), not position 4 like in BALANCE. **DO NOT CHANGE THIS ORDER** - Mac Excel will crash if you do.
+**CRITICAL:** The `currency` parameter is in **position 5** (after `subsidiary`, before `department`). Note: BALANCE does not have a currency parameter. **DO NOT CHANGE THIS ORDER** - Mac Excel will crash if you do.
 
 **Correct:**
 ```excel
