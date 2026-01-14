@@ -2,7 +2,7 @@
 
 **Product:** XAVI for NetSuite Excel Add-in  
 **Target Users:** Accountants, Senior Finance Professionals, Financial Analysts, CFOs  
-**Version:** 4.0.6.159  
+**Version:** 4.0.6.167  
 **Date:** January 2026
 
 ---
@@ -538,11 +538,17 @@
 - Uses Cloudflare Tunnel for local development
 
 **Key Endpoints:**
-- `/balance` - Single account balance
 - `/batch/balance` - Batch account balances
+- `/balancecurrency` - Get balance with explicit currency control (individual endpoint)
+- `/batch/full_year_refresh` - Fetch all P&L accounts for fiscal year
+- `/batch/bs_periods` - Fetch all BS accounts for specific periods
 - `/typebalance` - Account type totals
-- `/accounts/search` - Account search
-- `/transactions` - Transaction drill-down
+- `/retained-earnings` - Calculate Retained Earnings
+- `/net-income` - Calculate Net Income
+- `/cta` - Calculate Cumulative Translation Adjustment
+- `/account/name` - Get account name
+- `/account/type` - Get account type
+- `/lookups/all` - Get filter lookups
 - `/budget` - Budget amounts
 
 ### Performance Optimizations
@@ -598,6 +604,6 @@
 ---
 
 **Document Owner:** Product Management  
-**Last Updated:** January 10, 2026  
+**Last Updated:** January 12, 2026  
 **Next Review:** Q2 2026
 

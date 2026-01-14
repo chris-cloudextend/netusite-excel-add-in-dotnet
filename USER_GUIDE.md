@@ -112,6 +112,47 @@ Get the GL account balance for a specific period or date range.
 
 ---
 
+### XAVI.BALANCECURRENCY
+
+Get GL account balance with explicit currency control for multi-currency consolidation.
+
+**Syntax:**
+```
+=XAVI.BALANCECURRENCY(account, fromPeriod, toPeriod, subsidiary, currency, [department], [location], [class], [accountingBook])
+```
+
+**Parameters:**
+
+| Parameter | Required | Description | Example |
+|-----------|----------|-------------|---------|
+| account | Yes | Account number or wildcard pattern | `"60010"` or `"4*"` |
+| fromPeriod | Yes | Start period | `"Jan 2025"` |
+| toPeriod | Yes | End period | `"Dec 2025"` |
+| subsidiary | No | Subsidiary name or ID | `"Celigo India Pvt Ltd"` |
+| currency | No | Currency code for consolidation | `"USD"`, `"EUR"`, `"GBP"` |
+| department | No | Department name or ID | `"Sales"` |
+| location | No | Location name or ID | `"US"` |
+| class | No | Class name or ID | `"Enterprise"` |
+| accountingBook | No | Accounting book ID | `"1"` |
+
+**Key Differences from BALANCE:**
+- **Currency Parameter:** Position 5 (after subsidiary, before department)
+- **Individual API Calls:** Uses `/balancecurrency` endpoint (not batch endpoint)
+- **Purpose:** Allows you to specify the target currency for consolidation
+
+**Important:** BALANCECURRENCY applies NetSuite's consolidation logic at the presentation layer. It does not override transaction posting logic or introduce alternate FX assumptions.
+
+**Examples:**
+```
+=XAVI.BALANCECURRENCY("60010", "Jan 2025", "Jan 2025", "Celigo India Pvt Ltd", "USD")
+=XAVI.BALANCECURRENCY($A5, C$4, C$4, $M$2, $O$2)  // Currency in $O$2
+=XAVI.BALANCECURRENCY("60010", "Jan 2025", "Mar 2025", "", "EUR")  // All subsidiaries, EUR
+```
+
+**⚠️ Important:** Not all currency/subsidiary combinations are valid. The currency must be a valid consolidation root for the filtered subsidiary (checked via NetSuite's `ConsolidatedExchangeRate` table). Invalid combinations return `INV_SUB_CUR` error (balance = 0).
+
+---
+
 ### XAVI.BUDGET
 
 Get the budget amount for an account and period.
@@ -210,7 +251,7 @@ Use `*` in the account number to sum multiple accounts at once. This is perfect 
 | `"41*"` | All 41xx accounts | Service Revenue only |
 | `"60*"` | All 60xx accounts | Payroll & Benefits |
 
-### Example: CFO Flash Report
+### Example: Executive Summary Report
 
 Build a complete P&L summary in just 4 formulas:
 
@@ -223,12 +264,14 @@ Build a complete P&L summary in just 4 formulas:
 | **5** | Operating Expenses | `=XAVI.BALANCE("6*", B$1, B$1)` |
 | **6** | Operating Income | `=B4-B5` |
 
+> **Note:** The CFO Flash Report (available via Quick Start) uses `XAVI.TYPEBALANCE` with account types (e.g., "Income", "COGS", "Expense") rather than `XAVI.BALANCE` with wildcards. The example above demonstrates wildcard usage for custom reports.
+
 ### Example: Departmental Expense Comparison
 
 ```
 =XAVI.BALANCE("6*", "Jan 2025", "Mar 2025", "", "Sales")        → Sales OpEx for Q1 2025
 =XAVI.BALANCE("6*", "Jan 2025", "Mar 2025", "", "Engineering")  → Engineering OpEx for Q1 2025
-=XAVI.BALANCE("6*", "Q1 2025", "Q1 2025", "", "Marketing")    → Marketing OpEx
+=XAVI.BALANCE("6*", "Jan 2025", "Mar 2025", "", "Marketing")    → Marketing OpEx for Q1 2025
 ```
 
 ### Example: Subsidiary Revenue Comparison
@@ -472,7 +515,7 @@ If data seems stale after posting new transactions:
 
 ### Q: How often does data refresh?
 
-Data is cached for 5 minutes. Click **Refresh All** to force a refresh with the latest data from NetSuite, or use **Refresh Selected** for specific cells.
+Data is cached for 1 hour. Click **Refresh All** to force a refresh with the latest data from NetSuite, or use **Refresh Selected** for specific cells.
 
 ### Q: Can I use XAVI offline?
 
