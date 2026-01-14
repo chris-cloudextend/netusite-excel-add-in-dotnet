@@ -487,11 +487,15 @@
 **So that** I can build reports in specific currencies for consolidation or local reporting
 
 **Acceptance Criteria:**
-- [ ] Formula syntax: `=XAVI.BALANCECURRENCY(account, fromPeriod, toPeriod, subsidiary, currency, [department], [location], [class], [accountingBook])`
-- [ ] Supports all NetSuite currencies
-- [ ] Currency conversion uses NetSuite's exchange rates
-- [ ] Works with consolidated subsidiaries for multi-currency consolidation
-- [ ] Returns balances in the specified currency
+- [x] Formula syntax: `=XAVI.BALANCECURRENCY(account, fromPeriod, toPeriod, subsidiary, currency, [department], [location], [class], [accountingBook])`
+- [x] Supports all NetSuite currencies
+- [x] Currency conversion uses NetSuite's exchange rates from `ConsolidatedExchangeRate` table
+- [x] Works with consolidated subsidiaries for multi-currency consolidation
+- [x] Returns balances in the specified currency
+- [x] Uses individual `/balancecurrency` endpoint (not batch endpoint)
+- [x] Cache key includes currency parameter to prevent collisions
+- [x] Handles Excel date serials (e.g., `45658` → `"Jan 2025"`)
+- [x] Returns `INV_SUB_CUR` error if currency/subsidiary combination is invalid
 
 **Business Value:** Enables accurate multi-currency reporting and consolidation
 
