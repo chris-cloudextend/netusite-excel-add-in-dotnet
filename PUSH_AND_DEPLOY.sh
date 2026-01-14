@@ -29,7 +29,7 @@ if [ -n "$(git status --porcelain)" ]; then
     git add -A
     
     echo "💾 Committing changes..."
-    git commit -m "CRITICAL: Force GitHub Pages redeploy - version 4.0.6.65 - $(date +%Y-%m-%d\ %H:%M:%S)"
+    git commit -m "CRITICAL: Force GitHub Pages redeploy - version 4.0.6.167 - $(date +%Y-%m-%d\ %H:%M:%S)"
 else
     echo "⚠️  No uncommitted changes found."
     echo "   Making a small change to trigger deployment..."
@@ -50,5 +50,5 @@ echo "   Check: https://github.com/chris-cloudextend/netusite-excel-add-in-dotne
 echo ""
 echo "🔍 After deployment completes (2-3 minutes), verify:"
 echo "   https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js"
-echo "   (Search for FUNCTIONS_VERSION - should show 4.0.6.65)"
+echo "   (Search for FUNCTIONS_VERSION - should show 4.0.6.167)"
 

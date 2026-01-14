@@ -24,5 +24,5 @@ echo "   Check: https://github.com/chris-cloudextend/netusite-excel-add-in-dotne
 echo ""
 echo "🔍 Verify deployment:"
 echo "   https://chris-cloudextend.github.io/netusite-excel-add-in-dotnet/functions.js"
-echo "   (Search for FUNCTIONS_VERSION - should show 4.0.6.65)"
+echo "   (Search for FUNCTIONS_VERSION - should show 4.0.6.167)"
 
