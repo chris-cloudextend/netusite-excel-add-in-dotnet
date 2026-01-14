@@ -1016,7 +1016,8 @@ async function CTA(period, subsidiary, accountingBook) {
 | `docs/functions.js` | Frontend formula functions, caching, in-flight deduplication |
 | `docs/taskpane.html` | Refresh All logic with special formula sequencing |
 | `backend-dotnet/Controllers/SpecialFormulaController.cs` | `/retained-earnings`, `/net-income`, `/cta` endpoints with SuiteQL |
-| `backend/constants.py` | Account type constants and SQL-ready strings |
+| `backend-dotnet/Models/AccountTypes.cs` | Account type constants and SQL-ready strings |
+| `backend/constants.py` | Legacy Python constants (kept for reference only) |
 
 ---
 
