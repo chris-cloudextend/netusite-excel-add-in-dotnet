@@ -194,27 +194,31 @@ Not all currency/subsidiary combinations are valid. The backend uses NetSuite's 
 ---
 
 ### 7. NETINCOME
-**Calculate Net Income YTD (current fiscal year P&L through target period)**
+**Calculate Net Income for a period range (P&L activity from start period through end period)**
 
 ```excel
 =XAVI.NETINCOME(fromPeriod, toPeriod, subsidiary, accountingBook, classId, department, location)
 ```
 
 **Parameters:**
-1. **`fromPeriod`** (required) - Start period (e.g., `"Jan 2025"` or cell reference)
-2. **`toPeriod`** (optional) - End period (defaults to fromPeriod if empty)
+1. **`fromPeriod`** (required) - Start period (e.g., `"Jan 2025"` or `1/1/2025`)
+2. **`toPeriod`** (required) - End period (e.g., `"Feb 2025"` or `2/1/2025`)
 3. **`subsidiary`** (optional) - Subsidiary name or ID (use `""` for all)
 4. **`accountingBook`** (optional) - Accounting Book ID (defaults to Primary Book)
 5. **`classId`** (optional) - Class filter (use `""` for all)
 6. **`department`** (optional) - Department filter (use `""` for all)
 7. **`location`** (optional) - Location filter (use `""` for all)
 
-**Description:** Calculates net income as the sum of all P&L transactions from fiscal year start through target period end. This is the current year's P&L portion.
+**Description:** Calculates net income as the sum of all P&L transactions from `fromPeriod` through `toPeriod`. Date strings like `"3/1/2024"` are normalized to month periods (e.g., `"Mar 2024"`).
+
+**Important:** If `toPeriod` is omitted, XAVI treats it as a single-period range (`fromPeriod` = `toPeriod`). This is almost never what users want for Balance Sheet Net Income. Always pass both periods explicitly.
 
 **Examples:**
 ```excel
 =XAVI.NETINCOME("Jan 2025", "Mar 2025")
 =XAVI.NETINCOME("Jan 2025", "Dec 2025")                  // Full year
+=XAVI.NETINCOME("3/1/2024", "11/2/2025")                 // Date strings supported
+=XAVI.NETINCOME("Jan 2025", "Feb 2025", "Celigo Inc.")   // Balance Sheet as-of Feb 2025
 ```
 
 ---
@@ -318,7 +322,7 @@ Not all currency/subsidiary combinations are valid. The backend uses NetSuite's 
 | **BUDGET** | 9 | 4 | Get budget amount |
 | **TYPEBALANCE** | 9 | 3 | Get total for account type |
 | **RETAINEDEARNINGS** | 6 | 1 | Calculate retained earnings |
-| **NETINCOME** | 7 | 1 | Calculate net income YTD |
+| **NETINCOME** | 7 | 2 | Calculate net income for a period range |
 | **CTA** | 3 | 1 | Calculate translation adjustment |
 | **NAME** | 1 | 1 | Get account name |
 | **TYPE** | 1 | 1 | Get account type |

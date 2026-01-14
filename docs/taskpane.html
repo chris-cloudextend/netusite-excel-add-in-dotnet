@@ -5525,11 +5525,13 @@ For licensing inquiries, contact: legal@celigo.com
                     <svg class="formula-expand-icon" viewBox="0 0 24 24"><path fill="currentColor" d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z"/></svg>
                     </div>
                 <div class="formula-details">
-                    <div class="formula-syntax">=XAVI.NETINCOME(from, [to], [sub], [book], ...)</div>
-                    <div class="param-item"><span class="param-name">from/to</span> - Period range (to defaults to from)</div>
+                    <div class="formula-syntax">=XAVI.NETINCOME(from, to, [sub], [book], ...)</div>
+                    <div class="param-item"><span class="param-name">from/to</span> - Required period range (use explicit start and end)</div>
+                    <div class="param-item" style="color: var(--bottlenose);">If you pass only one period, XAVI treats it as a single-period range (from = to). For Balance Sheet-style Net Income, always provide both.</div>
                     <div class="example">
                         <div class="example-code">=XAVI.NETINCOME("Jan 2025", "Dec 2025")</div>
-                        <div class="example-code">=XAVI.NETINCOME("Jan 2025", "Dec 2025", "Celigo Inc.")</div>
+                        <div class="example-code">=XAVI.NETINCOME("3/1/2024", "11/2/2025")</div>
+                        <div class="example-code">=XAVI.NETINCOME("Jan 2025", "Feb 2025", "Celigo Inc.")</div>
                     </div>
                     <div style="font-size: 10px; color: var(--bottlenose); margin-top: 6px;">⏱️ 10–20 sec</div>
                     </div>

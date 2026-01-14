@@ -11,7 +11,7 @@ These three formulas calculate values that **NetSuite computes dynamically at ru
 | Formula | What it Calculates | Backend Endpoint |
 |---------|-------------------|------------------|
 | `XAVI.RETAINEDEARNINGS` | Cumulative P&L from inception through prior fiscal year end | `/retained-earnings` |
-| `XAVI.NETINCOME` | Current fiscal year P&L through target period | `/net-income` |
+| `XAVI.NETINCOME` | P&L activity for a specified period range | `/net-income` |
 | `XAVI.CTA` | Cumulative Translation Adjustment (multi-currency plug) | `/cta` |
 
 ---
@@ -44,13 +44,19 @@ RE = Sum of all P&L from inception through prior fiscal year end
 
 ### NETINCOME
 ```javascript
-XAVI.NETINCOME(period, [subsidiary], [accountingBook], [classId], [department], [location])
+XAVI.NETINCOME(fromPeriod, toPeriod, [subsidiary], [accountingBook], [classId], [department], [location])
 ```
-Same signature as RETAINEDEARNINGS.
+- **fromPeriod**: Required. e.g., "Jan 2025" or "1/1/2025"
+- **toPeriod**: Required. e.g., "Feb 2025" or "2/1/2025"
+- **subsidiary**: Optional. Subsidiary ID or name
+- **accountingBook**: Optional. Defaults to Primary Book
+- **classId, department, location**: Optional segment filters
+
+**Important:** If `toPeriod` is omitted, XAVI treats it as a single-period range (`from = to`). This often does not match Balance Sheet Net Income. Always pass both periods explicitly.
 
 **Backend Logic:**
 ```
-NI = Sum of all P&L transactions from FY start through target period end
+NI = Sum of all P&L transactions from fromPeriod through toPeriod
 ```
 
 ### CTA (Cumulative Translation Adjustment)
@@ -89,7 +95,7 @@ Each formula type uses a distinct prefix:
 cacheKey = `retainedearnings:${period}:${subsidiary}:${accountingBook}:${classId}:${department}:${location}`;
 
 // NETINCOME  
-cacheKey = `netincome:${period}:${subsidiary}:${accountingBook}:${classId}:${department}:${location}`;
+cacheKey = `netincome:${fromPeriod}:${toPeriod}:${subsidiary}:${accountingBook}:${classId}:${department}:${location}`;
 
 // CTA (no segment filters)
 cacheKey = `cta:${period}:${subsidiary}:${accountingBook}`;

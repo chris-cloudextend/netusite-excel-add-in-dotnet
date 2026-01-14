@@ -227,8 +227,10 @@ These formulas calculate values that NetSuite computes dynamically (not stored a
 | Formula | Purpose | Example |
 |---------|---------|---------|
 | `XAVI.RETAINEDEARNINGS` | Cumulative P&L through prior year-end | `=XAVI.RETAINEDEARNINGS("Dec 2024")` |
-| `XAVI.NETINCOME` | YTD Net Income | `=XAVI.NETINCOME("Mar 2025")` |
+| `XAVI.NETINCOME` | Net Income for a period range | `=XAVI.NETINCOME("Jan 2025", "Mar 2025")` |
 | `XAVI.CTA` | Cumulative Translation Adjustment | `=XAVI.CTA("Dec 2024")` |
+
+**Important:** `NETINCOME` requires both a start and end period to match NetSuite report ranges. If you enter only one period, XAVI treats it as a single-period range (`from = to`). This often does **not** match Balance Sheet Net Income. Always pass both periods explicitly.
 
 ---
 

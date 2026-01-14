@@ -13,6 +13,7 @@
 | **BUDGET** | `account, fromPeriod, toPeriod, subsidiary, department, location, classId, accountingBook, budgetCategory` |
 | **TYPEBALANCE** | `accountType, fromPeriod, toPeriod, subsidiary, department, location, classId, accountingBook, useSpecialAccount` |
 | **RETAINEDEARNINGS** | `period, subsidiary, accountingBook, classId, department, location` |
+| **NETINCOME** | `fromPeriod, toPeriod, subsidiary, accountingBook, classId, department, location` |
 | **NAME** | `accountNumber` |
 | **TYPE** | `accountNumber` |
 | **PARENT** | `accountNumber` |
@@ -176,7 +177,34 @@
 
 ---
 
-### 7. NAME
+### 7. NETINCOME
+**Calculate Net Income for a period range**
+
+```excel
+=XAVI.NETINCOME(fromPeriod, toPeriod, subsidiary, accountingBook, classId, department, location)
+```
+
+**Parameters (in order):**
+1. **`fromPeriod`** (required) - Start period (e.g., `"Jan 2025"` or `1/1/2025`)
+2. **`toPeriod`** (required) - End period (e.g., `"Feb 2025"` or `2/1/2025`)
+3. **`subsidiary`** (optional) - Subsidiary filter (use `""` for all)
+4. **`accountingBook`** (optional) - Accounting Book ID (defaults to Primary Book)
+5. **`classId`** (optional) - Class filter (use `""` for all)
+6. **`department`** (optional) - Department filter (use `""` for all)
+7. **`location`** (optional) - Location filter (use `""` for all)
+
+**Important:** If `toPeriod` is omitted, XAVI treats it as a single-period range (`from = to`). This is often not what users want. Always pass both periods explicitly.
+
+**Examples:**
+```excel
+=XAVI.NETINCOME("Jan 2025", "Feb 2025")
+=XAVI.NETINCOME("3/1/2024", "11/2/2025")
+=XAVI.NETINCOME("Jan 2025", "Feb 2025", "Celigo Inc.")
+```
+
+---
+
+### 8. NAME
 **Get account name from account number**
 
 ```excel
@@ -194,7 +222,7 @@
 
 ---
 
-### 8. TYPE
+### 9. TYPE
 **Get account type from account number**
 
 ```excel
@@ -214,7 +242,7 @@
 
 ---
 
-### 9. PARENT
+### 10. PARENT
 **Get parent account number from account number**
 
 ```excel

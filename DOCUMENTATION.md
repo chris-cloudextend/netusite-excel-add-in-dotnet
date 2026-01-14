@@ -43,7 +43,7 @@
 | `XAVI.TYPE` | Get account type | `=XAVI.TYPE("4010")` → "Income" |
 | `XAVI.PARENT` | Get parent account | `=XAVI.PARENT("4010-1")` → "4010" |
 | `XAVI.RETAINEDEARNINGS` | Calculate Retained Earnings | `=XAVI.RETAINEDEARNINGS("Dec 2024")` |
-| `XAVI.NETINCOME` | Calculate Net Income YTD | `=XAVI.NETINCOME("Mar 2025")` |
+| `XAVI.NETINCOME` | Calculate Net Income for a period range | `=XAVI.NETINCOME("Jan 2025", "Mar 2025")` |
 | `XAVI.CTA` | Calculate Cumulative Translation Adjustment | `=XAVI.CTA("Dec 2024")` |
 
 ---
@@ -104,10 +104,12 @@ RE = All P&L from company inception through prior fiscal year end
 
 #### Net Income
 ```
-NI = All P&L from fiscal year start through the report period
+NI = All P&L from a specified start period through a specified end period
 ```
 
-**When to use:** Balance Sheet reports (completes equity section) or to verify P&L totals.
+**Important:** `XAVI.NETINCOME` requires an explicit `fromPeriod` and `toPeriod`. If you pass only one period, XAVI treats it as a single-period range (`from = to`), which often does not match Balance Sheet Net Income.
+
+**When to use:** Balance Sheet reports (use fiscal year start → report period) or to verify P&L totals.
 
 #### CTA (Cumulative Translation Adjustment)
 
