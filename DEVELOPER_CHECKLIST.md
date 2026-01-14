@@ -20,23 +20,24 @@
 
 ### Examples of Universal vs Non-Universal Code:
 
-```python
-# ❌ BAD - Assumes account prefix indicates type
-if account.startswith('1') or account.startswith('2'):
-    is_bs_account = True
+```csharp
+// ❌ BAD - Assumes account prefix indicates type
+if (account.StartsWith("1") || account.StartsWith("2"))
+    isBsAccount = true;
 
-# ✅ GOOD - Queries actual account type from NetSuite
-type_result = query_netsuite("SELECT accttype FROM Account WHERE acctnumber = '...'")
-is_bs_account = is_balance_sheet_account(type_result['accttype'])
+// ✅ GOOD - Queries actual account type from NetSuite
+var typeResult = await _netSuiteService.QueryAsync("SELECT accttype FROM Account WHERE acctnumber = @account", new { account });
+isBsAccount = IsBalanceSheetAccount(typeResult["accttype"]);
 ```
 
-```python
-# ❌ BAD - Assumes fiscal year starts January 1
-fy_start = f"Jan {year}"
+```csharp
+// ❌ BAD - Assumes fiscal year starts January 1
+var fyStart = $"Jan {year}";
 
-# ✅ GOOD - Queries actual fiscal year boundaries
-fy_info = get_fiscal_year_for_period(period_name, accounting_book)
-fy_start = fy_info['fy_start']
+// ✅ GOOD - Queries actual fiscal year boundaries
+var periodData = await _netSuiteService.GetPeriodAsync(periodName);
+var fyInfo = await GetFiscalYearForPeriodAsync(periodData, accountingBook);
+var fyStart = fyInfo.FyStart;
 ```
 
 ---
@@ -94,8 +95,11 @@ The add-in uses Office's **Shared Runtime** where all components share a single 
 | File | Location | What to Update |
 |------|----------|----------------|
 | `docs/functions.js` | Function definition | Core logic, parameters, return values |
-| `docs/functions.js` | `convertToMonthYear()` | If new date handling needed |
+| `docs/functions.js` | `normalizePeriodKey()` | If new date handling needed (Excel date serials) |
+| `docs/functions.js` | `extractValueFromRange()` | For cell reference parameters (BALANCECURRENCY uses this) |
 | `docs/functions.js` | Cache logic | Cache key format, localStorage keys |
+| `docs/functions.js` | `getCacheKey()` | Cache key generation (must include all filter parameters) |
+| `docs/functions.js` | `processBatchQueue()` | Routing logic (BALANCECURRENCY routes to individual endpoint) |
 | `docs/functions.js` | `__CLEARCACHE__` handler | If formula has special cache needs |
 | `docs/functions.js` | Build mode | If formula should batch with others |
 
@@ -105,7 +109,7 @@ The add-in uses Office's **Shared Runtime** where all components share a single 
 | `docs/functions.json` | Function entry | `id`, `name`, `description` |
 | `docs/functions.json` | Parameters array | Names, descriptions, types, optional flags |
 | `docs/functions.json` | Options | `stream`, `cancelable`, `volatile` settings |
-| `docs/functions.js` | **`CustomFunctions.associate()`** | **MUST add function binding (~line 13885)** |
+| `docs/functions.js` | **`CustomFunctions.associate()`** | **MUST add function binding (~line 14027)** |
 
 > ⚠️ **CRITICAL #1**: Missing `CustomFunctions.associate('FUNCTIONNAME', FUNCTIONNAME)` will cause  
 > the entire add-in to fail with "We can't start this add-in because it isn't set up properly."
@@ -138,8 +142,12 @@ The add-in uses Office's **Shared Runtime** where all components share a single 
 | `backend-dotnet/Services/` | Service class (e.g., `BalanceService.cs`) | SuiteQL query construction |
 | `backend-dotnet/Services/` | Service method | Default handling, subsidiary resolution |
 | `backend-dotnet/Services/LookupService.cs` | `ResolveSubsidiaryIdAsync()` | Consolidation hierarchy if needed |
+| `backend-dotnet/Services/LookupService.cs` | `ResolveCurrencyToConsolidationRootAsync()` | For BALANCECURRENCY currency resolution |
 | `backend-dotnet/Services/LookupService.cs` | `ResolveDimensionIdAsync()` | Name-to-ID conversion for filters |
 | `backend-dotnet/Models/` | Response model class | JSON structure returned |
+
+**Special Considerations:**
+- **BALANCECURRENCY:** Uses individual `/balancecurrency` endpoint (not batch endpoint). Routes separately in `processBatchQueue()` via `endpoint === '/balancecurrency'` check. Cache key must include currency parameter.
 
 ### 5. Manifest & Versioning ⚠️ CRITICAL
 | File | Location | What to Update |
@@ -297,7 +305,8 @@ Update this file when:
 | 2026-01-10 | 4.0.6.145 | Added Refresh All smart detection, Income Statement pre-caching notes |
 | 2026-01-10 | 4.0.6.158 | Early grid detection to skip preload wait for 3+ columns |
 | 2026-01-10 | 4.0.6.159 | Reverted to full-year refresh for 3+ periods (removed 3-column batching) |
+| 2026-01-12 | 4.0.6.167 | Updated Python examples to C#/.NET, fixed CustomFunctions.associate() line number, added BALANCECURRENCY routing notes |
 
 ---
 
-*Last updated: January 10, 2026*
+*Last updated: January 12, 2026*
