@@ -95,7 +95,7 @@
 
 ## Version Numbers
 
-- [ ] Current version: 4.0.6.163
+- [ ] Current version: 4.0.6.167
 - [ ] All version references updated
 - [ ] Dates updated to January 12, 2026 (or current date)
 

@@ -302,6 +302,7 @@ Invalid currencies: EUR (no consolidation path defined)
 | `/batch/bs_periods` | POST | Fetch all BS accounts for specific periods |
 | `/batch/balance` | POST | Fetch specific accounts for specific periods |
 | `/batch/account_types` | POST | Get account types for classification |
+| `/balancecurrency` | GET | Get balance with explicit currency control (individual endpoint) |
 | `/retained-earnings` | POST | Calculate Retained Earnings |
 | `/net-income` | POST | Calculate Net Income |
 | `/cta` | POST | Calculate CTA |
@@ -1486,6 +1487,10 @@ Backend prints detailed query information:
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 4.0.6.167 | Jan 2026 | **BALANCECURRENCY cache key fix** - Fixed cache collision issue when changing currency cell references. Cache key now includes currency parameter to differentiate USD vs INR vs other currencies. Changing currency from USD to INR (or vice versa) now triggers new API call instead of returning cached value. |
+| 4.0.6.166 | Jan 2026 | **BALANCECURRENCY individual endpoint routing** - Fixed issue where BALANCECURRENCY requests were routed to batch endpoint. Batch endpoint doesn't support currency parameter, causing incorrect results. Now routes to individual `/balancecurrency` endpoint for proper currency handling. |
+| 4.0.6.165 | Jan 2026 | **BALANCECURRENCY duplicate variable fix** - Fixed `SyntaxError: Cannot declare a const variable twice: 'rawAccountingBook'` in BALANCECURRENCY function. |
+| 4.0.6.164 | Jan 2026 | **BALANCECURRENCY Excel date serial normalization** - Fixed issue where Excel date serials (e.g., `45658` for `1/1/2025`) were not normalized. Now converts Excel date serials to `"Mon YYYY"` format before sending to backend. Backend also handles date strings like `"1/1/2025"` as fallback. |
 | 4.0.6.163 | Jan 2026 | **Performance: Increased CHUNK_SIZE from 50 to 100** - Backend tested and confirmed to support 114+ accounts in single request. Performance improvement: ~5.5s vs ~13.8s for 114 accounts (60% faster batch processing). |
 | 4.0.6.162 | Jan 2026 | **Taskpane range preload + checkLocalStorageCache range support** - Fixed cache misses for quarterly ranges by updating taskpane preload logic to correctly cache range data using full_year_refresh and range-specific cache keys. |
 | 4.0.6.159 | Jan 2026 | **Full-year refresh for 3+ periods** - Reverted to full-year refresh for all 3+ periods from same year (removed 3-column batching). Single optimized query fetches all months at once (5-15 seconds), all data appears simultaneously. See `DRAG_RIGHT_9_COLUMN_ANALYSIS.md` for analysis. |
