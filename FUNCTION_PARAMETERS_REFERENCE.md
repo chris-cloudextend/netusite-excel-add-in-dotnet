@@ -321,6 +321,6 @@ This prevents silent `0` values that could be mistakes.
 
 ---
 
-**Last Updated:** January 10, 2026  
-**Version:** 4.0.6.163
+**Last Updated:** January 12, 2026  
+**Version:** 4.0.6.167
 

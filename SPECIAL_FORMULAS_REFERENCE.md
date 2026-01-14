@@ -312,42 +312,44 @@ if (specialFormulasRefreshed > 0) {
 
 ## Account Type Constants
 
-From `backend/constants.py`:
+From `backend-dotnet/Models/AccountTypes.cs`:
 
-```python
-class AccountType:
-    # BALANCE SHEET - ASSETS (Debit balance, stored positive, NO sign flip)
-    BANK = 'Bank'
-    ACCT_REC = 'AcctRec'
-    OTHER_CURR_ASSET = 'OthCurrAsset'
-    FIXED_ASSET = 'FixedAsset'
-    OTHER_ASSET = 'OthAsset'
-    DEFERRED_EXPENSE = 'DeferExpense'
-    UNBILLED_REC = 'UnbilledRec'
+```csharp
+public static class AccountType
+{
+    // BALANCE SHEET - ASSETS (Debit balance, stored positive, NO sign flip)
+    public const string Bank = "Bank";
+    public const string AcctRec = "AcctRec";
+    public const string OthCurrAsset = "OthCurrAsset";
+    public const string FixedAsset = "FixedAsset";
+    public const string OthAsset = "OthAsset";
+    public const string DeferExpense = "DeferExpense";
+    public const string UnbilledRec = "UnbilledRec";
     
-    # BALANCE SHEET - LIABILITIES (Credit balance, stored negative, FLIP × -1)
-    ACCT_PAY = 'AcctPay'
-    CRED_CARD = 'CredCard'          # NOT 'CreditCard'!
-    OTHER_CURR_LIAB = 'OthCurrLiab'
-    LONG_TERM_LIAB = 'LongTermLiab'
-    DEFERRED_REVENUE = 'DeferRevenue'
+    // BALANCE SHEET - LIABILITIES (Credit balance, stored negative, FLIP × -1)
+    public const string AcctPay = "AcctPay";
+    public const string CredCard = "CredCard";          // NOT "CreditCard"!
+    public const string OthCurrLiab = "OthCurrLiab";
+    public const string LongTermLiab = "LongTermLiab";
+    public const string DeferRevenue = "DeferRevenue";
     
-    # BALANCE SHEET - EQUITY (Credit balance, stored negative, FLIP × -1)
-    EQUITY = 'Equity'
-    RETAINED_EARNINGS = 'RetainedEarnings'
+    // BALANCE SHEET - EQUITY (Credit balance, stored negative, FLIP × -1)
+    public const string Equity = "Equity";
+    public const string RetainedEarnings = "RetainedEarnings";
     
-    # P&L - INCOME (Credit balance, stored negative, FLIP × -1)
-    INCOME = 'Income'
-    OTHER_INCOME = 'OthIncome'
+    // P&L - INCOME (Credit balance, stored negative, FLIP × -1)
+    public const string Income = "Income";
+    public const string OthIncome = "OthIncome";
     
-    # P&L - EXPENSES (Debit balance, stored positive, NO sign flip)
-    COGS = 'COGS'                           # Modern
-    COST_OF_GOODS_SOLD = 'Cost of Goods Sold'  # Legacy - INCLUDE BOTH!
-    EXPENSE = 'Expense'
-    OTHER_EXPENSE = 'OthExpense'
+    // P&L - EXPENSES (Debit balance, stored positive, NO sign flip)
+    public const string COGS = "COGS";                           // Modern
+    public const string CostOfGoodsSold = "Cost of Goods Sold";  // Legacy - INCLUDE BOTH!
+    public const string Expense = "Expense";
+    public const string OthExpense = "OthExpense";
 
-# SQL-ready string for P&L types
-PL_TYPES_SQL = "'COGS', 'Cost of Goods Sold', 'Expense', 'Income', 'OthExpense', 'OthIncome'"
+    // SQL-ready string for P&L types
+    public const string IncomeTypesSql = "'COGS', 'Cost of Goods Sold', 'Expense', 'Income', 'OthExpense', 'OthIncome'";
+}
 ```
 
 **IMPORTANT:** NetSuite uses BOTH `'COGS'` AND `'Cost of Goods Sold'` in different contexts. Always include both!
@@ -480,21 +482,20 @@ WHERE t.posting = 'T'
 
 ### Parallel Execution
 
-Both queries run concurrently using `ThreadPoolExecutor(max_workers=2)`:
+Both queries run concurrently using .NET's `Task.WhenAll`:
 
-```python
-with ThreadPoolExecutor(max_workers=2) as executor:
-    futures = {
-        executor.submit(query_with_retry, 'prior_pl', prior_pl_query): 'prior_pl',
-        executor.submit(query_with_retry, 'posted_re', posted_re_query): 'posted_re'
-    }
-    for future in as_completed(futures):
-        name = futures[future]
-        result = future.result()
-        # ... process results ...
+```csharp
+// In SpecialFormulaService.cs
+var priorPlTask = QueryPriorYearsPlAsync(request);
+var postedReTask = QueryPostedReAdjustmentsAsync(request);
 
-# Final calculation
-retained_earnings = prior_pl + posted_re
+await Task.WhenAll(priorPlTask, postedReTask);
+
+var priorPl = await priorPlTask;
+var postedRe = await postedReTask;
+
+// Final calculation
+var retainedEarnings = priorPl + postedRe;
 ```
 
 ---
@@ -691,21 +692,21 @@ WHERE ...
 
 ### Final CTA Calculation
 
-```python
-# Extract results from parallel queries
-total_assets = results.get('total_assets', 0.0)
-total_liabilities = results.get('total_liabilities', 0.0)
-posted_equity = results.get('posted_equity', 0.0)
-prior_pl = results.get('prior_pl', 0.0)
-posted_re = results.get('posted_re', 0.0)
-net_income = results.get('net_income', 0.0)
+```csharp
+// In SpecialFormulaService.cs - Extract results from parallel queries
+var totalAssets = results.TotalAssets;
+var totalLiabilities = results.TotalLiabilities;
+var postedEquity = results.PostedEquity;
+var priorPl = results.PriorPl;
+var postedRe = results.PostedRe;
+var netIncome = results.NetIncome;
 
-# Derived values
-total_equity = total_assets - total_liabilities
-retained_earnings = prior_pl + posted_re
+// Derived values
+var totalEquity = totalAssets - totalLiabilities;
+var retainedEarnings = priorPl + postedRe;
 
-# FINAL: CTA as PLUG
-cta = total_equity - posted_equity - retained_earnings - net_income
+// FINAL: CTA as PLUG
+var cta = totalEquity - postedEquity - retainedEarnings - netIncome;
 ```
 
 **Visual representation:**
@@ -728,20 +729,28 @@ cta = total_equity - posted_equity - retained_earnings - net_income
 
 All queries include retry logic for NetSuite's concurrency limits:
 
-```python
-def query_with_retry(name, sql, max_retries=3):
-    """Execute query with retry logic for rate limiting"""
-    for attempt in range(max_retries):
-        result = query_netsuite(sql, 120)
-        if isinstance(result, dict) and 'error' in result:
-            error_str = str(result.get('details', ''))
-            if 'CONCURRENCY_LIMIT_EXCEEDED' in error_str or '429' in error_str:
-                wait_time = (attempt + 1) * 2  # 2s, 4s, 6s backoff
-                print(f"⏳ {name}: Rate limited, retrying in {wait_time}s...")
-                time.sleep(wait_time)
-                continue
-        return result
-    return result  # Return last result even if failed
+```csharp
+// In NetSuiteService.cs
+private async Task<QueryResult> QueryWithRetryAsync(string name, string sql, int maxRetries = 3)
+{
+    for (int attempt = 0; attempt < maxRetries; attempt++)
+    {
+        var result = await QueryRawWithErrorAsync(sql);
+        if (result.Error != null)
+        {
+            var errorStr = result.Error.ToString();
+            if (errorStr.Contains("CONCURRENCY_LIMIT_EXCEEDED") || errorStr.Contains("429"))
+            {
+                var waitTime = (attempt + 1) * 2; // 2s, 4s, 6s backoff
+                _logger.LogWarning($"{name}: Rate limited, retrying in {waitTime}s...");
+                await Task.Delay(waitTime * 1000);
+                continue;
+            }
+        }
+        return result;
+    }
+    return result; // Return last result even if failed
+}
 ```
 
 ---
@@ -1013,8 +1022,8 @@ async function CTA(period, subsidiary, accountingBook) {
 
 ## Version
 
-*Current Version: 4.0.6.163*  
-*Last Updated: January 10, 2026*
+*Current Version: 4.0.6.167*  
+*Last Updated: January 12, 2026*
 
 ## Recent Updates
 

@@ -510,6 +510,7 @@ public const string CRED_CARD = "CredCard";               // NOT "CreditCard"
 | `/batch/bs_periods` | POST | Fetch all BS accounts for specific periods |
 | `/batch/balance` | POST | Fetch specific accounts for specific periods |
 | `/batch/account_types` | POST | Get account types for a list of accounts |
+| `/balancecurrency` | GET | Get balance with explicit currency control (individual endpoint) |
 | `/retained-earnings` | POST | Calculate Retained Earnings |
 | `/net-income` | POST | Calculate Net Income |
 | `/cta` | POST | Calculate CTA |
@@ -520,8 +521,8 @@ public const string CRED_CARD = "CredCard";               // NOT "CreditCard"
 ---
 
 *Document Version: 2.2*
-*Last Updated: January 10, 2026*
-*Add-in Version: 4.0.6.159*
+*Last Updated: January 12, 2026*
+*Add-in Version: 4.0.6.167*
 
 ## Recent Updates
 

@@ -338,7 +338,7 @@ Not all currency/subsidiary combinations are valid. The backend uses NetSuite's 
 - **P&L accounts:** `fromPeriod` is required
 
 ### BALANCECURRENCY Parameter Order
-**CRITICAL:** The `currency` parameter is in **position 5** (after `subsidiary`, before `department`), not position 4 like in BALANCE.
+**CRITICAL:** The `currency` parameter is in **position 5** (after `subsidiary`, before `department`). Note: BALANCE does not have a currency parameter.
 
 **Correct:**
 ```excel
@@ -353,6 +353,6 @@ If a cell reference points to an empty cell, the function will return an error:
 
 ---
 
-**Last Updated:** January 10, 2026  
-**Version:** 4.0.6.163
+**Last Updated:** January 12, 2026  
+**Version:** 4.0.6.167
 

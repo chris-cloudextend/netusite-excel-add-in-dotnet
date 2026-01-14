@@ -134,5 +134,5 @@ See [DOCUMENTATION.md](DOCUMENTATION.md) for detailed troubleshooting.
 
 ---
 
-*Current Version: 4.0.6.163*
+*Current Version: 4.0.6.167*
  
