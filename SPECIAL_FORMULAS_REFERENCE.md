@@ -54,6 +54,9 @@ XAVI.NETINCOME(fromPeriod, toPeriod, [subsidiary], [accountingBook], [classId], 
 
 **Important:** If `toPeriod` is omitted, XAVI treats it as a single-period range (`from = to`). This often does not match Balance Sheet Net Income. Always pass both periods explicitly.
 
+**FAQ:** Why doesn’t `XAVI.NETINCOME("2/1/2025")` match `XAVI.NETINCOME("1/1/2025", "2/1/2025")`?
+Because `NETINCOME` always computes a **period range**. A single period is treated as **from = to**, so it returns only that month’s P&L. For Balance Sheet Net Income (YTD), always pass both periods.
+
 **Backend Logic:**
 ```
 NI = Sum of all P&L transactions from fromPeriod through toPeriod

@@ -213,6 +213,9 @@ Not all currency/subsidiary combinations are valid. The backend uses NetSuite's 
 
 **Important:** If `toPeriod` is omitted, XAVI treats it as a single-period range (`fromPeriod` = `toPeriod`). This is almost never what users want for Balance Sheet Net Income. Always pass both periods explicitly.
 
+**FAQ:** Why doesn’t `XAVI.NETINCOME("2/1/2025")` match `XAVI.NETINCOME("1/1/2025", "2/1/2025")`?
+Because `NETINCOME` always computes a **period range**. A single period is treated as **from = to**, so it returns only that month’s P&L. For Balance Sheet Net Income (YTD), always pass both periods.
+
 **Examples:**
 ```excel
 =XAVI.NETINCOME("Jan 2025", "Mar 2025")

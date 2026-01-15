@@ -111,6 +111,9 @@ NI = All P&L from a specified start period through a specified end period
 
 **When to use:** Balance Sheet reports (use fiscal year start → report period) or to verify P&L totals.
 
+**FAQ:** Why doesn’t `XAVI.NETINCOME("2/1/2025")` match `XAVI.NETINCOME("1/1/2025", "2/1/2025")`?
+Because `NETINCOME` always computes a **period range**. A single period is treated as **from = to**, so it returns just that month’s P&L. For Balance Sheet Net Income (YTD), always pass both periods.
+
 #### CTA (Cumulative Translation Adjustment)
 
 **What is CTA?**
