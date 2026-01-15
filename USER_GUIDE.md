@@ -527,6 +527,15 @@ No, XAVI requires an internet connection to communicate with NetSuite.
 
 XAVI shows the true GL (General Ledger) values. NetSuite sometimes displays different signs for presentation purposes. The **totals always match** - only individual line signs may differ.
 
+### Q: Why doesn’t `XAVI.NETINCOME("2/1/2025")` match `XAVI.NETINCOME("1/1/2025", "2/1/2025")`?
+
+`XAVI.NETINCOME` always computes a **period range**. If you supply only one period, XAVI treats it as a single-period range (`from = to`), so it returns **only that month’s P&L**.  
+
+To match Balance Sheet Net Income (YTD), always pass **both** `fromPeriod` and `toPeriod`:
+```
+=XAVI.NETINCOME("Jan 2025", "Feb 2025")
+```
+
 ### Q: Can I use wildcards with budgets?
 
 Yes! `=XAVI.BUDGET("6*", "Jan 2025", "Dec 2025")` returns the sum of all 6xxx expense budgets.
