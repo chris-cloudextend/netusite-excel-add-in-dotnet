@@ -1,8 +1,10 @@
-# Class Filter Cache Bug – Root Cause and Fix
+# Class Filter Cache Bug – Engineer Fix Guide
 
-## Summary
+## Problem
 
-When using **Quick Start → Full Income Statement**, changing the **Class** (or Department/Location) filter to a new value (e.g. "CloudExtend") left some accounts showing **cached values from the first run** instead of refetching with the new filter. Accounts that had values with no class (e.g. 59999) continued to show those values after selecting Class = CloudExtend instead of the correct filtered values.
+**Symptom:** In Quick Start → Full Income Statement, after changing **Class** (or Department or Location) to a new value (e.g. "CloudExtend"), some accounts keep showing **numbers from the first run** instead of values for the new filter. Cells that had data with no class selected continue to show those old values instead of refetching or showing filtered data.
+
+**Example:** First run with no Class → account 59999 shows $X. User changes Class to CloudExtend → 59999 still shows $X instead of the CloudExtend-filtered balance (or #BUSY while refetching).
 
 ---
 
@@ -11,52 +13,55 @@ When using **Quick Start → Full Income Statement**, changing the **Class** (or
 **File:** `docs/functions.js`  
 **Function:** `checkLocalStorageCache(account, period, toPeriod, subsidiary, filtersHash)`
 
-The preload/localStorage cache is keyed by:
+Balance lookups use two localStorage caches. Both were returning unfiltered data when a segment filter was applied.
 
-- `balance:${account}:${filtersHash}:${period}` (single period)
-- `balance:${account}:${filtersHash}:${fromPeriod}::${toPeriod}` (range)
+### 1. Preload cache (`xavi_balance_cache`)
 
-For “backward compatibility,” the code also tried a **no-filter** key when the requested key was missing:
+- **Keys:** `balance:${account}:${filtersHash}:${period}` (single) or `balance:${account}:${filtersHash}:${fromPeriod}::${toPeriod}` (range).
+- **Bug:** For backward compatibility, the code also tried a **no-filter** key when the exact key missed: `balance:${account}::${lookupPeriod}` (and the range equivalent). That fallback was used **even when the user had a segment filter**.
+- **What happened:** Request with Class=CloudExtend → lookup `balance:59999:|||CloudExtend|1:Jan 2025` → miss → then try `balance:59999::Jan 2025` → **hit** (from first run with no class) → wrong value returned.
 
-- Single period: `balance:${account}::${lookupPeriod}`
-- Range: `balance:${account}::${fromPeriod}::${toPeriod}`
+So the bug was: **no-filter fallback was used even when Class/Department/Location was in the request.**
 
-That fallback was added **unconditionally**. So when the user added a segment filter (e.g. Class = CloudExtend):
+### 2. Legacy cache (`netsuite_balance_cache`)
 
-1. `filtersHash` became something like `|||CloudExtend|1` (sub\|dept\|loc\|**class**\|book).
-2. The code looked up `balance:59999:|||CloudExtend|1:Jan 2025` → **miss** (no preload with that filter yet).
-3. It then tried the no-filter key `balance:59999::Jan 2025` → **hit** (from the first run with no class).
-4. It returned that cached value, so the cell showed the **unfiltered** balance instead of the Class=CloudExtend balance.
+- **Keys:** Account + period only. Format is effectively `balances[account][period]`. **No segment dimensions** (no Class, Department, Location).
+- **Bug:** After the preload cache, the code always fell through to this legacy cache. So even after fixing (1), a request with Class=CloudExtend could still hit the legacy cache and get the unfiltered balance.
 
-So the bug was: **using the no-filter cache key even when the user had requested data with a segment filter (Class, Department, or Location)**. That made a filter change appear to have no effect for accounts that were already in the cache from a no-filter run.
+So the bug was: **legacy cache was used for requests that had a segment filter**, even though that cache is not filter-aware.
 
 ---
 
-## Fix (Applied in This Repo)
+## Fix (Two Parts)
 
-**Location:** `docs/functions.js`, inside `checkLocalStorageCache`, in the block that builds `keysToTry` for the preload cache (`xavi_balance_cache`).
+Both changes are in `checkLocalStorageCache` in `docs/functions.js`.
 
-1. **Define “no filter”:**  
-   Treat the request as having no segment filters only when `filtersHash` is null or the empty hash:
+### Part 1: Preload cache – only use no-filter fallback when there is no segment filter
+
+**Where:** In the block that builds `keysToTry` for the preload cache (reading `xavi_balance_cache`).
+
+1. **Define “no filter”** once, before building keys:
 
    ```js
    const isNoFilterHash = !filtersHash || filtersHash === '||||1' || filtersHash === '||||';
    ```
 
-   (Empty hash format is `sub|dept|loc|class|book`, e.g. `||||1` when all segments are empty and book is 1.)
+   (`filtersHash` format is `sub|dept|loc|class|book`; `||||1` = all segments empty, book 1.)
 
-2. **Use no-filter fallback only when there are no segment filters:**
-   - **Single period:** Add `balance:${account}::${lookupPeriod}` to `keysToTry` only when `isNoFilterHash` is true.
-   - **Range:** Add `balance:${account}::${fromPeriod}::${toPeriod}` only when `isNoFilterHash` is true.
-   - **Partial (subsidiary-only):** Add the subsidiary-only key only when `isNoFilterHash` is true (so we don’t reuse “subsidiary-only” cache when the user has set Class/Dept/Loc).
+2. **Guard every no-filter and partial fallback** so they are only added when there is no segment filter:
+   - **Single period:** Add `balance:${account}::${lookupPeriod}` to `keysToTry` **only if** `isNoFilterHash`.
+   - **Range:** Add `balance:${account}::${fromPeriod}::${toPeriod}` **only if** `isNoFilterHash`.
+   - **Subsidiary-only key:** Add the subsidiary-only variant **only if** `isNoFilterHash`.
 
-With this change, when the user sets Class (or Department or Location), we no longer fall back to the no-filter or subsidiary-only key, so we don’t return stale data and the sheet refetches (or shows correct cached data when keyed by the full `filtersHash`).
+3. **Leave unchanged:** The key that uses the full `filtersHash`, e.g. `balance:${account}:${filtersHash}:${lookupPeriod}` — always try that when `filtersHash` is present.
 
-### Second part: skip legacy cache when a segment filter is applied
+Result: When the user sets Class (or Department or Location), we no longer fall back to no-filter or subsidiary-only keys, so we don’t return stale preload data.
 
-There is a **second cache** in the same function: the **legacy cache** (`netsuite_balance_cache`). It is keyed only by **account + period** and has **no concept of Class/Department/Location**. After the preload cache lookup, the code falls through to this legacy cache. So even with the preload fix above, a request with Class=CloudExtend could still **hit the legacy cache** and return the unfiltered value.
+### Part 2: Legacy cache – skip when any segment filter is present
 
-**Fix:** Before reading the legacy cache, skip it when the request has any segment filter:
+**Where:** Immediately before the block that reads the legacy cache (`STORAGE_TIMESTAMP_KEY` and `STORAGE_KEY` / `netsuite_balance_cache`).
+
+Add:
 
 ```js
 const hasSegmentFilter = filtersHash && filtersHash !== '||||1' && filtersHash !== '||||';
@@ -65,51 +70,40 @@ if (hasSegmentFilter) {
 }
 ```
 
-Place this immediately before the block that reads `STORAGE_TIMESTAMP_KEY` and `STORAGE_KEY` (the legacy cache). With both the preload fix and this legacy-cache skip, changing Class (or Department/Location) will no longer show stale values.
+Result: When the user has a segment filter, we never read the legacy cache, so we don’t return unfiltered legacy data. The caller will refetch or use another cache key.
 
 ---
 
-## How to Apply the Same Fix in Your Build
+## How to Apply in Your Build
 
-1. **Open** `docs/functions.js` (or your project’s equivalent of the shared runtime/custom functions script that contains `checkLocalStorageCache`).
+1. Open the file that contains `checkLocalStorageCache` (in this repo: `docs/functions.js`).
 
-2. **Find** the function `checkLocalStorageCache`. Inside it, locate the block that:
-   - Reads `xavi_balance_cache` from localStorage,
-   - Builds an array of keys to try (e.g. `keysToTry`),
-   - Pushes the **no-filter** key `balance:${account}::${lookupPeriod}` (single period),
-   - And for range queries, the no-filter key `balance:${accountStr}::${normalizedPeriod}::${normalizedToPeriod}`.
+2. **Preload cache (Part 1):**
+   - Find where `xavi_balance_cache` is read and `keysToTry` is built.
+   - Add `isNoFilterHash` as above before building keys.
+   - Wrap the **no-filter** and **subsidiary-only** key pushes in `if (isNoFilterHash) { ... }` (for both single-period and range paths).
+   - Do **not** remove or change the key that includes the full `filtersHash`.
 
-3. **Before** building those keys:
-   - Add:
-     ```js
-     const isNoFilterHash = !filtersHash || filtersHash === '||||1' || filtersHash === '||||';
-     ```
+3. **Legacy cache (Part 2):**
+   - Find the comment/block for “CHECK LEGACY CACHE” / `netsuite_balance_cache` / `STORAGE_KEY`.
+   - Right before that block, add the `hasSegmentFilter` check and `return null` as above.
 
-4. **Guard the no-filter and partial keys:**
-   - Only add the **single-period no-filter** key when `isNoFilterHash` is true.
-   - Only add the **range no-filter** key when `isNoFilterHash` is true.
-   - Only add the **subsidiary-only** key when `isNoFilterHash` is true (so segment filters like Class are not ignored).
-
-5. **Keep** the key that uses the full `filtersHash` (e.g. `balance:${account}:${filtersHash}:${lookupPeriod}`) as-is; that one is correct and should be tried whenever `filtersHash` is present.
-
-6. **Legacy cache:** In the same function, find the block that checks the legacy cache (`netsuite_balance_cache` / `STORAGE_KEY`). Immediately before that block, add the `hasSegmentFilter` check and `return null` so the legacy cache is skipped when Class/Dept/Location (or subsidiary) is in the request (see “Second part” above).
-
-7. **Verify:**  
-   Run Quick Start → Full Income Statement, then change Class to e.g. CloudExtend. Accounts that had values in the first run should now show values for the new filter (or refetch) instead of staying at the previous no-filter numbers.
+4. **Verify:**  
+   Quick Start → Full Income Statement → run once (no Class). Then set Class to e.g. CloudExtend. Previously populated accounts should update to the new filter (or show #BUSY then correct values), not stay at the first-run numbers.
 
 ---
 
-## Related Details
+## Reference
 
-- **Cache key format:** `filtersHash` is built by `getFilterKey(params)` as `sub|dept|loc|class|book` (e.g. `||||1` when all segments are empty and book is 1).
-- **In-memory cache:** The in-memory balance cache uses `getCacheKey('balance', params)`, which already includes `class: params.classId || ''`, so it was not the source of this bug; the bug was only in the **localStorage** lookup logic in `checkLocalStorageCache`.
-- **Impact:** Any change of Class, Department, or Location could have shown stale balances until this fix was applied.
+| Item | Location |
+|------|----------|
+| File | `docs/functions.js` |
+| Function | `checkLocalStorageCache(account, period, toPeriod, subsidiary, filtersHash)` |
+| Part 1 | Preload block: `isNoFilterHash` and conditional no-filter/subsidiary-only keys in `keysToTry` |
+| Part 2 | Before legacy block: `hasSegmentFilter` check and `return null` |
 
----
+**Cache key format:** `filtersHash` = `sub|dept|loc|class|book` (from `getFilterKey(params)`). Empty segments + default book → `||||1` or `||||`.
 
-## File and Line Reference (This Repo)
+**In-memory cache:** The in-memory balance cache already keys by segment (e.g. `getCacheKey('balance', params)` with `class` etc.); the bug was only in the **localStorage** logic in `checkLocalStorageCache`.
 
-- **File:** `docs/functions.js`
-- **Function:** `checkLocalStorageCache`
-- **Change 1:** Introduction of `isNoFilterHash` and conditional use of no-filter and subsidiary-only keys (preload cache).
-- **Change 2:** Before the legacy cache block (`CHECK LEGACY CACHE`), add `hasSegmentFilter` and skip legacy cache when true (return null). `isNoFilterHash` and conditional use of no-filter and subsidiary-only keys (around the existing “Key format 1 / 2 / 3” and range key comments).
+**Impact:** Without both parts of the fix, any change to Class, Department, or Location could show stale balances for accounts that had been cached from a previous run.

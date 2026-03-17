@@ -6242,13 +6242,13 @@ let batchTimer = null;  // Timer reference for BALANCE batching
 let typeBatchTimer = null;  // Timer reference for TYPE batching
 let budgetBatchTimer = null;  // Timer reference for BUDGET batching
 let titleBatchTimer = null;  // Timer reference for NAME/title batching
-const BATCH_DELAY = 500;           // Wait 500ms to collect multiple requests (matches build mode settle)
+const BATCH_DELAY = 700;           // Wait 700ms to collect drag-fill requests (longer = fewer, larger batches)
 const BUDGET_BATCH_DELAY = 300;    // Faster batch delay for BUDGET (simpler queries)
 
 // Track request timing for smart timer management (prevent reset during rapid drag operations)
 let lastRequestTimestamp = null;  // Timestamp of last request that queued
-const RAPID_REQUEST_THRESHOLD_MS = 100;  // Requests < 100ms apart are considered rapid
-const QUEUE_SIZE_THRESHOLD = 10;  // Don't reset timer if queue size exceeds this
+const RAPID_REQUEST_THRESHOLD_MS = 150;  // Requests < 150ms apart are considered rapid (allows drag-fill to batch)
+const QUEUE_SIZE_THRESHOLD = 3;   // Don't reset timer once queue has 3+ items (so drag-fill batches instead of one-by-one)
 const TITLE_BATCH_DELAY = 100;     // Fast batch delay for titles (simple lookups)
 const TYPE_BATCH_DELAY = 150;      // Faster batch delay for TYPE (lightweight queries)
 const CHUNK_SIZE = 100;             // Max 100 accounts per batch (backend supports 100+, tested with 114)
@@ -7963,16 +7963,19 @@ async function BALANCE(account, fromPeriod, toPeriod, subsidiary, department, lo
                     if (req.account) uniqueAccounts.add(req.account);
                 }
 
-                // Grid pattern threshold: 3+ periods/ranges AND 2+ accounts
-                // This matches detectColumnBasedPLGrid() requirements (line 925)
+                // Grid pattern: 3+ periods/ranges AND 2+ accounts (full grid).
+                // Column-drag pattern: 3+ periods with 1 account (user dragged one row across columns).
+                // Both skip the 120s preload wait so we go straight to queue and batch (avoids long wait
+                // when taskpane isn't running preload, and avoids cells resolving one-by-one from small batches).
                 const totalPeriodsOrRanges = uniquePeriods.size + uniqueRanges.size;
                 const isGridPattern = totalPeriodsOrRanges >= 3 && uniqueAccounts.size >= 2;
+                const isColumnDragPattern = totalPeriodsOrRanges >= 3 && uniqueAccounts.size >= 1;
 
-                if (isGridPattern) {
+                if (isGridPattern || isColumnDragPattern) {
                     // ================================================================
-                    // GRID MODE: Skip preload wait - batch queue will handle efficiently
+                    // GRID / COLUMN-DRAG: Skip preload wait - batch queue will handle efficiently
                     // ================================================================
-                    console.log(`📊 GRID MODE DETECTED: ${totalPeriodsOrRanges} ${isRangeQuery ? 'ranges' : 'periods'} × ${uniqueAccounts.size} accounts`);
+                    console.log(`📊 ${isGridPattern ? 'GRID' : 'COLUMN-DRAG'} MODE: ${totalPeriodsOrRanges} ${isRangeQuery ? 'ranges' : 'periods'} × ${uniqueAccounts.size} account(s) - skipping preload wait`);
                     console.log(`   ⏭️ Skipping preload wait - batch queue will use full-year refresh`);
                     shouldWaitForPreload = false;
                     
