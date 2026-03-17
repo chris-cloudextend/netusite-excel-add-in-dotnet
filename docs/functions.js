@@ -5800,6 +5800,10 @@ function checkLocalStorageCache(account, period, toPeriod = null, subsidiary = '
                 
                 const keysToTry = [];
                 
+                // CRITICAL: Only use no-filter fallback when request has no segment filters.
+                // Otherwise changing Class/Department/Location would return stale cached values from the first run.
+                const isNoFilterHash = !filtersHash || filtersHash === '||||1' || filtersHash === '||||';
+
                 // For range queries, check for range cache keys first
                 if (isRangeQuery && normalizedPeriod && normalizedToPeriod) {
                     // Range cache key format: balance:account:filtersHash:fromPeriod::toPeriod
@@ -5810,33 +5814,36 @@ function checkLocalStorageCache(account, period, toPeriod = null, subsidiary = '
                         keysToTry.push(key);
                         console.log(`🔍 RANGE CACHE LOOKUP: Trying key "${key}"`);
                     }
-                    // Also try with partial filters
-                    if (subsidiary && subsidiary !== '') {
+                    // Also try with partial filters (subsidiary only) only when no other segment filters
+                    if (subsidiary && subsidiary !== '' && isNoFilterHash) {
                         const partialHash = `${subsidiary}||||1`;
                         const key = `balance:${accountStr}:${partialHash}:${normalizedPeriod}::${normalizedToPeriod}`;
                         keysToTry.push(key);
                         console.log(`🔍 RANGE CACHE LOOKUP: Trying partial key "${key}"`);
                     }
-                    // Also try without filters (backward compatibility)
-                    const key = `balance:${accountStr}::${normalizedPeriod}::${normalizedToPeriod}`;
-                    keysToTry.push(key);
-                    console.log(`🔍 RANGE CACHE LOOKUP: Trying no-filter key "${key}"`);
+                    // Only try no-filter key when request has no segment filters (prevents wrong data when user adds Class/etc.)
+                    if (isNoFilterHash) {
+                        const key = `balance:${accountStr}::${normalizedPeriod}::${normalizedToPeriod}`;
+                        keysToTry.push(key);
+                        console.log(`🔍 RANGE CACHE LOOKUP: Trying no-filter key "${key}"`);
+                    }
                 }
-                
+
                 // Key format 1: With full filtersHash (most specific) - single period
                 if (filtersHash) {
                     keysToTry.push(`balance:${account}:${filtersHash}:${lookupPeriod}`);
                 }
-                
-                // Key format 2: With partial filters (subsidiary only, if provided) - single period
-                if (subsidiary && subsidiary !== '') {
-                    // Try with subsidiary only (assumes empty dept/loc/class, book=1)
+
+                // Key format 2: With partial filters (subsidiary only) - only when no other segment filters
+                if (subsidiary && subsidiary !== '' && isNoFilterHash) {
                     const partialHash = `${subsidiary}||||1`;
                     keysToTry.push(`balance:${account}:${partialHash}:${lookupPeriod}`);
                 }
-                
-                // Key format 3: Without filters (backward compatibility - old format) - single period
-                keysToTry.push(`balance:${account}::${lookupPeriod}`);
+
+                // Key format 3: Without filters - ONLY when request has no segment filters (prevents Class/Dept/Loc change returning stale cache)
+                if (isNoFilterHash) {
+                    keysToTry.push(`balance:${account}::${lookupPeriod}`);
+                }
                 
                 // Try each key format in order of specificity
                 for (const preloadKey of keysToTry) {
