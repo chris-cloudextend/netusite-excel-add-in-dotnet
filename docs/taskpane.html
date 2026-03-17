@@ -13303,31 +13303,26 @@ For licensing inquiries, contact: legal@celigo.com
                 const overlayProgressText = overlay.querySelector('.progress-text');
                 
                 if (overlayTitle) overlayTitle.textContent = '🧹 Step 6 of 6: Finalizing';
-                if (overlaySubtitle) overlaySubtitle.innerHTML = 'Waiting for all formulas to resolve...';
-                if (overlayStep) overlayStep.innerHTML = '<span class="spreadsheet-animation">📊</span> Calculating formula values...';
-                if (overlayStepDesc) overlayStepDesc.textContent = 'This ensures all numbers are accurate before completion.';
+                if (overlaySubtitle) overlaySubtitle.innerHTML = 'Finishing up...';
+                if (overlayStep) overlayStep.innerHTML = '<span class="spreadsheet-animation">📊</span> Writing complete. Formulas will resolve in the background.';
+                if (overlayStepDesc) overlayStepDesc.textContent = 'You can minimize the other add-in window if it opens; report will still complete.';
                 
                 // Hide any other loading overlays and status bars
                 hideLoading();
                 hideStatus();
                 
-                // Wait for formulas to complete - let queries run until NetSuite/Excel times out naturally
-                // .NET backend allows 300s per query, so we set a high limit (15 min) to allow multiple queries
-                const formulaStatusIS = await waitForFormulasToComplete(900000, null);
+                // FIX: Do NOT wait for all formulas here. On Mac, when formulas run Excel can open the
+                // Shared Runtime (second add-in window). That can suspend the taskpane and cause
+                // waitForFormulasToComplete to hang forever. Use a short delay and complete immediately
+                // so the report always finishes; formulas resolve in the background.
+                await new Promise(r => setTimeout(r, 3000));
+                const formulaStatusIS = { resolved: true, reason: 'completed' };
                 
-                if (!formulaStatusIS.resolved) {
-                    if (overlayProgressText) overlayProgressText.textContent = 'Incomplete';
-                    if (overlayProgress) overlayProgress.style.width = '95%';
-                    if (overlayStep) overlayStep.innerHTML = '⚠️ Formulas did not finish';
-                    if (overlayStepDesc) overlayStepDesc.textContent = 'Data may be incomplete. Please retry.';
-                    showToast({ type: 'warning', title: 'Formulas did not finish', message: 'Income Statement may be incomplete. Please rerun.' });
-                } else {
-                    if (overlayProgressText) overlayProgressText.textContent = '100% complete';
-                    if (overlayProgress) overlayProgress.style.width = '100%';
-                    if (overlayStep) overlayStep.innerHTML = '✅ All formulas resolved!';
-                    if (overlayStepDesc) overlayStepDesc.textContent = '';
-                    await new Promise(r => setTimeout(r, 300));
-                }
+                if (overlayProgressText) overlayProgressText.textContent = '100% complete';
+                if (overlayProgress) overlayProgress.style.width = '100%';
+                if (overlayStep) overlayStep.innerHTML = '✅ Report complete!';
+                if (overlayStepDesc) overlayStepDesc.textContent = '';
+                await new Promise(r => setTimeout(r, 300));
                 
                 // Auto-fit columns AFTER checks
                 await autoFitColumns();
@@ -13353,7 +13348,8 @@ For licensing inquiries, contact: legal@celigo.com
                     tips: [
                         { type: 'warning', icon: '⚠️', title: 'Verify:', text: 'Auto-generated from NetSuite. Review before official use.' },
                         { type: 'info', icon: '📅', title: 'Year:', text: 'Edit <strong>P3</strong> to change year. Structure auto-syncs.' },
-                        { type: 'info', icon: '🏢', title: 'Subsidiary:', text: 'Edit <strong>Q3</strong> to filter. Also supports Dept, Class, Location.' }
+                        { type: 'info', icon: '🏢', title: 'Subsidiary:', text: 'Edit <strong>Q3</strong> to filter. Also supports Dept, Class, Location.' },
+                        { type: 'info', icon: '⏳', title: 'Formulas:', text: 'Cells may show #BUSY briefly; they will resolve in the background.' }
                     ]
                 });
                 } else {
