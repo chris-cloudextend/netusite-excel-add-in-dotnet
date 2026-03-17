@@ -5897,7 +5897,13 @@ function checkLocalStorageCache(account, period, toPeriod = null, subsidiary = '
         // ================================================================
         // CHECK LEGACY CACHE (netsuite_balance_cache)
         // Legacy format: { "10010": { "Jan 2025": 2064705.84, ... }, ... }
+        // CRITICAL: Legacy cache has NO concept of Class/Dept/Location - it's account+period only.
+        // If user has any segment filter, do NOT use legacy cache or we return wrong (unfiltered) data.
         // ================================================================
+        const hasSegmentFilter = filtersHash && filtersHash !== '||||1' && filtersHash !== '||||';
+        if (hasSegmentFilter) {
+            return null; // Skip legacy cache when Class/Dept/Loc/Subsidiary filter is applied
+        }
         const timestamp = localStorage.getItem(STORAGE_TIMESTAMP_KEY);
         if (!timestamp) {
             // Only log if this is likely an Income Statement lookup (P&L account)

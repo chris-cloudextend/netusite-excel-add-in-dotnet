@@ -52,6 +52,21 @@ So the bug was: **using the no-filter cache key even when the user had requested
 
 With this change, when the user sets Class (or Department or Location), we no longer fall back to the no-filter or subsidiary-only key, so we don’t return stale data and the sheet refetches (or shows correct cached data when keyed by the full `filtersHash`).
 
+### Second part: skip legacy cache when a segment filter is applied
+
+There is a **second cache** in the same function: the **legacy cache** (`netsuite_balance_cache`). It is keyed only by **account + period** and has **no concept of Class/Department/Location**. After the preload cache lookup, the code falls through to this legacy cache. So even with the preload fix above, a request with Class=CloudExtend could still **hit the legacy cache** and return the unfiltered value.
+
+**Fix:** Before reading the legacy cache, skip it when the request has any segment filter:
+
+```js
+const hasSegmentFilter = filtersHash && filtersHash !== '||||1' && filtersHash !== '||||';
+if (hasSegmentFilter) {
+    return null; // Skip legacy cache when Class/Dept/Loc/Subsidiary filter is applied
+}
+```
+
+Place this immediately before the block that reads `STORAGE_TIMESTAMP_KEY` and `STORAGE_KEY` (the legacy cache). With both the preload fix and this legacy-cache skip, changing Class (or Department/Location) will no longer show stale values.
+
 ---
 
 ## How to Apply the Same Fix in Your Build
@@ -77,7 +92,9 @@ With this change, when the user sets Class (or Department or Location), we no lo
 
 5. **Keep** the key that uses the full `filtersHash` (e.g. `balance:${account}:${filtersHash}:${lookupPeriod}`) as-is; that one is correct and should be tried whenever `filtersHash` is present.
 
-6. **Verify:**  
+6. **Legacy cache:** In the same function, find the block that checks the legacy cache (`netsuite_balance_cache` / `STORAGE_KEY`). Immediately before that block, add the `hasSegmentFilter` check and `return null` so the legacy cache is skipped when Class/Dept/Location (or subsidiary) is in the request (see “Second part” above).
+
+7. **Verify:**  
    Run Quick Start → Full Income Statement, then change Class to e.g. CloudExtend. Accounts that had values in the first run should now show values for the new filter (or refetch) instead of staying at the previous no-filter numbers.
 
 ---
@@ -94,4 +111,5 @@ With this change, when the user sets Class (or Department or Location), we no lo
 
 - **File:** `docs/functions.js`
 - **Function:** `checkLocalStorageCache`
-- **Change:** Introduction of `isNoFilterHash` and conditional use of no-filter and subsidiary-only keys (around the existing “Key format 1 / 2 / 3” and range key comments).
+- **Change 1:** Introduction of `isNoFilterHash` and conditional use of no-filter and subsidiary-only keys (preload cache).
+- **Change 2:** Before the legacy cache block (`CHECK LEGACY CACHE`), add `hasSegmentFilter` and skip legacy cache when true (return null). `isNoFilterHash` and conditional use of no-filter and subsidiary-only keys (around the existing “Key format 1 / 2 / 3” and range key comments).
